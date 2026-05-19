@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "RandllMusic",
+    name: "LyraMusic",
     defaultLocalization: "en",
     platforms: [
         .iOS(.v26),
@@ -10,19 +10,19 @@ let package = Package(
         .macOS(.v15),
     ],
     products: [
-        .library(name: "RandllMusicKit", targets: ["RandllMusicKit"]),
-        .executable(name: "RandllMusic", targets: ["RandllMusic"]),
+        .library(name: "LyraMusicKit", targets: ["LyraMusicKit"]),
+        .executable(name: "LyraMusic", targets: ["LyraMusic"]),
     ],
     targets: [
         .target(
-            name: "RandllMusicKit",
-            path: "Sources/RandllMusicKit",
+            name: "LyraMusicKit",
+            path: "Sources/LyraMusicKit",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .executableTarget(
-            name: "RandllMusic",
-            dependencies: ["RandllMusicKit"],
-            path: "Sources/RandllMusic",
+            name: "LyraMusic",
+            dependencies: ["LyraMusicKit"],
+            path: "Sources/LyraMusic",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
     ]

@@ -1,8 +1,8 @@
-import RandllMusicKit
+import LyraMusicKit
 import SwiftUI
 
 @main
-struct RandllMusicApp: App {
+struct LyraMusicApp: App {
     @StateObject private var appModel = AppModel()
 
     var body: some Scene {
