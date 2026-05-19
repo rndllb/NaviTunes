@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 enum KeychainStore {
-    private static let service = "com.randll.musicclient"
+    private static let service = "com.randll.lyra"
 
     struct JellyfinCreds: Codable {
         var base: URL
