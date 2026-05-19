@@ -805,7 +805,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
             URLQueryItem(name: "SortBy", value: "SortName"),
             URLQueryItem(name: "SortOrder", value: "Ascending"),
             URLQueryItem(name: "Limit", value: "\(cap)"),
-            URLQueryItem(name: "Fields", value: "ChildCount,IsPublic"),
+            URLQueryItem(name: "Fields", value: "ChildCount,IsPublic,DateCreated"),
         ]
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
@@ -991,6 +991,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         }
         let childCount = (dict["ChildCount"] as? NSNumber)?.intValue ?? dict["ChildCount"] as? Int
         let isPublic = Self.parseOptionalBool(dict["IsPublic"])
+        let added = jellyfinDate(dict["DateCreated"])
         var art: URL?
         if let tag = dict["ImageTags"] as? [String: Any],
            let primary = tag["Primary"] as? String,
@@ -1001,7 +1002,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
             comps.queryItems = [URLQueryItem(name: "tag", value: primary)]
             art = mediaURLWithQueryAuth(comps.url!, extraQuery: [])
         }
-        return PlaylistSummary(id: id, name: name, songCount: childCount, artworkURL: art, isPublic: isPublic)
+        return PlaylistSummary(id: id, name: name, songCount: childCount, artworkURL: art, isPublic: isPublic, libraryAddedDate: added)
     }
 
     private static func parseOptionalBool(_ value: Any?) -> Bool? {
