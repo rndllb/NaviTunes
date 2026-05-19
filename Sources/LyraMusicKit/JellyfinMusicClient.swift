@@ -586,11 +586,42 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         guard !userId.isEmpty else {
             throw JellyfinClientError.unexpectedPayload
         }
-        async let artists = fetchTotalRecordCount(includeItemTypes: "MusicArtist")
+        async let artists = fetchAlbumArtistTotalCount()
         async let albums = fetchTotalRecordCount(includeItemTypes: "MusicAlbum")
         async let songs = fetchTotalRecordCount(includeItemTypes: "Audio")
         let (a, al, s) = try await (artists, albums, songs)
         return LibraryStatistics(artistCount: a, albumCount: al, songCount: s, playlistCount: nil)
+    }
+
+    /// Album artists (matches ``libraryArtists`` / Jellyfin music libraries — `MusicArtist` items are often empty).
+    private func fetchAlbumArtistTotalCount() async throws -> Int {
+        guard !userId.isEmpty, !accessToken.isEmpty else {
+            throw JellyfinClientError.unexpectedPayload
+        }
+        var comps = URLComponents(url: apiURL("Artists", "AlbumArtists"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [
+            URLQueryItem(name: "UserId", value: userId),
+            URLQueryItem(name: "Recursive", value: "true"),
+            URLQueryItem(name: "Limit", value: "1"),
+            URLQueryItem(name: "EnableTotalRecordCount", value: "true"),
+        ]
+        guard let url = comps.url else {
+            throw URLError(.badURL)
+        }
+        var req = URLRequest(url: url)
+        applyAuth(&req)
+        let (data, res) = try await URLSession.shared.data(for: req)
+        guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        if let total = json?["TotalRecordCount"] as? Int {
+            return total
+        }
+        if let totalNum = json?["totalRecordCount"] as? NSNumber {
+            return totalNum.intValue
+        }
+        throw JellyfinClientError.unexpectedPayload
     }
 
     private func fetchTotalRecordCount(includeItemTypes: String) async throws -> Int {
