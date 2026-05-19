@@ -235,6 +235,7 @@ struct LibraryArtistAlbumsView: View {
                         LibraryBrowsingAlbumGridCell(album: album)
                     }
                     .buttonStyle(.plain)
+                    .libraryAlbumContextMenu(album)
                 }
             }
             .padding(.horizontal, 16)
@@ -259,6 +260,13 @@ struct LibraryArtistAlbumsView: View {
                     try? await app.player.playNext(library: lib, track: track)
                 }
             },
+            onAddToQueue: {
+                Task {
+                    guard let lib = app.activeLibrary else { return }
+                    try? await app.player.addToQueue(library: lib, track: track)
+                }
+            },
+            hasActiveQueue: !app.player.queue.isEmpty,
             onGoToAlbum: { navigateAlbum = app.albumSummary(for: track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
             onDeleteFromLibrary: { app.beginLibraryTrackDeletion(track) },
@@ -488,6 +496,7 @@ struct LibraryGenreAlbumsView: View {
                             LibraryBrowsingAlbumGridCell(album: album)
                         }
                         .buttonStyle(.plain)
+                        .libraryAlbumContextMenu(album)
                     }
                 }
                 .padding(.horizontal, 16)

@@ -251,11 +251,9 @@ struct ServerPlaylistDetailView: View {
     @State private var loadError: String?
     @State private var searchText = ""
     @State private var navigateAlbum: AlbumSummary?
-    @State private var showRename = false
-    @State private var renameField = ""
-    @State private var renameVisibleToAll = false
-    @State private var isRenameWorking = false
+    @State private var showPlaylistEditor = false
     @State private var showDeleteConfirm = false
+    @State private var rowPendingRemoval: PlaylistRowItem?
     @State private var navigationTitleText = ""
     @State private var isDownloadingAll = false
     @State private var sortOrder: PlaylistTrackSortOrder = .playlistOrder
@@ -277,65 +275,64 @@ struct ServerPlaylistDetailView: View {
     }
 
     var body: some View {
-        ScrollView {
-            PlaylistHeroOrPillsHeader(
-                hero: { heroBlock.padding(.top, 8).padding(.bottom, 22) },
-                pills: {
-                    LibraryPlayShuffleRow(
-                        isDisabled: filtered.isEmpty,
-                        onPlay: { Task { await playAll() } },
-                        onShuffle: { Task { await shuffleAll() } }
-                    )
-                    .padding(.horizontal, 20)
-                    .padding(.top, 8)
-                    .padding(.bottom, 14)
-                }
-            )
-
-            VStack(alignment: .leading, spacing: 0) {
-                if isLoading, rows.isEmpty {
-                    ProgressView()
-                        .tint(MusicDesign.accent)
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 40)
-                } else if let loadError, rows.isEmpty {
-                    Text(loadError)
-                        .font(.subheadline)
-                        .foregroundStyle(MusicDesign.secondaryLabel)
-                        .padding(.horizontal, 20)
-                } else if filtered.isEmpty {
-                    ContentUnavailableView(
-                        "No songs",
-                        systemImage: "music.note.list",
-                        description: Text(
-                            searchText.isEmpty
-                                ? "Add tracks from your library. Changes sync with \(app.backendKind.title)."
-                                : "Nothing matches your search."
+        List {
+            Section {
+                PlaylistHeroOrPillsHeader(
+                    hero: { heroBlock.padding(.top, 8).padding(.bottom, 22) },
+                    pills: {
+                        LibraryPlayShuffleRow(
+                            isDisabled: filtered.isEmpty,
+                            onPlay: { Task { await playAll() } },
+                            onShuffle: { Task { await shuffleAll() } }
                         )
-                    )
-                    .padding(.top, 32)
-                } else {
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(filtered.enumerated()), id: \.element.rowId) { index, row in
-                            songRow(row)
-                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                    Button(role: .destructive) {
-                                        Task { await removeRow(row) }
-                                    } label: {
-                                        Label("Remove", systemImage: "trash")
-                                    }
-                                    .tint(.red)
-                                }
-                            if index < filtered.count - 1 {
-                                Divider()
-                                    .background(MusicDesign.separator)
-                            }
-                        }
+                        .padding(.horizontal, 20)
+                        .padding(.top, 8)
+                        .padding(.bottom, 14)
                     }
-                    .padding(.bottom, 24)
+                )
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets())
+            }
+
+            if isLoading, rows.isEmpty {
+                ProgressView()
+                    .tint(MusicDesign.accent)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 40)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            } else if let loadError, rows.isEmpty {
+                Text(loadError)
+                    .font(.subheadline)
+                    .foregroundStyle(MusicDesign.secondaryLabel)
+                    .padding(.horizontal, 20)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            } else if filtered.isEmpty {
+                ContentUnavailableView(
+                    "No songs",
+                    systemImage: "music.note.list",
+                    description: Text(
+                        searchText.isEmpty
+                            ? "Add tracks from your library. Changes sync with \(app.backendKind.title)."
+                            : "Nothing matches your search."
+                    )
+                )
+                .padding(.top, 32)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            } else {
+                ForEach(filtered, id: \.rowId) { row in
+                    songRow(row)
+                        .listRowBackground(MusicDesign.background)
+                        .listRowInsets(EdgeInsets())
+                        .listRowSeparatorTint(MusicDesign.separator)
                 }
             }
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
         .background(MusicDesign.background)
 #if os(iOS)
         .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search")
@@ -359,6 +356,25 @@ struct ServerPlaylistDetailView: View {
             Task { await load() }
         }
         .refreshable { await load() }
+        .confirmationDialog(
+            "Remove from Playlist?",
+            isPresented: Binding(
+                get: { rowPendingRemoval != nil },
+                set: { if !$0 { rowPendingRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Remove", role: .destructive) {
+                guard let row = rowPendingRemoval else { return }
+                rowPendingRemoval = nil
+                Task { await removeRow(row) }
+            }
+            Button("Cancel", role: .cancel) {
+                rowPendingRemoval = nil
+            }
+        } message: {
+            Text("Would you like to remove this song from this playlist?")
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
@@ -370,41 +386,21 @@ struct ServerPlaylistDetailView: View {
                 .menuOrder(.fixed)
             }
         }
-        .sheet(isPresented: $showRename) {
-            NavigationStack {
-                Form {
-                    TextField("Playlist name", text: $renameField)
+        .sheet(isPresented: $showPlaylistEditor) {
+            PlaylistEditSheet(
+                playlist: app.libraryPlaylists.first(where: { $0.id == playlist.id }) ?? playlist,
+                rows: rows,
+                onSaved: { newName in
+                    if let newName {
+                        navigationTitleText = newName
+                    }
+                    Task { await load() }
+                }
+            )
+            .environmentObject(app)
 #if os(iOS)
-                        .musicTextInputAutocapitalization(.words)
+            .presentationDetents([.large])
 #endif
-                    if app.backendKind == .jellyfin {
-                        Toggle("Visible to all", isOn: $renameVisibleToAll)
-                        Text("Other Jellyfin users on this server can see public playlists.")
-                            .font(.caption)
-                            .foregroundStyle(MusicDesign.secondaryLabel)
-                    }
-                }
-                .scrollContentBackground(.hidden)
-                .background(MusicDesign.background)
-                .navigationTitle("Rename playlist")
-                .musicNavigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") {
-                            showRename = false
-                        }
-                    }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Save") {
-                            Task { await saveRename() }
-                        }
-                        .disabled(
-                            renameField.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isRenameWorking
-                        )
-                    }
-                }
-                .musicNavigationChrome()
-            }
         }
         .confirmationDialog(
             "Delete “\(navigationTitleText.isEmpty ? playlist.name : navigationTitleText)”?",
@@ -652,13 +648,7 @@ struct ServerPlaylistDetailView: View {
     }
 
     private func beginRename() {
-        renameField = navigationTitleText.isEmpty ? playlist.name : navigationTitleText
-        if let updated = app.libraryPlaylists.first(where: { $0.id == playlist.id }) {
-            renameVisibleToAll = updated.isPublic ?? false
-        } else {
-            renameVisibleToAll = playlist.isPublic ?? false
-        }
-        showRename = true
+        showPlaylistEditor = true
     }
 
     private func togglePlaylistPinned() {
@@ -734,8 +724,16 @@ struct ServerPlaylistDetailView: View {
                     try? await app.player.playNext(library: lib, track: row.track)
                 }
             },
+            onAddToQueue: {
+                Task {
+                    guard let lib = app.activeLibrary else { return }
+                    try? await app.player.addToQueue(library: lib, track: row.track)
+                }
+            },
+            hasActiveQueue: !app.player.queue.isEmpty,
             onGoToAlbum: { navigateAlbum = app.albumSummary(for: row.track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [row.track]) },
+            onRemoveFromPlaylist: { rowPendingRemoval = row },
             onDeleteFromLibrary: { app.beginLibraryTrackDeletion(row.track) },
             canDeleteFromLibrary: app.canDeleteFromLibrary,
             onRemoveDownload: app.offline.downloadedTrackIds.contains(row.track.id)
@@ -773,24 +771,6 @@ struct ServerPlaylistDetailView: View {
         do {
             try await app.removePlaylistRow(playlistId: playlist.id, row: row)
             await load()
-        } catch {
-            app.errorMessage = error.localizedDescription
-        }
-    }
-
-    private func saveRename() async {
-        let trimmed = renameField.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        isRenameWorking = true
-        defer { isRenameWorking = false }
-        do {
-            try await app.renamePlaylist(
-                playlistId: playlist.id,
-                name: trimmed,
-                jellyfinVisibleToAll: app.backendKind == .jellyfin ? renameVisibleToAll : nil
-            )
-            navigationTitleText = trimmed
-            showRename = false
         } catch {
             app.errorMessage = error.localizedDescription
         }
@@ -834,6 +814,466 @@ struct ServerPlaylistDetailView: View {
         let playbackTracks = tracksForPlayback
         guard let idx = filtered.firstIndex(where: { $0.rowId == row.rowId }) else { return }
         try? await app.player.playAlbum(library: lib, tracks: playbackTracks, startIndex: idx, source: playbackSource)
+    }
+}
+
+private struct PlaylistEditSheet: View {
+    let playlist: PlaylistSummary
+    let rows: [PlaylistRowItem]
+    let onSaved: (String?) -> Void
+
+    @EnvironmentObject private var app: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var title: String
+    @State private var description = ""
+    @State private var visibleToAll: Bool
+    @State private var editableRows: [PlaylistRowItem]
+    @State private var selectedRowIds: Set<String> = []
+    @State private var isSaving = false
+    @State private var showAddTracks = false
+
+    init(playlist: PlaylistSummary, rows: [PlaylistRowItem], onSaved: @escaping (String?) -> Void) {
+        self.playlist = playlist
+        self.rows = rows
+        self.onSaved = onSaved
+        _title = State(initialValue: playlist.name)
+        _visibleToAll = State(initialValue: playlist.isPublic ?? false)
+        _editableRows = State(initialValue: rows)
+    }
+
+    private var trimmedTitle: String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var selectedRows: [PlaylistRowItem] {
+        editableRows.filter { selectedRowIds.contains($0.rowId) }
+    }
+
+    private var canSave: Bool {
+        !trimmedTitle.isEmpty && !isSaving
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack(alignment: .bottom) {
+                ScrollView {
+                    VStack(spacing: 18) {
+                        artworkCarousel
+                            .padding(.top, 18)
+
+                        metadataFields
+
+                        trackList
+                            .padding(.top, 4)
+                    }
+                    .padding(.bottom, 92)
+                }
+                .background(MusicDesign.background)
+
+                bottomBar
+            }
+            .navigationTitle("")
+            .musicNavigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.headline.weight(.semibold))
+                    }
+                    .buttonStyle(PlaylistEditCircleButtonStyle())
+                    .accessibilityLabel("Cancel")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        Task { await save() }
+                    } label: {
+                        if isSaving {
+                            ProgressView()
+                                .tint(.white)
+                        } else {
+                            Image(systemName: "checkmark")
+                                .font(.headline.weight(.bold))
+                        }
+                    }
+                    .buttonStyle(PlaylistEditCircleButtonStyle(fill: MusicDesign.accent, foreground: .white))
+                    .disabled(!canSave)
+                    .accessibilityLabel("Done")
+                }
+            }
+            .sheet(isPresented: $showAddTracks) {
+                PlaylistTrackAddSheet(
+                    playlistId: playlist.id,
+                    existingTrackIds: Set(editableRows.map(\.track.id)),
+                    onAdded: { added in
+                        appendAddedTracks(added)
+                        onSaved(nil)
+                    }
+                )
+                .environmentObject(app)
+            }
+        }
+    }
+
+    private var artworkCarousel: some View {
+        VStack(spacing: 12) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 16) {
+                    Spacer(minLength: 112)
+                    artworkOption(url: playlist.artworkURL, isPrimary: true)
+                    artworkOption(url: nil, isPrimary: false)
+                    artworkOption(url: nil, isPrimary: false, tint: .pink)
+                    Spacer(minLength: 112)
+                }
+                .scrollTargetLayout()
+            }
+            .scrollTargetBehavior(.viewAligned)
+
+            HStack(spacing: 10) {
+                Image(systemName: "camera.fill")
+                    .font(.caption2)
+                    .foregroundStyle(MusicDesign.secondaryLabel)
+                ForEach(0..<8, id: \.self) { idx in
+                    Circle()
+                        .fill(idx == 0 ? Color.primary.opacity(0.78) : MusicDesign.secondaryLabel.opacity(0.35))
+                        .frame(width: 7, height: 7)
+                }
+            }
+        }
+    }
+
+    private func artworkOption(url: URL?, isPrimary: Bool, tint: Color = MusicDesign.accent) -> some View {
+        ZStack {
+            if let url {
+                AlbumArtworkView(url: url, cornerRadius: 8)
+            } else {
+                LinearGradient(
+                    colors: [tint.opacity(0.95), .green.opacity(0.55), .orange.opacity(0.65)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .overlay(alignment: .topLeading) {
+                    Text(trimmedTitle.isEmpty ? playlist.name : trimmedTitle)
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                        .padding(14)
+                }
+            }
+            Circle()
+                .fill(MusicDesign.accent)
+                .frame(width: 58, height: 58)
+                .overlay {
+                    Image(systemName: isPrimary ? "photo" : "textformat")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.white)
+                }
+        }
+        .frame(width: 184, height: 184)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var metadataFields: some View {
+        VStack(spacing: 0) {
+            TextField("Playlist name", text: $title)
+                .font(.title3.weight(.bold))
+                .multilineTextAlignment(.center)
+                .padding(.vertical, 12)
+#if os(iOS)
+                .musicTextInputAutocapitalization(.words)
+#endif
+
+            Divider().background(MusicDesign.separator)
+
+            TextField("Description", text: $description, axis: .vertical)
+                .font(.body)
+                .lineLimit(1...4)
+                .padding(.vertical, 12)
+
+            if app.backendKind == .jellyfin {
+                Divider().background(MusicDesign.separator)
+                Toggle("Show on My Profile and in Search", isOn: $visibleToAll)
+                    .font(.body)
+                    .padding(.vertical, 12)
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private var trackList: some View {
+        LazyVStack(spacing: 0) {
+            ForEach(editableRows) { row in
+                PlaylistEditableTrackRow(
+                    row: row,
+                    isSelected: selectedRowIds.contains(row.rowId),
+                    onToggle: { toggle(row) }
+                )
+                Divider()
+                    .background(MusicDesign.separator)
+                    .padding(.leading, 82)
+            }
+        }
+    }
+
+    private var bottomBar: some View {
+        HStack {
+            Button {
+                Task { await removeSelectedRows() }
+            } label: {
+                Image(systemName: "trash")
+                    .font(.title3.weight(.semibold))
+                    .frame(width: 54, height: 54)
+            }
+            .buttonStyle(PlaylistEditCircleButtonStyle())
+            .disabled(selectedRowIds.isEmpty || isSaving)
+            .accessibilityLabel("Remove selected songs")
+
+            Spacer()
+
+            Button {
+                showAddTracks = true
+            } label: {
+                Image(systemName: "plus")
+                    .font(.title3.weight(.semibold))
+                    .frame(width: 54, height: 54)
+            }
+            .buttonStyle(PlaylistEditCircleButtonStyle())
+            .disabled(isSaving)
+            .accessibilityLabel("Add songs")
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
+        .padding(.bottom, 18)
+        .background(.ultraThinMaterial)
+    }
+
+    private func toggle(_ row: PlaylistRowItem) {
+        if selectedRowIds.contains(row.rowId) {
+            selectedRowIds.remove(row.rowId)
+        } else {
+            selectedRowIds.insert(row.rowId)
+        }
+    }
+
+    private func appendAddedTracks(_ tracks: [Track]) {
+        let start = editableRows.count
+        let newRows = tracks.enumerated().map { offset, track in
+            PlaylistRowItem(rowId: "\(playlist.id)-added-\(start + offset)-\(track.id)", track: track)
+        }
+        editableRows.append(contentsOf: newRows)
+    }
+
+    private func removeSelectedRows() async {
+        guard !selectedRows.isEmpty else { return }
+        isSaving = true
+        defer { isSaving = false }
+        do {
+            try await app.removePlaylistRows(playlistId: playlist.id, rows: selectedRows)
+            editableRows.removeAll { selectedRowIds.contains($0.rowId) }
+            selectedRowIds.removeAll()
+            onSaved(nil)
+        } catch {
+            app.errorMessage = error.localizedDescription
+        }
+    }
+
+    private func save() async {
+        guard canSave else { return }
+        isSaving = true
+        defer { isSaving = false }
+        do {
+            try await app.renamePlaylist(
+                playlistId: playlist.id,
+                name: trimmedTitle,
+                jellyfinVisibleToAll: app.backendKind == .jellyfin ? visibleToAll : nil
+            )
+            onSaved(trimmedTitle)
+            dismiss()
+        } catch {
+            app.errorMessage = error.localizedDescription
+        }
+    }
+}
+
+private struct PlaylistEditableTrackRow: View {
+    let row: PlaylistRowItem
+    let isSelected: Bool
+    let onToggle: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button(action: onToggle) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3.weight(.medium))
+                    .foregroundStyle(isSelected ? MusicDesign.accent : MusicDesign.secondaryLabel)
+                    .frame(width: 36, height: 44)
+            }
+            .buttonStyle(.plain)
+
+            AlbumArtworkView(url: row.track.artworkURL, cornerRadius: 5)
+                .frame(width: 46, height: 46)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.track.title)
+                    .font(.body)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(row.track.artist)
+                    .font(.caption)
+                    .foregroundStyle(MusicDesign.secondaryLabel)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            Image(systemName: "line.3.horizontal")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(MusicDesign.secondaryLabel)
+                .frame(width: 32, height: 44)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct PlaylistTrackAddSheet: View {
+    let playlistId: String
+    let existingTrackIds: Set<String>
+    let onAdded: ([Track]) -> Void
+
+    @EnvironmentObject private var app: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var searchText = ""
+    @State private var selectedTrackIds: Set<String> = []
+    @State private var tracks: [Track] = []
+    @State private var isLoading = false
+    @State private var isSaving = false
+    @State private var loadError: String?
+
+    private var filtered: [Track] {
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let available = tracks.filter { !existingTrackIds.contains($0.id) }
+        guard !q.isEmpty else { return available }
+        return available.filter {
+            $0.title.lowercased().contains(q)
+                || $0.artist.lowercased().contains(q)
+                || $0.albumTitle.lowercased().contains(q)
+        }
+    }
+
+    private var selectedTracks: [Track] {
+        tracks.filter { selectedTrackIds.contains($0.id) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if isLoading, tracks.isEmpty {
+                    ProgressView()
+                        .tint(MusicDesign.accent)
+                } else if let loadError, tracks.isEmpty {
+                    ContentUnavailableView("Could not load songs", systemImage: "exclamationmark.triangle", description: Text(loadError))
+                } else {
+                    List(filtered) { track in
+                        Button {
+                            toggle(track)
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: selectedTrackIds.contains(track.id) ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(selectedTrackIds.contains(track.id) ? MusicDesign.accent : MusicDesign.secondaryLabel)
+                                AlbumArtworkView(url: track.artworkURL, cornerRadius: 5)
+                                    .frame(width: 44, height: 44)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(track.title)
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+                                    Text(track.artist)
+                                        .font(.caption)
+                                        .foregroundStyle(MusicDesign.secondaryLabel)
+                                        .lineLimit(1)
+                                }
+                            }
+                        }
+                    }
+                    .listStyle(.plain)
+                }
+            }
+            .background(MusicDesign.background)
+            .navigationTitle("Add Songs")
+            .musicNavigationBarTitleDisplayMode(.inline)
+            .searchable(text: $searchText, prompt: "Search")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add") {
+                        Task { await addSelected() }
+                    }
+                    .disabled(selectedTrackIds.isEmpty || isSaving)
+                }
+            }
+            .task { await load() }
+        }
+    }
+
+    private func toggle(_ track: Track) {
+        if selectedTrackIds.contains(track.id) {
+            selectedTrackIds.remove(track.id)
+        } else {
+            selectedTrackIds.insert(track.id)
+        }
+    }
+
+    private func load() async {
+        guard tracks.isEmpty else { return }
+        isLoading = true
+        loadError = nil
+        defer { isLoading = false }
+
+        if !app.discoveryLibraryTracks.isEmpty {
+            tracks = app.discoveryLibraryTracks
+            return
+        }
+
+        guard let lib = app.activeLibrary else {
+            loadError = "Sign in to browse your library."
+            return
+        }
+
+        do {
+            tracks = try await lib.allTracks(limit: 50_000)
+        } catch {
+            loadError = error.localizedDescription
+        }
+    }
+
+    private func addSelected() async {
+        let selected = selectedTracks
+        guard !selected.isEmpty else { return }
+        isSaving = true
+        defer { isSaving = false }
+        do {
+            try await app.addTracksToPlaylist(playlistId: playlistId, tracks: selected)
+            onAdded(selected)
+            dismiss()
+        } catch {
+            app.errorMessage = error.localizedDescription
+        }
+    }
+}
+
+private struct PlaylistEditCircleButtonStyle: ButtonStyle {
+    var fill: Color = MusicDesign.chromeCapsuleFill
+    var foreground: Color = .primary
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(foreground)
+            .background(Circle().fill(fill.opacity(configuration.isPressed ? 0.72 : 1)))
+            .opacity(configuration.isPressed ? 0.82 : 1)
     }
 }
 

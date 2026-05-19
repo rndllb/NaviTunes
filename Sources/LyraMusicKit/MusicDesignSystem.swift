@@ -259,7 +259,8 @@ enum MusicDesign {
 
     // MARK: - Now Playing scrubber / volume track (match each other; thin “volume” pill, no thumb)
     /// Track pill height for scrubber and simulator volume row (device `MPVolumeView` uses system sizing).
-    static let nowPlayingSliderTrackHeight: CGFloat = 4
+    /// Apple Music's bars sit around 8pt at rest, expanding while scrubbing.
+    static let nowPlayingSliderTrackHeight: CGFloat = 8
     static let nowPlayingSliderDimOpacity: Double = 0.18
     static let nowPlayingSliderFillOpacity: Double = 0.90
     static let nowPlayingSliderStrokeOpacity: Double = 0.16

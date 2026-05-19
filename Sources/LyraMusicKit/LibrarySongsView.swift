@@ -90,48 +90,53 @@ struct LibrarySongsView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+        List {
+            Section {
                 searchSection
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 14)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 14, trailing: 20))
 
                 playShuffleRow
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 16)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 16, trailing: 20))
+            }
 
-                if isLoading, tracks.isEmpty {
-                    ProgressView()
-                        .tint(MusicDesign.accent)
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 40)
-                } else if let loadError, tracks.isEmpty {
-                    Text(loadError)
-                        .font(.subheadline)
-                        .foregroundStyle(MusicDesign.secondaryLabel)
-                        .padding(.horizontal, 20)
-                } else if filtered.isEmpty {
-                    ContentUnavailableView(
-                        emptyTitle,
-                        systemImage: "music.note",
-                        description: emptyDescription
-                    )
-                    .padding(.top, 32)
-                } else {
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(filtered.enumerated()), id: \.element.id) { index, track in
-                            songRow(track)
-                            if index < filtered.count - 1 {
-                                Divider()
-                                    .background(MusicDesign.separator)
-                            }
-                        }
-                    }
-                    .padding(.bottom, 24)
+            if isLoading, tracks.isEmpty {
+                ProgressView()
+                    .tint(MusicDesign.accent)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 40)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            } else if let loadError, tracks.isEmpty {
+                Text(loadError)
+                    .font(.subheadline)
+                    .foregroundStyle(MusicDesign.secondaryLabel)
+                    .padding(.horizontal, 20)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            } else if filtered.isEmpty {
+                ContentUnavailableView(
+                    emptyTitle,
+                    systemImage: "music.note",
+                    description: emptyDescription
+                )
+                .padding(.top, 32)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            } else {
+                ForEach(filtered, id: \.id) { track in
+                    songRow(track)
+                        .listRowBackground(MusicDesign.background)
+                        .listRowInsets(EdgeInsets())
+                        .listRowSeparatorTint(MusicDesign.separator)
                 }
             }
-            .padding(.top, 8)
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
         .background(MusicDesign.background)
         .navigationTitle("Songs")
         .musicNavigationBarTitleDisplayMode(.large)
@@ -276,6 +281,13 @@ struct LibrarySongsView: View {
                     try? await app.player.playNext(library: lib, track: track)
                 }
             },
+            onAddToQueue: {
+                Task {
+                    guard let lib = app.activeLibrary else { return }
+                    try? await app.player.addToQueue(library: lib, track: track)
+                }
+            },
+            hasActiveQueue: !app.player.queue.isEmpty,
             onGoToAlbum: { navigateAlbum = albumSummary(for: track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
             onDeleteFromLibrary: { app.beginLibraryTrackDeletion(track) },
@@ -369,8 +381,11 @@ struct LibrarySongRow: View, Equatable {
     let onCancelOfflineDownload: () -> Void
     let onFavorite: () -> Void
     let onPlayNext: () -> Void
+    var onAddToQueue: (() -> Void)? = nil
+    var hasActiveQueue: Bool = false
     let onGoToAlbum: () -> Void
     var onAddToPlaylist: (() -> Void)? = nil
+    var onRemoveFromPlaylist: (() -> Void)? = nil
     var onDeleteFromLibrary: () -> Void = {}
     var canDeleteFromLibrary: Bool = false
     var onRemoveDownload: (() -> Void)? = nil
@@ -384,6 +399,8 @@ struct LibrarySongRow: View, Equatable {
             && lhs.isOfflineCached == rhs.isOfflineCached
             && lhs.canDeleteFromLibrary == rhs.canDeleteFromLibrary
             && lhs.offlineDownload == rhs.offlineDownload
+            && lhs.hasActiveQueue == rhs.hasActiveQueue
+            && (lhs.onRemoveFromPlaylist != nil) == (rhs.onRemoveFromPlaylist != nil)
     }
 
     private var offlinePhase: TrackOfflineIndicatorPhase {
@@ -391,6 +408,57 @@ struct LibrarySongRow: View, Equatable {
     }
 
     var body: some View {
+        // Wrapping the icon over a transparent sizing rectangle gives the Button a
+        // hard intrinsic size — the swipe drawer reads that and the chip background
+        // becomes a horizontal capsule (because chip corner radius = height/2, and
+        // width > height).
+        // The first button in the closure is the outermost on screen AND the one the
+        // full-swipe gesture commits — when a queue exists that's "Add to Queue".
+        rowContent
+            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                if hasActiveQueue, let onAddToQueue {
+                    Button(action: onAddToQueue) {
+                        Self.swipeChipIcon("text.badge.plus")
+                    }
+                    .tint(Self.addToQueueTint)
+                    .accessibilityLabel("Add to Queue")
+                }
+                Button(action: onPlayNext) {
+                    Self.swipeChipIcon("text.line.first.and.arrowtriangle.forward")
+                }
+                .tint(MusicDesign.accent)
+                .accessibilityLabel("Play Next")
+            }
+            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                if let onRemoveFromPlaylist {
+                    Button(role: .destructive, action: onRemoveFromPlaylist) {
+                        Self.swipeChipIcon("trash")
+                    }
+                    .tint(.red)
+                    .accessibilityLabel("Remove from Playlist")
+                } else if canDeleteFromLibrary {
+                    Button(role: .destructive, action: onDeleteFromLibrary) {
+                        Self.swipeChipIcon("trash")
+                    }
+                    .tint(.red)
+                    .accessibilityLabel("Delete from Library")
+                }
+            }
+    }
+
+    private static let swipeChipWidth: CGFloat = 96
+    private static let swipeChipHeight: CGFloat = 34
+    private static let addToQueueTint = Color(red: 0.97, green: 0.62, blue: 0.36)
+
+    @ViewBuilder
+    private static func swipeChipIcon(_ systemName: String) -> some View {
+        ZStack {
+            Color.clear.frame(width: swipeChipWidth, height: swipeChipHeight)
+            Image(systemName: systemName)
+        }
+    }
+
+    private var rowContent: some View {
         HStack(alignment: .center, spacing: 10) {
             Button(action: onPlay) {
                 HStack(alignment: .center, spacing: 14) {
@@ -414,84 +482,86 @@ struct LibrarySongRow: View, Equatable {
             .buttonStyle(.plain)
 
             TrackOfflineDownloadIndicator(
-                phase: offlinePhase,
-                onCancelDownload: offlinePhase.isDownloading ? { onCancelOfflineDownload() } : nil,
-                onTapStartDownload: offlinePhase == .notCached ? { onDownload() } : nil
-            )
+                    phase: offlinePhase,
+                    onCancelDownload: offlinePhase.isDownloading ? { onCancelOfflineDownload() } : nil,
+                    onTapStartDownload: offlinePhase == .notCached ? { onDownload() } : nil
+                )
 
-            Menu {
-                ControlGroup {
-                    if let onRemoveDownload, isOfflineCached {
-                        Button(action: onRemoveDownload) {
-                            Label("Remove Download", systemImage: "arrow.down.circle.dotted")
+                Menu {
+                    ControlGroup {
+                        if let onRemoveDownload, isOfflineCached {
+                            Button(action: onRemoveDownload) {
+                                Label("Remove Download", systemImage: "arrow.down.circle.dotted")
+                            }
+                        } else {
+                            Button(action: onDownload) {
+                                Label("Download", systemImage: "arrow.down.circle")
+                            }
+                            .disabled(isOfflineCached)
                         }
-                    } else {
-                        Button(action: onDownload) {
-                            Label("Download", systemImage: "arrow.down.circle")
+                        Button(action: onFavorite) {
+                            Label(
+                                isFavorite ? "Unfavorite" : "Favorite",
+                                systemImage: isFavorite ? "star.fill" : "star"
+                            )
                         }
-                        .disabled(isOfflineCached)
-                    }
-                    Button(action: onFavorite) {
-                        Label(
-                            isFavorite ? "Unfavorite" : "Favorite",
-                            systemImage: isFavorite ? "star.fill" : "star"
-                        )
-                    }
-                    ShareLink(item: "\(track.title) — \(track.artist)") {
-                        Label("Share", systemImage: "square.and.arrow.up")
-                    }
-                }
-                .tint(Color.primary)
-
-                Section {
-                    Button {} label: { Label("Pin Song", systemImage: "pin") }
-                    if let onAddToPlaylist {
-                        Button(action: onAddToPlaylist) {
-                            Label("Add to Playlist", systemImage: "rectangle.stack.badge.plus")
+                        ShareLink(item: "\(track.title) — \(track.artist)") {
+                            Label("Share", systemImage: "square.and.arrow.up")
                         }
-                    } else {
-                        Button {} label: { Label("Add to Playlist", systemImage: "rectangle.stack.badge.plus") }
                     }
-                }
-                .tint(Color.primary)
+                    .tint(Color.primary)
 
-                Section {
-                    Button(action: onPlayNext) {
-                        Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                    Section {
+                        Button {} label: { Label("Pin Song", systemImage: "pin") }
+                        if let onAddToPlaylist {
+                            Button(action: onAddToPlaylist) {
+                                Label("Add to Playlist", systemImage: "rectangle.stack.badge.plus")
+                            }
+                        } else {
+                            Button {} label: { Label("Add to Playlist", systemImage: "rectangle.stack.badge.plus") }
+                        }
                     }
-                    Button {} label: { Label("Create Station", systemImage: "dot.radiowaves.left.and.right") }
-                }
-                .tint(Color.primary)
+                    .tint(Color.primary)
 
-                Section {
-                    Button(action: onGoToAlbum) {
-                        Label("Go to Album", systemImage: "music.note.square")
+                    Section {
+                        Button(action: onPlayNext) {
+                            Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                        }
+                        Button {} label: { Label("Create Station", systemImage: "dot.radiowaves.left.and.right") }
                     }
-                    Button {} label: { Label("View Credits", systemImage: "info.circle") }
-                }
-                .tint(Color.primary)
+                    .tint(Color.primary)
 
-                Section {
-                    Button {} label: { Label("Suggest Less", systemImage: "hand.thumbsdown") }
-                }
-                .tint(Color.primary)
-
-                Section {
-                    Button(role: .destructive, action: onDeleteFromLibrary) {
-                        Label("Delete from Library", systemImage: "trash")
+                    Section {
+                        Button(action: onGoToAlbum) {
+                            Label("Go to Album", systemImage: "music.note.square")
+                        }
+                        Button {} label: { Label("View Credits", systemImage: "info.circle") }
                     }
-                    .disabled(!canDeleteFromLibrary)
+                    .tint(Color.primary)
+
+                    Section {
+                        Button {} label: { Label("Suggest Less", systemImage: "hand.thumbsdown") }
+                    }
+                    .tint(Color.primary)
+
+                    Section {
+                        Button(role: .destructive, action: onDeleteFromLibrary) {
+                            Label("Delete from Library", systemImage: "trash")
+                        }
+                        .disabled(!canDeleteFromLibrary)
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(MusicDesign.secondaryLabel)
+                        .frame(width: 32, height: 36)
+                        .contentShape(Rectangle())
                 }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(MusicDesign.secondaryLabel)
-                    .frame(width: 32, height: 36)
-                    .contentShape(Rectangle())
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, itemSize.libraryVerticalPadding)
+            .padding(.horizontal, 20)
+            .padding(.vertical, itemSize.libraryVerticalPadding)
+            .background(MusicDesign.background)
     }
 }
+
