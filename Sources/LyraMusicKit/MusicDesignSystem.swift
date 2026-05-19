@@ -430,7 +430,7 @@ extension View {
 }
 
 enum MusicToolbar {
-    /// Replaces `.topBarTrailing`, which is unavailable when compiling `RandllMusicKit` for macOS.
+    /// Replaces `.topBarTrailing`, which is unavailable when compiling `LyraMusicKit` for macOS.
     static var trailingItemPlacement: ToolbarItemPlacement {
         #if os(iOS)
         .topBarTrailing

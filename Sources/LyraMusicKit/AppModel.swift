@@ -170,7 +170,7 @@ public final class AppModel: ObservableObject {
     private var navidrome: NavidromeClient?
     private var cancellables = Set<AnyCancellable>()
     private let networkMonitor = NWPathMonitor()
-    private let networkMonitorQueue = DispatchQueue(label: "RandllMusic.networkPath")
+    private let networkMonitorQueue = DispatchQueue(label: "LyraMusic.networkPath")
 
     var activeLibrary: MusicLibraryProviding? {
         switch backendKind {
