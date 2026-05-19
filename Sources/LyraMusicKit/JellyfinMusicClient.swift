@@ -519,66 +519,106 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         ]
     }
 
-    private func universalAudioStreamURL(trackId: String, transcodingContainer: String, audioCodec: String, mode: BitrateApplication) -> URL {
-        let base = apiURL("Audio", trackId, "universal")
+    private func baseStreamQueryItems(mode: BitrateApplication, allowStaticDirect: Bool = false) -> [URLQueryItem] {
         let deviceId = Self.stableDeviceId.replacingOccurrences(of: "\"", with: "")
         var extras: [URLQueryItem] = [
             URLQueryItem(name: "deviceId", value: deviceId),
-            URLQueryItem(name: "transcodingContainer", value: transcodingContainer),
-            URLQueryItem(name: "audioCodec", value: audioCodec),
-            // Progressive HTTP transmux — avoids HLS-only pipelines some builds prefer for ambiguous routes.
-            URLQueryItem(name: "transcodingProtocol", value: "Http"),
         ]
-        extras.append(contentsOf: bitrateQueryItems(for: mode))
         if !userId.isEmpty {
             extras.append(URLQueryItem(name: "userId", value: userId))
         }
+        extras.append(contentsOf: bitrateQueryItems(for: mode))
+        if allowStaticDirect, streamingBitrateCapBps == nil {
+            extras.append(URLQueryItem(name: "Static", value: "true"))
+        }
+        return extras
+    }
+
+    private func progressiveStreamURL(trackId: String, container: String, mode: BitrateApplication, staticDirect: Bool = false) -> URL {
+        let base = apiURL("Audio", trackId, "stream.\(container)")
+        return mediaURLWithQueryAuth(base, extraQuery: baseStreamQueryItems(mode: mode, allowStaticDirect: staticDirect))
+    }
+
+    private func universalAudioStreamURL(trackId: String, transcodingContainer: String, audioCodec: String, mode: BitrateApplication) -> URL {
+        let base = apiURL("Audio", trackId, "universal")
+        var extras = baseStreamQueryItems(mode: mode, allowStaticDirect: false)
+        extras.append(contentsOf: [
+            URLQueryItem(name: "transcodingContainer", value: transcodingContainer),
+            URLQueryItem(name: "audioCodec", value: audioCodec),
+            URLQueryItem(name: "transcodingProtocol", value: "Http"),
+        ])
         return mediaURLWithQueryAuth(base, extraQuery: extras)
+    }
+
+    private static func preferredStreamContainer(for track: Track) -> String {
+        let codec = track.audioCodec?.lowercased() ?? ""
+        switch codec {
+        case "mp3", "mpeg": return "mp3"
+        case "flac": return "flac"
+        case "aac", "m4a", "alac": return "m4a"
+        case "ogg", "vorbis", "opus": return "mp3"
+        case "wma": return "wma"
+        case "wav", "pcm": return "wav"
+        default: return "mp3"
+        }
+    }
+
+    private func orderedStreamingURLs(for track: Track) -> [URL] {
+        let primaryContainer = Self.preferredStreamContainer(for: track)
+        let allowStatic = streamingBitrateCapBps == nil
+        var urls: [URL] = []
+        var seen = Set<String>()
+
+        func append(_ url: URL) {
+            let key = url.absoluteString
+            guard !seen.contains(key) else { return }
+            seen.insert(key)
+            urls.append(url)
+        }
+
+        append(progressiveStreamURL(trackId: track.id, container: primaryContainer, mode: .streaming, staticDirect: allowStatic))
+        if primaryContainer != "mp3" {
+            append(progressiveStreamURL(trackId: track.id, container: "mp3", mode: .streaming, staticDirect: false))
+        }
+        append(universalAudioStreamURL(trackId: track.id, transcodingContainer: "mp3", audioCodec: "mp3", mode: .streaming))
+        if primaryContainer != "m4a" {
+            append(progressiveStreamURL(trackId: track.id, container: "m4a", mode: .streaming, staticDirect: false))
+        }
+        append(progressiveStreamURL(trackId: track.id, container: "aac", mode: .streaming, staticDirect: false))
+        append(universalAudioStreamURL(trackId: track.id, transcodingContainer: "aac", audioCodec: "aac", mode: .streaming))
+        append(universalAudioStreamURL(trackId: track.id, transcodingContainer: "m4a", audioCodec: "aac", mode: .streaming))
+        let codec = track.audioCodec?.lowercased() ?? ""
+        if codec == "flac", primaryContainer != "flac" {
+            append(progressiveStreamURL(trackId: track.id, container: "flac", mode: .streaming, staticDirect: allowStatic))
+            append(universalAudioStreamURL(trackId: track.id, transcodingContainer: "flac", audioCodec: "flac", mode: .streaming))
+        }
+        return urls
+    }
+
+    /// Full Jellyfin candidate list for playback (primary + fallbacks, deduped).
+    func allStreamingURLs(for track: Track) -> [URL] {
+        orderedStreamingURLs(for: track)
     }
 
     func streamURL(for track: Track) throws -> URL {
-        // Jellyfin 10.10+: bare `/Audio/{id}/stream` with no container / `audioCodec` is undefined and
-        // may return an empty or non-playable body (see jellyfin#13082). Use `stream.aac` so the server
-        // returns a defined progressive AAC stream (still direct-streams when the source is already AAC).
-        let base = apiURL("Audio", track.id, "stream.aac")
-        let deviceId = Self.stableDeviceId.replacingOccurrences(of: "\"", with: "")
-        var extras = [URLQueryItem(name: "deviceId", value: deviceId)]
-        extras.append(contentsOf: bitrateQueryItems(for: .streaming))
-        return mediaURLWithQueryAuth(base, extraQuery: extras)
+        guard let first = orderedStreamingURLs(for: track).first else {
+            throw JellyfinClientError.unexpectedPayload
+        }
+        return first
     }
 
     func offlineDownloadURL(for track: Track) throws -> URL {
-        let deviceId = Self.stableDeviceId.replacingOccurrences(of: "\"", with: "")
-        var extras = [URLQueryItem(name: "deviceId", value: deviceId)]
-        extras.append(contentsOf: bitrateQueryItems(for: .offline))
-        // Prefer FLAC for lossless sources; otherwise request MP3 which Jellyfin transcodes
-        // to a guaranteed AVPlayer-compatible container.
         let codec = track.audioCodec?.lowercased() ?? ""
         if codec == "flac" {
-            return mediaURLWithQueryAuth(apiURL("Audio", track.id, "stream.flac"), extraQuery: extras)
+            return progressiveStreamURL(trackId: track.id, container: "flac", mode: .offline, staticDirect: true)
         }
-        return mediaURLWithQueryAuth(apiURL("Audio", track.id, "stream.mp3"), extraQuery: extras)
+        return progressiveStreamURL(trackId: track.id, container: "mp3", mode: .offline, staticDirect: false)
     }
 
     func fallbackStreamURLs(for track: Track) -> [URL] {
-        let deviceId = Self.stableDeviceId.replacingOccurrences(of: "\"", with: "")
-        var extras = [URLQueryItem(name: "deviceId", value: deviceId)]
-        extras.append(contentsOf: bitrateQueryItems(for: .streaming))
-        // MP3 transcode is widely supported when AAC fails for exotic sources.
-        var urls: [URL] = [
-            mediaURLWithQueryAuth(apiURL("Audio", track.id, "stream.mp3"), extraQuery: extras),
-            universalAudioStreamURL(trackId: track.id, transcodingContainer: "mp3", audioCodec: "mp3", mode: .streaming),
-            universalAudioStreamURL(trackId: track.id, transcodingContainer: "aac", audioCodec: "aac", mode: .streaming),
-            universalAudioStreamURL(trackId: track.id, transcodingContainer: "m4a", audioCodec: "aac", mode: .streaming),
-        ]
-        let codec = track.audioCodec?.lowercased() ?? ""
-        if codec == "flac" {
-            urls.append(
-                mediaURLWithQueryAuth(apiURL("Audio", track.id, "stream.flac"), extraQuery: extras),
-            )
-            urls.append(universalAudioStreamURL(trackId: track.id, transcodingContainer: "flac", audioCodec: "flac", mode: .streaming))
-        }
-        return urls
+        let all = orderedStreamingURLs(for: track)
+        guard all.count > 1 else { return [] }
+        return Array(all.dropFirst())
     }
 
     /// Item totals via ``TotalRecordCount`` (accurate; does not fetch full libraries).

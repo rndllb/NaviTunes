@@ -5,6 +5,7 @@ struct LoginView: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.colorScheme) private var colorScheme
     @State private var forgotPasswordHint = false
+    @State private var serverDraft = ServerConnectionDraft()
 
     private var isDark: Bool { colorScheme == .dark }
 
@@ -42,6 +43,9 @@ struct LoginView: View {
             }
         }
         .id("\(app.accentPresetId)-\(app.themePreference.rawValue)")
+        .onAppear {
+            SettingsFormDrafts.pullServer(from: app, into: &serverDraft)
+        }
         .alert("Password help", isPresented: $forgotPasswordHint) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -202,7 +206,7 @@ struct LoginView: View {
             ) {
                 TextField(
                     "",
-                    text: $app.baseURLString,
+                    text: $serverDraft.baseURL,
                     prompt: Text(serverURLPlaceholder)
                         .foregroundStyle(MusicDesign.accent.opacity(isDark ? 0.82 : 0.78)),
                 )
@@ -226,7 +230,7 @@ struct LoginView: View {
                 label: "USERNAME",
                 systemImage: "person.fill",
             ) {
-                TextField("Username", text: $app.username)
+                TextField("Username", text: $serverDraft.username)
                     .font(.body.weight(.semibold))
                     .foregroundStyle(fieldValueText)
                     .tint(MusicDesign.accent)
@@ -310,7 +314,7 @@ struct LoginView: View {
                     .foregroundStyle(iconTint)
                     .frame(width: 22, alignment: .center)
 
-                SecureField("Password", text: $app.password)
+                SecureField("Password", text: $serverDraft.password)
                     .font(.body.weight(.semibold))
                     .foregroundStyle(fieldValueText)
                     .tint(MusicDesign.accent)
@@ -352,6 +356,7 @@ struct LoginView: View {
 
     private var loginButton: some View {
         Button {
+            SettingsFormDrafts.pushServer(serverDraft, to: app)
             Task { await app.signIn() }
         } label: {
             HStack(spacing: 10) {
@@ -377,7 +382,17 @@ struct LoginView: View {
             .shadow(color: MusicDesign.accent.opacity(isDark ? 0.45 : 0.35), radius: 14, x: 0, y: 8)
         }
         .buttonStyle(.plain)
-        .disabled(app.isAuthenticating || app.baseURLString.isEmpty || app.username.isEmpty)
-        .opacity(app.isAuthenticating || app.baseURLString.isEmpty || app.username.isEmpty ? 0.42 : 1)
+        .disabled(
+            app.isAuthenticating
+                || serverDraft.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || serverDraft.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+        )
+        .opacity(
+            app.isAuthenticating
+                || serverDraft.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || serverDraft.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? 0.42
+                : 1,
+        )
     }
 }
