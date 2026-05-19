@@ -38,6 +38,134 @@ struct AppAccentPreset: Identifiable, Equatable {
     }
 }
 
+/// Accent swatch grid shared by Settings and Login (uses real Icon Composer artwork per accent).
+struct AccentColorPickerGrid: View {
+    @Binding var accentPresetId: String
+    var showsLabels: Bool = true
+    var swatchSize: CGFloat = 44
+    var selectedLabelColor: Color = .white
+    var unselectedLabelColor: Color = .secondary
+
+    var body: some View {
+        LazyVGrid(
+            columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 5),
+            spacing: 14,
+        ) {
+            ForEach(AppAccentPreset.presets) { preset in
+                Button {
+                    accentPresetId = preset.id
+                } label: {
+                    VStack(spacing: 6) {
+                        ZStack {
+                            LyraAccentLogoView(
+                                accentPresetId: preset.id,
+                                size: swatchSize,
+                                cornerRadius: swatchSize * 0.22,
+                                showsIconPlate: true,
+                            )
+                            if accentPresetId == preset.id {
+                                RoundedRectangle(cornerRadius: swatchSize * 0.22, style: .continuous)
+                                    .strokeBorder(.white, lineWidth: 2.5)
+                                    .frame(width: swatchSize, height: swatchSize)
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: swatchSize * 0.28, weight: .bold))
+                                    .foregroundStyle(.white)
+                                    .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
+                            }
+                        }
+                        if showsLabels {
+                            Text(preset.name)
+                                .font(.caption2)
+                                .foregroundStyle(
+                                    accentPresetId == preset.id ? selectedLabelColor : unselectedLabelColor,
+                                )
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
+/// Signed-in profile image (cached Jellyfin / Navidrome avatar or placeholder).
+struct AccountProfileAvatarView: View {
+    @EnvironmentObject private var app: AppModel
+    var diameter: CGFloat = 96
+
+    @State private var avatarCG: CGImage?
+
+    private var decodePixelSize: CGFloat { max(diameter * 3, 120) }
+
+    private var reloadToken: String {
+        let identity = app.accountAvatarIdentity.map { "\($0.backend)|\($0.serverKey)|\($0.userKey)" } ?? "none"
+        return "\(app.accountAvatarRevision)-\(identity)-\(app.accountAvatarURL?.absoluteString ?? "")"
+    }
+
+    var body: some View {
+        Group {
+            if app.accountAvatarIdentity != nil {
+                Group {
+                    if let cg = avatarCG {
+                        ArtworkPlatformImage.swiftUIImage(cgImage: cg)
+                            .resizable()
+                            .scaledToFill()
+                    } else {
+                        profilePlaceholder
+                            .opacity(0.55)
+                    }
+                }
+                .frame(width: diameter, height: diameter)
+                .clipShape(Circle())
+                .overlay(Circle().stroke(MusicDesign.separator, lineWidth: 1))
+            } else {
+                profilePlaceholder
+            }
+        }
+        .frame(width: diameter, height: diameter)
+        .task(id: reloadToken) {
+            await refreshAvatarImage()
+        }
+        .onAppear {
+            app.prefetchAccountAvatar()
+        }
+    }
+
+    private func refreshAvatarImage() async {
+        guard let identity = app.accountAvatarIdentity else {
+            avatarCG = nil
+            return
+        }
+
+        if let data = AccountAvatarCache.loadData(identity: identity) {
+            let cached = await Task.detached(priority: .userInitiated) {
+                ArtworkImageDecoder.cgImage(from: data, maxPixelSize: decodePixelSize)
+            }.value
+            if let cached {
+                avatarCG = cached
+            }
+        }
+
+        guard let url = app.accountAvatarURL else { return }
+        await AccountAvatarCache.prefetch(url: url, identity: identity)
+        if let data = AccountAvatarCache.loadData(identity: identity) {
+            let refreshed = await Task.detached(priority: .userInitiated) {
+                ArtworkImageDecoder.cgImage(from: data, maxPixelSize: decodePixelSize)
+            }.value
+            if let refreshed {
+                avatarCG = refreshed
+            }
+        }
+    }
+
+    private var profilePlaceholder: some View {
+        Image(systemName: "person.crop.circle.fill")
+            .font(.system(size: diameter * 0.92, weight: .regular))
+            .symbolRenderingMode(.hierarchical)
+            .foregroundStyle(MusicDesign.secondaryLabel)
+    }
+}
+
 /// Visual tokens aligned with Apple Music: adaptive canvas + accent-driven chrome.
 enum MusicDesign {
     /// Dynamic accent — reads the user's chosen preset from UserDefaults each call.
@@ -205,86 +333,18 @@ struct AlbumArtworkView: View {
 
 /// Profile control → **Settings** (cached Jellyfin / Navidrome avatar or SF Symbol fallback).
 struct MusicToolbarSettingsAvatarLink: View {
-    @EnvironmentObject private var app: AppModel
     /// Circular artwork diameter (New tab uses 45; compact pills may use less).
     var diameter: CGFloat = 45
-
-    @State private var avatarCG: CGImage?
-
-    private var decodePixelSize: CGFloat { max(diameter * 3, 120) }
-
-    private var reloadToken: String {
-        let identity = app.accountAvatarIdentity.map { "\($0.backend)|\($0.serverKey)|\($0.userKey)" } ?? "none"
-        return "\(app.accountAvatarRevision)-\(identity)-\(app.accountAvatarURL?.absoluteString ?? "")"
-    }
 
     var body: some View {
         NavigationLink {
             SettingsView()
         } label: {
-            Group {
-                if app.accountAvatarIdentity != nil {
-                    Group {
-                        if let cg = avatarCG {
-                            ArtworkPlatformImage.swiftUIImage(cgImage: cg)
-                                .resizable()
-                                .scaledToFill()
-                        } else {
-                            profilePlaceholder
-                                .opacity(0.55)
-                        }
-                    }
-                    .frame(width: diameter, height: diameter)
-                    .clipShape(Circle())
-                    .overlay(Circle().stroke(MusicDesign.separator, lineWidth: 1))
-                } else {
-                    profilePlaceholder
-                }
-            }
-            .frame(minWidth: max(44, diameter), minHeight: max(44, diameter))
+            AccountProfileAvatarView(diameter: diameter)
+                .frame(minWidth: max(44, diameter), minHeight: max(44, diameter))
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Settings")
-        .task(id: reloadToken) {
-            await refreshAvatarImage()
-        }
-        .onAppear {
-            app.prefetchAccountAvatar()
-        }
-    }
-
-    private func refreshAvatarImage() async {
-        guard let identity = app.accountAvatarIdentity else {
-            avatarCG = nil
-            return
-        }
-
-        if let data = AccountAvatarCache.loadData(identity: identity) {
-            let cached = await Task.detached(priority: .userInitiated) {
-                ArtworkImageDecoder.cgImage(from: data, maxPixelSize: decodePixelSize)
-            }.value
-            if let cached {
-                avatarCG = cached
-            }
-        }
-
-        guard let url = app.accountAvatarURL else { return }
-        await AccountAvatarCache.prefetch(url: url, identity: identity)
-        if let data = AccountAvatarCache.loadData(identity: identity) {
-            let refreshed = await Task.detached(priority: .userInitiated) {
-                ArtworkImageDecoder.cgImage(from: data, maxPixelSize: decodePixelSize)
-            }.value
-            if let refreshed {
-                avatarCG = refreshed
-            }
-        }
-    }
-
-    private var profilePlaceholder: some View {
-        Image(systemName: "person.crop.circle.fill")
-            .font(.system(size: diameter, weight: .regular))
-            .symbolRenderingMode(.hierarchical)
-            .foregroundStyle(.primary)
     }
 }
 

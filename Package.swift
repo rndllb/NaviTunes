@@ -17,6 +17,7 @@ let package = Package(
         .target(
             name: "LyraMusicKit",
             path: "Sources/LyraMusicKit",
+            resources: [.process("Resources")],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .executableTarget(
