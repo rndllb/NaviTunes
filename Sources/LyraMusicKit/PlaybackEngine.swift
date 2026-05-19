@@ -38,6 +38,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private var lastEmittedUIProgress: TimeInterval = -10_000
     private var lastNowPlayingInfoRefresh: TimeInterval = -10_000
     private var playbackHead: TimeInterval = 0
+    /// Seek target carried from a persisted queue restore — applied on the first play tap when the AVPlayer is still nil.
+    private var pendingRestoreSeconds: TimeInterval = 0
     private var isSeeking = false
     /// Ignores stale periodic time samples until after a scrub seek settles.
     private var seekSettleDeadline: ContinuousClock.Instant?
@@ -53,6 +55,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private weak var lastFm: LastFmScrobbler?
     private weak var offline: OfflineDownloadManager?
     private var scrobbledForCurrentTrack = false
+
+    /// Fires once per track when scrobble threshold is reached. `AppModel` uses this to
+    /// stamp the played playlist (or album, for ad-hoc queues) into the Recently Played history.
+    var onTrackScrobbled: ((Track, PlaybackSource?) -> Void)?
     private var didConfigureRemoteCommands = false
 
     #if os(iOS)
@@ -150,10 +156,99 @@ final class PlaybackEngine: NSObject, ObservableObject {
         didConfigureRemoteCommands = false
         currentTime = 0
         playbackHead = 0
+        pendingRestoreSeconds = 0
         isPlaying = false
         duration = 0
         playbackSource = nil
         updateNowPlaying(nil)
+    }
+
+    /// Encodable copy of the current playback queue + playhead, used by `AppModel` to persist across launches.
+    /// Returns `nil` when the queue is empty so we don't overwrite a useful saved snapshot with garbage.
+    func currentSnapshot() -> PlaybackQueueSnapshot? {
+        guard !queue.isEmpty else { return nil }
+        let livePosition = player?.currentTime().seconds ?? playbackHead
+        let position: TimeInterval = {
+            if livePosition.isFinite, livePosition >= 0 { return livePosition }
+            return max(0, currentTime)
+        }()
+        let playlist: PlaylistSummary? = {
+            switch playbackSource {
+            case .playlist(let p): return p
+            case .none: return nil
+            }
+        }()
+        return PlaybackQueueSnapshot(
+            queue: queue,
+            currentIndex: currentIndex,
+            position: position,
+            playlistSource: playlist,
+            shuffle: shuffleMode == .on,
+            repeatMode: Self.encodeRepeatMode(repeatMode),
+            savedAt: Date(),
+        )
+    }
+
+    /// Repopulates the queue + index + transport modes from a saved snapshot **without** starting playback.
+    /// The first play tap (mini player / lock screen) resumes from `pendingRestoreSeconds`.
+    func restore(library: MusicLibraryProviding?, snapshot: PlaybackQueueSnapshot) {
+        guard !snapshot.queue.isEmpty else { return }
+        teardownPlayer()
+        if let library { self.library = library }
+        queue = snapshot.queue
+        let clampedIndex = min(max(0, snapshot.currentIndex), max(snapshot.queue.count - 1, 0))
+        currentIndex = clampedIndex
+        playbackSource = snapshot.playlistSource.map(PlaybackSource.playlist)
+        shuffleMode = snapshot.shuffle ? .on : .off
+        repeatMode = Self.decodeRepeatMode(snapshot.repeatMode)
+        let pending = max(0, snapshot.position)
+        pendingRestoreSeconds = pending
+        playbackHead = pending
+        currentTime = pending
+        lastEmittedUIProgress = pending
+        lyrics = []
+        scrobbledForCurrentTrack = false
+        isPlaying = false
+        duration = activeTrack?.duration ?? 0
+        configureRemoteCommands()
+        refreshNowPlaying()
+    }
+
+    private static func encodeRepeatMode(_ mode: RepeatMode) -> String {
+        switch mode {
+        case .off: return "off"
+        case .all: return "all"
+        case .one: return "one"
+        }
+    }
+
+    private static func decodeRepeatMode(_ raw: String) -> RepeatMode {
+        switch raw {
+        case "all": return .all
+        case "one": return .one
+        default: return .off
+        }
+    }
+
+    /// Returns `true` if there's a queue staged from a restore but no AVPlayer yet — caller should
+    /// kick off ``startFromPendingRestore()`` instead of toggling the (nil) player.
+    private var hasPendingRestore: Bool {
+        player == nil && queue.indices.contains(currentIndex)
+    }
+
+    private func startFromPendingRestore() async {
+        let startAt = pendingRestoreSeconds
+        pendingRestoreSeconds = 0
+        activateAudioSession()
+        do {
+            try await startCurrentItem(startSeconds: startAt)
+            player?.play()
+            isPlaying = true
+        } catch {
+            // If the restored stream can't be reached (offline, server moved), leave the queue
+            // intact and paused — the user can still skip/jump or try again later.
+            isPlaying = false
+        }
     }
 
     func playAlbum(library: MusicLibraryProviding?, tracks: [Track], startIndex: Int = 0, source: PlaybackSource? = nil) async throws {
@@ -196,6 +291,20 @@ final class PlaybackEngine: NSObject, ObservableObject {
         }
     }
 
+    func addToQueue(library: MusicLibraryProviding?, track: Track) async throws {
+        try await addTracksToQueue(library: library, tracks: [track])
+    }
+
+    func addTracksToQueue(library: MusicLibraryProviding?, tracks: [Track]) async throws {
+        guard !tracks.isEmpty else { return }
+        if let library { self.library = library }
+        if queue.isEmpty {
+            try await playAlbum(library: library, tracks: tracks, startIndex: 0)
+            return
+        }
+        queue.append(contentsOf: tracks)
+    }
+
     func removeTracksFromQueue(trackIds: Set<String>) {
         guard !trackIds.isEmpty, !queue.isEmpty else { return }
         let previousId = activeTrack?.id
@@ -213,6 +322,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     func togglePlayPause() {
+        if hasPendingRestore {
+            Task { await startFromPendingRestore() }
+            return
+        }
         guard let player else { return }
         if player.rate > 0.01 {
             player.pause()
@@ -228,6 +341,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     private func resumePlaybackFromRemoteCommand() {
+        if hasPendingRestore {
+            Task { await startFromPendingRestore() }
+            return
+        }
         activateAudioSession()
         guard player != nil else { return }
         if player?.rate ?? 0 < 0.01 {
@@ -443,6 +560,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     private func advance() async throws {
+        // A skip/jump abandons the saved playhead for the previously-active track.
+        pendingRestoreSeconds = 0
         teardownPlayer()
         try await loadLyrics()
         activateAudioSession()
@@ -804,6 +923,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         if position >= half {
             scrobbledForCurrentTrack = true
             Task { await lastFm?.scrobble(track: track, timestamp: Date()) }
+            onTrackScrobbled?(track, playbackSource)
         }
     }
 

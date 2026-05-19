@@ -1,12 +1,24 @@
 import SwiftUI
 
 /// Apple Music–style **Home** tab: personalized sections pulled from the user's library.
+/// Every section is a single horizontal-scroll shelf — matches Apple Music's home layout.
 struct HomeView: View {
     @EnvironmentObject private var app: AppModel
     @State private var showFloatingHeader = true
 
     private let inset: CGFloat = MusicDesign.newTabHorizontalInset
-    private let twoCol = [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)]
+
+    private var topPicksAlbums: [AlbumSummary] {
+        Array(app.recentlyAddedAlbums.prefix(8))
+    }
+
+    private var newReleasesAlbums: [AlbumSummary] {
+        Array(app.recentlyAddedAlbums.dropFirst(topPicksAlbums.count).prefix(20))
+    }
+
+    private var madeForYouPlaylists: [PlaylistSummary] {
+        Array(app.libraryPlaylists.prefix(12))
+    }
 
     var body: some View {
         NavigationStack {
@@ -25,37 +37,45 @@ struct HomeView: View {
                         )
                         .padding(.top, 40)
                     } else {
-                        if !app.homeRecentlyPlayed.isEmpty {
-                            shelf(
-                                title: "Recently Played",
-                                systemImage: "clock.arrow.circlepath",
-                                albums: app.homeRecentlyPlayed
+                        if !topPicksAlbums.isEmpty {
+                            heroShelf(
+                                title: "Top Picks for You",
+                                albums: topPicksAlbums
                             )
                         }
 
-                        if !app.recentlyAddedAlbums.isEmpty {
-                            twoColumnSection(
-                                title: "Top Picks for You",
-                                systemImage: "sparkles",
-                                albums: Array(app.recentlyAddedAlbums.prefix(6))
+                        if !app.homeRecentlyPlayed.isEmpty {
+                            recentlyPlayedShelf(
+                                title: "Recently Played",
+                                items: app.homeRecentlyPlayed
+                            )
+                        }
+
+                        if !madeForYouPlaylists.isEmpty {
+                            playlistShelf(
+                                title: "Your Playlists",
+                                playlists: madeForYouPlaylists
                             )
                         }
 
                         ForEach(app.homeGenreShelves, id: \.genre) { shelf in
-                            self.shelf(
-                                title: shelf.genre,
-                                systemImage: "music.note",
-                                albums: shelf.albums
+                            self.shelf(title: shelf.genre, albums: shelf.albums)
+                        }
+
+                        if !newReleasesAlbums.isEmpty {
+                            shelf(
+                                title: "New Releases for You",
+                                albums: newReleasesAlbums
                             )
                         }
 
                         if app.homeRecentlyPlayed.isEmpty,
                            app.homeGenreShelves.isEmpty,
+                           topPicksAlbums.isEmpty,
                            !app.libraryAlbums.isEmpty {
-                            twoColumnSection(
+                            shelf(
                                 title: "Your Library",
-                                systemImage: "music.note.list",
-                                albums: Array(app.libraryAlbums.prefix(10))
+                                albums: Array(app.libraryAlbums.prefix(20))
                             )
                         }
                     }
@@ -103,25 +123,30 @@ struct HomeView: View {
             .padding(.horizontal, inset)
     }
 
-    private func twoColumnSection(title: String, systemImage: String, albums: [AlbumSummary]) -> some View {
+    /// Top of home — larger banner-style album cards matching Apple Music's "Top Picks for You" hero row.
+    private func heroShelf(title: String, albums: [AlbumSummary]) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             sectionHeader(title: title)
 
-            LazyVGrid(columns: twoCol, spacing: 16) {
-                ForEach(albums) { album in
-                    NavigationLink {
-                        AlbumDetailView(album: album)
-                    } label: {
-                        gridCell(album: album)
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 16) {
+                    ForEach(albums) { album in
+                        NavigationLink {
+                            AlbumDetailView(album: album)
+                        } label: {
+                            heroCard(album: album)
+                        }
+                        .buttonStyle(.plain)
+                        .libraryAlbumContextMenu(album)
                     }
-                    .buttonStyle(.plain)
                 }
+                .padding(.horizontal, inset)
             }
-            .padding(.horizontal, inset)
+            .scrollTargetBehavior(.viewAligned)
         }
     }
 
-    private func shelf(title: String, systemImage: String, albums: [AlbumSummary]) -> some View {
+    private func shelf(title: String, albums: [AlbumSummary]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             sectionHeader(title: title)
 
@@ -134,6 +159,62 @@ struct HomeView: View {
                             shelfCard(album: album)
                         }
                         .buttonStyle(.plain)
+                        .libraryAlbumContextMenu(album)
+                    }
+                }
+                .padding(.horizontal, inset)
+            }
+        }
+    }
+
+    /// Mixed-content shelf (albums + playlists) used by Recently Played, where each tile reflects
+    /// whatever surface the user actually started playback from.
+    private func recentlyPlayedShelf(title: String, items: [RecentPlayedItem]) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionHeader(title: title)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 14) {
+                    ForEach(items) { item in
+                        switch item {
+                        case .album(let album):
+                            NavigationLink {
+                                AlbumDetailView(album: album)
+                            } label: {
+                                shelfCard(album: album)
+                            }
+                            .buttonStyle(.plain)
+                            .libraryAlbumContextMenu(album)
+                        case .playlist(let playlist):
+                            NavigationLink {
+                                ServerPlaylistDetailView(playlist: playlist)
+                            } label: {
+                                playlistShelfCard(playlist: playlist)
+                            }
+                            .buttonStyle(.plain)
+                            .libraryPlaylistContextMenu(playlist)
+                        }
+                    }
+                }
+                .padding(.horizontal, inset)
+            }
+        }
+    }
+
+    private func playlistShelf(title: String, playlists: [PlaylistSummary]) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionHeader(title: title)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 14) {
+                    ForEach(playlists) { playlist in
+                        NavigationLink {
+                            ServerPlaylistDetailView(playlist: playlist)
+                        } label: {
+                            playlistShelfCard(playlist: playlist)
+                        }
+                        .buttonStyle(.plain)
+                        .libraryPlaylistContextMenu(playlist)
                     }
                 }
                 .padding(.horizontal, inset)
@@ -143,17 +224,21 @@ struct HomeView: View {
 
     // MARK: - Cells
 
-    private func gridCell(album: AlbumSummary) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            AlbumArtworkView(url: album.artworkURL, cornerRadius: MusicDesign.gridAlbumCorner)
+    private func heroCard(album: AlbumSummary) -> some View {
+        let width: CGFloat = MusicDesign.shelfCardWidth + 60
+        return VStack(alignment: .leading, spacing: 10) {
+            AlbumArtworkView(url: album.artworkURL, cornerRadius: MusicDesign.heroCorner)
+                .frame(width: width, height: width)
             Text(album.title)
-                .font(.subheadline.weight(.semibold))
+                .font(.headline)
                 .foregroundStyle(.primary)
                 .lineLimit(2)
+                .frame(width: width, alignment: .leading)
             Text(album.artist)
-                .font(.caption)
+                .font(.subheadline)
                 .foregroundStyle(MusicDesign.secondaryLabel)
                 .lineLimit(1)
+                .frame(width: width, alignment: .leading)
         }
     }
 
@@ -167,6 +252,23 @@ struct HomeView: View {
                 .lineLimit(2)
                 .frame(width: MusicDesign.shelfCardWidth, alignment: .leading)
             Text(album.artist)
+                .font(.caption)
+                .foregroundStyle(MusicDesign.secondaryLabel)
+                .lineLimit(1)
+                .frame(width: MusicDesign.shelfCardWidth, alignment: .leading)
+        }
+    }
+
+    private func playlistShelfCard(playlist: PlaylistSummary) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            AlbumArtworkView(url: playlist.artworkURL, cornerRadius: MusicDesign.heroCorner)
+                .frame(width: MusicDesign.shelfCardWidth, height: MusicDesign.shelfCardHeight)
+            Text(playlist.name)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+                .frame(width: MusicDesign.shelfCardWidth, alignment: .leading)
+            Text(playlist.songCount.map { $0 == 1 ? "1 song" : "\($0) songs" } ?? "Playlist")
                 .font(.caption)
                 .foregroundStyle(MusicDesign.secondaryLabel)
                 .lineLimit(1)

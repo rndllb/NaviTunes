@@ -237,6 +237,7 @@ struct LibraryView: View {
                             pinnedPlaylistCell(playlist)
                         }
                         .buttonStyle(.plain)
+                        .libraryPlaylistContextMenu(playlist)
                     }
                 }
                 .padding(.horizontal, 20)
@@ -349,9 +350,11 @@ struct LibraryView: View {
         case .album(let album):
             NavigationLink { AlbumDetailView(album: album) } label: { recentCell(item) }
                 .buttonStyle(.plain)
+                .libraryAlbumContextMenu(album)
         case .playlist(let playlist):
             NavigationLink { ServerPlaylistDetailView(playlist: playlist) } label: { recentCell(item) }
                 .buttonStyle(.plain)
+                .libraryPlaylistContextMenu(playlist)
         }
     }
 
@@ -504,7 +507,7 @@ struct LibraryPlaylistsView: View {
                                 gridCell(playlist)
                             }
                             .buttonStyle(.plain)
-                            .contextMenu { playlistContextMenu(playlist) }
+                            .libraryPlaylistContextMenu(playlist)
                         }
                     }
                     .padding(.horizontal, 20)
@@ -517,7 +520,7 @@ struct LibraryPlaylistsView: View {
                                 listRow(playlist)
                             }
                             .buttonStyle(.plain)
-                            .contextMenu { playlistContextMenu(playlist) }
+                            .libraryPlaylistContextMenu(playlist)
 
                             Divider()
                                 .background(MusicDesign.separator)
@@ -682,18 +685,6 @@ struct LibraryPlaylistsView: View {
         }
     }
 
-    @ViewBuilder
-    private func playlistContextMenu(_ playlist: PlaylistSummary) -> some View {
-        Button {
-            toggleFavorite(playlist.id)
-        } label: {
-            Label(
-                favoritedIds.contains(playlist.id) ? "Remove from Favorites" : "Add to Favorites",
-                systemImage: favoritedIds.contains(playlist.id) ? "star.slash" : "star"
-            )
-        }
-    }
-
     private func subtitleText(_ playlist: PlaylistSummary) -> String {
         if let n = playlist.songCount { return n == 1 ? "1 song" : "\(n) songs" }
         return "Playlist"
@@ -820,6 +811,13 @@ struct FavoritePlaylistView: View {
                     try? await app.player.playNext(library: lib, track: track)
                 }
             },
+            onAddToQueue: {
+                Task {
+                    guard let lib = app.activeLibrary else { return }
+                    try? await app.player.addToQueue(library: lib, track: track)
+                }
+            },
+            hasActiveQueue: !app.player.queue.isEmpty,
             onGoToAlbum: { navigateAlbum = app.albumSummary(for: track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
             onDeleteFromLibrary: { app.beginLibraryTrackDeletion(track) },
@@ -1038,6 +1036,7 @@ struct LibraryDownloadedView: View {
                                     albumCell(album)
                                 }
                                 .buttonStyle(.plain)
+                                .libraryAlbumContextMenu(album)
                             }
                         }
                         .padding(.horizontal, 20)
@@ -1125,6 +1124,12 @@ struct LibraryDownloadedView: View {
                     try? await app.player.playNext(library: app.activeLibrary, track: track)
                 }
             },
+            onAddToQueue: {
+                Task {
+                    try? await app.player.addToQueue(library: app.activeLibrary, track: track)
+                }
+            },
+            hasActiveQueue: !app.player.queue.isEmpty,
             onGoToAlbum: { navigateAlbum = resolvedAlbumSummary(for: track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
             onDeleteFromLibrary: { app.beginLibraryTrackDeletion(track) },
@@ -1227,6 +1232,7 @@ struct AlbumsGridView: View {
                             AlbumGridCell(album: album)
                         }
                         .buttonStyle(.plain)
+                        .libraryAlbumContextMenu(album)
                     }
                 }
                 .padding(.horizontal, 16)
@@ -1318,6 +1324,7 @@ struct ArtistAlbumsView: View {
                             AlbumGridCell(album: album)
                         }
                         .buttonStyle(.plain)
+                        .libraryAlbumContextMenu(album)
                     }
                 }
                 .padding(.horizontal, 16)
