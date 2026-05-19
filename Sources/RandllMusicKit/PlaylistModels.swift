@@ -1,0 +1,49 @@
+import Foundation
+
+/// Server-backed playlist (Jellyfin `Playlist` item or Navidrome Subsonic playlist).
+struct PlaylistSummary: Identifiable, Hashable, Codable {
+    let id: String
+    let name: String
+    let songCount: Int?
+    let artworkURL: URL?
+    /// Jellyfin only: `IsPublic` — visible to all users on the server (`nil` if unknown / Navidrome).
+    let isPublic: Bool?
+
+    init(id: String, name: String, songCount: Int? = nil, artworkURL: URL? = nil, isPublic: Bool? = nil) {
+        self.id = id
+        self.name = name
+        self.songCount = songCount
+        self.artworkURL = artworkURL
+        self.isPublic = isPublic
+    }
+}
+
+/// One row in a playlist detail view (supports duplicate tracks + backend-specific removal keys).
+struct PlaylistRowItem: Identifiable, Hashable {
+    /// Stable within the current loaded snapshot (used by SwiftUI `ForEach`).
+    let rowId: String
+    let track: Track
+    /// Jellyfin playlist entry id (`PlaylistItemId`) for `DELETE .../Playlists/{id}/Items`.
+    let jellyfinEntryId: String?
+    /// Zero-based index for Navidrome `songIndexToRemove`.
+    let navidromeIndex: Int?
+
+    var id: String { rowId }
+
+    init(rowId: String, track: Track, jellyfinEntryId: String? = nil, navidromeIndex: Int? = nil) {
+        self.rowId = rowId
+        self.track = track
+        self.jellyfinEntryId = jellyfinEntryId
+        self.navidromeIndex = navidromeIndex
+    }
+}
+
+/// Drives the global “add to playlist” sheet (`MainShellView`).
+struct PlaylistPickerPayload: Identifiable {
+    let id = UUID()
+    let tracks: [Track]
+
+    init(tracks: [Track]) {
+        self.tracks = tracks
+    }
+}
