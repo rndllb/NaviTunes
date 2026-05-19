@@ -18,7 +18,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
     private static let clientName = "LyraMusic"
     private static let deviceName = "LyraMusic"
     private static let version = "0.1"
-    private static let deviceIdDefaultsKey = "com.randll.musicclient.jellyfin.deviceId"
+    private static let deviceIdDefaultsKey = "com.randll.lyra.jellyfin.deviceId"
 
     private static let jellyfinISOFrac: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
