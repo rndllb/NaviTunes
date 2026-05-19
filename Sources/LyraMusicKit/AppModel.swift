@@ -27,11 +27,9 @@ public final class AppModel: ObservableObject {
     @Published var accentPresetId: String = UserDefaults.standard.string(forKey: "lyraAccentPresetId") ?? AppAccentPreset.defaultId {
         didSet {
             UserDefaults.standard.set(accentPresetId, forKey: "lyraAccentPresetId")
-            // Home screen icon is not updated here — iOS always shows a system alert for each change.
+            syncHomeScreenIconForAccentIfNeeded()
         }
     }
-
-    private static let homeScreenIconAppliedAccentKey = "lyraHomeScreenIconAppliedAccent"
 
     @Published var musicBrainzEnabled: Bool = UserDefaults.standard.object(forKey: "musicBrainzEnabled") as? Bool ?? true {
         didSet { UserDefaults.standard.set(musicBrainzEnabled, forKey: "musicBrainzEnabled") }
@@ -260,21 +258,13 @@ public final class AppModel: ObservableObject {
         loadFavoriteTrackIdsFromDefaults()
     }
 
-    /// Updates the home screen icon when it does not match the current accent (shows the system confirmation once).
+    /// Updates the home screen icon when it does not match the current accent (iOS shows its OK alert on change).
     public func syncHomeScreenIconForAccentIfNeeded() {
         #if canImport(UIKit)
         guard UIApplication.shared.supportsAlternateIcons else { return }
-        let applied = UserDefaults.standard.string(forKey: Self.homeScreenIconAppliedAccentKey)
         let target = AppAlternateIconSync.resolvedIconName(forAccentPresetId: accentPresetId)
-        let matchesApplied = applied == accentPresetId
-        let matchesRuntime = UIApplication.shared.alternateIconName == target
-        guard !matchesApplied || !matchesRuntime else { return }
-        let presetId = accentPresetId
-        AppAlternateIconSync.apply(accentPresetId: presetId) { succeeded in
-            if succeeded {
-                UserDefaults.standard.set(presetId, forKey: Self.homeScreenIconAppliedAccentKey)
-            }
-        }
+        guard UIApplication.shared.alternateIconName != target else { return }
+        AppAlternateIconSync.apply(accentPresetId: accentPresetId, completion: nil)
         #endif
     }
 

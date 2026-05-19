@@ -16,9 +16,12 @@ struct LyraMusicHostApp: App {
                     appModel.syncHomeScreenIconForAccentIfNeeded()
                 }
                 .onChange(of: scenePhase) { _, phase in
-                    // One system alert when leaving the app after changing accent, not on every tap in Settings.
-                    if phase == .background {
+                    // `.inactive` fires when pressing Home on a physical device; `.background` alone is unreliable.
+                    switch phase {
+                    case .inactive, .background:
                         appModel.syncHomeScreenIconForAccentIfNeeded()
+                    default:
+                        break
                     }
                 }
         }

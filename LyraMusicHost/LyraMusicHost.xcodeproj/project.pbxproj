@@ -48,44 +48,7 @@
 		};
 /* End PBXFrameworksBuildPhase section */
 
-/* Begin PBXResourcesBuildPhase section */
-		IC0000000000000000000002 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				IC0000000000000000000020 /* AppIcon.icon in Resources */,
-				IC0000000000000000000021 /* LyraIcon-blue.icon in Resources */,
-				IC0000000000000000000022 /* LyraIcon-green.icon in Resources */,
-				IC0000000000000000000023 /* LyraIcon-orange.icon in Resources */,
-				IC0000000000000000000024 /* LyraIcon-pink.icon in Resources */,
-				IC0000000000000000000025 /* LyraIcon-indigo.icon in Resources */,
-				IC0000000000000000000026 /* LyraIcon-teal.icon in Resources */,
-				IC0000000000000000000027 /* LyraIcon-yellow.icon in Resources */,
-				IC0000000000000000000028 /* LyraIcon-purple.icon in Resources */,
-				IC0000000000000000000029 /* LyraIcon-lightgray.icon in Resources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXResourcesBuildPhase section */
-
 /* Begin PBXGroup section */
-		IC0000000000000000000001 /* AppIcons */ = {
-			isa = PBXGroup;
-			children = (
-				IC0000000000000000000010 /* AppIcon.icon */,
-				IC0000000000000000000011 /* LyraIcon-blue.icon */,
-				IC0000000000000000000012 /* LyraIcon-green.icon */,
-				IC0000000000000000000013 /* LyraIcon-orange.icon */,
-				IC0000000000000000000014 /* LyraIcon-pink.icon */,
-				IC0000000000000000000015 /* LyraIcon-indigo.icon */,
-				IC0000000000000000000016 /* LyraIcon-teal.icon */,
-				IC0000000000000000000017 /* LyraIcon-yellow.icon */,
-				IC0000000000000000000018 /* LyraIcon-purple.icon */,
-				IC0000000000000000000019 /* LyraIcon-lightgray.icon */,
-			);
-			path = AppIcons;
-			sourceTree = "<group>";
-		};
 		A00000000000000000000003 /* LyraMusicHost */ = {
 			isa = PBXGroup;
 			children = (
@@ -110,6 +73,23 @@
 				A00000000000000000000003 /* LyraMusicHost */,
 				A00000000000000000000004 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		IC0000000000000000000001 /* AppIcons */ = {
+			isa = PBXGroup;
+			children = (
+				IC0000000000000000000010 /* AppIcon.icon */,
+				IC0000000000000000000011 /* LyraIcon-blue.icon */,
+				IC0000000000000000000012 /* LyraIcon-green.icon */,
+				IC0000000000000000000013 /* LyraIcon-orange.icon */,
+				IC0000000000000000000014 /* LyraIcon-pink.icon */,
+				IC0000000000000000000015 /* LyraIcon-indigo.icon */,
+				IC0000000000000000000016 /* LyraIcon-teal.icon */,
+				IC0000000000000000000017 /* LyraIcon-yellow.icon */,
+				IC0000000000000000000018 /* LyraIcon-purple.icon */,
+				IC0000000000000000000019 /* LyraIcon-lightgray.icon */,
+			);
+			path = AppIcons;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -171,6 +151,26 @@
 		};
 /* End PBXProject section */
 
+/* Begin PBXResourcesBuildPhase section */
+		IC0000000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				IC0000000000000000000020 /* AppIcon.icon in Resources */,
+				IC0000000000000000000021 /* LyraIcon-blue.icon in Resources */,
+				IC0000000000000000000022 /* LyraIcon-green.icon in Resources */,
+				IC0000000000000000000023 /* LyraIcon-orange.icon in Resources */,
+				IC0000000000000000000024 /* LyraIcon-pink.icon in Resources */,
+				IC0000000000000000000025 /* LyraIcon-indigo.icon in Resources */,
+				IC0000000000000000000026 /* LyraIcon-teal.icon in Resources */,
+				IC0000000000000000000027 /* LyraIcon-yellow.icon in Resources */,
+				IC0000000000000000000028 /* LyraIcon-purple.icon in Resources */,
+				IC0000000000000000000029 /* LyraIcon-lightgray.icon in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		A00000000000000000000008 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -223,6 +223,7 @@
 				GCC_GENERATE_DEBUGGING_SYMBOLS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = LyraMusicHost/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.music";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -254,6 +255,7 @@
 				GCC_GENERATE_DEBUGGING_SYMBOLS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = LyraMusicHost/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.music";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
