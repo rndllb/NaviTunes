@@ -24,6 +24,8 @@ enum NewTabBrowseBackend: Equatable {
 
 @MainActor
 public final class AppModel: ObservableObject {
+    /// Default album fetch size for library grid / sync (raised for large Jellyfin / Navidrome libraries).
+    public static let defaultLibraryAlbumFetchLimit = 500
     @Published var accentPresetId: String = UserDefaults.standard.string(forKey: "lyraAccentPresetId") ?? AppAccentPreset.defaultId {
         didSet {
             UserDefaults.standard.set(accentPresetId, forKey: "lyraAccentPresetId")
@@ -48,7 +50,9 @@ public final class AppModel: ObservableObject {
     @Published private(set) var serverConnectionHealth: ServerConnectionHealth = .unknown
 
     /// Shared catalog for Listen / Library / Search tabs.
-    @Published private(set) var libraryAlbums: [AlbumSummary] = []
+    @Published private(set) var libraryAlbums: [AlbumSummary] = [] {
+        didSet { rebuildLibraryAlbumIndex() }
+    }
     @Published private(set) var recentlyAddedAlbums: [AlbumSummary] = []
     @Published private(set) var homeRecentlyPlayed: [AlbumSummary] = []
     @Published private(set) var homeGenreShelves: [(genre: String, albums: [AlbumSummary])] = []
@@ -74,6 +78,10 @@ public final class AppModel: ObservableObject {
     let player = PlaybackEngine()
     let offline = OfflineDownloadManager()
     let lastFm = LastFmScrobbler()
+
+    private var libraryAlbumsById: [String: AlbumSummary] = [:]
+    private var libraryBootstrapTask: Task<Void, Never>?
+    private var trackIndexTask: Task<Void, Never>?
 
     private static let favoriteTrackIdsKey = "LyraMusic.favoriteTrackIds"
     @Published private(set) var favoriteTrackIds: Set<String> = []
@@ -249,9 +257,9 @@ public final class AppModel: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         player.$repeatMode
             .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
-        offline.objectWillChange.sink { [weak self] _ in
-            self?.objectWillChange.send()
-        }.store(in: &cancellables)
+        offline.$downloadedTrackIds
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
         loadPersistedSettings()
         startNetworkMonitor()
         loadKeychain()
@@ -309,14 +317,7 @@ public final class AppModel: ObservableObject {
             prefetchAccountAvatar()
             lastFm.restoreSession()
             pushQualitySettingsToClients()
-            Task {
-                await refreshLibraryAlbums()
-                await refreshHome()
-                await refreshLibraryTrackMatchIndex()
-                await refreshLibraryStatistics()
-                recordSuccessfulLibrarySync()
-                await refreshNewTabBrowse()
-            }
+            scheduleLibraryBootstrap()
         } catch {
             let hadLocalSession = jellyfin != nil || navidrome != nil
             if !hadLocalSession {
@@ -526,17 +527,48 @@ public final class AppModel: ObservableObject {
         let (playedResult, genresResult) = await (played, genres)
         homeRecentlyPlayed = playedResult
         let pickedGenres = Array(genresResult.prefix(4))
-        var shelves: [(genre: String, albums: [AlbumSummary])] = []
-        for g in pickedGenres {
-            let albums = (try? await lib.albums(inGenre: g, limit: 8)) ?? []
-            if !albums.isEmpty {
-                shelves.append((genre: g.name, albums: albums))
+        let shelves = await withTaskGroup(of: (genre: String, albums: [AlbumSummary])?.self) { group in
+            for g in pickedGenres {
+                group.addTask {
+                    let albums = (try? await lib.albums(inGenre: g, limit: 8)) ?? []
+                    guard !albums.isEmpty else { return nil }
+                    return (genre: g.name, albums: albums)
+                }
             }
+            var rows: [(genre: String, albums: [AlbumSummary])] = []
+            for await row in group {
+                if let row { rows.append(row) }
+            }
+            return rows
         }
         homeGenreShelves = shelves
     }
 
-    public func refreshLibraryAlbums(limit: Int = 200) async {
+    /// Single cold-start / sign-in library refresh (deduped).
+    public func scheduleLibraryBootstrap() {
+        guard isSignedIn else { return }
+        if let libraryBootstrapTask, !libraryBootstrapTask.isCancelled { return }
+        libraryBootstrapTask = Task { [weak self] in
+            guard let self else { return }
+            await self.runLibraryBootstrap()
+            self.libraryBootstrapTask = nil
+        }
+    }
+
+    private func runLibraryBootstrap() async {
+        await refreshLibraryAlbums()
+        recordSuccessfulLibrarySync()
+        async let home: Void = refreshHome()
+        async let stats: Void = refreshLibraryStatistics()
+        async let browse: Void = refreshNewTabBrowse()
+        _ = await (home, stats, browse)
+    }
+
+    private func rebuildLibraryAlbumIndex() {
+        libraryAlbumsById = Dictionary(uniqueKeysWithValues: libraryAlbums.map { ($0.id, $0) })
+    }
+
+    public func refreshLibraryAlbums(limit: Int = AppModel.defaultLibraryAlbumFetchLimit) async {
         guard let lib = activeLibrary else { return }
         libraryAlbumsLoadError = nil
         do {
@@ -546,7 +578,7 @@ public final class AppModel: ObservableObject {
             recentlyAddedAlbums = (try? await recent) ?? []
             mergeOfflineCatalog()
             persistLibrarySnapshot()
-            Task { await refreshLibraryTrackMatchIndex() }
+            scheduleLibraryTrackMatchIndexRefresh()
             await refreshFavoritesFromServer()
             await refreshLibraryPlaylists()
         } catch {
@@ -727,8 +759,19 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    private func scheduleLibraryTrackMatchIndexRefresh(limit: Int = 50_000) {
+        trackIndexTask?.cancel()
+        trackIndexTask = Task { [weak self] in
+            guard let self else { return }
+            await self.refreshLibraryTrackMatchIndex(limit: limit)
+            if !Task.isCancelled {
+                self.trackIndexTask = nil
+            }
+        }
+    }
+
     /// Loads up to `limit` audio tracks from the server and rebuilds `libraryTrackTitleIndex` for discovery matching.
-    public func refreshLibraryTrackMatchIndex(limit: Int = 20_000) async {
+    public func refreshLibraryTrackMatchIndex(limit: Int = 50_000) async {
         guard let lib = activeLibrary else {
             libraryTrackIndexLoadError = nil
             if discoveryLibraryTracks.isEmpty {
@@ -757,7 +800,7 @@ public final class AppModel: ObservableObject {
     }
 
     func albumSummary(for track: Track) -> AlbumSummary {
-        if let cached = libraryAlbums.first(where: { $0.id == track.albumId }) {
+        if let cached = libraryAlbumsById[track.albumId] {
             var album = cached
             if let local = resolvedArtworkURL(for: cached) {
                 album = AlbumSummary(
@@ -854,9 +897,9 @@ public final class AppModel: ObservableObject {
     func resolveBrowseAlbumPreviewTracks(source: BrowseAlbumDetailSource) async -> [BrowseAlbumPreviewTrack] {
         switch source {
         case .lfm(let artist, let title, _, let kind):
-            try? await Task.sleep(nanoseconds: 1_100_000_000)
+            try? await Task.sleep(nanoseconds: 350_000_000)
             if let rg = await MusicBrainzTracklistClient.findReleaseGroupId(artist: artist, albumTitle: title) {
-                try? await Task.sleep(nanoseconds: 1_100_000_000)
+                try? await Task.sleep(nanoseconds: 350_000_000)
                 let mbTracks = await MusicBrainzTracklistClient.tracksForReleaseGroup(rg)
                 if !mbTracks.isEmpty { return mbTracks }
             }
@@ -1059,7 +1102,7 @@ public final class AppModel: ObservableObject {
         await refreshLibraryAlbums()
         await refreshLibraryPlaylists()
         await refreshHome()
-        await refreshLibraryTrackMatchIndex()
+        scheduleLibraryTrackMatchIndexRefresh()
         await refreshLibraryStatistics()
         recordSuccessfulLibrarySync()
     }

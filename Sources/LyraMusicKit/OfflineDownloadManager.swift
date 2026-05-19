@@ -30,8 +30,11 @@ final class OfflineDownloadManager: ObservableObject {
     @Published private(set) var downloadedTrackIds: Set<String> = []
     @Published private(set) var activeDownloads: [String: OfflineDownloadUIState] = [:]
 
-    /// Soft-cancel: loop cooperatively stops when `cancelDownload` is called for this id.
+    /// Soft-cancel + in-flight `URLSession` task cancellation.
     private var cancelledDownloadIds = Set<String>()
+    private var inflightDownloadTasks: [String: URLSessionDownloadTask] = [:]
+    private var downloadProgressObservations: [String: NSKeyValueObservation] = [:]
+    private var lastReportedDownloadFraction: [String: Double] = [:]
 
     private static let manifestFilename = "offline-manifest.json"
 
@@ -294,8 +297,60 @@ final class OfflineDownloadManager: ObservableObject {
         http.value(forHTTPHeaderField: "Content-Type")?.split(separator: ";").first.map { String($0).trimmingCharacters(in: .whitespaces) }
     }
 
+    private func downloadToTemporary(request: URLRequest, trackId: String) async throws -> (URL, URLResponse) {
+        try await withCheckedThrowingContinuation { continuation in
+            let task = URLSession.shared.downloadTask(with: request) { [weak self] url, response, error in
+                Task { @MainActor in
+                    self?.tearDownDownloadObservation(trackId: trackId)
+                }
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                guard let url, let response else {
+                    continuation.resume(throwing: URLError(.badServerResponse))
+                    return
+                }
+                continuation.resume(returning: (url, response))
+            }
+            inflightDownloadTasks[trackId] = task
+            downloadProgressObservations[trackId] = task.progress.observe(\.fractionCompleted) { [weak self] progress, _ in
+                Task { @MainActor in
+                    self?.applyDownloadProgress(trackId: trackId, fraction: progress.fractionCompleted)
+                }
+            }
+            task.resume()
+        }
+    }
+
+    private func applyDownloadProgress(trackId: String, fraction: Double) {
+        guard !cancelledDownloadIds.contains(trackId) else { return }
+        if fraction.isNaN || fraction <= 0 {
+            activeDownloads[trackId] = .indeterminate
+            return
+        }
+        if fraction >= 1 {
+            activeDownloads[trackId] = .progress(0.99)
+            return
+        }
+        let clamped = min(max(fraction, 0), 0.99)
+        let previous = lastReportedDownloadFraction[trackId] ?? -1
+        guard clamped - previous >= 0.02 || previous < 0 else { return }
+        lastReportedDownloadFraction[trackId] = clamped
+        activeDownloads[trackId] = .progress(clamped)
+    }
+
+    private func tearDownDownloadObservation(trackId: String) {
+        downloadProgressObservations.removeValue(forKey: trackId)?.invalidate()
+        lastReportedDownloadFraction.removeValue(forKey: trackId)
+        inflightDownloadTasks.removeValue(forKey: trackId)
+    }
+
     func cancelDownload(trackId: String) {
         cancelledDownloadIds.insert(trackId)
+        inflightDownloadTasks[trackId]?.cancel()
+        tearDownDownloadObservation(trackId: trackId)
+        activeDownloads.removeValue(forKey: trackId)
     }
 
     func cache(track: Track, remote: URL, headers: [String: String]) async throws {
@@ -304,6 +359,7 @@ final class OfflineDownloadManager: ObservableObject {
 
         activeDownloads[trackId] = .indeterminate
         defer {
+            tearDownDownloadObservation(trackId: trackId)
             activeDownloads.removeValue(forKey: trackId)
             cancelledDownloadIds.remove(trackId)
         }
@@ -314,10 +370,15 @@ final class OfflineDownloadManager: ObservableObject {
         let tmpURL: URL
         let response: URLResponse
         do {
-            (tmpURL, response) = try await URLSession.shared.download(for: req)
+            (tmpURL, response) = try await downloadToTemporary(request: req, trackId: trackId)
         } catch is CancellationError {
             throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
         } catch {
+            if cancelledDownloadIds.contains(trackId) {
+                throw CancellationError()
+            }
             throw error
         }
 
@@ -340,8 +401,6 @@ final class OfflineDownloadManager: ObservableObject {
         guard !sniff.isEmpty else {
             throw URLError(.zeroByteResource)
         }
-
-        activeDownloads[trackId] = .progress(1)
 
         let ext = Self.fileExtension(forMime: mime, sniffing: sniff)
         let root = try Self.downloadsFolder()

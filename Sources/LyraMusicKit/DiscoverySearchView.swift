@@ -478,7 +478,7 @@ struct DiscoverySearchView: View {
     private func flashToast(_ msg: String) {
         toast = msg
         Task {
-            try? await Task.sleep(nanoseconds: 2_400_000_000)
+            try? await Task.sleep(nanoseconds: 500_000_000)
             toast = nil
         }
     }

@@ -221,6 +221,7 @@ struct ServerPlaylistDetailView: View {
     let playlist: PlaylistSummary
 
     @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var offline: OfflineDownloadManager
     @Environment(\.dismiss) private var dismiss
     @State private var rows: [PlaylistRowItem] = []
     @State private var isLoading = true
@@ -402,7 +403,7 @@ struct ServerPlaylistDetailView: View {
         LibrarySongRow(
             track: row.track,
             isFavorite: app.favoriteTrackIds.contains(row.track.id),
-            offlineDownload: app.offline.activeDownloads[row.track.id],
+            offlineDownload: offline.activeDownloads[row.track.id],
             isOfflineCached: app.offline.downloadedTrackIds.contains(row.track.id),
             onPlay: { Task { await play(row: row) } },
             onDownload: { Task { await cacheOffline(track: row.track) } },

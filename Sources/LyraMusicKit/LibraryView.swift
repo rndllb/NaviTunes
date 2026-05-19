@@ -109,7 +109,6 @@ private enum LibraryRow: String, CaseIterable, Identifiable {
 /// Apple Music **Library** tab: category rows + Recently Added grid.
 struct LibraryView: View {
     @EnvironmentObject private var app: AppModel
-    @Environment(MiniPlayerCollapseState.self) private var collapseState
     @AppStorage("library_section_config") private var sectionConfigRaw: String = ""
     @State private var showNewPlaylistSheet = false
     @State private var showEditSections = false
@@ -145,7 +144,6 @@ struct LibraryView: View {
                 slack: 72,
                 showFloatingHeader: $showFloatingHeader
             ))
-            .collapsesMiniPlayerOnScroll(collapseState)
             .safeAreaInset(edge: .top, spacing: 0) {
                 if showFloatingHeader {
                     libraryHeaderBar
@@ -647,6 +645,7 @@ struct LibraryPlaylistsView: View {
 /// Tracks starred as favorites (``LibraryPlaylistsView`` → Favorite Songs).
 struct FavoritePlaylistView: View {
     @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var offline: OfflineDownloadManager
     @State private var tracks: [Track] = []
     @State private var isLoading = true
     @State private var loadError: String?
@@ -750,7 +749,7 @@ struct FavoritePlaylistView: View {
         LibrarySongRow(
             track: track,
             isFavorite: app.favoriteTrackIds.contains(track.id),
-            offlineDownload: app.offline.activeDownloads[track.id],
+            offlineDownload: offline.activeDownloads[track.id],
             isOfflineCached: app.offline.downloadedTrackIds.contains(track.id),
             onPlay: { Task { await play(track: track) } },
             onDownload: { Task { await cacheOffline(track: track) } },
@@ -907,6 +906,7 @@ private struct LibraryScrollFloatingHeaderVisibilityModifier: ViewModifier {
 
 struct LibraryDownloadedView: View {
     @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var offline: OfflineDownloadManager
     @State private var searchText = ""
     @State private var navigateAlbum: AlbumSummary?
 
@@ -1054,7 +1054,7 @@ struct LibraryDownloadedView: View {
             track: track,
             artworkURL: app.resolvedArtworkURL(for: track),
             isFavorite: app.favoriteTrackIds.contains(track.id),
-            offlineDownload: app.offline.activeDownloads[track.id],
+            offlineDownload: offline.activeDownloads[track.id],
             isOfflineCached: true,
             onPlay: { Task { await play(track: track) } },
             onDownload: {},

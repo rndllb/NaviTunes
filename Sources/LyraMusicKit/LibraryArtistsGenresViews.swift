@@ -120,6 +120,7 @@ struct LibraryArtistsView: View {
 /// Tracks and albums for one library artist.
 struct LibraryArtistAlbumsView: View {
     @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var offline: OfflineDownloadManager
     let artist: LibraryArtistSummary
 
     @State private var albums: [AlbumSummary] = []
@@ -245,7 +246,7 @@ struct LibraryArtistAlbumsView: View {
         LibrarySongRow(
             track: track,
             isFavorite: app.favoriteTrackIds.contains(track.id),
-            offlineDownload: app.offline.activeDownloads[track.id],
+            offlineDownload: offline.activeDownloads[track.id],
             isOfflineCached: app.offline.downloadedTrackIds.contains(track.id),
             onPlay: { Task { await play(track: track) } },
             onDownload: { Task { await cacheOffline(track: track) } },

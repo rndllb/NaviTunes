@@ -1,0 +1,75 @@
+import CryptoKit
+import Foundation
+
+/// Disk + memory cache for remote album artwork (shared across list cells and backdrops).
+enum ArtworkURLCache {
+    private static let folderName = "LyraMusic/ArtworkCache"
+    private static let memory = NSCache<NSString, NSData>()
+
+    static func data(for url: URL) async -> Data? {
+        let key = cacheKey(for: url)
+        if let cached = memory.object(forKey: key as NSString) as Data? {
+            return cached
+        }
+        if let disk = loadFromDisk(key: key) {
+            memory.setObject(disk as NSData, forKey: key as NSString)
+            return disk
+        }
+        var request = URLRequest(url: url)
+        request.cachePolicy = .returnCacheDataElseLoad
+        request.timeoutInterval = 25
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200 ..< 300).contains(http.statusCode),
+                  !data.isEmpty
+            else { return nil }
+            let valid = await Task.detached(priority: .utility) {
+                ArtworkImageDecoder.cgImage(from: data, maxPixelSize: 64) != nil
+            }.value
+            guard valid else { return nil }
+            memory.setObject(data as NSData, forKey: key as NSString)
+            saveToDisk(data: data, key: key)
+            return data
+        } catch {
+            return nil
+        }
+    }
+
+    // MARK: - Private
+
+    private static func cacheKey(for url: URL) -> String {
+        let digest = SHA256.hash(data: Data(url.absoluteString.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func cacheDirectory() throws -> URL {
+        let base = try FileManager.default.url(
+            for: .cachesDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true,
+        )
+        let dir = base.appendingPathComponent(folderName, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private static func fileURL(key: String) throws -> URL {
+        try cacheDirectory().appendingPathComponent(key + ".img", isDirectory: false)
+    }
+
+    private static func loadFromDisk(key: String) -> Data? {
+        guard let url = try? fileURL(key: key),
+              FileManager.default.fileExists(atPath: url.path),
+              let data = try? Data(contentsOf: url),
+              !data.isEmpty
+        else { return nil }
+        return data
+    }
+
+    private static func saveToDisk(data: Data, key: String) {
+        guard let url = try? fileURL(key: key) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+}

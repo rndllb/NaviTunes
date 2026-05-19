@@ -33,14 +33,16 @@ enum ArtworkImageDecoder {
 
 enum RemoteArtworkLoad {
     static func cgImage(from url: URL, maxPixelSize: CGFloat) async -> CGImage? {
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            return await Task.detached(priority: .utility) {
-                ArtworkImageDecoder.cgImage(from: data, maxPixelSize: maxPixelSize)
-            }.value
-        } catch {
-            return nil
+        let data: Data?
+        if url.isFileURL {
+            data = try? Data(contentsOf: url)
+        } else {
+            data = await ArtworkURLCache.data(for: url)
         }
+        guard let data, !data.isEmpty else { return nil }
+        return await Task.detached(priority: .utility) {
+            ArtworkImageDecoder.cgImage(from: data, maxPixelSize: maxPixelSize)
+        }.value
     }
 }
 

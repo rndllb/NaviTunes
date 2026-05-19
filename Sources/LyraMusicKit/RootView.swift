@@ -50,33 +50,39 @@ private struct MainShellView: View {
     @EnvironmentObject private var app: AppModel
     @State private var showNowPlaying = false
     @State private var selectedTab: AppTab = .home
-    @State private var collapseState = MiniPlayerCollapseState()
 
     var body: some View {
         ZStack {
             TabView(selection: $selectedTab) {
-                Tab("Home", systemImage: "house.fill", value: AppTab.home) { HomeView() }
-                Tab("New", systemImage: "square.grid.2x2.fill", value: AppTab.new) { MusicNewTabView() }
-                Tab("Radio", systemImage: "dot.radiowaves.left.and.right", value: AppTab.radio) { RadioTabView() }
-                Tab("Library", systemImage: "music.note.list", value: AppTab.library) { LibraryView() }
-                Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) { SearchLibraryView() }
+                Tab("Home", systemImage: AppTab.home.systemImage, value: AppTab.home) {
+                    HomeView()
+                }
+                Tab("New", systemImage: AppTab.new.systemImage, value: AppTab.new) {
+                    MusicNewTabView()
+                }
+                Tab("Radio", systemImage: AppTab.radio.systemImage, value: AppTab.radio) {
+                    RadioTabView()
+                }
+                Tab("Library", systemImage: AppTab.library.systemImage, value: AppTab.library) {
+                    LibraryView()
+                }
+                Tab(value: AppTab.search, role: .search) {
+                    SearchLibraryView()
+                } label: {
+                    Label("Search", systemImage: AppTab.search.systemImage)
+                }
             }
             .tint(MusicDesign.accent)
-            .musicHidesTabBar()
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                BottomChrome(
+            .musicNativeTabChrome(isEnabled: app.player.activeTrack != nil) {
+                TabViewMiniPlayerAccessory(
                     showNowPlaying: $showNowPlaying,
-                    selectedTab: $selectedTab,
-                    player: app.player,
-                    collapseState: collapseState
+                    player: app.player
                 )
                 .environmentObject(app)
             }
-            .environment(collapseState)
+            .environmentObject(app.offline)
             .task {
-                await app.refreshLibraryAlbums()
-                await app.refreshNewTabBrowse()
-                await app.refreshLibraryStatistics()
+                app.scheduleLibraryBootstrap()
             }
             .sheet(item: $app.playlistPickerPayload) { payload in
                 AddToPlaylistSheet(tracks: payload.tracks)
@@ -96,137 +102,30 @@ private struct MainShellView: View {
     }
 }
 
-// MARK: - Bottom chrome (mini player + custom tab bar / collapsed pill)
+// MARK: - Native tab view bottom accessory (system liquid glass)
 
-private struct BottomChrome: View {
+private struct TabViewMiniPlayerAccessory: View {
+    #if os(iOS)
+    @Environment(\.tabViewBottomAccessoryPlacement) private var placement
+    #endif
     @EnvironmentObject private var app: AppModel
     @Binding var showNowPlaying: Bool
-    @Binding var selectedTab: AppTab
-    var player: PlaybackEngine
-    var collapseState: MiniPlayerCollapseState
+    @ObservedObject var player: PlaybackEngine
 
-    private var hasTrack: Bool { player.activeTrack != nil }
-    private var isCollapsed: Bool { collapseState.isCollapsed && hasTrack }
+    private var layout: MiniPlayerLayout {
+        #if os(iOS)
+        placement == .inline ? .tabViewAccessoryInline : .tabViewAccessoryExpanded
+        #else
+        .tabViewAccessoryExpanded
+        #endif
+    }
 
     var body: some View {
-        Group {
-            if isCollapsed {
-                collapsedRow
-                    .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)),
-                        removal: .opacity.combined(with: .scale(scale: 0.96, anchor: .bottom))
-                    ))
-            } else {
-                expandedStack
-                    .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)),
-                        removal: .opacity.combined(with: .scale(scale: 0.96, anchor: .bottom))
-                    ))
-            }
-        }
-        .animation(.spring(response: 0.38, dampingFraction: 0.82), value: isCollapsed)
-    }
-
-    // MARK: Expanded
-
-    private var expandedStack: some View {
-        VStack(spacing: 0) {
-            if hasTrack {
-                MiniPlayerView(showNowPlaying: $showNowPlaying, player: player)
-                    .padding(.horizontal, 24)
-                    .padding(.top, 6)
-                    .padding(.bottom, 2)
-            }
-            customTabBar
-        }
-    }
-
-    private var customTabBar: some View {
-        HStack(spacing: 0) {
-            ForEach(AppTab.allCases, id: \.self) { tab in
-                Button {
-                    selectedTab = tab
-                } label: {
-                    VStack(spacing: 3) {
-                        Image(systemName: tab.systemImage)
-                            .font(.system(size: 21))
-                        Text(tab.label)
-                            .font(.caption2.weight(.medium))
-                    }
-                    .foregroundStyle(selectedTab == tab ? MusicDesign.accent : Color.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 8)
-        .padding(.bottom, 6)
-    }
-
-    // MARK: Collapsed
-
-    private var collapsedRow: some View {
-        HStack(spacing: 12) {
-            collapsedLeftPill
-            Spacer(minLength: 0)
-            collapsedSearchButton
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 10)
-    }
-
-    private var collapsedLeftPill: some View {
-        HStack(spacing: 0) {
-            // Tab icon — tap to expand bar
-            Button {
-                collapseState.expand()
-            } label: {
-                Image(systemName: selectedTab.systemImage)
-                    .font(.system(size: 17, weight: .medium))
-                    .foregroundStyle(.primary)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            // Art + play/pause — tap to toggle playback
-            if let track = player.activeTrack {
-                let artURL = app.resolvedArtworkURL(for: track)
-                Button {
-                    player.togglePlayPause()
-                } label: {
-                    ZStack {
-                        AlbumArtworkView(url: artURL, cornerRadius: 5)
-                            .frame(width: 30, height: 30)
-                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(.white)
-                            .shadow(color: .black.opacity(0.55), radius: 3, x: 0, y: 0)
-                    }
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .musicGlassCapsuleInteractiveChrome()
-    }
-
-    private var collapsedSearchButton: some View {
-        Button {
-            selectedTab = .search
-            collapseState.expand()
-        } label: {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 17, weight: .medium))
-                .foregroundStyle(.primary)
-                .frame(width: 48, height: 48)
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .musicGlassEffect(in: Circle())
+        MiniPlayerView(
+            showNowPlaying: $showNowPlaying,
+            player: player,
+            layout: layout
+        )
     }
 }
 
@@ -295,7 +194,7 @@ private struct LibraryTrackDeletionChrome: ViewModifier {
 }
 
 /// Wraps NowPlayingView with its drag-to-dismiss gesture. Keeping drag state here
-/// prevents MainShellView (and its TabView) from rebuilding every frame during a drag.
+/// prevents MainShellView from rebuilding every frame during a drag.
 private struct NowPlayingGestureHost: View {
     @Binding var isPresented: Bool
     @EnvironmentObject private var app: AppModel

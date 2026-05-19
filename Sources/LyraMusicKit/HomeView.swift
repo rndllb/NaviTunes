@@ -3,8 +3,6 @@ import SwiftUI
 /// Apple Music–style **Home** tab: personalized sections pulled from the user's library.
 struct HomeView: View {
     @EnvironmentObject private var app: AppModel
-    @Environment(MiniPlayerCollapseState.self) private var collapseState
-
     @State private var showFloatingHeader = true
 
     private let inset: CGFloat = MusicDesign.newTabHorizontalInset
@@ -68,7 +66,6 @@ struct HomeView: View {
                 slack: 72,
                 showFloatingHeader: $showFloatingHeader
             ))
-            .collapsesMiniPlayerOnScroll(collapseState)
             .safeAreaInset(edge: .top, spacing: 0) {
                 if showFloatingHeader {
                     MusicTabTitleHeaderBar(title: "Home") {

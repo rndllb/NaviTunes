@@ -5,7 +5,7 @@ let package = Package(
     name: "LyraMusic",
     defaultLocalization: "en",
     platforms: [
-        .iOS(.v26),
+        .iOS("26.1"),
         // Host `swift build` compiles for macOS; without this, the deployment target is too low for SwiftUI.
         .macOS(.v15),
     ],

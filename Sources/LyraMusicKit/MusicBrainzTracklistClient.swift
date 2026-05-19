@@ -73,7 +73,7 @@ enum MusicBrainzTracklistClient {
                 return []
             }
 
-            try await Task.sleep(nanoseconds: 1_100_000_000)
+            try await Task.sleep(nanoseconds: 350_000_000)
 
             guard let relURL = URL(string: "https://musicbrainz.org/ws/2/release/\(releaseId)?inc=recordings&fmt=json") else {
                 return []
