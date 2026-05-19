@@ -185,7 +185,7 @@ struct SettingsView: View {
         } header: {
             Text("Appearance")
         } footer: {
-            Text("Theme applies to the whole app (including the sign-in screen). Accent updates icons and highlights.")
+            Text("Theme applies to the whole app. The home screen icon updates when you leave the app (iOS shows a confirmation once — it cannot be turned off).")
         }
     }
 

@@ -6,11 +6,21 @@ import SwiftUI
 @main
 struct LyraMusicHostApp: App {
     @StateObject private var appModel = AppModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environmentObject(appModel)
+                .onAppear {
+                    appModel.syncHomeScreenIconForAccentIfNeeded()
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    // One system alert when leaving the app after changing accent, not on every tap in Settings.
+                    if phase == .background {
+                        appModel.syncHomeScreenIconForAccentIfNeeded()
+                    }
+                }
         }
     }
 }
