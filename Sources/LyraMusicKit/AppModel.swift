@@ -302,6 +302,8 @@ public final class AppModel: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         player.$isPlaying
             .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
+        player.$showsMiniPlayerChrome
+            .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         player.$lyrics
             .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         player.$shuffleMode

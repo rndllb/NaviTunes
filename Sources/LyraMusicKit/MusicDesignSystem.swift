@@ -422,16 +422,20 @@ extension View {
     }
 
     /// Native liquid-glass tab bar + Now Playing bottom accessory (iOS 26.1+).
-    /// Tab bar scroll-minimize runs only while the accessory is enabled (track playing).
+    /// Tab bar scroll-minimize runs only while the accessory is enabled (user has started playback).
     @ViewBuilder
     func musicNativeTabChrome<Accessory: View>(
         isEnabled: Bool,
         @ViewBuilder accessory: () -> Accessory
     ) -> some View {
         #if os(iOS)
-        self
-            .tabBarMinimizeBehavior(.onScrollDown)
-            .tabViewBottomAccessory(isEnabled: isEnabled, content: accessory)
+        if isEnabled {
+            self
+                .tabBarMinimizeBehavior(.onScrollDown)
+                .tabViewBottomAccessory(isEnabled: true, content: accessory)
+        } else {
+            self
+        }
         #else
         self
         #endif
