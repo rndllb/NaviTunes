@@ -870,46 +870,40 @@ private struct NowPlayingQueueListTableChrome: UIViewRepresentable {
         context.coordinator.reorderTint = reorderTint
         context.coordinator.scrollIndicatorStyle = scrollIndicatorStyle
         context.coordinator.apply(from: uiView)
-        context.coordinator.startRefreshing()
     }
 
     static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
-        coordinator.stopRefreshing()
+        coordinator.teardown()
     }
 
     final class Coordinator {
         var reorderTint: UIColor = .white
         var scrollIndicatorStyle: UIScrollView.IndicatorStyle = .white
         private weak var tableView: UITableView?
-        private var displayLink: CADisplayLink?
+        private var scrollObservation: NSKeyValueObservation?
 
         func apply(from anchor: UIView) {
+            if let table = tableView {
+                applyAll(to: table)
+                return
+            }
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                guard let table = anchor.ancestorUITableView() else { return }
+                guard let self, let table = anchor.ancestorUITableView() else { return }
                 self.tableView = table
-                table.tintColor = self.reorderTint
-                table.indicatorStyle = self.scrollIndicatorStyle
-                self.styleReorderControls(in: table)
+                self.scrollObservation = table.observe(\.contentOffset, options: []) { [weak self] table, _ in
+                    self?.styleReorderControls(in: table)
+                }
+                self.applyAll(to: table)
             }
         }
 
-        func startRefreshing() {
-            guard displayLink == nil else { return }
-            let link = CADisplayLink(target: self, selector: #selector(refreshChrome))
-            link.preferredFrameRateRange = CAFrameRateRange(minimum: 10, maximum: 20, preferred: 15)
-            link.add(to: .main, forMode: .common)
-            displayLink = link
-        }
-
-        func stopRefreshing() {
-            displayLink?.invalidate()
-            displayLink = nil
+        func teardown() {
+            scrollObservation?.invalidate()
+            scrollObservation = nil
             tableView = nil
         }
 
-        @objc private func refreshChrome() {
-            guard let table = tableView else { return }
+        private func applyAll(to table: UITableView) {
             table.tintColor = reorderTint
             table.indicatorStyle = scrollIndicatorStyle
             styleReorderControls(in: table)
