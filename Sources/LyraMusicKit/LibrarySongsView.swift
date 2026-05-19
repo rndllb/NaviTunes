@@ -15,6 +15,7 @@ private enum LibrarySongSort: String {
 /// Apple Music–style flat song list for **Library → Songs**.
 struct LibrarySongsView: View {
     @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var offline: OfflineDownloadManager
 
     @State private var tracks: [Track] = []
     @State private var isLoading = false
@@ -262,7 +263,7 @@ struct LibrarySongsView: View {
             track: track,
             artworkURL: app.resolvedArtworkURL(for: track),
             isFavorite: app.favoriteTrackIds.contains(track.id),
-            offlineDownload: app.offline.activeDownloads[track.id],
+            offlineDownload: offline.activeDownloads[track.id],
             isOfflineCached: app.offline.downloadedTrackIds.contains(track.id),
             onPlay: { Task { await play(track: track) } },
             onDownload: { Task { await cacheOffline(track: track) } },
@@ -327,7 +328,7 @@ struct LibrarySongsView: View {
             return
         }
         do {
-            tracks = try await lib.allTracks(limit: 15_000)
+            tracks = try await lib.allTracks(limit: 50_000)
             app.mergeOfflineCatalogFromDownloads()
         } catch {
             tracks = app.discoveryLibraryTracks

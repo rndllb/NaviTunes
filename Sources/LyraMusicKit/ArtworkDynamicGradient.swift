@@ -46,24 +46,16 @@ enum ArtworkDynamicGradient {
     /// Decode artwork → flat backdrop tint + WCAG luminance for adaptive hero chrome.
     static func analyzeBackdrop(from artworkURL: URL?) async -> BackdropPalette {
         guard let url = artworkURL else { return .fallback }
-        do {
-            let data: Data
-            if url.isFileURL {
-                data = try Data(contentsOf: url)
-            } else {
-                let (remoteData, response) = try await URLSession.shared.data(from: url)
-                guard let http = response as? HTTPURLResponse, (200 ..< 300).contains(http.statusCode),
-                      !remoteData.isEmpty
-                else {
-                    return .fallback
-                }
-                data = remoteData
-            }
-            guard !data.isEmpty, let cgImage = cgImage(fromImageData: data) else { return .fallback }
-            return makeBackdropPalette(from: cgImage)
-        } catch {
-            return .fallback
+        let data: Data?
+        if url.isFileURL {
+            data = try? Data(contentsOf: url)
+        } else {
+            data = await ArtworkURLCache.data(for: url)
         }
+        guard let data, !data.isEmpty, let cgImage = cgImage(fromImageData: data) else { return .fallback }
+        return await Task.detached(priority: .utility) {
+            makeBackdropPalette(from: cgImage)
+        }.value
     }
 
     static func gradientStops(from artworkURL: URL?) async -> [Gradient.Stop] {

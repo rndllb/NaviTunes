@@ -5,8 +5,6 @@ import UIKit
 
 struct MusicNewTabView: View {
     @EnvironmentObject private var app: AppModel
-    @Environment(MiniPlayerCollapseState.self) private var collapseState
-
     @State private var navigateLibraryTrack: Track?
     @State private var navigateLibraryAlbum: AlbumSummary?
     @State private var browseLFMSingle: LFMTrack?
@@ -64,7 +62,6 @@ struct MusicNewTabView: View {
                 slack: newTabFloatingHeaderCollapseSlack,
                 showFloatingHeader: $newTabShowFloatingHeader
             ))
-            .collapsesMiniPlayerOnScroll(collapseState)
             .safeAreaInset(edge: .top, spacing: 0) {
                 if newTabShowFloatingHeader {
                     MusicTabTitleHeaderBar(title: "New") {
@@ -484,7 +481,7 @@ struct MusicNewTabView: View {
     private func flashDowntifyToast(_ msg: String) {
         downtifyToast = msg
         Task {
-            try? await Task.sleep(nanoseconds: 2_400_000_000)
+            try? await Task.sleep(nanoseconds: 500_000_000)
             downtifyToast = nil
         }
     }
