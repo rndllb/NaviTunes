@@ -412,6 +412,14 @@ extension View {
         #endif
     }
 
+    func musicHidesTabBar() -> some View {
+        #if os(iOS)
+        self.toolbarVisibility(.hidden, for: .tabBar)
+        #else
+        self
+        #endif
+    }
+
     /// Pushed screens (detail, settings, …): restore a visible bar when the New tab root hides it.
     @ViewBuilder
     func musicNavigationBarVisibleWhenPushed() -> some View {
@@ -609,5 +617,29 @@ struct LibraryPlayShuffleRow: View {
             .buttonStyle(.plain)
             .disabled(isDisabled)
         }
+    }
+}
+
+// MARK: - Scroll-driven mini-player collapse
+
+struct CollapseOnScrollModifier: ViewModifier {
+    var collapseState: MiniPlayerCollapseState
+
+    func body(content: Content) -> some View {
+        content.onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y }) { old, new in
+            let delta = new - old
+            guard abs(delta) > 4 else { return }
+            if delta > 0, new > 40 {
+                if !collapseState.isCollapsed { collapseState.collapse() }
+            } else if delta < 0 {
+                if collapseState.isCollapsed { collapseState.expand() }
+            }
+        }
+    }
+}
+
+extension View {
+    func collapsesMiniPlayerOnScroll(_ state: MiniPlayerCollapseState) -> some View {
+        modifier(CollapseOnScrollModifier(collapseState: state))
     }
 }

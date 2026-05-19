@@ -5,6 +5,7 @@ import UIKit
 
 struct MusicNewTabView: View {
     @EnvironmentObject private var app: AppModel
+    @Environment(MiniPlayerCollapseState.self) private var collapseState
 
     @State private var navigateLibraryTrack: Track?
     @State private var navigateLibraryAlbum: AlbumSummary?
@@ -63,6 +64,7 @@ struct MusicNewTabView: View {
                 slack: newTabFloatingHeaderCollapseSlack,
                 showFloatingHeader: $newTabShowFloatingHeader
             ))
+            .collapsesMiniPlayerOnScroll(collapseState)
             .safeAreaInset(edge: .top, spacing: 0) {
                 if newTabShowFloatingHeader {
                     MusicTabTitleHeaderBar(title: "New") {
