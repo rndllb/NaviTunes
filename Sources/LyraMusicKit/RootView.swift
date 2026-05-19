@@ -21,7 +21,6 @@ public struct RootView: View {
 private struct MainShellView: View {
     @EnvironmentObject private var app: AppModel
     @State private var showNowPlaying = false
-    @State private var dragOffset: CGFloat = 0
 
     var body: some View {
         ZStack {
@@ -51,30 +50,10 @@ private struct MainShellView: View {
             .modifier(LibraryErrorAlertChrome())
 
             if showNowPlaying {
-                NowPlayingView()
-                    .environmentObject(app)
-                    .offset(y: max(0, dragOffset))
-                    .gesture(
-                        DragGesture(minimumDistance: 5)
-                            .onChanged { value in
-                                if value.translation.height > 0 {
-                                    dragOffset = value.translation.height
-                                }
-                            }
-                            .onEnded { value in
-                                if value.translation.height > 150 || value.predictedEndTranslation.height > 250 {
-                                    showNowPlaying = false
-                                } else {
-                                    withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
-                                        dragOffset = 0
-                                    }
-                                }
-                            }
-                    )
+                NowPlayingGestureHost(isPresented: $showNowPlaying)
                     .ignoresSafeArea()
                     .zIndex(1)
                     .transition(.move(edge: .bottom))
-                    .onDisappear { dragOffset = 0 }
             }
         }
         .animation(.spring(response: 0.45, dampingFraction: 0.85), value: showNowPlaying)
@@ -140,6 +119,38 @@ private struct LibraryTrackDeletionChrome: ViewModifier {
             return "Delete from library?"
         }
         return "Delete \"\(t.title)\" from your library?"
+    }
+}
+
+/// Wraps NowPlayingView with its drag-to-dismiss gesture. Keeping drag state here
+/// prevents MainShellView (and its TabView) from rebuilding every frame during a drag.
+private struct NowPlayingGestureHost: View {
+    @Binding var isPresented: Bool
+    @EnvironmentObject private var app: AppModel
+    @State private var dragOffset: CGFloat = 0
+
+    var body: some View {
+        NowPlayingView()
+            .environmentObject(app)
+            .offset(y: max(0, dragOffset))
+            .gesture(
+                DragGesture(minimumDistance: 5)
+                    .onChanged { value in
+                        if value.translation.height > 0 {
+                            dragOffset = value.translation.height
+                        }
+                    }
+                    .onEnded { value in
+                        if value.translation.height > 150 || value.predictedEndTranslation.height > 250 {
+                            isPresented = false
+                        } else {
+                            withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
+                                dragOffset = 0
+                            }
+                        }
+                    }
+            )
+            .onDisappear { dragOffset = 0 }
     }
 }
 
