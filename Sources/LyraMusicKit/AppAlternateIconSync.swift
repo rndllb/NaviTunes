@@ -33,26 +33,41 @@ enum AppAlternateIconSync {
         return alternateIconName(forAccentPresetId: id)
     }
 
+    /// Reads `CFBundleAlternateIcons` from the installed app bundle (what iOS actually sees).
+    static func bundledAlternateIconCount() -> Int {
+        guard let icons = Bundle.main.infoDictionary?["CFBundleIcons"] as? [String: Any],
+              let alternates = icons["CFBundleAlternateIcons"] as? [String: Any]
+        else { return 0 }
+        return alternates.count
+    }
+
     #if canImport(UIKit)
     @MainActor
-    static func apply(accentPresetId: String, completion: ((Bool) -> Void)? = nil) {
+    static func apply(
+        accentPresetId: String,
+        completion: ((Bool, String?) -> Void)? = nil,
+    ) {
         guard UIApplication.shared.supportsAlternateIcons else {
-            completion?(false)
+            let bundled = bundledAlternateIconCount()
+            let message =
+                bundled == 0
+                ? "This install’s Info.plist has no alternate icons. Your Sideloadly IPA was probably built without LyraMusicHost/AppIcons — the Simulator Xcode run includes them, sideload often doesn’t."
+                : "iOS reports alternate icons unsupported for this install (\(bundled) listed in plist). Try a fresh sideload of a LyraMusicHost IPA built after the icon assets were added."
+            completion?(false, message)
             return
         }
         let target = resolvedIconName(forAccentPresetId: accentPresetId)
         guard UIApplication.shared.alternateIconName != target else {
-            completion?(true)
+            completion?(true, nil)
             return
         }
         UIApplication.shared.setAlternateIconName(target) { error in
             if let error {
-                #if DEBUG
-                print("Lyra: alternate icon \(target ?? "primary") failed: \(error.localizedDescription)")
-                #endif
-                completion?(false)
+                let message = error.localizedDescription
+                print("Lyra: alternate icon \(target ?? "primary") failed: \(message)")
+                completion?(false, message)
             } else {
-                completion?(true)
+                completion?(true, nil)
             }
         }
     }

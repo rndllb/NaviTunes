@@ -179,7 +179,6 @@ struct NowPlayingView: View {
             }
         }
         .offset(y: max(0, dismissDragOffset))
-        .gesture(showQueue ? nil : dismissDragGesture)
         .onAppear {
             dismissDragOffset = 0
             app.player.reconcilePlaybackSessionAfterUIMilestone()
@@ -573,6 +572,10 @@ struct NowPlayingView: View {
             .frame(width: 50, height: 5)
             .padding(.top, 18)
             .padding(.bottom, 6)
+            .frame(maxWidth: .infinity)
+            .frame(height: 44)
+            .contentShape(Rectangle())
+            .gesture(showQueue ? nil : dismissDragGesture)
     }
 
     private func bottomChromeIconButton(
@@ -1017,7 +1020,12 @@ private struct VolumeScrubberBlock: View {
                     enlarged: isScrubbing,
                     backdropPalette: backdropPalette
                 )
-                .gesture(
+                .background {
+                    HiddenSystemVolumeBridge(level: $volume)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .contentShape(Rectangle())
+                .highPriorityGesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { value in
                             if !isScrubbing { isScrubbing = true }
@@ -1043,10 +1051,6 @@ private struct VolumeScrubberBlock: View {
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 24)
         .padding(.bottom, 12)
-        .background {
-            HiddenSystemVolumeBridge(level: $volume)
-                .frame(width: 0, height: 0)
-        }
         .onAppear {
             try? AVAudioSession.sharedInstance().setActive(true)
             volume = AVAudioSession.sharedInstance().outputVolume
@@ -1062,37 +1066,74 @@ private struct HiddenSystemVolumeBridge: UIViewRepresentable {
         Coordinator(level: $level)
     }
 
-    func makeUIView(context: Context) -> UIView {
-        let container = UIView(frame: .zero)
-        container.isUserInteractionEnabled = false
-        let volumeView = MPVolumeView(frame: CGRect(x: -2000, y: -2000, width: 1, height: 1))
-        volumeView.clipsToBounds = true
+    func makeUIView(context: Context) -> MPVolumeView {
+        let volumeView = MPVolumeView(frame: .zero)
         volumeView.showsRouteButton = false
-        volumeView.alpha = 0.01
-        container.addSubview(volumeView)
-        context.coordinator.attach(volumeView: volumeView)
-        return container
+        volumeView.showsVolumeSlider = true
+        volumeView.isUserInteractionEnabled = false
+        volumeView.alpha = 0.001
+        volumeView.backgroundColor = .clear
+        context.coordinator.attach(to: volumeView)
+        return volumeView
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {
+    func updateUIView(_ volumeView: MPVolumeView, context: Context) {
         context.coordinator.syncSystemVolume(to: level)
+    }
+
+    static func dismantleUIView(_ uiView: MPVolumeView, coordinator: Coordinator) {
+        coordinator.teardown()
     }
 
     final class Coordinator: NSObject {
         @Binding var level: Float
+        private weak var volumeView: MPVolumeView?
         private weak var slider: UISlider?
         private var isWritingToSlider = false
+        private var volumeObservation: NSKeyValueObservation?
+        private var sliderResolveGeneration = 0
+        private var sliderResolveAttempts = 0
+        private let maxSliderResolveAttempts = 40
 
         init(level: Binding<Float>) {
             _level = level
         }
 
-        func attach(volumeView: MPVolumeView) {
+        func attach(to volumeView: MPVolumeView) {
+            self.volumeView = volumeView
+            resolveSliderIfNeeded()
+            volumeObservation = AVAudioSession.sharedInstance().observe(\.outputVolume, options: [.new]) {
+                [weak self] session, _ in
+                guard let self, !self.isWritingToSlider else { return }
+                DispatchQueue.main.async {
+                    self.level = session.outputVolume
+                }
+            }
+        }
+
+        func teardown() {
+            volumeObservation?.invalidate()
+            volumeObservation = nil
+            slider?.removeTarget(self, action: #selector(sliderChanged(_:)), for: .valueChanged)
+            slider = nil
+        }
+
+        func resolveSliderIfNeeded() {
+            guard slider == nil, let volumeView, sliderResolveAttempts < maxSliderResolveAttempts else { return }
+            sliderResolveAttempts += 1
+            let generation = sliderResolveGeneration + 1
+            sliderResolveGeneration = generation
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.slider = Self.findSlider(in: volumeView)
-                self.slider?.addTarget(self, action: #selector(self.sliderChanged(_:)), for: .valueChanged)
-                self.level = AVAudioSession.sharedInstance().outputVolume
+                guard let self, self.sliderResolveGeneration == generation else { return }
+                if let found = Self.findSlider(in: volumeView) {
+                    self.slider = found
+                    found.addTarget(self, action: #selector(self.sliderChanged(_:)), for: .valueChanged)
+                    self.level = AVAudioSession.sharedInstance().outputVolume
+                } else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                        self?.resolveSliderIfNeeded()
+                    }
+                }
             }
         }
 
@@ -1102,11 +1143,13 @@ private struct HiddenSystemVolumeBridge: UIViewRepresentable {
         }
 
         func syncSystemVolume(to value: Float) {
+            if slider == nil { resolveSliderIfNeeded() }
             guard let slider else { return }
             let clamped = min(max(value, 0), 1)
             guard abs(slider.value - clamped) > 0.001 else { return }
             isWritingToSlider = true
-            slider.value = clamped
+            slider.setValue(clamped, animated: false)
+            slider.sendActions(for: .valueChanged)
             isWritingToSlider = false
         }
 
