@@ -43,6 +43,10 @@ enum AccountAvatarCache {
         var request = URLRequest(url: url)
         request.cachePolicy = .returnCacheDataElseLoad
         request.timeoutInterval = 20
+        // Inject per-host auth headers (Jellyfin) so the avatar fetch authenticates
+        // without leaking the access token into the URL.
+        let authHeaders = await MediaAuthHeaderRegistry.shared.headers(for: url)
+        for (k, v) in authHeaders { request.setValue(v, forHTTPHeaderField: k) }
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)

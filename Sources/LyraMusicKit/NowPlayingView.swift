@@ -302,14 +302,16 @@ struct NowPlayingView: View {
                 }
                 .buttonStyle(.plain)
 
-                Menu {
-                    Button("Share", action: {})
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(fgPrimary)
-                        .frame(width: 30, height: 30)
-                        .background(Circle().fill(fgCapsule))
+                if let activeTrack = app.player.activeTrack {
+                    Menu {
+                        ShareLink(item: "\(activeTrack.title) — \(activeTrack.artist)")
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(fgPrimary)
+                            .frame(width: 30, height: 30)
+                            .background(Circle().fill(fgCapsule))
+                    }
                 }
             }
         }
@@ -391,14 +393,16 @@ struct NowPlayingView: View {
                 }
                 .buttonStyle(.plain)
 
-                Menu {
-                    Button("Share", action: {})
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(fgPrimary)
-                        .frame(width: 30, height: 30)
-                        .background(Circle().fill(fgCapsule))
+                if let activeTrack = app.player.activeTrack {
+                    Menu {
+                        ShareLink(item: "\(activeTrack.title) — \(activeTrack.artist)")
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(fgPrimary)
+                            .frame(width: 30, height: 30)
+                            .background(Circle().fill(fgCapsule))
+                    }
                 }
             }
         }
@@ -600,14 +604,16 @@ struct NowPlayingView: View {
                         .background(Circle().fill(fgCapsule))
                 }
                 .buttonStyle(.plain)
-                Menu {
-                    Button("Share") {}
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(fgPrimary)
-                        .frame(width: 30, height: 30)
-                        .background(Circle().fill(fgCapsule))
+                if let activeTrack = app.player.activeTrack {
+                    Menu {
+                        ShareLink(item: "\(activeTrack.title) — \(activeTrack.artist)")
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(fgPrimary)
+                            .frame(width: 30, height: 30)
+                            .background(Circle().fill(fgCapsule))
+                    }
                 }
             }
             .padding(.horizontal, 20)

@@ -6,6 +6,9 @@ struct LoginView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var forgotPasswordHint = false
     @State private var serverDraft = ServerConnectionDraft()
+    @State private var isTestingConnection = false
+    @State private var testResultMessage: String?
+    @State private var testResultIsSuccess = false
 
     private var isDark: Bool { colorScheme == .dark }
 
@@ -35,6 +38,12 @@ struct LoginView: View {
                         .padding(.bottom, 22)
 
                     errorText
+
+                    HStack(spacing: 0) {
+                        testConnectionButton
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.bottom, 14)
 
                     loginButton
                 }
@@ -334,10 +343,20 @@ struct LoginView: View {
 
     @ViewBuilder
     private var errorText: some View {
+        // Sign-in errors always win the slot. Test-connection results take the slot while
+        // there is no sign-in error; success renders green, failure renders red.
         if let err = app.errorMessage {
             Text(err)
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(Color(red: 1, green: 0.38, blue: 0.38))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, 14)
+        } else if let msg = testResultMessage {
+            Text(msg)
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(testResultIsSuccess
+                    ? Color(red: 0.22, green: 0.78, blue: 0.42)
+                    : Color(red: 1, green: 0.38, blue: 0.38))
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.bottom, 14)
         }
@@ -394,5 +413,151 @@ struct LoginView: View {
                 ? 0.42
                 : 1,
         )
+    }
+
+    private var testConnectionButton: some View {
+        Button {
+            Task { await runConnectionTest() }
+        } label: {
+            HStack(spacing: 8) {
+                if isTestingConnection {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(MusicDesign.accent)
+                }
+                Text(isTestingConnection ? "TESTING…" : "TEST CONNECTION")
+                    .font(.caption.weight(.bold))
+                    .tracking(0.9)
+                    .foregroundStyle(MusicDesign.accent)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(
+                Capsule(style: .continuous)
+                    .strokeBorder(MusicDesign.accent.opacity(isDark ? 0.55 : 0.45), lineWidth: 1.2),
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(isTestingConnection || app.isAuthenticating || trimmedBaseURL.isEmpty)
+        .opacity(isTestingConnection || app.isAuthenticating || trimmedBaseURL.isEmpty ? 0.42 : 1)
+        .accessibilityLabel("Test server connection")
+    }
+
+    private var trimmedBaseURL: String {
+        serverDraft.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// No-auth reachability probe: hits a public endpoint matching the selected backend
+    /// (`/System/Info/Public` for Jellyfin, `/rest/ping.view` for Navidrome). Surfaces the
+    /// outcome in the same slot the sign-in error uses, in green on success and red on failure.
+    private func runConnectionTest() async {
+        guard !isTestingConnection else { return }
+        let raw = trimmedBaseURL
+        guard !raw.isEmpty else { return }
+        guard let base = URL(string: raw), base.scheme != nil, base.host != nil else {
+            testResultMessage = "Invalid server URL."
+            testResultIsSuccess = false
+            return
+        }
+
+        // Take over the message slot from any prior sign-in error.
+        app.errorMessage = nil
+        testResultMessage = nil
+        isTestingConnection = true
+        defer { isTestingConnection = false }
+
+        let probeURL: URL
+        let serverLabel: String
+        switch app.backendKind {
+        case .jellyfin:
+            probeURL = base.appendingPathComponent("System/Info/Public")
+            serverLabel = "Jellyfin"
+        case .navidrome:
+            var comps = URLComponents(url: base.appendingPathComponent("rest/ping.view"), resolvingAgainstBaseURL: false)
+            comps?.queryItems = [
+                URLQueryItem(name: "u", value: "lyra-probe"),
+                URLQueryItem(name: "p", value: "lyra-probe"),
+                URLQueryItem(name: "v", value: "1.16.1"),
+                URLQueryItem(name: "c", value: "LyraMusicKit"),
+                URLQueryItem(name: "f", value: "json"),
+            ]
+            probeURL = comps?.url ?? base.appendingPathComponent("rest/ping.view")
+            serverLabel = "Navidrome"
+        }
+
+        var req = URLRequest(url: probeURL)
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        req.timeoutInterval = 12
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            guard let http = response as? HTTPURLResponse else {
+                testResultMessage = "Server responded with an unexpected reply."
+                testResultIsSuccess = false
+                return
+            }
+            switch app.backendKind {
+            case .jellyfin:
+                // Jellyfin's public-info endpoint should always return 200 with a JSON body
+                // containing ServerName / Version. 401/403 here would mean someone fronted
+                // the server with auth, but the server itself is still reachable.
+                if (200 ..< 300).contains(http.statusCode),
+                   let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let name = (body["ServerName"] as? String) ?? (body["serverName"] as? String) {
+                    let version = (body["Version"] as? String) ?? (body["version"] as? String) ?? "?"
+                    testResultMessage = "Connected to \(name) (Jellyfin \(version))."
+                    testResultIsSuccess = true
+                } else if http.statusCode == 401 || http.statusCode == 403 {
+                    testResultMessage = "Reached the server, but it requires auth at the public-info endpoint."
+                    testResultIsSuccess = true
+                } else {
+                    testResultMessage = "Server reached, but it doesn't look like a \(serverLabel) server (HTTP \(http.statusCode))."
+                    testResultIsSuccess = false
+                }
+            case .navidrome:
+                if (200 ..< 300).contains(http.statusCode),
+                   let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let sub = body["subsonic-response"] as? [String: Any] {
+                    let version = (sub["version"] as? String) ?? "?"
+                    // Wrong-credentials is a successful connection — the server replied with a Subsonic
+                    // error payload, which proves it's a Subsonic-compatible server we reached.
+                    testResultMessage = "Connected to Navidrome / Subsonic API \(version)."
+                    testResultIsSuccess = true
+                } else {
+                    testResultMessage = "Server reached, but it doesn't look like a \(serverLabel) server (HTTP \(http.statusCode))."
+                    testResultIsSuccess = false
+                }
+            }
+        } catch let urlError as URLError {
+            testResultMessage = friendlyMessage(for: urlError)
+            testResultIsSuccess = false
+        } catch {
+            testResultMessage = "Connection failed: \(error.localizedDescription)"
+            testResultIsSuccess = false
+        }
+    }
+
+    private func friendlyMessage(for error: URLError) -> String {
+        switch error.code {
+        case .timedOut:
+            return "Connection timed out."
+        case .cannotFindHost:
+            return "Couldn't find that host."
+        case .cannotConnectToHost:
+            return "Couldn't connect to that host."
+        case .notConnectedToInternet:
+            return "Not connected to the internet."
+        case .networkConnectionLost:
+            return "Network connection lost."
+        case .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate,
+             .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid, .clientCertificateRejected:
+            return "TLS handshake failed — check the server certificate."
+        case .badURL, .unsupportedURL:
+            return "Invalid server URL."
+        case .appTransportSecurityRequiresSecureConnection:
+            return "App Transport Security blocked this URL."
+        default:
+            return "Connection failed: \(error.localizedDescription)"
+        }
     }
 }

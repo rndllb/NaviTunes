@@ -11,10 +11,13 @@ final class LastFmScrobbler {
         restoreSession()
     }
 
+    private static let migrationFlagKey = "lastfm_keychain_migrated_v1"
+
     func restoreSession() {
-        sessionKey = UserDefaults.standard.string(forKey: "lastfm_session")
+        migrateLegacyDefaultsIfNeeded()
         apiKey = UserDefaults.standard.string(forKey: "lastfm_api_key")
-        secret = UserDefaults.standard.string(forKey: "lastfm_secret")
+        secret = KeychainStore.loadLastFmSecret()
+        sessionKey = KeychainStore.loadLastFmSession()
     }
 
     func configure(apiKey: String, secret: String, sessionKey: String) {
@@ -22,8 +25,31 @@ final class LastFmScrobbler {
         self.secret = secret
         self.sessionKey = sessionKey
         UserDefaults.standard.set(apiKey, forKey: "lastfm_api_key")
-        UserDefaults.standard.set(secret, forKey: "lastfm_secret")
-        UserDefaults.standard.set(sessionKey, forKey: "lastfm_session")
+        do {
+            try KeychainStore.saveLastFmSecret(secret)
+            try KeychainStore.saveLastFmSession(sessionKey)
+        } catch {
+            self.secret = nil
+            self.sessionKey = nil
+        }
+        UserDefaults.standard.removeObject(forKey: "lastfm_secret")
+        UserDefaults.standard.removeObject(forKey: "lastfm_session")
+    }
+
+    /// One-time migration: move legacy plaintext `lastfm_secret` / `lastfm_session`
+    /// from UserDefaults into the Keychain, then scrub the UserDefaults entries.
+    private func migrateLegacyDefaultsIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: Self.migrationFlagKey) else { return }
+        if let legacySecret = defaults.string(forKey: "lastfm_secret"),
+           (try? KeychainStore.saveLastFmSecret(legacySecret)) != nil {
+            defaults.removeObject(forKey: "lastfm_secret")
+        }
+        if let legacySession = defaults.string(forKey: "lastfm_session"),
+           (try? KeychainStore.saveLastFmSession(legacySession)) != nil {
+            defaults.removeObject(forKey: "lastfm_session")
+        }
+        defaults.set(true, forKey: Self.migrationFlagKey)
     }
 
     func scrobble(track: Track, timestamp: Date) async {

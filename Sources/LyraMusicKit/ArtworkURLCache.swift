@@ -18,6 +18,11 @@ enum ArtworkURLCache {
         var request = URLRequest(url: url)
         request.cachePolicy = .returnCacheDataElseLoad
         request.timeoutInterval = 25
+        // Inject per-host auth headers so Jellyfin artwork loads without leaking the
+        // access token into the URL — see MediaAuthHeaderRegistry. Cache key is the URL,
+        // which is stable for a given server session, so this is safe to layer here.
+        let authHeaders = await MediaAuthHeaderRegistry.shared.headers(for: url)
+        for (k, v) in authHeaders { request.setValue(v, forHTTPHeaderField: k) }
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse,

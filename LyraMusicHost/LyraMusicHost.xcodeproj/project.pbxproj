@@ -71,6 +71,7 @@
 			isa = PBXGroup;
 			children = (
 				A00000000000000000000003 /* LyraMusicHost */,
+				AA9E8B822FBCB48C006C70DB /* Frameworks */,
 				A00000000000000000000004 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -90,6 +91,13 @@
 				IC0000000000000000000019 /* LyraIcon-lightgray.icon */,
 			);
 			path = AppIcons;
+			sourceTree = "<group>";
+		};
+		AA9E8B822FBCB48C006C70DB /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -218,7 +226,7 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = F7YZT72GUX;
+				DEVELOPMENT_TEAM = G98QGR9HZY;
 				ENABLE_PREVIEWS = YES;
 				GCC_GENERATE_DEBUGGING_SYMBOLS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -250,7 +258,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = F7YZT72GUX;
+				DEVELOPMENT_TEAM = G98QGR9HZY;
 				ENABLE_PREVIEWS = YES;
 				GCC_GENERATE_DEBUGGING_SYMBOLS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
