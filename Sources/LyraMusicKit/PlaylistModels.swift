@@ -8,13 +8,15 @@ struct PlaylistSummary: Identifiable, Hashable, Codable {
     let artworkURL: URL?
     /// Jellyfin only: `IsPublic` — visible to all users on the server (`nil` if unknown / Navidrome).
     let isPublic: Bool?
+    let libraryAddedDate: Date?
 
-    init(id: String, name: String, songCount: Int? = nil, artworkURL: URL? = nil, isPublic: Bool? = nil) {
+    init(id: String, name: String, songCount: Int? = nil, artworkURL: URL? = nil, isPublic: Bool? = nil, libraryAddedDate: Date? = nil) {
         self.id = id
         self.name = name
         self.songCount = songCount
         self.artworkURL = artworkURL
         self.isPublic = isPublic
+        self.libraryAddedDate = libraryAddedDate
     }
 }
 

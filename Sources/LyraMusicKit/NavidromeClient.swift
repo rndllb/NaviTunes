@@ -739,7 +739,8 @@ final class NavidromeClient: MusicLibraryProviding {
         let count = navidromeInt(dict["songCount"])
         let coverId = navidromeCoerceString(dict["coverArt"])
         let art = coverId.flatMap { streamURLForCover(coverArt: $0) }
-        return PlaylistSummary(id: id, name: name, songCount: count, artworkURL: art)
+        let created = navidromeCreatedDate(dict["created"])
+        return PlaylistSummary(id: id, name: name, songCount: count, artworkURL: art, libraryAddedDate: created)
     }
 
     /// Subsonic ``getAvatar`` for the signed-in user (toolbar profile image).
