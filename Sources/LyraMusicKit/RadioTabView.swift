@@ -2,6 +2,7 @@ import SwiftUI
 
 /// Apple Music **Radio** tab layout (decorative stations + hint text).
 struct RadioTabView: View {
+    @Environment(MiniPlayerCollapseState.self) private var collapseState
     @State private var showFloatingHeader = true
 
     private let floatingHeaderCollapseSlack: CGFloat = 72
@@ -41,6 +42,7 @@ struct RadioTabView: View {
                 slack: floatingHeaderCollapseSlack,
                 showFloatingHeader: $showFloatingHeader,
             ))
+            .collapsesMiniPlayerOnScroll(collapseState)
             .safeAreaInset(edge: .top, spacing: 0) {
                 if showFloatingHeader {
                     MusicTabTitleHeaderBar(title: "Radio") {
