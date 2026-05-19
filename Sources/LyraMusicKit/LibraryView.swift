@@ -110,20 +110,36 @@ private enum LibraryRow: String, CaseIterable, Identifiable {
 struct LibraryView: View {
     @EnvironmentObject private var app: AppModel
     @AppStorage("library_section_config") private var sectionConfigRaw: String = ""
+    @AppStorage("favoritedPlaylistIds") private var favoritedRaw: String = ""
     @State private var showNewPlaylistSheet = false
     @State private var showEditSections = false
     @State private var showFloatingHeader = true
+
+    private let pinnedColumns = [
+        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 12),
+    ]
 
     private let recentColumns = [
         GridItem(.flexible(), spacing: 12),
         GridItem(.flexible(), spacing: 12),
     ]
 
+    private var pinnedPlaylistIds: Set<String> {
+        Set(favoritedRaw.split(separator: ",").map(String.init).filter { !$0.isEmpty })
+    }
+
+    private var pinnedPlaylists: [PlaylistSummary] {
+        app.libraryPlaylists.filter { pinnedPlaylistIds.contains($0.id) }
+    }
+
     private var recentItems: [RecentLibraryItem] {
-        let playlists = app.libraryPlaylists.map { RecentLibraryItem.playlist($0) }
-        let albums = app.recentlyAddedAlbums.map { RecentLibraryItem.album($0) }
-        return Array(
-            (playlists + albums)
+        // Albums excluded for now: server `DateCreated` is scan time, not the user's
+        // add-to-library time. Playlists are user-owned, so their `DateCreated` is accurate.
+        Array(
+            app.libraryPlaylists
+                .map { RecentLibraryItem.playlist($0) }
                 .sorted { ($0.libraryAddedDate ?? .distantPast) > ($1.libraryAddedDate ?? .distantPast) }
                 .prefix(60)
         )
@@ -212,6 +228,21 @@ struct LibraryView: View {
 
     private var libraryScrollMainContent: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if !pinnedPlaylists.isEmpty {
+                LazyVGrid(columns: pinnedColumns, spacing: 20) {
+                    ForEach(pinnedPlaylists) { playlist in
+                        NavigationLink {
+                            ServerPlaylistDetailView(playlist: playlist)
+                        } label: {
+                            pinnedPlaylistCell(playlist)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 28)
+            }
+
             ForEach(orderedVisibleRows) { row in
                 libraryRowLink(row)
             }
@@ -337,6 +368,18 @@ struct LibraryView: View {
                 .lineLimit(1)
         }
     }
+
+    private func pinnedPlaylistCell(_ playlist: PlaylistSummary) -> some View {
+        VStack(spacing: 8) {
+            AlbumArtworkView(url: playlist.artworkURL, cornerRadius: MusicDesign.gridAlbumCorner)
+                .aspectRatio(1, contentMode: .fit)
+            Text(playlist.name)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .multilineTextAlignment(.center)
+        }
+    }
 }
 
 /// Library → **Playlists** (favorite songs as a playlist; Jellyfin favorites sync with the server).
@@ -404,18 +447,33 @@ struct LibraryPlaylistsView: View {
         let sorted: [PlaylistSummary]
         switch sort {
         case .title:
-            sorted = server.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            sorted = server.sorted(by: pinnedFirstThenTitle)
         case .playlistType:
             sorted = server.sorted { lhs, rhs in
+                let lhsPinned = favoritedIds.contains(lhs.id)
+                let rhsPinned = favoritedIds.contains(rhs.id)
+                if lhsPinned != rhsPinned { return lhsPinned && !rhsPinned }
                 let lp = lhs.isPublic ?? false
                 let rp = rhs.isPublic ?? false
                 if lp != rp { return lp && !rp }
                 return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
             }
         default:
-            sorted = server
+            sorted = server.enumerated().sorted { lhs, rhs in
+                let lhsPinned = favoritedIds.contains(lhs.element.id)
+                let rhsPinned = favoritedIds.contains(rhs.element.id)
+                if lhsPinned != rhsPinned { return lhsPinned && !rhsPinned }
+                return lhs.offset < rhs.offset
+            }.map(\.element)
         }
         return [favoriteSongsEntry] + sorted
+    }
+
+    private func pinnedFirstThenTitle(_ lhs: PlaylistSummary, _ rhs: PlaylistSummary) -> Bool {
+        let lhsPinned = favoritedIds.contains(lhs.id)
+        let rhsPinned = favoritedIds.contains(rhs.id)
+        if lhsPinned != rhsPinned { return lhsPinned && !rhsPinned }
+        return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
     }
 
     @ViewBuilder
@@ -748,6 +806,7 @@ struct FavoritePlaylistView: View {
     private func songRow(_ track: Track) -> some View {
         LibrarySongRow(
             track: track,
+            itemSize: app.songListItemSize,
             isFavorite: app.favoriteTrackIds.contains(track.id),
             offlineDownload: offline.activeDownloads[track.id],
             isOfflineCached: app.offline.downloadedTrackIds.contains(track.id),
@@ -1053,6 +1112,7 @@ struct LibraryDownloadedView: View {
         LibrarySongRow(
             track: track,
             artworkURL: app.resolvedArtworkURL(for: track),
+            itemSize: app.songListItemSize,
             isFavorite: app.favoriteTrackIds.contains(track.id),
             offlineDownload: offline.activeDownloads[track.id],
             isOfflineCached: true,

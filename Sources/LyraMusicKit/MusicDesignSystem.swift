@@ -428,13 +428,9 @@ extension View {
         @ViewBuilder accessory: () -> Accessory
     ) -> some View {
         #if os(iOS)
-        if isEnabled {
-            self
-                .tabBarMinimizeBehavior(.onScrollDown)
-                .tabViewBottomAccessory(isEnabled: true, content: accessory)
-        } else {
-            self
-        }
+        self
+            .tabBarMinimizeBehavior(.onScrollDown)
+            .tabViewBottomAccessory(isEnabled: isEnabled, content: accessory)
         #else
         self
         #endif

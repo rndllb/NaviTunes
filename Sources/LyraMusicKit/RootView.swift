@@ -199,19 +199,28 @@ private struct NowPlayingGestureHost: View {
     @Binding var isPresented: Bool
     @EnvironmentObject private var app: AppModel
     @State private var dragOffset: CGFloat = 0
+    @State private var libraryNavigationDepth = 0
 
     var body: some View {
-        NowPlayingView()
+        NowPlayingView { depth in
+            libraryNavigationDepth = depth
+        }
             .environmentObject(app)
+            .environmentObject(app.offline)
             .offset(y: max(0, dragOffset))
             .gesture(
                 DragGesture(minimumDistance: 5)
                     .onChanged { value in
+                        guard libraryNavigationDepth == 0 else { return }
                         if value.translation.height > 0 {
                             dragOffset = value.translation.height
                         }
                     }
                     .onEnded { value in
+                        guard libraryNavigationDepth == 0 else {
+                            dragOffset = 0
+                            return
+                        }
                         if value.translation.height > 150 || value.predictedEndTranslation.height > 250 {
                             isPresented = false
                         } else {

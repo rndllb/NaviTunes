@@ -219,6 +219,8 @@ private enum AlbumTrackRowLayout {
 
 /// Track row matching Apple Music album pages (optional ★ beside index + title stack + trailing offline glyph + ⋯ menu).
 struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
+    @EnvironmentObject private var app: AppModel
+
     let index: Int
     let title: String
     let subtitle: String?
@@ -243,6 +245,8 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
     private var offlinePhase: TrackOfflineIndicatorPhase {
         TrackOfflineIndicatorPhase(offlineDownload: offlineDownload, isOfflineCached: isOfflineCached)
     }
+
+    private var itemSize: SongListItemSize { app.songListItemSize }
 
     var body: some View {
         HStack(alignment: .top, spacing: 6) {
@@ -274,12 +278,12 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
 
                     VStack(alignment: .leading, spacing: AlbumTrackRowLayout.titleSubtitleSpacing) {
                         Text(title)
-                            .font(.subheadline.weight(.semibold))
+                            .font(itemSize.albumTitleFont)
                             .foregroundStyle(backdropPalette.heroChromePrimary)
                             .multilineTextAlignment(.leading)
                         if let subtitle, !subtitle.isEmpty {
                             Text(subtitle)
-                                .font(.caption)
+                                .font(itemSize.albumSubtitleFont)
                                 .foregroundStyle(backdropPalette.heroChromeSecondary)
                                 .multilineTextAlignment(.leading)
                         }
@@ -312,7 +316,7 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
             .padding(.top, 1)
         }
         .padding(.horizontal, AlbumTrackRowLayout.horizontalPadding)
-        .padding(.vertical, AlbumTrackRowLayout.verticalPadding)
+        .padding(.vertical, itemSize.albumVerticalPadding)
     }
 }
 
