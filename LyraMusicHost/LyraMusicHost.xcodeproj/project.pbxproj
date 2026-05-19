@@ -7,13 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		02E1B2612FB8DE7B006F4370 /* RandllMusicKit in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000014 /* RandllMusicKit */; };
-		A00000000000000000000011 /* RandllMusicHostApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000006 /* RandllMusicHostApp.swift */; };
+		02E1B2612FB8DE7B006F4370 /* LyraMusicKit in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000014 /* LyraMusicKit */; };
+		A00000000000000000000011 /* LyraMusicHostApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000006 /* LyraMusicHostApp.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		A00000000000000000000002 /* RandllMusicHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RandllMusicHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		A00000000000000000000006 /* RandllMusicHostApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RandllMusicHostApp.swift; sourceTree = "<group>"; };
+		A00000000000000000000002 /* LyraMusicHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LyraMusicHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000006 /* LyraMusicHostApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyraMusicHostApp.swift; sourceTree = "<group>"; };
 		A00000000000000000000007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -22,26 +22,26 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				02E1B2612FB8DE7B006F4370 /* RandllMusicKit in Frameworks */,
+				02E1B2612FB8DE7B006F4370 /* LyraMusicKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		A00000000000000000000003 /* RandllMusicHost */ = {
+		A00000000000000000000003 /* LyraMusicHost */ = {
 			isa = PBXGroup;
 			children = (
-				A00000000000000000000006 /* RandllMusicHostApp.swift */,
+				A00000000000000000000006 /* LyraMusicHostApp.swift */,
 				A00000000000000000000007 /* Info.plist */,
 			);
-			path = RandllMusicHost;
+			path = LyraMusicHost;
 			sourceTree = "<group>";
 		};
 		A00000000000000000000004 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				A00000000000000000000002 /* RandllMusicHost.app */,
+				A00000000000000000000002 /* LyraMusicHost.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -49,7 +49,7 @@
 		A00000000000000000000005 = {
 			isa = PBXGroup;
 			children = (
-				A00000000000000000000003 /* RandllMusicHost */,
+				A00000000000000000000003 /* LyraMusicHost */,
 				A00000000000000000000004 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -57,9 +57,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		A00000000000000000000010 /* RandllMusicHost */ = {
+		A00000000000000000000010 /* LyraMusicHost */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = A00000000000000000000015 /* Build configuration list for PBXNativeTarget "RandllMusicHost" */;
+			buildConfigurationList = A00000000000000000000015 /* Build configuration list for PBXNativeTarget "LyraMusicHost" */;
 			buildPhases = (
 				A00000000000000000000008 /* Sources */,
 				A00000000000000000000009 /* Frameworks */,
@@ -68,12 +68,12 @@
 			);
 			dependencies = (
 			);
-			name = RandllMusicHost;
+			name = LyraMusicHost;
 			packageProductDependencies = (
-				A00000000000000000000014 /* RandllMusicKit */,
+				A00000000000000000000014 /* LyraMusicKit */,
 			);
-			productName = RandllMusicHost;
-			productReference = A00000000000000000000002 /* RandllMusicHost.app */;
+			productName = LyraMusicHost;
+			productReference = A00000000000000000000002 /* LyraMusicHost.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -91,7 +91,7 @@
 					};
 				};
 			};
-			buildConfigurationList = A00000000000000000000016 /* Build configuration list for PBXProject "RandllMusicHost" */;
+			buildConfigurationList = A00000000000000000000016 /* Build configuration list for PBXProject "LyraMusicHost" */;
 			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -107,7 +107,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				A00000000000000000000010 /* RandllMusicHost */,
+				A00000000000000000000010 /* LyraMusicHost */,
 			);
 		};
 /* End PBXProject section */
@@ -117,7 +117,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A00000000000000000000011 /* RandllMusicHostApp.swift in Sources */,
+				A00000000000000000000011 /* LyraMusicHostApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -160,7 +160,7 @@
 				ENABLE_PREVIEWS = YES;
 				GCC_GENERATE_DEBUGGING_SYMBOLS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = RandllMusicHost/Info.plist;
+				INFOPLIST_FILE = LyraMusicHost/Info.plist;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -188,7 +188,7 @@
 				ENABLE_PREVIEWS = YES;
 				GCC_GENERATE_DEBUGGING_SYMBOLS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = RandllMusicHost/Info.plist;
+				INFOPLIST_FILE = LyraMusicHost/Info.plist;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -207,7 +207,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		A00000000000000000000015 /* Build configuration list for PBXNativeTarget "RandllMusicHost" */ = {
+		A00000000000000000000015 /* Build configuration list for PBXNativeTarget "LyraMusicHost" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				A00000000000000000000200 /* Debug */,
@@ -216,7 +216,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		A00000000000000000000016 /* Build configuration list for PBXProject "RandllMusicHost" */ = {
+		A00000000000000000000016 /* Build configuration list for PBXProject "LyraMusicHost" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				A00000000000000000000100 /* Debug */,
@@ -235,10 +235,10 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		A00000000000000000000014 /* RandllMusicKit */ = {
+		A00000000000000000000014 /* LyraMusicKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = A00000000000000000000013 /* XCLocalSwiftPackageReference ".." */;
-			productName = RandllMusicKit;
+			productName = LyraMusicKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

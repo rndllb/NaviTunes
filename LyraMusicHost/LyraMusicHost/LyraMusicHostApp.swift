@@ -1,10 +1,10 @@
-import RandllMusicKit
+import LyraMusicKit
 import SwiftUI
 
 /// iOS (and optional macOS) host with a real bundle identifier. Open
-/// `RandllMusicHost.xcodeproj` and run this scheme on a simulator or device.
+/// `LyraMusicHost.xcodeproj` and run this scheme on a simulator or device.
 @main
-struct RandllMusicHostApp: App {
+struct LyraMusicHostApp: App {
     @StateObject private var appModel = AppModel()
 
     var body: some Scene {
