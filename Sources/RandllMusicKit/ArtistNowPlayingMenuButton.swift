@@ -1,0 +1,116 @@
+import SwiftUI
+
+#if os(iOS)
+import UIKit
+
+/// SwiftUI `Menu` often collapses multi-line custom `Button` labels to a single line. `UIMenu` + `UIAction` subtitles match Apple Music.
+struct ArtistNowPlayingMenuButton: UIViewRepresentable {
+    let artist: String
+    let albumSubtitle: String
+    let libraryAlbum: AlbumSummary?
+    /// When set, artist line follows album hero **luminance handoff** (black/white vs backdrop).
+    var heroBackdropPalette: ArtworkDynamicGradient.BackdropPalette? = nil
+    let onGoToAlbum: () -> Void
+    let onGoToArtist: () -> Void
+
+    func makeUIView(context: Context) -> UIButton {
+        let button = UIButton(type: .system)
+        button.contentHorizontalAlignment = .leading
+        button.showsMenuAsPrimaryAction = true
+        button.tintColor = .label
+        button.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return button
+    }
+
+    func updateUIView(_ button: UIButton, context: Context) {
+        let isDarkSystem = context.environment.colorScheme == .dark
+        var cfg = UIButton.Configuration.plain()
+        cfg.title = artist
+        if let palette = heroBackdropPalette {
+            cfg.baseForegroundColor = palette.prefersDarkHeroChrome
+                ? UIColor.black.withAlphaComponent(0.58)
+                : UIColor.white.withAlphaComponent(0.55)
+        } else {
+            cfg.baseForegroundColor = isDarkSystem ? UIColor.white.withAlphaComponent(0.55) : UIColor.secondaryLabel
+        }
+        cfg.titleLineBreakMode = .byTruncatingTail
+        cfg.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var out = incoming
+            out.font = UIFont.preferredFont(forTextStyle: .title3)
+            return out
+        }
+        cfg.contentInsets = .zero
+        cfg.titlePadding = 0
+        button.configuration = cfg
+        if let palette = heroBackdropPalette {
+            button.tintColor = palette.prefersDarkHeroChrome ? .black : .white
+        } else {
+            button.tintColor = isDarkSystem ? .white : .label
+        }
+
+        let albumLine = albumSubtitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let artistLine = artist.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let albumAction = UIAction(
+            title: "Go to Album",
+            subtitle: albumLine.isEmpty ? "—" : albumLine,
+            image: UIImage(systemName: "square.stack.fill"),
+            attributes: libraryAlbum == nil ? [.disabled] : []
+        ) { _ in
+            onGoToAlbum()
+        }
+
+        let artistAction = UIAction(
+            title: "Go to Artist",
+            subtitle: artistLine.isEmpty ? "—" : artistLine,
+            image: UIImage(systemName: "music.mic")
+        ) { _ in
+            onGoToArtist()
+        }
+
+        button.menu = UIMenu(children: [artistAction, albumAction])
+    }
+}
+
+#else
+
+/// macOS / non-UIKit: plain SwiftUI menu (subtitle styling differs from iOS `UIMenu`).
+struct ArtistNowPlayingMenuButton: View {
+    let artist: String
+    let albumSubtitle: String
+    let libraryAlbum: AlbumSummary?
+    var heroBackdropPalette: ArtworkDynamicGradient.BackdropPalette? = nil
+    let onGoToAlbum: () -> Void
+    let onGoToArtist: () -> Void
+
+    var body: some View {
+        Menu {
+            Button {
+                onGoToArtist()
+            } label: {
+                Label("Go to Artist", systemImage: "music.mic")
+            }
+            Button {
+                onGoToAlbum()
+            } label: {
+                Label("Go to Album", systemImage: "square.stack.fill")
+            }
+            .disabled(libraryAlbum == nil)
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(artist)
+                    .font(.title3)
+                    .foregroundStyle((heroBackdropPalette?.heroChromeSecondary) ?? MusicDesign.secondaryLabel)
+                Text(albumSubtitle)
+                    .font(.subheadline)
+                    .foregroundStyle((heroBackdropPalette?.heroChromeTertiary) ?? MusicDesign.secondaryLabel.opacity(0.85))
+            }
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .menuStyle(.borderlessButton)
+    }
+}
+
+#endif
