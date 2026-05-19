@@ -109,6 +109,7 @@ private enum LibraryRow: String, CaseIterable, Identifiable {
 /// Apple Music **Library** tab: category rows + Recently Added grid.
 struct LibraryView: View {
     @EnvironmentObject private var app: AppModel
+    @Environment(MiniPlayerCollapseState.self) private var collapseState
     @AppStorage("library_section_config") private var sectionConfigRaw: String = ""
     @State private var showNewPlaylistSheet = false
     @State private var showEditSections = false
@@ -144,6 +145,7 @@ struct LibraryView: View {
                 slack: 72,
                 showFloatingHeader: $showFloatingHeader
             ))
+            .collapsesMiniPlayerOnScroll(collapseState)
             .safeAreaInset(edge: .top, spacing: 0) {
                 if showFloatingHeader {
                     libraryHeaderBar
