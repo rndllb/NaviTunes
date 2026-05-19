@@ -17,6 +17,12 @@ private enum PlaybackEngineError: LocalizedError {
 enum ShuffleMode { case off, on }
 enum RepeatMode { case off, all, one }
 
+/// Where the current playback queue came from, so the Now Playing UI can offer
+/// "Go to Playlist" / "Go to Album" navigation. `nil` = ad-hoc queue with no origin.
+enum PlaybackSource: Equatable {
+    case playlist(PlaylistSummary)
+}
+
 @MainActor
 final class PlaybackEngine: NSObject, ObservableObject {
     @Published private(set) var queue: [Track] = []
@@ -27,6 +33,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
     @Published private(set) var lyrics: [LyricLine] = []
     @Published var shuffleMode: ShuffleMode = .off
     @Published var repeatMode: RepeatMode = .off
+    @Published private(set) var playbackSource: PlaybackSource?
 
     private var lastEmittedUIProgress: TimeInterval = -10_000
     private var lastNowPlayingInfoRefresh: TimeInterval = -10_000
@@ -145,14 +152,16 @@ final class PlaybackEngine: NSObject, ObservableObject {
         playbackHead = 0
         isPlaying = false
         duration = 0
+        playbackSource = nil
         updateNowPlaying(nil)
     }
 
-    func playAlbum(library: MusicLibraryProviding?, tracks: [Track], startIndex: Int = 0) async throws {
+    func playAlbum(library: MusicLibraryProviding?, tracks: [Track], startIndex: Int = 0, source: PlaybackSource? = nil) async throws {
         if let library { self.library = library }
         teardownPlayer()
         queue = tracks
         currentIndex = min(max(0, startIndex), max(tracks.count - 1, 0))
+        playbackSource = source
         lastEmittedUIProgress = -10_000
         playbackHead = 0
         try await loadLyrics()
