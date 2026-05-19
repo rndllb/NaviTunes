@@ -209,6 +209,44 @@ final class NavidromeClient: MusicLibraryProviding {
         }
     }
 
+    func allTracks(limit: Int) async throws -> [Track] {
+        let cap = max(1, min(limit, 50_000))
+        if let batch = try? await fetchSongsViaSearch3(cap: cap), !batch.isEmpty {
+            return Array(batch.prefix(cap))
+        }
+        return try await allTracksByWalkingAlbums(limit: cap)
+    }
+
+    private func fetchSongsViaSearch3(cap: Int) async throws -> [Track] {
+        for query in ["*", "a", ""] {
+            let items = try await subsonicRequest(path: "search3", query: [
+                "query": query,
+                "songCount": "\(cap)",
+                "albumCount": "0",
+                "artistCount": "0",
+            ])
+            guard let result = navidromeDict(items["searchResult3"]) else { continue }
+            let songs = childDictArray(from: result, key: "song")
+            let parsed = songs.compactMap { parseSongFromChildDict($0) }
+            if !parsed.isEmpty { return parsed }
+        }
+        return []
+    }
+
+    private func allTracksByWalkingAlbums(limit: Int) async throws -> [Track] {
+        let cap = max(1, min(limit, 50_000))
+        let albumBudget = min(2_000, max(400, cap))
+        let albumsList = try await albums(limit: albumBudget)
+        var out: [Track] = []
+        out.reserveCapacity(min(cap, 6_000))
+        for album in albumsList {
+            let ts = try await tracks(forAlbumId: album.id)
+            out.append(contentsOf: ts)
+            if out.count >= cap { break }
+        }
+        return Array(out.prefix(cap))
+    }
+
     func libraryArtists(limit: Int) async throws -> [LibraryArtistSummary] {
         let items = try await subsonicRequest(path: "getArtists", query: [:])
         guard let artistsRoot = items["artists"] as? [String: Any] else {
@@ -460,11 +498,10 @@ final class NavidromeClient: MusicLibraryProviding {
         }
 
         // Navidrome "Favourites" includes starred albums; those only appear under `album`, not `song`.
-        for albumDict in albumRows {
-            guard out.count < cap else { break }
-            guard let albumId = navidromeCoerceString(albumDict["id"]) else { continue }
-            let albumTracks = try await tracks(forAlbumId: albumId)
-            for t in albumTracks {
+        let albumIds: [String] = albumRows.compactMap { navidromeCoerceString($0["id"]) }
+        if !albumIds.isEmpty {
+            let expanded = await expandFavoriteAlbumTracks(albumIds: albumIds, cap: cap)
+            for t in expanded {
                 guard out.count < cap else { break }
                 if seen.insert(t.id).inserted {
                     out.append(t)
@@ -473,6 +510,32 @@ final class NavidromeClient: MusicLibraryProviding {
         }
 
         return out
+    }
+
+    private func expandFavoriteAlbumTracks(albumIds: [String], cap: Int) async -> [Track] {
+        var collected: [Track] = []
+        collected.reserveCapacity(min(cap, albumIds.count * 8))
+        let chunkSize = 6
+        var index = 0
+        while index < albumIds.count, collected.count < cap {
+            let end = min(index + chunkSize, albumIds.count)
+            let chunk = Array(albumIds[index ..< end])
+            await withTaskGroup(of: [Track].self) { group in
+                for albumId in chunk {
+                    group.addTask {
+                        (try? await self.tracks(forAlbumId: albumId)) ?? []
+                    }
+                }
+                for await batch in group {
+                    for t in batch {
+                        collected.append(t)
+                        if collected.count >= cap { break }
+                    }
+                }
+            }
+            index = end
+        }
+        return collected
     }
 
     func fetchFavoriteTrackIds(limit: Int = 20_000) async throws -> Set<String> {

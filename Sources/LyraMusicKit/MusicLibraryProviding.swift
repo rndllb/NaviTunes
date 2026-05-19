@@ -305,7 +305,7 @@ extension MusicLibraryProviding {
     func offlineDownloadURL(for track: Track) throws -> URL { try streamURL(for: track) }
 
     func allTracks(limit: Int) async throws -> [Track] {
-        let cap = max(1, min(limit, 20_000))
+        let cap = max(1, min(limit, 50_000))
         let albumBudget = min(2_000, max(400, cap))
         let albumsList = try await albums(limit: albumBudget)
         var out: [Track] = []

@@ -7,6 +7,7 @@ import UIKit
 /// For chart/discovery releases with optional MB tracklist + Downtify, use ``BrowseAlbumDetailView``.
 struct AlbumDetailView: View {
     @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var offline: OfflineDownloadManager
     let album: AlbumSummary
     /// When set (e.g. deep-linked from Downtify), scrolls the tracklist to this item after load.
     var scrollToTrackId: String? = nil
@@ -258,7 +259,7 @@ struct AlbumDetailView: View {
                             title: track.title,
                             subtitle: track.artist == album.artist || track.artist.isEmpty ? nil : track.artist,
                             isFavorite: app.favoriteTrackIds.contains(track.id),
-                            offlineDownload: app.offline.activeDownloads[track.id],
+                            offlineDownload: offline.activeDownloads[track.id],
                             isOfflineCached: app.offline.downloadedTrackIds.contains(track.id),
                             onCancelOfflineDownload: {
                                 app.offline.cancelDownload(trackId: track.id)
@@ -464,7 +465,7 @@ struct AlbumDetailView: View {
     private func flashToast(_ msg: String) {
         toast = msg
         Task {
-            try? await Task.sleep(nanoseconds: 2_400_000_000)
+            try? await Task.sleep(nanoseconds: 500_000_000)
             toast = nil
         }
     }

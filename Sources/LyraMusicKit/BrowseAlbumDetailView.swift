@@ -7,6 +7,7 @@ import UIKit
 /// Apple Music-style album page for New tab rows (library match → Play; otherwise Request via Downtify).
 struct BrowseAlbumDetailView: View {
     @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var offline: OfflineDownloadManager
     let source: BrowseAlbumDetailSource
 
     @State private var libraryTracks: [Track] = []
@@ -443,7 +444,7 @@ struct BrowseAlbumDetailView: View {
                                 title: track.title,
                                 subtitle: track.artist == displayArtist || track.artist.isEmpty ? nil : track.artist,
                                 isFavorite: app.favoriteTrackIds.contains(track.id),
-                                offlineDownload: app.offline.activeDownloads[track.id],
+                                offlineDownload: offline.activeDownloads[track.id],
                                 isOfflineCached: app.offline.downloadedTrackIds.contains(track.id),
                                 onCancelOfflineDownload: {
                                     app.offline.cancelDownload(trackId: track.id)
@@ -817,7 +818,7 @@ struct BrowseAlbumDetailView: View {
     private func flashToast(_ msg: String) {
         toast = msg
         Task {
-            try? await Task.sleep(nanoseconds: 2_400_000_000)
+            try? await Task.sleep(nanoseconds: 500_000_000)
             toast = nil
         }
     }

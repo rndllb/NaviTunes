@@ -475,7 +475,23 @@ final class JellyfinMusicClient: MusicLibraryProviding {
     }
 
     func allTracks(limit: Int) async throws -> [Track] {
-        let cap = max(1, min(limit, 20_000))
+        let cap = max(1, min(limit, 50_000))
+        var collected: [Track] = []
+        collected.reserveCapacity(min(cap, 4_096))
+        let pageSize = 1_000
+        var startIndex = 0
+        while collected.count < cap {
+            let pageLimit = min(pageSize, cap - collected.count)
+            let page = try await fetchAudioItemsPage(startIndex: startIndex, limit: pageLimit)
+            if page.isEmpty { break }
+            collected.append(contentsOf: page)
+            if page.count < pageLimit { break }
+            startIndex += page.count
+        }
+        return collected
+    }
+
+    private func fetchAudioItemsPage(startIndex: Int, limit: Int) async throws -> [Track] {
         let itemsURL = apiURL("Users", userId, "Items")
         var comps = URLComponents(url: itemsURL, resolvingAgainstBaseURL: false)!
         comps.queryItems = [
@@ -483,7 +499,8 @@ final class JellyfinMusicClient: MusicLibraryProviding {
             URLQueryItem(name: "IncludeItemTypes", value: "Audio"),
             URLQueryItem(name: "SortBy", value: "SortName"),
             URLQueryItem(name: "SortOrder", value: "Ascending"),
-            URLQueryItem(name: "Limit", value: "\(cap)"),
+            URLQueryItem(name: "StartIndex", value: "\(startIndex)"),
+            URLQueryItem(name: "Limit", value: "\(max(1, limit))"),
             URLQueryItem(name: "Fields", value: Self.jellyfinAudioItemFields),
         ]
         var req = URLRequest(url: comps.url!)

@@ -29,6 +29,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
     @Published var repeatMode: RepeatMode = .off
 
     private var lastEmittedUIProgress: TimeInterval = -10_000
+    private var lastNowPlayingInfoRefresh: TimeInterval = -10_000
     private var playbackHead: TimeInterval = 0
     private var isSeeking = false
     /// Ignores stale periodic time samples until after a scrub seek settles.
@@ -646,6 +647,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         playbackHead = head
         currentTime = head
         lastEmittedUIProgress = head > 0 ? head : -10_000
+        lastNowPlayingInfoRefresh = head > 0 ? head : -10_000
         let fromItem = item.duration.seconds
         if resolvedDuration > 0 {
             duration = resolvedDuration
@@ -684,10 +686,17 @@ final class PlaybackEngine: NSObject, ObservableObject {
                 }
 
                 let playing = p.rate > 0.01
-                if playing != self.isPlaying { self.isPlaying = playing }
+                let playStateChanged = playing != self.isPlaying
+                if playStateChanged { self.isPlaying = playing }
 
                 self.maybeScrobble(track: track, position: elapsed)
-                self.refreshNowPlaying()
+                if playStateChanged
+                    || elapsed - self.lastNowPlayingInfoRefresh >= 0.55
+                    || abs(elapsed - self.lastNowPlayingInfoRefresh) > 1.25
+                {
+                    self.lastNowPlayingInfoRefresh = elapsed
+                    self.refreshNowPlaying()
+                }
 
                 guard !self.isSeeking else { return }
                 if let deadline = self.seekSettleDeadline, ContinuousClock.now < deadline {
