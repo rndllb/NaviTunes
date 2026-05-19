@@ -26,9 +26,6 @@ struct LoginView: View {
                         .padding(.bottom, 28)
 
                     headerBlock
-                        .padding(.bottom, 24)
-
-                    appearanceBlock
                         .padding(.bottom, 28)
 
                     serverTypePicker
@@ -39,13 +36,10 @@ struct LoginView: View {
 
                     errorText
 
-                    HStack(spacing: 0) {
+                    HStack(spacing: 12) {
                         testConnectionButton
-                        Spacer(minLength: 0)
+                        loginButton
                     }
-                    .padding(.bottom, 14)
-
-                    loginButton
                 }
                 .padding(.horizontal, 26)
                 .padding(.bottom, 44)
@@ -155,40 +149,6 @@ struct LoginView: View {
                 .foregroundStyle(secondaryText)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var appearanceBlock: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 12) {
-                loginSectionLabel("THEME")
-                Picker("Theme", selection: $app.themePreference) {
-                    ForEach(AppThemePreference.allCases) { pref in
-                        Text(pref.title).tag(pref)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .tint(isDark ? MusicDesign.accent : nil)
-            }
-
-            VStack(alignment: .leading, spacing: 12) {
-                loginSectionLabel("ACCENT COLOR")
-                AccentColorPickerGrid(
-                    accentPresetId: $app.accentPresetId,
-                    showsLabels: false,
-                    swatchSize: 52,
-                    selectedLabelColor: primaryText,
-                    unselectedLabelColor: secondaryText,
-                )
-            }
-        }
-    }
-
-    private func loginSectionLabel(_ title: String) -> some View {
-        Text(title)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(captionText)
-            .tracking(0.6)
     }
 
     private var serverTypePicker: some View {
@@ -362,84 +322,53 @@ struct LoginView: View {
         }
     }
 
-    private var loginButtonGradient: LinearGradient {
-        LinearGradient(
-            colors: [
-                MusicDesign.accent,
-                MusicDesign.accent.opacity(0.78),
-            ],
-            startPoint: .leading,
-            endPoint: .trailing,
-        )
-    }
-
     private var loginButton: some View {
-        Button {
+        let isDisabled = app.isAuthenticating
+            || serverDraft.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || serverDraft.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+        return Button {
             SettingsFormDrafts.pushServer(serverDraft, to: app)
             Task { await app.signIn() }
         } label: {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 if app.isAuthenticating {
                     ProgressView()
+                        .controlSize(.small)
                         .tint(.white)
                 }
                 Text(app.isAuthenticating ? "SIGNING IN…" : "LOGIN")
-                    .font(.subheadline.weight(.bold))
-                    .tracking(1.1)
-                if !app.isAuthenticating {
-                    Image(systemName: "arrow.right")
-                        .font(.system(size: 14, weight: .semibold))
-                }
+                    .font(.caption.weight(.bold))
+                    .tracking(0.9)
             }
-            .foregroundStyle(.white)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 16)
-            .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(loginButtonGradient),
-            )
-            .shadow(color: MusicDesign.accent.opacity(isDark ? 0.45 : 0.35), radius: 14, x: 0, y: 8)
+            .modifier(LoginActionButtonStyle(isDark: isDark))
         }
         .buttonStyle(.plain)
-        .disabled(
-            app.isAuthenticating
-                || serverDraft.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || serverDraft.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-        )
-        .opacity(
-            app.isAuthenticating
-                || serverDraft.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || serverDraft.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? 0.42
-                : 1,
-        )
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.42 : 1)
     }
 
     private var testConnectionButton: some View {
-        Button {
+        let isDisabled = isTestingConnection || app.isAuthenticating || trimmedBaseURL.isEmpty
+
+        return Button {
             Task { await runConnectionTest() }
         } label: {
             HStack(spacing: 8) {
                 if isTestingConnection {
                     ProgressView()
                         .controlSize(.small)
-                        .tint(MusicDesign.accent)
+                        .tint(.white)
                 }
                 Text(isTestingConnection ? "TESTING…" : "TEST CONNECTION")
                     .font(.caption.weight(.bold))
                     .tracking(0.9)
-                    .foregroundStyle(MusicDesign.accent)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(
-                Capsule(style: .continuous)
-                    .strokeBorder(MusicDesign.accent.opacity(isDark ? 0.55 : 0.45), lineWidth: 1.2),
-            )
+            .modifier(LoginActionButtonStyle(isDark: isDark))
         }
         .buttonStyle(.plain)
-        .disabled(isTestingConnection || app.isAuthenticating || trimmedBaseURL.isEmpty)
-        .opacity(isTestingConnection || app.isAuthenticating || trimmedBaseURL.isEmpty ? 0.42 : 1)
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.42 : 1)
         .accessibilityLabel("Test server connection")
     }
 
@@ -559,5 +488,30 @@ struct LoginView: View {
         default:
             return "Connection failed: \(error.localizedDescription)"
         }
+    }
+}
+
+private struct LoginActionButtonStyle: ViewModifier {
+    let isDark: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                MusicDesign.accent,
+                                MusicDesign.accent.opacity(0.78),
+                            ],
+                            startPoint: .leading,
+                            endPoint: .trailing,
+                        ),
+                    ),
+            )
+            .shadow(color: MusicDesign.accent.opacity(isDark ? 0.45 : 0.35), radius: 14, x: 0, y: 8)
     }
 }
