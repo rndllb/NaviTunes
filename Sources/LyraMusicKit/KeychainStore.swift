@@ -59,6 +59,35 @@ enum KeychainStore {
         ["jellyfin", "navidrome"].forEach { delete(key: $0) }
     }
 
+    // MARK: - Last.fm secrets
+
+    static func saveLastFmSecret(_ value: String) throws {
+        try saveString(key: "lastfm_secret", value: value)
+    }
+
+    static func saveLastFmSession(_ value: String) throws {
+        try saveString(key: "lastfm_session", value: value)
+    }
+
+    static func loadLastFmSecret() -> String? { loadString(key: "lastfm_secret") }
+    static func loadLastFmSession() -> String? { loadString(key: "lastfm_session") }
+
+    static func clearLastFm() {
+        ["lastfm_secret", "lastfm_session"].forEach { delete(key: $0) }
+    }
+
+    private static func saveString(key: String, value: String) throws {
+        guard let data = value.data(using: .utf8) else {
+            throw NSError(domain: "KeychainStore", code: -1)
+        }
+        try save(key: key, data: data)
+    }
+
+    private static func loadString(key: String) -> String? {
+        guard let data = try? load(key: key) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
     private static func save(key: String, data: Data) throws {
         delete(key: key)
         let query: [String: Any] = [
@@ -66,7 +95,8 @@ enum KeychainStore {
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
             kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
         ]
         let status = SecItemAdd(query as CFDictionary, nil)
         guard status == errSecSuccess else {
@@ -81,6 +111,7 @@ enum KeychainStore {
             kSecAttrAccount as String: key,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
         ]
         var out: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &out)
@@ -95,6 +126,7 @@ enum KeychainStore {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
+            kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
         ]
         SecItemDelete(query as CFDictionary)
     }

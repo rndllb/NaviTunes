@@ -299,6 +299,7 @@ public final class AppModel: ObservableObject {
                     accessToken: client.sessionAccessToken,
                     userId: client.sessionUserId,
                 )
+                await Self.registerMediaAuthHeaders(host: base.host, headers: client.httpHeadersForMediaRequests())
             case .navidrome:
                 let client = NavidromeClient(baseURL: base)
                 try await client.signIn(username: username, password: password)
@@ -1138,7 +1139,8 @@ public final class AppModel: ObservableObject {
             username = j.user
             password = j.password
             let client = JellyfinMusicClient(baseURL: j.base)
-            if let token = j.accessToken, let uid = j.userId, !token.isEmpty, !uid.isEmpty {
+            let hasToken = !(j.accessToken ?? "").isEmpty && !(j.userId ?? "").isEmpty
+            if hasToken, let token = j.accessToken, let uid = j.userId {
                 client.applyRestoredSession(accessToken: token, userId: uid)
                 jellyfin = client
                 navidrome = nil
@@ -1148,19 +1150,20 @@ public final class AppModel: ObservableObject {
                 pushQualitySettingsToClients()
                 restoreLibraryFromDisk()
                 serverConnectionHealth = .unknown
+                Task { await Self.registerMediaAuthHeaders(host: j.base.host, headers: client.httpHeadersForMediaRequests()) }
             }
-            Task {
-                await refreshServerConnectionHealth()
-                await signIn()
-            }
+            Task { await reconcileRestoredSession(hasRestoredToken: hasToken) }
         } else if let n = try? KeychainStore.loadNavidrome() {
             backendKind = .navidrome
             baseURLString = n.base.absoluteString
             username = n.user
             password = n.password
             let client = NavidromeClient(baseURL: n.base)
-            if let token = n.subsonicToken, !token.isEmpty {
-                client.applyRestoredSession(token: token, username: n.user, password: n.password)
+            // Salted-token auth means there's no long-lived bearer token to "restore" — having
+            // username+password is enough to make API calls without re-POSTing the password.
+            let hasCredentials = !n.user.isEmpty && !n.password.isEmpty
+            if hasCredentials {
+                client.applyRestoredSession(token: n.subsonicToken ?? "", username: n.user, password: n.password)
                 navidrome = client
                 jellyfin = nil
                 isSignedIn = true
@@ -1169,10 +1172,45 @@ public final class AppModel: ObservableObject {
                 restoreLibraryFromDisk()
                 serverConnectionHealth = .unknown
             }
-            Task {
-                await refreshServerConnectionHealth()
-                await signIn()
-            }
+            Task { await reconcileRestoredSession(hasRestoredToken: hasCredentials) }
+        }
+    }
+
+    /// Registers per-host auth headers so artwork / avatar loaders can authenticate
+    /// against Jellyfin without leaking the bearer token into the URL.
+    private static func registerMediaAuthHeaders(host: String?, headers: [String: String]) async {
+        guard let host = host, !host.isEmpty else { return }
+        await MediaAuthHeaderRegistry.shared.register(host: host, headers: headers)
+    }
+
+    /// Decides whether to re-authenticate after a Keychain restore.
+    ///
+    /// Sign-in only runs when:
+    ///   (a) no usable session was restored, or
+    ///   (b) the server explicitly rejected the restored session (401/403 / Subsonic error 40/41).
+    /// On healthy or merely-unreachable probes we do NOT re-POST credentials — preserving the
+    /// password's privacy across cold launches on hostile networks.
+    private func reconcileRestoredSession(hasRestoredToken: Bool) async {
+        await refreshServerConnectionHealth()
+        guard hasRestoredToken else {
+            await signIn()
+            return
+        }
+        let probe: ServerReachabilityProbe
+        switch backendKind {
+        case .jellyfin:
+            probe = await jellyfin?.probeAuthStatus() ?? .unreachable
+        case .navidrome:
+            probe = await navidrome?.probeAuthStatus() ?? .unreachable
+        }
+        switch probe {
+        case .authRejected:
+            // Token / credentials rejected — re-authenticate (also covers "user changed password
+            // on server" recovery flow).
+            await signIn()
+        case .ok, .unreachable:
+            // Healthy session OR transient outage — never re-leak the password on cold launch.
+            break
         }
     }
 }

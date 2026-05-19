@@ -198,6 +198,26 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         }
     }
 
+    /// Distinguishes "token rejected" (401/403) from "server unreachable".
+    /// Used at cold launch so we can avoid re-POSTing the password when the restored
+    /// session is still healthy. When there is no restored token, returns `.authRejected`
+    /// to force sign-in.
+    func probeAuthStatus() async -> ServerReachabilityProbe {
+        guard !userId.isEmpty, !accessToken.isEmpty else { return .authRejected }
+        let url = apiURL("Users", userId)
+        var req = URLRequest(url: url)
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        applyAuth(&req)
+        do {
+            let (_, res) = try await URLSession.shared.data(for: req)
+            guard let http = res as? HTTPURLResponse else { return .unreachable }
+            if http.statusCode == 401 || http.statusCode == 403 { return .authRejected }
+            return (200 ..< 300).contains(http.statusCode) ? .ok : .unreachable
+        } catch {
+            return .unreachable
+        }
+    }
+
     /// Re-reads ``UserDto/Policy`` from ``GET /Users/{userId}`` (same source as the dashboard).
     private func refreshLibraryDeletionCapabilityFromUserEndpoint() async {
         guard !userId.isEmpty, !accessToken.isEmpty else { return }
@@ -709,12 +729,19 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         throw JellyfinClientError.unexpectedPayload
     }
 
-    /// `AVURLAsset` / `AsyncImage` often omit custom headers or drop them on redirects. Jellyfin
-    /// accepts `ApiKey` on the query string for the same access token (see Jellyfin API / Swiftfin).
+    /// Build a media URL **without** placing the bearer token in the query string.
+    /// Callers must inject `Authorization: MediaBrowser Token=...` via headers — see
+    /// `httpHeadersForMediaRequests()` (for `AVURLAssetHTTPHeaderFieldsKey` / `URLRequest`)
+    /// and `MediaAuthHeaderRegistry` (for artwork loaders behind `URLSession.shared`).
+    ///
+    /// Putting `ApiKey=` in URLs leaks the full user access token into:
+    ///   - Jellyfin's HTTP access log (`$request_uri`)
+    ///   - every reverse proxy in front of it (NGINX/Caddy/Cloudflare/Tailscale)
+    ///   - `URLSession`'s on-disk URL cache (`Cache.db`)
+    ///   - any `Referer` header that travels with follow-on requests
+    /// Token disclosure = full account compromise.
     private func mediaURLWithQueryAuth(_ base: URL, extraQuery: [URLQueryItem]) -> URL {
-        guard !accessToken.isEmpty,
-              var comps = URLComponents(url: base, resolvingAgainstBaseURL: false)
-        else {
+        guard var comps = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
             return base
         }
         var items = comps.queryItems ?? []
@@ -722,11 +749,10 @@ final class JellyfinMusicClient: MusicLibraryProviding {
             items.removeAll { $0.name == extra.name }
             items.append(extra)
         }
-        let hasKey = items.contains { $0.name == "ApiKey" || $0.name == "api_key" }
-        if !hasKey {
-            items.append(URLQueryItem(name: "ApiKey", value: accessToken))
-        }
-        comps.queryItems = items
+        // Strip any stale ApiKey/api_key that may have been appended by older code paths
+        // (defense-in-depth; the bearer goes in the Authorization header).
+        items.removeAll { $0.name == "ApiKey" || $0.name == "api_key" }
+        comps.queryItems = items.isEmpty ? nil : items
         return comps.url ?? base
     }
 

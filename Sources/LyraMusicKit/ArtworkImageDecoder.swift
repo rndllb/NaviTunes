@@ -37,6 +37,8 @@ enum RemoteArtworkLoad {
         if url.isFileURL {
             data = try? Data(contentsOf: url)
         } else {
+            // ArtworkURLCache injects per-host auth headers from MediaAuthHeaderRegistry
+            // so Jellyfin artwork loads without the access token appearing in the URL.
             data = await ArtworkURLCache.data(for: url)
         }
         guard let data, !data.isEmpty else { return nil }

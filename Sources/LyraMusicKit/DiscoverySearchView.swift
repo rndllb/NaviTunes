@@ -276,7 +276,11 @@ struct DiscoverySearchView: View {
                     } label: {
                         Label("Play", systemImage: "play.fill")
                     }
-                    Button {} label: {
+                    Button {
+                        if let resolved = resolvedLibraryTrack(for: song) {
+                            app.toggleFavoriteTrack(id: resolved.id)
+                        }
+                    } label: {
                         Label("Favorite", systemImage: "star.fill")
                     }
                     ShareLink(item: shareItem) {
@@ -285,7 +289,14 @@ struct DiscoverySearchView: View {
                 }
                 .tint(Color.primary)
 
-                ChartStyleSongOverflowChrome.trailingMenuSections(onGoToAlbum: {})
+                ChartStyleSongOverflowChrome.trailingMenuSections(
+                    onGoToAlbum: {},
+                    onPlayNext: {
+                        Task { @MainActor in
+                            try? await app.player.playTracksNext(library: app.activeLibrary, tracks: [track])
+                        }
+                    }
+                )
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.body.weight(.semibold))
@@ -299,7 +310,17 @@ struct DiscoverySearchView: View {
                 shareItem: shareItem,
                 onAdd: { Task { await downloadSong(song) } },
                 addDisabled: !app.downtifyConfigured || downloadingIds.contains(song.songId),
-                onGoToAlbum: {}
+                onGoToAlbum: {},
+                onPlayNext: libraryTrack.map { resolved in
+                    {
+                        Task { @MainActor in
+                            try? await app.player.playTracksNext(library: app.activeLibrary, tracks: [resolved])
+                        }
+                    }
+                },
+                onToggleFavorite: libraryTrack.map { resolved in
+                    { app.toggleFavoriteTrack(id: resolved.id) }
+                }
             )
         }
     }

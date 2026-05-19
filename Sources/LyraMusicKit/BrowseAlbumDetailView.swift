@@ -19,6 +19,7 @@ struct BrowseAlbumDetailView: View {
     @State private var isDownloading = false
     @State private var downloadingPreviewTrackIds: Set<String> = []
     @State private var previewDowntifyFraction: [String: Double] = [:]
+    @State private var navigateLibraryAlbum: AlbumSummary?
 
     private var matchedLibraryAlbum: AlbumSummary? {
         app.libraryAlbums.firstMatchingNewTabRelease(artist: matchArtist, albumTitle: matchAlbumTitle)
@@ -196,6 +197,9 @@ struct BrowseAlbumDetailView: View {
         .musicHeroAlbumNavigationChrome(palette: backdropPalette)
         .toolbar {
             ToolbarItemGroup(placement: MusicToolbar.trailingItemPlacement) { toolbarButtons }
+        }
+        .navigationDestination(item: $navigateLibraryAlbum) { album in
+            AlbumDetailView(album: album)
         }
         .task(id: matchedLibraryAlbum?.id ?? "none") { await loadLibraryTracks() }
         .task(id: "\(isLibraryPlayback)-\(matchArtist)-\(matchAlbumTitle)") { await loadPreviewTracksIfNeeded() }
@@ -556,7 +560,9 @@ struct BrowseAlbumDetailView: View {
                     Label("Download", systemImage: "arrow.down.circle")
                 }
             }
-            Button {} label: {
+            Button {
+                app.toggleFavoriteTrack(id: track.id)
+            } label: {
                 Label("Favorite", systemImage: "star.fill")
             }
             ShareLink(item: "\(track.title) — \(track.artist)") {
@@ -571,7 +577,11 @@ struct BrowseAlbumDetailView: View {
             } label: {
                 Label("Add to a Playlist", systemImage: "music.note.list")
             }
-            Button {} label: { Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward") }
+            Button {
+                Task { @MainActor in
+                    try? await app.player.playTracksNext(library: app.activeLibrary, tracks: [track])
+                }
+            } label: { Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward") }
         }
         .tint(Color.primary)
 
@@ -581,7 +591,10 @@ struct BrowseAlbumDetailView: View {
         .tint(Color.primary)
 
         Section {
-            Button {} label: { Label("Go to Album", systemImage: "music.note.square") }
+            Button {
+                navigateLibraryAlbum = matchedLibraryAlbum
+            } label: { Label("Go to Album", systemImage: "music.note.square") }
+            .disabled(matchedLibraryAlbum == nil)
             Button {} label: { Label("View Credits", systemImage: "info.circle") }
         }
         .tint(Color.primary)

@@ -7,7 +7,8 @@ enum ChartStyleSongOverflowChrome {
     @ViewBuilder
     static func trailingMenuSections(
         onGoToAlbum: @escaping () -> Void,
-        onAddToPlaylist: (() -> Void)? = nil
+        onAddToPlaylist: (() -> Void)? = nil,
+        onPlayNext: (() -> Void)? = nil
     ) -> some View {
         Section {
             if let onAddToPlaylist {
@@ -18,7 +19,14 @@ enum ChartStyleSongOverflowChrome {
                 Button {} label: { Label("Add to a Playlist", systemImage: "music.note.list") }
                     .disabled(true)
             }
-            Button {} label: { Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward") }
+            if let onPlayNext {
+                Button(action: onPlayNext) {
+                    Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                }
+            } else {
+                Button {} label: { Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward") }
+                    .disabled(true)
+            }
         }
         .tint(Color.primary)
 
@@ -49,6 +57,8 @@ struct ChartStyleSongOverflowMenuContent: View {
     var addDisabled: Bool = false
     let onGoToAlbum: () -> Void
     var onAddToPlaylist: (() -> Void)? = nil
+    var onPlayNext: (() -> Void)? = nil
+    var onToggleFavorite: (() -> Void)? = nil
 
     var body: some View {
         ControlGroup {
@@ -56,8 +66,15 @@ struct ChartStyleSongOverflowMenuContent: View {
                 Label("Request", systemImage: "arrow.down.circle.fill")
             }
             .disabled(addDisabled)
-            Button {} label: {
-                Label("Favorite", systemImage: "star.fill")
+            if let onToggleFavorite {
+                Button(action: onToggleFavorite) {
+                    Label("Favorite", systemImage: "star.fill")
+                }
+            } else {
+                Button {} label: {
+                    Label("Favorite", systemImage: "star.fill")
+                }
+                .disabled(true)
             }
             ShareLink(item: shareItem) {
                 Label("Share", systemImage: "square.and.arrow.up")
@@ -65,7 +82,11 @@ struct ChartStyleSongOverflowMenuContent: View {
         }
         .tint(Color.primary)
 
-        ChartStyleSongOverflowChrome.trailingMenuSections(onGoToAlbum: onGoToAlbum, onAddToPlaylist: onAddToPlaylist)
+        ChartStyleSongOverflowChrome.trailingMenuSections(
+            onGoToAlbum: onGoToAlbum,
+            onAddToPlaylist: onAddToPlaylist,
+            onPlayNext: onPlayNext
+        )
     }
 }
 
@@ -76,6 +97,8 @@ struct ChartStyleSongOverflowMenu: View {
     var addDisabled: Bool = false
     let onGoToAlbum: () -> Void
     var onAddToPlaylist: (() -> Void)? = nil
+    var onPlayNext: (() -> Void)? = nil
+    var onToggleFavorite: (() -> Void)? = nil
 
     var body: some View {
         Menu {
@@ -84,7 +107,9 @@ struct ChartStyleSongOverflowMenu: View {
                 onAdd: onAdd,
                 addDisabled: addDisabled,
                 onGoToAlbum: onGoToAlbum,
-                onAddToPlaylist: onAddToPlaylist
+                onAddToPlaylist: onAddToPlaylist,
+                onPlayNext: onPlayNext,
+                onToggleFavorite: onToggleFavorite
             )
         } label: {
             Image(systemName: "ellipsis")
@@ -105,13 +130,17 @@ struct NewTabChartOverflowPanel: View {
     let onAdd: () -> Void
     let onGoToAlbum: () -> Void
     var onAddToPlaylist: (() -> Void)? = nil
+    var onPlayNext: (() -> Void)? = nil
+    var onToggleFavorite: (() -> Void)? = nil
 
     var body: some View {
         ChartStyleSongOverflowMenu(
             shareItem: "\(track.name) — \(track.artistName)",
             onAdd: onAdd,
             onGoToAlbum: onGoToAlbum,
-            onAddToPlaylist: onAddToPlaylist
+            onAddToPlaylist: onAddToPlaylist,
+            onPlayNext: onPlayNext,
+            onToggleFavorite: onToggleFavorite
         )
     }
 }

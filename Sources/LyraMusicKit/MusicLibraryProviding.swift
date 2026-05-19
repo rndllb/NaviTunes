@@ -1,5 +1,50 @@
 import Foundation
 
+/// Result of a lightweight reachability probe that distinguishes
+/// "server says your token is bad" from "server is unreachable".
+/// Used so cold-launch restore can decide whether to re-POST the
+/// user's password (only when explicitly auth-rejected).
+enum ServerReachabilityProbe {
+    case ok
+    case authRejected
+    case unreachable
+}
+
+/// Process-wide host → auth headers registry. Lets media-asset / artwork loaders inject
+/// per-backend `Authorization` headers without leaking bearer tokens into URLs (which
+/// would otherwise appear in server access logs, reverse-proxy logs, and URL caches).
+///
+/// `AppModel` registers the active Jellyfin host's headers on sign-in / Keychain restore;
+/// `RemoteArtworkLoad`, `AccountAvatarCache`, and `ArtworkDynamicGradient` consult the
+/// registry before their `URLSession` requests.
+actor MediaAuthHeaderRegistry {
+    static let shared = MediaAuthHeaderRegistry()
+
+    private var headersByHost: [String: [String: String]] = [:]
+
+    func register(host: String, headers: [String: String]) {
+        let key = host.lowercased()
+        if headers.isEmpty {
+            headersByHost.removeValue(forKey: key)
+        } else {
+            headersByHost[key] = headers
+        }
+    }
+
+    func unregister(host: String) {
+        headersByHost.removeValue(forKey: host.lowercased())
+    }
+
+    func clear() {
+        headersByHost.removeAll()
+    }
+
+    func headers(for url: URL) -> [String: String] {
+        guard let host = url.host?.lowercased() else { return [:] }
+        return headersByHost[host] ?? [:]
+    }
+}
+
 struct AlbumSummary: Identifiable, Hashable, Codable {
     let id: String
     let title: String
