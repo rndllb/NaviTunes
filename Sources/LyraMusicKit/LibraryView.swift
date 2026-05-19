@@ -35,6 +35,13 @@ private enum RecentLibraryItem: Identifiable {
             return "Playlist"
         }
     }
+
+    var libraryAddedDate: Date? {
+        switch self {
+        case .album(let a): return a.libraryAddedDate
+        case .playlist(let p): return p.libraryAddedDate
+        }
+    }
 }
 
 // MARK: - Section config
@@ -115,7 +122,11 @@ struct LibraryView: View {
     private var recentItems: [RecentLibraryItem] {
         let playlists = app.libraryPlaylists.map { RecentLibraryItem.playlist($0) }
         let albums = app.recentlyAddedAlbums.map { RecentLibraryItem.album($0) }
-        return Array((playlists + albums).prefix(60))
+        return Array(
+            (playlists + albums)
+                .sorted { ($0.libraryAddedDate ?? .distantPast) > ($1.libraryAddedDate ?? .distantPast) }
+                .prefix(60)
+        )
     }
 
     private var orderedVisibleRows: [LibraryRow] {
