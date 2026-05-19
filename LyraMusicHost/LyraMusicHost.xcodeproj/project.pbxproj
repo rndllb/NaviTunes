@@ -9,12 +9,32 @@
 /* Begin PBXBuildFile section */
 		02E1B2612FB8DE7B006F4370 /* LyraMusicKit in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000014 /* LyraMusicKit */; };
 		A00000000000000000000011 /* LyraMusicHostApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000006 /* LyraMusicHostApp.swift */; };
+		IC0000000000000000000020 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000010 /* AppIcon.icon */; };
+		IC0000000000000000000021 /* LyraIcon-blue.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000011 /* LyraIcon-blue.icon */; };
+		IC0000000000000000000022 /* LyraIcon-green.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000012 /* LyraIcon-green.icon */; };
+		IC0000000000000000000023 /* LyraIcon-orange.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000013 /* LyraIcon-orange.icon */; };
+		IC0000000000000000000024 /* LyraIcon-pink.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000014 /* LyraIcon-pink.icon */; };
+		IC0000000000000000000025 /* LyraIcon-indigo.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000015 /* LyraIcon-indigo.icon */; };
+		IC0000000000000000000026 /* LyraIcon-teal.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000016 /* LyraIcon-teal.icon */; };
+		IC0000000000000000000027 /* LyraIcon-yellow.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000017 /* LyraIcon-yellow.icon */; };
+		IC0000000000000000000028 /* LyraIcon-purple.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000018 /* LyraIcon-purple.icon */; };
+		IC0000000000000000000029 /* LyraIcon-lightgray.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000019 /* LyraIcon-lightgray.icon */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		A00000000000000000000002 /* LyraMusicHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LyraMusicHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00000000000000000000006 /* LyraMusicHostApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyraMusicHostApp.swift; sourceTree = "<group>"; };
 		A00000000000000000000007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		IC0000000000000000000010 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
+		IC0000000000000000000011 /* LyraIcon-blue.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "LyraIcon-blue.icon"; sourceTree = "<group>"; };
+		IC0000000000000000000012 /* LyraIcon-green.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "LyraIcon-green.icon"; sourceTree = "<group>"; };
+		IC0000000000000000000013 /* LyraIcon-orange.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "LyraIcon-orange.icon"; sourceTree = "<group>"; };
+		IC0000000000000000000014 /* LyraIcon-pink.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "LyraIcon-pink.icon"; sourceTree = "<group>"; };
+		IC0000000000000000000015 /* LyraIcon-indigo.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "LyraIcon-indigo.icon"; sourceTree = "<group>"; };
+		IC0000000000000000000016 /* LyraIcon-teal.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "LyraIcon-teal.icon"; sourceTree = "<group>"; };
+		IC0000000000000000000017 /* LyraIcon-yellow.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "LyraIcon-yellow.icon"; sourceTree = "<group>"; };
+		IC0000000000000000000018 /* LyraIcon-purple.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "LyraIcon-purple.icon"; sourceTree = "<group>"; };
+		IC0000000000000000000019 /* LyraIcon-lightgray.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "LyraIcon-lightgray.icon"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -28,10 +48,48 @@
 		};
 /* End PBXFrameworksBuildPhase section */
 
+/* Begin PBXResourcesBuildPhase section */
+		IC0000000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				IC0000000000000000000020 /* AppIcon.icon in Resources */,
+				IC0000000000000000000021 /* LyraIcon-blue.icon in Resources */,
+				IC0000000000000000000022 /* LyraIcon-green.icon in Resources */,
+				IC0000000000000000000023 /* LyraIcon-orange.icon in Resources */,
+				IC0000000000000000000024 /* LyraIcon-pink.icon in Resources */,
+				IC0000000000000000000025 /* LyraIcon-indigo.icon in Resources */,
+				IC0000000000000000000026 /* LyraIcon-teal.icon in Resources */,
+				IC0000000000000000000027 /* LyraIcon-yellow.icon in Resources */,
+				IC0000000000000000000028 /* LyraIcon-purple.icon in Resources */,
+				IC0000000000000000000029 /* LyraIcon-lightgray.icon in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
 /* Begin PBXGroup section */
+		IC0000000000000000000001 /* AppIcons */ = {
+			isa = PBXGroup;
+			children = (
+				IC0000000000000000000010 /* AppIcon.icon */,
+				IC0000000000000000000011 /* LyraIcon-blue.icon */,
+				IC0000000000000000000012 /* LyraIcon-green.icon */,
+				IC0000000000000000000013 /* LyraIcon-orange.icon */,
+				IC0000000000000000000014 /* LyraIcon-pink.icon */,
+				IC0000000000000000000015 /* LyraIcon-indigo.icon */,
+				IC0000000000000000000016 /* LyraIcon-teal.icon */,
+				IC0000000000000000000017 /* LyraIcon-yellow.icon */,
+				IC0000000000000000000018 /* LyraIcon-purple.icon */,
+				IC0000000000000000000019 /* LyraIcon-lightgray.icon */,
+			);
+			path = AppIcons;
+			sourceTree = "<group>";
+		};
 		A00000000000000000000003 /* LyraMusicHost */ = {
 			isa = PBXGroup;
 			children = (
+				IC0000000000000000000001 /* AppIcons */,
 				A00000000000000000000006 /* LyraMusicHostApp.swift */,
 				A00000000000000000000007 /* Info.plist */,
 			);
@@ -63,6 +121,7 @@
 			buildPhases = (
 				A00000000000000000000008 /* Sources */,
 				A00000000000000000000009 /* Frameworks */,
+				IC0000000000000000000002 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -150,7 +209,10 @@
 		A00000000000000000000200 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "LyraIcon-pink LyraIcon-orange LyraIcon-yellow LyraIcon-green LyraIcon-teal LyraIcon-blue LyraIcon-indigo LyraIcon-purple LyraIcon-lightgray";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
@@ -179,7 +241,10 @@
 		A00000000000000000000201 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "LyraIcon-pink LyraIcon-orange LyraIcon-yellow LyraIcon-green LyraIcon-teal LyraIcon-blue LyraIcon-indigo LyraIcon-purple LyraIcon-lightgray";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
