@@ -1145,15 +1145,13 @@ private struct LyricsFocusScrollView: View {
 
     private var activeIndex: Int {
         guard !lines.isEmpty else { return 0 }
-        var idx = 0
-        for (i, line) in lines.enumerated() {
-            if line.start <= currentTime + 0.08 {
-                idx = i
-            } else {
-                break
-            }
+        let t = currentTime + 0.08
+        var lo = 0, hi = lines.count - 1
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2
+            if lines[mid].start <= t { lo = mid } else { hi = mid - 1 }
         }
-        return idx
+        return lines[lo].start <= t ? lo : 0
     }
 
     private var scrollAnchor: UnitPoint { UnitPoint(x: 0.5, y: 0.38) }
