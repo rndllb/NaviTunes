@@ -18,24 +18,39 @@ public struct RootView: View {
     }
 }
 
+private enum AppTab: Hashable { case home, new, radio, library, search }
+
 private struct MainShellView: View {
     @EnvironmentObject private var app: AppModel
     @State private var showNowPlaying = false
+    @State private var selectedTab: AppTab = .home
+    @State private var isSwitchingTabs = false
 
     var body: some View {
         ZStack {
-            TabView {
-                Tab("Home", systemImage: "house.fill") { HomeView() }
-                Tab("New", systemImage: "square.grid.2x2.fill") { MusicNewTabView() }
-                Tab("Radio", systemImage: "dot.radiowaves.left.and.right") { RadioTabView() }
-                Tab("Library", systemImage: "music.note.list") { LibraryView() }
-                Tab(role: .search) { SearchLibraryView() }
+            TabView(selection: $selectedTab) {
+                Tab("Home", systemImage: "house.fill", value: AppTab.home) { HomeView() }
+                Tab("New", systemImage: "square.grid.2x2.fill", value: AppTab.new) { MusicNewTabView() }
+                Tab("Radio", systemImage: "dot.radiowaves.left.and.right", value: AppTab.radio) { RadioTabView() }
+                Tab("Library", systemImage: "music.note.list", value: AppTab.library) { LibraryView() }
+                Tab(value: AppTab.search, role: .search) { SearchLibraryView() }
             }
             .tint(MusicDesign.accent)
+            .onChange(of: selectedTab) { _, _ in
+                withAnimation(.interactiveSpring(response: 0.25, dampingFraction: 0.85)) {
+                    isSwitchingTabs = true
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                        isSwitchingTabs = false
+                    }
+                }
+            }
             .modifier(TabMiniPlayerShellModifier(
                 showNowPlaying: $showNowPlaying,
                 showMiniPlayer: app.player.activeTrack != nil,
-                player: app.player
+                player: app.player,
+                isSwitchingTabs: isSwitchingTabs
             ))
             .task {
                 await app.refreshLibraryAlbums()
@@ -158,12 +173,13 @@ private struct TabMiniPlayerShellModifier: ViewModifier {
     @Binding var showNowPlaying: Bool
     var showMiniPlayer: Bool
     var player: PlaybackEngine
+    var isSwitchingTabs: Bool
 
     func body(content: Content) -> some View {
         content
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if showMiniPlayer {
-                    MiniPlayerView(showNowPlaying: $showNowPlaying, player: player)
+                    MiniPlayerView(showNowPlaying: $showNowPlaying, player: player, isSwitchingTabs: isSwitchingTabs)
                         .padding(.horizontal, 24)
                         .padding(.top, 6)
                         .padding(.bottom, bottomPadding)
