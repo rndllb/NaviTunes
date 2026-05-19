@@ -17,9 +17,15 @@ struct LoginView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
+                    logoBlock
+                        .padding(.top, 36)
+                        .padding(.bottom, 28)
+
                     headerBlock
-                        .padding(.top, 52)
-                        .padding(.bottom, 32)
+                        .padding(.bottom, 24)
+
+                    appearanceBlock
+                        .padding(.bottom, 28)
 
                     serverTypePicker
                         .padding(.bottom, 18)
@@ -29,13 +35,13 @@ struct LoginView: View {
 
                     errorText
 
-                    loginButtonRow
+                    loginButton
                 }
                 .padding(.horizontal, 26)
                 .padding(.bottom, 44)
             }
         }
-        .id(app.accentPresetId)
+        .id("\(app.accentPresetId)-\(app.themePreference.rawValue)")
         .alert("Password help", isPresented: $forgotPasswordHint) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -112,12 +118,23 @@ struct LoginView: View {
             .blur(radius: 26)
     }
 
-    // MARK: - Header
+    // MARK: - Logo & header
+
+    private var logoBlock: some View {
+        VStack(spacing: 14) {
+            LyraAccentLogoView(accentPresetId: app.accentPresetId, size: 88, showsIconPlate: true)
+                .animation(.easeInOut(duration: 0.2), value: app.accentPresetId)
+            Text("Lyra Music")
+                .font(.title2.weight(.bold))
+                .foregroundStyle(primaryText)
+        }
+        .frame(maxWidth: .infinity)
+    }
 
     private var headerBlock: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Login")
-                .font(.system(size: 34, weight: .bold))
+                .font(.system(size: 28, weight: .bold))
                 .foregroundStyle(primaryText)
 
             Text("Please sign in to continue.")
@@ -125,6 +142,40 @@ struct LoginView: View {
                 .foregroundStyle(secondaryText)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var appearanceBlock: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 12) {
+                loginSectionLabel("THEME")
+                Picker("Theme", selection: $app.themePreference) {
+                    ForEach(AppThemePreference.allCases) { pref in
+                        Text(pref.title).tag(pref)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .tint(isDark ? MusicDesign.accent : nil)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                loginSectionLabel("ACCENT COLOR")
+                AccentColorPickerGrid(
+                    accentPresetId: $app.accentPresetId,
+                    showsLabels: false,
+                    swatchSize: 52,
+                    selectedLabelColor: primaryText,
+                    unselectedLabelColor: secondaryText,
+                )
+            }
+        }
+    }
+
+    private func loginSectionLabel(_ title: String) -> some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(captionText)
+            .tracking(0.6)
     }
 
     private var serverTypePicker: some View {
@@ -299,37 +350,34 @@ struct LoginView: View {
         )
     }
 
-    private var loginButtonRow: some View {
-        HStack {
-            Spacer(minLength: 0)
-            Button {
-                Task { await app.signIn() }
-            } label: {
-                HStack(spacing: 10) {
-                    if app.isAuthenticating {
-                        ProgressView()
-                            .tint(.white)
-                    }
-                    Text(app.isAuthenticating ? "SIGNING IN…" : "LOGIN")
-                        .font(.subheadline.weight(.bold))
-                        .tracking(1.1)
-                    if !app.isAuthenticating {
-                        Image(systemName: "arrow.right")
-                            .font(.system(size: 14, weight: .semibold))
-                    }
+    private var loginButton: some View {
+        Button {
+            Task { await app.signIn() }
+        } label: {
+            HStack(spacing: 10) {
+                if app.isAuthenticating {
+                    ProgressView()
+                        .tint(.white)
                 }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 30)
-                .padding(.vertical, 15)
-                .background(
-                    Capsule(style: .continuous)
-                        .fill(loginButtonGradient),
-                )
-                .shadow(color: MusicDesign.accent.opacity(isDark ? 0.45 : 0.35), radius: 14, x: 0, y: 8)
+                Text(app.isAuthenticating ? "SIGNING IN…" : "LOGIN")
+                    .font(.subheadline.weight(.bold))
+                    .tracking(1.1)
+                if !app.isAuthenticating {
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 14, weight: .semibold))
+                }
             }
-            .buttonStyle(.plain)
-            .disabled(app.isAuthenticating || app.baseURLString.isEmpty || app.username.isEmpty)
-            .opacity(app.isAuthenticating || app.baseURLString.isEmpty || app.username.isEmpty ? 0.42 : 1)
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(loginButtonGradient),
+            )
+            .shadow(color: MusicDesign.accent.opacity(isDark ? 0.45 : 0.35), radius: 14, x: 0, y: 8)
         }
+        .buttonStyle(.plain)
+        .disabled(app.isAuthenticating || app.baseURLString.isEmpty || app.username.isEmpty)
+        .opacity(app.isAuthenticating || app.baseURLString.isEmpty || app.username.isEmpty ? 0.42 : 1)
     }
 }

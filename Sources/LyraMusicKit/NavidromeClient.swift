@@ -214,6 +214,9 @@ final class NavidromeClient: MusicLibraryProviding {
         guard let artistsRoot = items["artists"] as? [String: Any] else {
             return []
         }
+        var out: [LibraryArtistSummary] = []
+        out.reserveCapacity(512)
+        appendLibraryArtists(from: artistsRoot["artist"], into: &out)
         let rawIndexes = artistsRoot["index"]
         let indexes: [[String: Any]]
         if let a = rawIndexes as? [[String: Any]] {
@@ -223,34 +226,68 @@ final class NavidromeClient: MusicLibraryProviding {
         } else {
             indexes = []
         }
-        var out: [LibraryArtistSummary] = []
-        out.reserveCapacity(512)
         for idx in indexes {
-            let rawArtists = idx["artist"]
-            let rows: [[String: Any]]
-            if let a = rawArtists as? [[String: Any]] {
-                rows = a
-            } else if let o = rawArtists as? [String: Any] {
-                rows = [o]
-            } else {
-                rows = []
-            }
-            for dict in rows {
-                guard let id = dict["id"] as? String, let name = dict["name"] as? String else { continue }
-                let art: URL?
-                if let urlStr = dict["artistImageUrl"] as? String, let u = URL(string: urlStr), u.scheme != nil {
-                    art = u
-                } else if let cover = dict["coverArt"] as? String {
-                    art = streamURLForCover(coverArt: cover)
-                } else {
-                    art = nil
-                }
-                out.append(LibraryArtistSummary(id: id, name: name, artworkURL: art))
-            }
+            appendLibraryArtists(from: idx["artist"], into: &out)
         }
         out.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         let cap = max(1, min(limit, 20_000))
         return Array(out.prefix(cap))
+    }
+
+    private func appendLibraryArtists(from raw: Any?, into out: inout [LibraryArtistSummary]) {
+        for dict in navidromeDictRows(raw) {
+            guard let id = navidromeCoerceString(dict["id"]),
+                  let name = navidromeCoerceString(dict["name"]),
+                  !name.isEmpty
+            else { continue }
+            let art: URL?
+            if let urlStr = navidromeCoerceString(dict["artistImageUrl"]),
+               let u = URL(string: urlStr),
+               u.scheme != nil {
+                art = u
+            } else if let cover = navidromeCoerceString(dict["coverArt"]) {
+                art = streamURLForCover(coverArt: cover)
+            } else {
+                art = nil
+            }
+            out.append(LibraryArtistSummary(id: id, name: name, artworkURL: art))
+        }
+    }
+
+    private func navidromeDictRows(_ raw: Any?) -> [[String: Any]] {
+        if let a = raw as? [[String: Any]] { return a }
+        if let o = raw as? [String: Any] { return [o] }
+        return []
+    }
+
+    private func countArtistsInLibraryIndex() async throws -> Int {
+        let items = try await subsonicRequest(path: "getArtists", query: [:])
+        guard let artistsRoot = items["artists"] as? [String: Any] else {
+            return 0
+        }
+        var count = 0
+        for dict in navidromeDictRows(artistsRoot["artist"]) {
+            if navidromeCoerceString(dict["id"]) != nil, navidromeCoerceString(dict["name"]) != nil {
+                count += 1
+            }
+        }
+        let rawIndexes = artistsRoot["index"]
+        let indexes: [[String: Any]]
+        if let a = rawIndexes as? [[String: Any]] {
+            indexes = a
+        } else if let o = rawIndexes as? [String: Any] {
+            indexes = [o]
+        } else {
+            indexes = []
+        }
+        for idx in indexes {
+            for dict in navidromeDictRows(idx["artist"]) {
+                if navidromeCoerceString(dict["id"]) != nil, navidromeCoerceString(dict["name"]) != nil {
+                    count += 1
+                }
+            }
+        }
+        return count
     }
 
     func libraryGenres(limit: Int) async throws -> [LibraryGenreSummary] {
@@ -347,7 +384,7 @@ final class NavidromeClient: MusicLibraryProviding {
     /// Approximate totals by fetching up to 50k rows per category (large libraries may plateau at the cap).
     func fetchApproximateLibraryStatistics() async throws -> LibraryStatistics {
         let cap = 50_000
-        async let artists = libraryArtists(limit: cap).count
+        async let artists = countArtistsInLibraryIndex()
         async let albumRows = albums(limit: cap)
         async let trackRows = allTracks(limit: cap)
         let (artistCount, albumsList, tracksList) = try await (artists, albumRows, trackRows)

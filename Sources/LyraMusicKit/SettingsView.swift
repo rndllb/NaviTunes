@@ -7,12 +7,13 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            userProfileSection
+            serverSection
             librarySection
             syncSection
             mediaQualitySection
             appearanceSection
             pluginsSection
-            accountSection
             aboutSection
         }
         .navigationTitle("Settings")
@@ -22,8 +23,84 @@ struct SettingsView: View {
         .background(MusicDesign.background)
         .musicNavigationChrome()
         .onAppear {
+            app.prefetchAccountAvatar()
             Task { await app.refreshServerConnectionHealth() }
         }
+    }
+
+    // MARK: - User profile
+
+    private var userProfileSection: some View {
+        Section {
+            VStack(spacing: 12) {
+                AccountProfileAvatarView(diameter: 88)
+
+                VStack(spacing: 4) {
+                    Text(profileDisplayName)
+                        .font(.title3.weight(.semibold))
+                    Text(profileRoleLine)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                if app.isSignedIn {
+                    connectionStatusPill
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+        }
+    }
+
+    private var profileDisplayName: String {
+        if app.isSignedIn {
+            let user = app.username.trimmingCharacters(in: .whitespacesAndNewlines)
+            return user.isEmpty ? "Signed in" : user
+        }
+        return "Guest"
+    }
+
+    private var profileRoleLine: String {
+        app.isSignedIn ? serverKindName : "Lyra Music"
+    }
+
+    private var trimmedServerURL: String {
+        app.baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var connectionStatusPill: some View {
+        HStack(spacing: 6) {
+            if app.serverConnectionHealth == .checking {
+                ProgressView()
+                    .scaleEffect(0.7)
+                    .tint(MusicDesign.accent)
+            } else {
+                Circle()
+                    .fill(serverHealthColor)
+                    .frame(width: 7, height: 7)
+            }
+            Text(connectionPillText)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Capsule(style: .continuous).fill(MusicDesign.chromeCapsuleFill))
+    }
+
+    private var connectionPillText: String {
+        let host = trimmedServerURL
+            .replacingOccurrences(of: "https://", with: "")
+            .replacingOccurrences(of: "http://", with: "")
+        let status = app.serverConnectionHealth.statusTitle
+        if host.isEmpty {
+            return "\(serverKindName) · \(status)"
+        }
+        return "\(serverKindName) · \(host) · \(status)"
     }
 
     // MARK: - Library
@@ -148,38 +225,8 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Accent Color")
                     .font(.subheadline.weight(.medium))
-
-                LazyVGrid(
-                    columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 5),
-                    spacing: 14
-                ) {
-                    ForEach(AppAccentPreset.presets) { preset in
-                        Button {
-                            app.accentPresetId = preset.id
-                        } label: {
-                            VStack(spacing: 6) {
-                                ZStack {
-                                    Circle()
-                                        .fill(preset.color)
-                                        .frame(width: 44, height: 44)
-                                    if app.accentPresetId == preset.id {
-                                        Circle()
-                                            .strokeBorder(.white, lineWidth: 2.5)
-                                            .frame(width: 44, height: 44)
-                                        Image(systemName: "checkmark")
-                                            .font(.system(size: 13, weight: .bold))
-                                            .foregroundStyle(.white)
-                                    }
-                                }
-                                Text(preset.name)
-                                    .font(.caption2)
-                                    .foregroundStyle(app.accentPresetId == preset.id ? .white : .secondary)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.vertical, 4)
+                AccentColorPickerGrid(accentPresetId: $app.accentPresetId)
+                    .padding(.vertical, 4)
             }
             .padding(.vertical, 8)
         } header: {
@@ -194,7 +241,7 @@ struct SettingsView: View {
             Toggle(isOn: $app.musicBrainzEnabled) {
                 pluginRow(
                     icon: "globe",
-                    iconColor: Color(red: 186/255, green: 90/255, blue: 0/255),
+                    iconColor: MusicDesign.accent,
                     title: "MusicBrainz",
                     subtitle: "Recent releases in New tab"
                 )
@@ -239,92 +286,79 @@ struct SettingsView: View {
         .padding(.vertical, 2)
     }
 
-    // MARK: - Account (server)
+    // MARK: - Server
 
-    private var accountSection: some View {
-        Section {
-            Picker("Server type", selection: $app.backendKind) {
-                Text("Jellyfin").tag(BackendKind.jellyfin)
-                Text("Navidrome").tag(BackendKind.navidrome)
+    private var serverSection: some View {
+        Group {
+            Section {
+                Picker("Server", selection: $app.backendKind) {
+                    Text("Jellyfin").tag(BackendKind.jellyfin)
+                    Text("Navidrome").tag(BackendKind.navidrome)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
             }
-            .tint(MusicDesign.accent)
 
-            TextField(
-                app.backendKind == .jellyfin ? "http://192.168.1.x:8096" : "http://192.168.1.x:4533",
-                text: $app.baseURLString
-            )
-            .textContentType(.URL)
-            .musicTextInputAutocapitalization(.never)
-            .autocorrectionDisabled()
+            Section {
+                TextField("Server URL", text: $app.baseURLString, prompt: Text(serverURLPlaceholder))
+                    .textContentType(.URL)
+                    .musicTextInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .keyboardType(.URL)
+                    #endif
 
-            TextField("Username", text: $app.username)
-                .textContentType(.username)
-                .musicTextInputAutocapitalization(.never)
-                .autocorrectionDisabled()
+                TextField("Username", text: $app.username)
+                    .textContentType(.username)
+                    .musicTextInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
 
-            SecureField("Password", text: $app.password)
-                .textContentType(.password)
+                SecureField("Password", text: $app.password)
+                    .textContentType(.password)
 
-            Button {
-                Task { await checkConnection() }
-            } label: {
-                HStack {
-                    if isCheckingConnection {
-                        ProgressView()
-                            .tint(MusicDesign.accent)
-                            .scaleEffect(0.8)
-                    } else if connectionSuccess {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                        Text("Connected")
-                    } else {
-                        Text("Check Connection")
+                Button {
+                    Task { await checkConnection() }
+                } label: {
+                    HStack {
+                        Spacer(minLength: 0)
+                        if isCheckingConnection {
+                            ProgressView()
+                                .tint(MusicDesign.accent)
+                        } else if connectionSuccess {
+                            Label("Connected", systemImage: "checkmark.circle.fill")
+                        } else {
+                            Text(app.isSignedIn ? "Update connection" : "Sign in")
+                        }
+                        Spacer(minLength: 0)
+                    }
+                }
+                .disabled(isCheckingConnection || trimmedServerURL.isEmpty || app.username.isEmpty)
+            } header: {
+                Text("Connection")
+            } footer: {
+                if let footer = serverSectionFooter {
+                    Text(footer)
+                        .foregroundStyle(serverFooterIsError ? .red : .secondary)
+                }
+            }
+
+            if app.isSignedIn {
+                Section {
+                    Button("Sign out", role: .destructive) {
+                        app.signOut()
                     }
                 }
             }
-            .disabled(isCheckingConnection || app.baseURLString.isEmpty || app.username.isEmpty)
-            .tint(MusicDesign.accent)
-
-            if app.isSignedIn {
-                serverConnectionRow
-
-                LabeledContent("Signed in as") {
-                    Text(app.activeLibrary?.displayName ?? app.username)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Button("Sign out", role: .destructive) {
-                app.signOut()
-            }
-        } header: {
-            Text("Account")
-        } footer: {
-            Text(accountSectionFooter)
-                .foregroundStyle(accountFooterIsError ? .red : .secondary)
         }
+    }
+
+    private var serverURLPlaceholder: String {
+        app.backendKind == .jellyfin ? "http://192.168.1.x:8096" : "http://192.168.1.x:4533"
     }
 
     private var serverKindName: String {
         app.backendKind == .jellyfin ? "Jellyfin" : "Navidrome"
-    }
-
-    private var serverConnectionRow: some View {
-        LabeledContent("Server") {
-            HStack(spacing: 8) {
-                if app.serverConnectionHealth == .checking {
-                    ProgressView()
-                        .tint(MusicDesign.accent)
-                        .scaleEffect(0.75)
-                } else {
-                    Circle()
-                        .fill(serverHealthColor)
-                        .frame(width: 8, height: 8)
-                }
-                Text(app.serverConnectionHealth.statusTitle)
-                    .foregroundStyle(.secondary)
-            }
-        }
     }
 
     private var serverHealthColor: Color {
@@ -335,19 +369,18 @@ struct SettingsView: View {
         }
     }
 
-    private var accountSectionFooter: String {
-        if app.isSignedIn {
-            return app.serverConnectionHealth.detailText(serverName: serverKindName)
-        }
-        if let err = app.errorMessage, !err.isEmpty {
+    private var serverSectionFooter: String? {
+        if let err = app.errorMessage, !err.isEmpty, !app.isSignedIn {
             return err
         }
-        return app.backendKind == .jellyfin
-            ? "Jellyfin is a free, open-source media server. Point Lyra at your server's base URL to stream your music library."
-            : "Navidrome is an open-source Subsonic-compatible music server. Enter the base URL where your Navidrome instance is running."
+        if app.isSignedIn {
+            let detail = app.serverConnectionHealth.detailText(serverName: serverKindName)
+            return detail.isEmpty ? nil : detail
+        }
+        return "Use your Jellyfin or Navidrome address and account credentials."
     }
 
-    private var accountFooterIsError: Bool {
+    private var serverFooterIsError: Bool {
         !app.isSignedIn && app.errorMessage != nil
     }
 
