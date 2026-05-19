@@ -503,17 +503,19 @@ final class PlaybackEngine: NSObject, ObservableObject {
         observeBudget: Duration,
         expectedPosition: TimeInterval = 0,
     ) async -> Bool {
-        let minProgress = expectedPosition > 1 ? expectedPosition * 0.45 : 0.08
+        let minProgress = expectedPosition > 1 ? expectedPosition * 0.45 : 0.05
         let deadline = ContinuousClock.now + observeBudget
         while ContinuousClock.now < deadline {
             if item.status == .failed { return true }
             if item.error != nil { return true }
-            if let log = item.errorLog() {
-                for ev in log.events where ev.errorStatusCode != 0 { return true }
+            if item.isPlaybackLikelyToKeepUp || item.isPlaybackBufferFull {
+                return false
             }
             if let p = player {
+                if p.timeControlStatus == .playing { return false }
                 let t = p.currentTime().seconds
                 if t.isFinite, t >= minProgress { return false }
+                if p.rate > 0.01, t.isFinite, t >= 0.01 { return false }
             }
             try? await Task.sleep(for: .milliseconds(95))
         }
@@ -536,9 +538,15 @@ final class PlaybackEngine: NSObject, ObservableObject {
         }
         if let library {
             let serverHeaders = library.httpHeadersForMediaRequests()
-            appendUnique(try library.streamURL(for: track), serverHeaders)
-            for u in library.fallbackStreamURLs(for: track) {
-                appendUnique(u, serverHeaders)
+            if let jellyfin = library as? JellyfinMusicClient {
+                for u in jellyfin.allStreamingURLs(for: track) {
+                    appendUnique(u, serverHeaders)
+                }
+            } else {
+                appendUnique(try library.streamURL(for: track), serverHeaders)
+                for u in library.fallbackStreamURLs(for: track) {
+                    appendUnique(u, serverHeaders)
+                }
             }
         }
         guard !candidates.isEmpty else {
@@ -584,7 +592,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         if candidate.url.isFileURL {
             p.automaticallyWaitsToMinimizeStalling = false
         }
-        try await waitForPlayerItemReady(item, timeout: .seconds(16))
+        try await waitForPlayerItemReady(item, timeout: candidate.url.isFileURL ? .seconds(12) : .seconds(22))
         if resolvedDuration <= 0 {
             let fromAsset = await LocalMediaDuration.seconds(asset: asset)
             if fromAsset > 0 { resolvedDuration = fromAsset }
@@ -601,7 +609,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
         p.play()
         isPlaying = true
 
-        let readyBudget: Duration = startSeconds > 1 ? .seconds(5) : .seconds(3)
+        let readyBudget: Duration = candidate.url.isFileURL
+            ? (startSeconds > 1 ? .seconds(4) : .seconds(2))
+            : (startSeconds > 1 ? .seconds(12) : .seconds(10))
         if await playbackFailedAfterReady(
             item: item,
             observeBudget: readyBudget,

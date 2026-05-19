@@ -19,11 +19,9 @@ private enum NowPlayingLibraryRoute: Hashable {
 /// Apple Music–style Now Playing: artwork-derived backdrop + luminance handoff (same as album detail).
 struct NowPlayingView: View {
     @EnvironmentObject private var app: AppModel
-    @Binding var isPresented: Bool
     @State private var showLyrics = false
     @State private var showQueue = false
     @State private var libraryPath = NavigationPath()
-    @State private var dismissDragOffset: CGFloat = 0
 
     /// Paused — baseline artwork size.
     private let albumArtPausedSide: CGFloat = 256
@@ -178,35 +176,9 @@ struct NowPlayingView: View {
                 await MainActor.run { backdropPalette = p }
             }
         }
-        .offset(y: max(0, dismissDragOffset))
         .onAppear {
-            dismissDragOffset = 0
             app.player.reconcilePlaybackSessionAfterUIMilestone()
         }
-    }
-
-    private var dismissDragGesture: some Gesture {
-        DragGesture()
-            .onChanged { value in
-                if value.translation.height > 0 {
-                    dismissDragOffset = value.translation.height
-                }
-            }
-            .onEnded { value in
-                let velocity = value.predictedEndTranslation.height
-                if dismissDragOffset > 160 || velocity > 400 {
-                    withAnimation(.easeIn(duration: 0.22)) {
-                        dismissDragOffset = 1200
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
-                        withAnimation(.none) { isPresented = false }
-                    }
-                } else {
-                    withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) {
-                        dismissDragOffset = 0
-                    }
-                }
-            }
     }
 
     private var chromeBackground: some View {
@@ -574,8 +546,6 @@ struct NowPlayingView: View {
             .padding(.bottom, 6)
             .frame(maxWidth: .infinity)
             .frame(height: 44)
-            .contentShape(Rectangle())
-            .gesture(showQueue ? nil : dismissDragGesture)
     }
 
     private func bottomChromeIconButton(

@@ -375,6 +375,23 @@ final class NavidromeClient: MusicLibraryProviding {
         try buildURL(path: "stream", query: ["id": track.id, "maxBitRate": "\(streamingMaxBitRate)"])
     }
 
+    func fallbackStreamURLs(for track: Track) -> [URL] {
+        var urls: [URL] = []
+        if let mp3 = try? buildURL(
+            path: "stream",
+            query: ["id": track.id, "format": "mp3", "maxBitRate": "\(streamingMaxBitRate)"],
+        ) {
+            urls.append(mp3)
+        }
+        if let aac = try? buildURL(
+            path: "stream",
+            query: ["id": track.id, "format": "aac", "maxBitRate": "\(streamingMaxBitRate)"],
+        ) {
+            urls.append(aac)
+        }
+        return urls
+    }
+
     func offlineDownloadURL(for track: Track) throws -> URL {
         // Request MP3 explicitly so the saved file is always AVPlayer-compatible,
         // regardless of the source format (OGG, Opus, etc.).

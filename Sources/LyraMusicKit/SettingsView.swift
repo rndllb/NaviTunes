@@ -4,6 +4,7 @@ struct SettingsView: View {
     @EnvironmentObject private var app: AppModel
     @State private var isCheckingConnection = false
     @State private var connectionSuccess = false
+    @State private var serverDraft = ServerConnectionDraft()
 
     var body: some View {
         Form {
@@ -23,8 +24,12 @@ struct SettingsView: View {
         .background(MusicDesign.background)
         .musicNavigationChrome()
         .onAppear {
+            SettingsFormDrafts.pullServer(from: app, into: &serverDraft)
             app.prefetchAccountAvatar()
             Task { await app.refreshServerConnectionHealth() }
+        }
+        .onChange(of: app.isSignedIn) { _, _ in
+            SettingsFormDrafts.pullServer(from: app, into: &serverDraft)
         }
     }
 
@@ -301,7 +306,7 @@ struct SettingsView: View {
             }
 
             Section {
-                TextField("Server URL", text: $app.baseURLString, prompt: Text(serverURLPlaceholder))
+                TextField("Server URL", text: $serverDraft.baseURL, prompt: Text(serverURLPlaceholder))
                     .textContentType(.URL)
                     .musicTextInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -309,12 +314,12 @@ struct SettingsView: View {
                     .keyboardType(.URL)
                     #endif
 
-                TextField("Username", text: $app.username)
+                TextField("Username", text: $serverDraft.username)
                     .textContentType(.username)
                     .musicTextInputAutocapitalization(.never)
                     .autocorrectionDisabled()
 
-                SecureField("Password", text: $app.password)
+                SecureField("Password", text: $serverDraft.password)
                     .textContentType(.password)
 
                 Button {
@@ -333,7 +338,11 @@ struct SettingsView: View {
                         Spacer(minLength: 0)
                     }
                 }
-                .disabled(isCheckingConnection || trimmedServerURL.isEmpty || app.username.isEmpty)
+                .disabled(
+                    isCheckingConnection
+                        || serverDraft.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || serverDraft.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                )
             } header: {
                 Text("Connection")
             } footer: {
@@ -385,6 +394,7 @@ struct SettingsView: View {
     }
 
     private func checkConnection() async {
+        SettingsFormDrafts.pushServer(serverDraft, to: app)
         isCheckingConnection = true
         connectionSuccess = false
         defer { isCheckingConnection = false }
@@ -410,6 +420,7 @@ struct SettingsView: View {
 
 private struct DowntifyPluginView: View {
     @EnvironmentObject private var app: AppModel
+    @State private var baseURLDraft = ""
 
     var body: some View {
         Form {
@@ -422,12 +433,13 @@ private struct DowntifyPluginView: View {
             }
 
             Section("Server URL") {
-                TextField("http://192.168.1.x:8582", text: $app.downtifyBaseURLString)
+                TextField("http://192.168.1.x:8582", text: $baseURLDraft)
                     .textContentType(.URL)
                     .musicTextInputAutocapitalization(.never)
                     .autocorrectionDisabled()
 
                 Button("Save") {
+                    app.downtifyBaseURLString = baseURLDraft
                     app.saveDowntifyURL()
                 }
                 .tint(MusicDesign.accent)
@@ -435,15 +447,19 @@ private struct DowntifyPluginView: View {
                 if app.downtifyConfigured {
                     Button("Disconnect", role: .destructive) {
                         app.disconnectDowntify()
+                        baseURLDraft = ""
                     }
                 }
             }
 
             Section {
-                Text("Requests open a search sheet at \(app.downtifyBaseURLString.isEmpty ? "<base URL>" : app.downtifyBaseURLString)/search/<query>.")
+                Text(downtifyFooterText)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+        }
+        .onAppear {
+            baseURLDraft = app.downtifyBaseURLString
         }
         .navigationTitle("Downtify")
         .musicNavigationBarTitleDisplayMode(.inline)
@@ -451,5 +467,13 @@ private struct DowntifyPluginView: View {
         .scrollContentBackground(.hidden)
         .background(MusicDesign.background)
         .musicNavigationChrome()
+    }
+
+    private var downtifyFooterText: String {
+        let base = app.downtifyBaseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        if base.isEmpty {
+            return "Requests open a search sheet at <base URL>/search/<query> after you save."
+        }
+        return "Requests open a search sheet at \(base)/search/<query>."
     }
 }
