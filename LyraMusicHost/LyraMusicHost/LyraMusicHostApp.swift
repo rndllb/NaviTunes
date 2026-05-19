@@ -20,6 +20,7 @@ struct LyraMusicHostApp: App {
                     switch phase {
                     case .inactive, .background:
                         appModel.syncHomeScreenIconForAccentIfNeeded()
+                        appModel.persistPlaybackQueue()
                     default:
                         break
                     }

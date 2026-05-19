@@ -14,6 +14,7 @@ struct MiniPlayerView: View {
     @ObservedObject private var player: PlaybackEngine
     @Binding private var showNowPlaying: Bool
     @GestureState private var isDragging = false
+    @State private var horizontalDragOffset: CGFloat = 0
     var layout: MiniPlayerLayout = .standalone
 
     init(showNowPlaying: Binding<Bool>, player: PlaybackEngine, layout: MiniPlayerLayout = .standalone) {
@@ -35,17 +36,42 @@ struct MiniPlayerView: View {
                 }
             }
             .scaleEffect(isDragging ? 0.97 : 1.0)
+            .offset(x: horizontalDragOffset)
             .animation(.spring(response: 0.3, dampingFraction: 0.65), value: isDragging)
+            .animation(.spring(response: 0.28, dampingFraction: 0.78), value: horizontalDragOffset)
             .simultaneousGesture(
                 DragGesture(minimumDistance: 20)
                     .updating($isDragging) { _, state, _ in state = true }
+                    .onChanged { value in
+                        let dx = value.translation.width
+                        let dy = value.translation.height
+                        guard abs(dx) > abs(dy) else { return }
+                        horizontalDragOffset = max(-28, min(28, dx * 0.18))
+                    }
                     .onEnded { value in
-                        let isUpwardSwipe = value.translation.height < -40
-                            && abs(value.translation.height) > abs(value.translation.width)
+                        let dx = value.translation.width
+                        let dy = value.translation.height
+                        let predictedDx = value.predictedEndTranslation.width
+                        let isHorizontalSwipe = (abs(dx) > 45 && abs(dx) > abs(dy))
+                            || (abs(predictedDx) > 120
+                                && abs(predictedDx) > abs(value.predictedEndTranslation.height))
+                        let isUpwardSwipe = dy < -40
+                            && abs(dy) > abs(dx)
+
+                        if isHorizontalSwipe {
+                            if dx < 0 || predictedDx < -120 {
+                                player.skipNext()
+                            } else {
+                                player.skipPrevious()
+                            }
+                        }
+
                         if isUpwardSwipe {
                             player.reconcilePlaybackSessionAfterUIMilestone()
                             showNowPlaying = true
                         }
+
+                        horizontalDragOffset = 0
                     }
             )
         }

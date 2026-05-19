@@ -201,27 +201,36 @@ private struct NowPlayingGestureHost: View {
     @State private var dragOffset: CGFloat = 0
     @State private var libraryNavigationDepth = 0
 
+    /// 0…1 progress driving the Apple Music–style scale + corner-radius reveal.
+    private var dragProgress: CGFloat {
+        guard dragOffset > 0 else { return 0 }
+        return min(dragOffset / 360, 1)
+    }
+
     var body: some View {
         NowPlayingView { depth in
             libraryNavigationDepth = depth
         }
             .environmentObject(app)
             .environmentObject(app.offline)
+            .scaleEffect(1 - dragProgress * 0.06, anchor: .center)
+            .clipShape(RoundedRectangle(cornerRadius: dragProgress * 28, style: .continuous))
             .offset(y: max(0, dragOffset))
             .gesture(
-                DragGesture(minimumDistance: 5)
+                DragGesture(minimumDistance: 18)
                     .onChanged { value in
                         guard libraryNavigationDepth == 0 else { return }
-                        if value.translation.height > 0 {
-                            dragOffset = value.translation.height
-                        }
+                        let dy = value.translation.height
+                        let dx = value.translation.width
+                        guard dy > 0, abs(dy) > abs(dx) else { return }
+                        dragOffset = dy
                     }
                     .onEnded { value in
-                        guard libraryNavigationDepth == 0 else {
-                            dragOffset = 0
-                            return
-                        }
-                        if value.translation.height > 150 || value.predictedEndTranslation.height > 250 {
+                        let dy = value.translation.height
+                        let predictedDy = value.predictedEndTranslation.height
+                        let shouldDismiss = libraryNavigationDepth == 0
+                            && (dy > 140 || predictedDy > 280)
+                        if shouldDismiss {
                             isPresented = false
                         } else {
                             withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {

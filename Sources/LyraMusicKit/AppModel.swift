@@ -22,6 +22,28 @@ enum NewTabBrowseBackend: Equatable {
     case musicBrainz
 }
 
+/// On-disk record of a recently-played item. Plays sourced from a playlist record the playlist;
+/// everything else falls back to the track's album so the Home shelf still has something to show.
+struct RecentPlayedEntry: Codable, Hashable {
+    enum Kind: String, Codable { case album, playlist }
+    let kind: Kind
+    let id: String
+}
+
+/// UI-side resolved version of ``RecentPlayedEntry`` — the actual `AlbumSummary` or `PlaylistSummary`
+/// pulled from the in-memory library catalog so the Home shelf can render the right tile.
+enum RecentPlayedItem: Identifiable, Hashable {
+    case album(AlbumSummary)
+    case playlist(PlaylistSummary)
+
+    var id: String {
+        switch self {
+        case .album(let a): return "album:\(a.id)"
+        case .playlist(let p): return "playlist:\(p.id)"
+        }
+    }
+}
+
 @MainActor
 public final class AppModel: ObservableObject {
     /// Default album fetch size for library grid / sync (raised for large Jellyfin / Navidrome libraries).
@@ -54,8 +76,21 @@ public final class AppModel: ObservableObject {
         didSet { rebuildLibraryAlbumIndex() }
     }
     @Published private(set) var recentlyAddedAlbums: [AlbumSummary] = []
-    @Published private(set) var homeRecentlyPlayed: [AlbumSummary] = []
+    /// Backend-side play history (Jellyfin `DatePlayed`, Subsonic `getAlbumList2?type=recent`).
+    /// Stored separately from the local list so the merged Home shelf can update live as either side changes.
+    @Published private(set) var homeRecentlyPlayedServerAlbums: [AlbumSummary] = []
     @Published private(set) var homeGenreShelves: [(genre: String, albums: [AlbumSummary])] = []
+
+    /// Live merge of the local play log and the server's recently-played albums. Recomputed every
+    /// SwiftUI evaluation, so the Home shelf reflects new scrobbles or a late-arriving playlist sync
+    /// without waiting for the next `refreshHome()` pass.
+    var homeRecentlyPlayed: [RecentPlayedItem] {
+        let local = localRecentlyPlayed(limit: 24)
+        let server = homeRecentlyPlayedServerAlbums.map(RecentPlayedItem.album)
+        var seen = Set<String>()
+        let merged = (local + server).filter { seen.insert($0.id).inserted }
+        return Array(merged.prefix(12))
+    }
     @Published private(set) var libraryAlbumsLoadError: String?
 
     /// Normalized track titles → normalized artist strings (for Downtify vs library matching).
@@ -85,6 +120,15 @@ public final class AppModel: ObservableObject {
 
     private static let favoriteTrackIdsKey = "LyraMusic.favoriteTrackIds"
     @Published private(set) var favoriteTrackIds: Set<String> = []
+
+    /// Local "recently played" history (mix of playlist + album entries) so Home can show a
+    /// Recently Played shelf even when the backend doesn't expose play history. Newest first.
+    /// Persisted in UserDefaults as JSON.
+    private static let recentlyPlayedEntriesKey = "LyraMusic.recentlyPlayedEntries"
+    /// Legacy key (album ids only) — read once on launch and migrated into ``recentlyPlayedEntries``.
+    private static let recentlyPlayedAlbumIdsKey = "LyraMusic.recentlyPlayedAlbumIds"
+    private static let recentlyPlayedEntriesLimit = 50
+    @Published private(set) var recentlyPlayedEntries: [RecentPlayedEntry] = []
 
     /// Jellyfin / Navidrome playlists (excludes in-app “Favorite Songs”).
     @Published private(set) var libraryPlaylists: [PlaylistSummary] = []
@@ -271,6 +315,47 @@ public final class AppModel: ObservableObject {
         startNetworkMonitor()
         loadKeychain()
         loadFavoriteTrackIdsFromDefaults()
+        loadRecentlyPlayedEntriesFromDefaults()
+        player.onTrackScrobbled = { [weak self] track, source in
+            Task { @MainActor in
+                self?.recordRecentPlay(track: track, source: source)
+            }
+        }
+        installPlaybackQueueAutosave()
+    }
+
+    /// Saves the playback queue snapshot ~1s after the queue, current track, or transport modes
+    /// change. Position is captured on-demand from the live AVPlayer at save time. Scene-phase
+    /// transitions in `LyraMusicHostApp` flush a snapshot immediately via ``persistPlaybackQueue()``.
+    private func installPlaybackQueueAutosave() {
+        let triggers = Publishers.MergeMany(
+            player.$queue.map { _ in () }.eraseToAnyPublisher(),
+            player.$currentIndex.map { _ in () }.eraseToAnyPublisher(),
+            player.$shuffleMode.map { _ in () }.eraseToAnyPublisher(),
+            player.$repeatMode.map { _ in () }.eraseToAnyPublisher(),
+        )
+        triggers
+            .debounce(for: .milliseconds(1000), scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in self?.persistPlaybackQueue() }
+            .store(in: &cancellables)
+    }
+
+    /// Writes the current playback queue snapshot to disk (or clears it when nothing is queued).
+    /// Safe to call frequently — the underlying file write is atomic and cheap.
+    public func persistPlaybackQueue() {
+        guard isSignedIn else { return }
+        if let snap = player.currentSnapshot() {
+            PlaybackQueueStore.save(snap)
+        } else {
+            PlaybackQueueStore.clear()
+        }
+    }
+
+    /// Restores the saved queue (paused) so the user can pick up where they left off.
+    /// Called from the keychain-session restore path after the active backend client is wired up.
+    private func restorePlaybackQueueFromDisk() {
+        guard let snap = PlaybackQueueStore.load() else { return }
+        player.restore(library: activeLibrary, snapshot: snap)
     }
 
     /// Updates the home screen icon when it does not match the current accent (iOS shows its OK alert on change).
@@ -395,8 +480,11 @@ public final class AppModel: ObservableObject {
         isSignedIn = false
         libraryAlbums = []
         recentlyAddedAlbums = []
-        homeRecentlyPlayed = []
+        homeRecentlyPlayedServerAlbums = []
         homeGenreShelves = []
+        recentlyPlayedEntries = []
+        UserDefaults.standard.removeObject(forKey: Self.recentlyPlayedEntriesKey)
+        UserDefaults.standard.removeObject(forKey: Self.recentlyPlayedAlbumIdsKey)
         libraryAlbumsLoadError = nil
         lfmTopTracks = []
         lfmTopAlbums = []
@@ -419,6 +507,7 @@ public final class AppModel: ObservableObject {
         lastLibrarySyncAt = nil
         UserDefaults.standard.removeObject(forKey: Self.lastLibrarySyncAtKey)
         LibrarySnapshotStore.clear()
+        PlaybackQueueStore.clear()
         hasInternetPath = true
         serverConnectionHealth = .unknown
     }
@@ -533,7 +622,7 @@ public final class AppModel: ObservableObject {
         async let played = (try? await lib.recentlyPlayed(limit: 12)) ?? []
         async let genres = (try? await lib.libraryGenres(limit: 20)) ?? []
         let (playedResult, genresResult) = await (played, genres)
-        homeRecentlyPlayed = playedResult
+        homeRecentlyPlayedServerAlbums = playedResult
         let pickedGenres = Array(genresResult.prefix(4))
         let shelves = await withTaskGroup(of: (genre: String, albums: [AlbumSummary])?.self) { group in
             for g in pickedGenres {
@@ -679,23 +768,30 @@ public final class AppModel: ObservableObject {
     }
 
     func removePlaylistRow(playlistId: String, row: PlaylistRowItem) async throws {
+        try await removePlaylistRows(playlistId: playlistId, rows: [row])
+    }
+
+    func removePlaylistRows(playlistId: String, rows: [PlaylistRowItem]) async throws {
+        guard !rows.isEmpty else { return }
         switch backendKind {
         case .jellyfin:
             guard let client = jellyfin else {
                 throw URLError(.userAuthenticationRequired)
             }
-            guard let entry = row.jellyfinEntryId else {
+            let entries = rows.compactMap(\.jellyfinEntryId)
+            guard entries.count == rows.count else {
                 throw NSError(domain: "LyraMusic", code: 0, userInfo: [NSLocalizedDescriptionKey: "Missing playlist entry id."])
             }
-            try await client.removeTracksFromPlaylist(playlistId: playlistId, entryIds: [entry])
+            try await client.removeTracksFromPlaylist(playlistId: playlistId, entryIds: entries)
         case .navidrome:
             guard let client = navidrome else {
                 throw URLError(.userAuthenticationRequired)
             }
-            guard let idx = row.navidromeIndex else {
+            let indexes = rows.compactMap(\.navidromeIndex)
+            guard indexes.count == rows.count else {
                 throw NSError(domain: "LyraMusic", code: 0, userInfo: [NSLocalizedDescriptionKey: "Missing playlist index."])
             }
-            try await client.removeTracksFromPlaylist(playlistId: playlistId, indexes: [idx])
+            try await client.removeTracksFromPlaylist(playlistId: playlistId, indexes: indexes)
         }
         await refreshLibraryPlaylists()
     }
@@ -971,6 +1067,71 @@ public final class AppModel: ObservableObject {
         favoriteTrackIds = Set(UserDefaults.standard.stringArray(forKey: Self.favoriteTrackIdsKey) ?? [])
     }
 
+    private func loadRecentlyPlayedEntriesFromDefaults() {
+        let defaults = UserDefaults.standard
+        if let data = defaults.data(forKey: Self.recentlyPlayedEntriesKey),
+           let decoded = try? JSONDecoder().decode([RecentPlayedEntry].self, from: data) {
+            recentlyPlayedEntries = decoded
+            return
+        }
+        // Migrate the legacy album-only string array, then drop the old key.
+        if let legacy = defaults.stringArray(forKey: Self.recentlyPlayedAlbumIdsKey), !legacy.isEmpty {
+            let migrated = legacy.map { RecentPlayedEntry(kind: .album, id: $0) }
+            recentlyPlayedEntries = migrated
+            saveRecentlyPlayedEntriesToDefaults()
+            defaults.removeObject(forKey: Self.recentlyPlayedAlbumIdsKey)
+        }
+    }
+
+    private func saveRecentlyPlayedEntriesToDefaults() {
+        let defaults = UserDefaults.standard
+        guard let data = try? JSONEncoder().encode(recentlyPlayedEntries) else { return }
+        defaults.set(data, forKey: Self.recentlyPlayedEntriesKey)
+    }
+
+    /// Records that the user played a track. Plays sourced from a playlist record the playlist;
+    /// ad-hoc/album queues fall back to the track's album. Called by `PlaybackEngine` once per
+    /// track when scrobble fires (so a brief preview play doesn't pollute the shelf).
+    func recordRecentPlay(track: Track, source: PlaybackSource?) {
+        let entry: RecentPlayedEntry
+        switch source {
+        case .playlist(let playlist):
+            let id = playlist.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty else { return }
+            entry = RecentPlayedEntry(kind: .playlist, id: id)
+        case .none:
+            let id = track.albumId.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty else { return }
+            entry = RecentPlayedEntry(kind: .album, id: id)
+        }
+        var next = recentlyPlayedEntries.filter { $0 != entry }
+        next.insert(entry, at: 0)
+        if next.count > Self.recentlyPlayedEntriesLimit {
+            next = Array(next.prefix(Self.recentlyPlayedEntriesLimit))
+        }
+        recentlyPlayedEntries = next
+        saveRecentlyPlayedEntriesToDefaults()
+    }
+
+    /// Resolves the local recently-played list against the in-memory library / playlist catalogs.
+    /// Used as a fallback when the backend's `recentlyPlayed` endpoint returns nothing.
+    func localRecentlyPlayed(limit: Int = 12) -> [RecentPlayedItem] {
+        let albumsById = libraryAlbumsById
+        let playlistsById = Dictionary(uniqueKeysWithValues: libraryPlaylists.map { ($0.id, $0) })
+        var out: [RecentPlayedItem] = []
+        out.reserveCapacity(limit)
+        for entry in recentlyPlayedEntries {
+            switch entry.kind {
+            case .album:
+                if let album = albumsById[entry.id] { out.append(.album(album)) }
+            case .playlist:
+                if let playlist = playlistsById[entry.id] { out.append(.playlist(playlist)) }
+            }
+            if out.count >= limit { break }
+        }
+        return out
+    }
+
     // MARK: - Settings persistence, quality, sync, EQ
 
     private func loadPersistedSettings() {
@@ -1160,6 +1321,7 @@ public final class AppModel: ObservableObject {
                 prefetchAccountAvatar()
                 pushQualitySettingsToClients()
                 restoreLibraryFromDisk()
+                restorePlaybackQueueFromDisk()
                 serverConnectionHealth = .unknown
                 Task { await Self.registerMediaAuthHeaders(host: j.base.host, headers: client.httpHeadersForMediaRequests()) }
             }
@@ -1181,6 +1343,7 @@ public final class AppModel: ObservableObject {
                 updateDeleteCapability()
                 prefetchAccountAvatar()
                 restoreLibraryFromDisk()
+                restorePlaybackQueueFromDisk()
                 serverConnectionHealth = .unknown
             }
             Task { await reconcileRestoredSession(hasRestoredToken: hasCredentials) }

@@ -7,7 +7,7 @@ import UIKit
 #endif
 
 private enum NowPlayingScrubberMetrics {
-    static let slotHeight: CGFloat = 18
+    static let slotHeight: CGFloat = 22
     static let barHeight: CGFloat = MusicDesign.nowPlayingSliderTrackHeight
 }
 
@@ -24,7 +24,17 @@ struct NowPlayingView: View {
     @State private var showQueue = false
     @State private var libraryPath: [NowPlayingLibraryRoute] = []
     @State private var selectedPlaylist: PlaylistSummary?
+    /// Which of the three paged queue sections is currently snapped. Drives the
+    /// inter-section haptic so each swipe-and-snap fires its own impact, and
+    /// reaching the boundary the user is swiping toward requires a second swipe.
+    @State private var queueScrollAnchor: QueueScrollAnchor? = .nowPlayingHeader
+    @State private var lastQueueHapticAnchor: QueueScrollAnchor? = .nowPlayingHeader
+    @Namespace private var artworkNamespace
     var onLibraryNavigationDepthChanged: ((Int) -> Void)? = nil
+
+    private enum QueueScrollAnchor: Hashable {
+        case historyTop, nowPlayingHeader, upNextTop
+    }
 
     /// Paused — baseline artwork size.
     private let albumArtPausedSide: CGFloat = 256
@@ -135,15 +145,19 @@ struct NowPlayingView: View {
             VStack(spacing: 0) {
                 dragIndicator
 
-
                 if let track = app.player.activeTrack {
-                    if showQueue {
-                        queuePanel(track: track)
-                    } else if showLyrics {
-                        lyricsPanel(track: track)
-                    } else {
-                        standardNowPlayingPanel(track: track)
+                    Group {
+                        if showLyrics {
+                            lyricsScrollContent(track: track)
+                        } else if showQueue {
+                            queueScrollContent(track: track)
+                        } else {
+                            standardPlayerContent(track: track)
+                        }
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    pinnedBottomChrome(track: track)
                 } else {
                     VStack {
                         ContentUnavailableView("Nothing playing", systemImage: "music.note")
@@ -225,36 +239,26 @@ struct NowPlayingView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func standardNowPlayingPanel(track: Track) -> some View {
+    // MARK: - Standard player content (default mode)
+
+    /// Default mode — large artwork + metadata, no internal scroll.
+    private func standardPlayerContent(track: Track) -> some View {
         VStack(spacing: 0) {
             albumBlock(track: track)
+                .matchedGeometryEffect(id: "nowPlayingArtwork", in: artworkNamespace)
 
             metadataRow(track: track)
                 .padding(.horizontal, 24)
                 .padding(.top, 20)
                 .padding(.bottom, 22)
 
-            progressBlock(track: track)
-                .padding(.horizontal, 24)
-                .padding(.top, 14)
-                .padding(.bottom, 8)
-
-            VStack(spacing: 0) {
-                Spacer(minLength: 0)
-                transportRow
-                    .padding(.horizontal, 20)
-                NowPlayingVolumeRow(backdropPalette: backdropPalette)
-                    .padding(.top, 32)
-                nowPlayingBottomChrome
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    // MARK: - Lyrics panel (Apple Music–style focus scroll)
-
-    private func lyricsPanel(track: Track) -> some View {
+    /// Lyrics + lyric scroll area, sized to fill the space above the pinned chrome.
+    private func lyricsScrollContent(track: Track) -> some View {
         VStack(spacing: 0) {
             lyricsCompactHeader(track: track)
                 .padding(.horizontal, 20)
@@ -268,23 +272,242 @@ struct NowPlayingView: View {
                 secondaryColor: fgSecondary,
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
 
+    // MARK: - Queue scroll content (triggered by the queue button)
+
+    /// Paged scroll with three full-height sections: History (above), Now Playing
+    /// (initial center page), Up Next (below). `.scrollTargetBehavior(.paging)`
+    /// enforces one snap per gesture, so swiping past the now-playing boundary
+    /// requires a second deliberate swipe to reach history / up-next — and a
+    /// medium haptic fires at each snap.
+    private func queueScrollContent(track: Track) -> some View {
+        let upNext = Array(app.player.queue.dropFirst(app.player.currentIndex + 1))
+        let history = app.localRecentlyPlayed(limit: 50)
+
+        return ScrollView(.vertical, showsIndicators: false) {
+            LazyVStack(spacing: 0) {
+                historySection(history: history)
+                    .containerRelativeFrame(.vertical)
+                    .id(QueueScrollAnchor.historyTop)
+                nowPlayingPage(track: track, upNextPeek: upNext)
+                    .containerRelativeFrame(.vertical)
+                    .id(QueueScrollAnchor.nowPlayingHeader)
+                upNextSection(upNext: upNext)
+                    .containerRelativeFrame(.vertical)
+                    .id(QueueScrollAnchor.upNextTop)
+            }
+            .scrollTargetLayout()
+        }
+        .scrollTargetBehavior(.paging)
+        .scrollPosition(id: $queueScrollAnchor)
+        .onChange(of: queueScrollAnchor) { _, new in
+            guard let new, new != lastQueueHapticAnchor else { return }
+            lastQueueHapticAnchor = new
+            #if os(iOS)
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            #endif
+        }
+    }
+
+    /// Middle page — Now Playing header anchored at top, with a peek of Up Next
+    /// (and an implicit hint of history above via the page boundary) to read as
+    /// "the queue with the current track as a divider."
+    private func nowPlayingPage(track: Track, upNextPeek: [Track]) -> some View {
+        VStack(spacing: 0) {
+            nowPlayingHeader(track: track)
+
+            if upNextPeek.isEmpty {
+                Spacer(minLength: 0)
+                Text("Nothing up next")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(fgMuted)
+                    .padding(.vertical, 24)
+                Spacer(minLength: 0)
+            } else {
+                shuffleRepeatRow
+                    .padding(.top, 10)
+                    .padding(.bottom, 8)
+
+                ForEach(upNextPeek.prefix(3), id: \.id) { t in
+                    queueRow(track: t)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 6)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    @ViewBuilder
+    private func historySection(history: [RecentPlayedItem]) -> some View {
+        if history.isEmpty {
+            EmptyView()
+        } else {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text("History")
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(fgPrimary)
+                    Spacer()
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 14)
+                .padding(.bottom, 8)
+                .id(QueueScrollAnchor.historyTop)
+
+                ForEach(history) { item in
+                    historyRow(item: item)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 6)
+                }
+
+                Rectangle()
+                    .fill(fgDivider)
+                    .frame(height: 0.5)
+                    .padding(.top, 12)
+            }
+        }
+    }
+
+    private func nowPlayingHeader(track: Track) -> some View {
+        HStack(spacing: 12) {
+            AlbumArtworkView(url: artworkURL(for: track), cornerRadius: 6)
+                .frame(width: 56, height: 56)
+                .matchedGeometryEffect(id: "nowPlayingArtwork", in: artworkNamespace)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(track.title)
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(fgPrimary)
+                    .lineLimit(1)
+                Text(track.artist)
+                    .font(.subheadline)
+                    .foregroundStyle(fgSecondaryStrong)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .background {
+            Rectangle()
+                .fill(fgDivider)
+                .frame(height: 0.5)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+        }
+    }
+
+    @ViewBuilder
+    private func upNextSection(upNext: [Track]) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Up Next")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(fgPrimary)
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 14)
+            .padding(.bottom, 8)
+            .id(QueueScrollAnchor.upNextTop)
+
+            shuffleRepeatRow
+                .padding(.bottom, 8)
+
+            if upNext.isEmpty {
+                Text("Nothing up next")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(fgMuted)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 24)
+                    .frame(maxWidth: .infinity)
+            } else {
+                ForEach(upNext, id: \.id) { t in
+                    Button {
+                        if let idx = app.player.queue.firstIndex(where: { $0.id == t.id }) {
+                            app.player.jumpToQueueItem(at: idx)
+                        }
+                    } label: {
+                        queueRow(track: t)
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 6)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func historyRow(item: RecentPlayedItem) -> some View {
+        switch item {
+        case .album(let album):
+            Button {
+                navigateToLibraryRoute(.album(album))
+            } label: {
+                historyRowContent(
+                    artworkURL: album.artworkURL,
+                    title: album.title,
+                    subtitle: album.artist
+                )
+            }
+            .buttonStyle(.plain)
+        case .playlist(let playlist):
+            Button {
+                selectedPlaylist = playlist
+                navigateToLibraryRoute(.playlist)
+            } label: {
+                historyRowContent(
+                    artworkURL: playlist.artworkURL,
+                    title: playlist.name,
+                    subtitle: playlist.songCount.map { $0 == 1 ? "1 song" : "\($0) songs" } ?? "Playlist"
+                )
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func historyRowContent(artworkURL: URL?, title: String, subtitle: String) -> some View {
+        HStack(spacing: 12) {
+            AlbumArtworkView(url: artworkURL, cornerRadius: 4)
+                .frame(width: 44, height: 44)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(fgPrimary)
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(fgSecondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+        }
+        .contentShape(Rectangle())
+    }
+
+    /// Pinned beneath the paged scroll: scrubber, transport, volume, bottom chrome.
+    private func pinnedBottomChrome(track: Track) -> some View {
+        VStack(spacing: 0) {
             progressBlock(track: track)
                 .padding(.horizontal, 24)
-                .padding(.top, 10)
+                .padding(.top, 8)
                 .padding(.bottom, 4)
 
             transportRow
                 .padding(.horizontal, 20)
-                .padding(.top, 4)
 
             NowPlayingVolumeRow(backdropPalette: backdropPalette)
-                .padding(.top, 32)
+                .padding(.top, 20)
 
             nowPlayingBottomChrome
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
+
+    // MARK: - Lyrics header (Apple Music–style focus scroll)
 
     private func lyricsCompactHeader(track: Track) -> some View {
         HStack(alignment: .center, spacing: 12) {
@@ -560,7 +783,7 @@ struct NowPlayingView: View {
                 isActive: showLyrics,
                 iconFont: .system(size: 20, weight: .semibold),
             ) {
-                withAnimation(.spring(response: 0.35)) {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
                     showLyrics.toggle()
                     if showLyrics { showQueue = false }
                 }
@@ -570,7 +793,7 @@ struct NowPlayingView: View {
                 .frame(width: 40, height: 40)
             #endif
             bottomChromeIconButton("list.bullet", isActive: showQueue) {
-                withAnimation(.spring(response: 0.35)) {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
                     showQueue.toggle()
                     if showQueue { showLyrics = false }
                 }
@@ -612,144 +835,6 @@ struct NowPlayingView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-
-    // MARK: - Queue panel
-
-    private func queuePanel(track: Track) -> some View {
-        VStack(spacing: 0) {
-            // Compact now-playing header
-            HStack(spacing: 12) {
-                AlbumArtworkView(url: artworkURL(for: track), cornerRadius: 6)
-                    .frame(width: 44, height: 44)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(track.title)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(fgPrimary)
-                        .lineLimit(1)
-                    Text(track.artist)
-                        .font(.caption)
-                        .foregroundStyle(fgSecondaryStrong)
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                Button {
-                    app.toggleFavoriteTrack(id: track.id)
-                } label: {
-                    Image(systemName: app.favoriteTrackIds.contains(track.id) ? "star.fill" : "star")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(fgPrimary)
-                        .frame(width: 30, height: 30)
-                        .background(Circle().fill(fgCapsule))
-                }
-                .buttonStyle(.plain)
-                if let activeTrack = app.player.activeTrack {
-                    Menu {
-                        ShareLink(item: "\(activeTrack.title) — \(activeTrack.artist)")
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(fgPrimary)
-                            .frame(width: 30, height: 30)
-                            .background(Circle().fill(fgCapsule))
-                    }
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 12)
-            .padding(.bottom, 14)
-
-            Rectangle()
-                .fill(fgDivider)
-                .frame(height: 0.5)
-
-            shuffleRepeatRow
-                .padding(.top, 12)
-                .padding(.bottom, 4)
-
-            let upNext = Array(app.player.queue.dropFirst(app.player.currentIndex + 1))
-
-            if upNext.isEmpty {
-                VStack(spacing: 8) {
-                    Spacer(minLength: 0)
-                    Text("Nothing up next")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(fgMuted)
-                    Text("Add songs to the queue or keep playing an album.")
-                        .font(.caption)
-                        .foregroundStyle(fgSubtle)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 40)
-                    Spacer(minLength: 0)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List {
-                    Section {
-                        ForEach(upNext, id: \.id) { t in
-                            queueRow(track: t)
-                                .listRowBackground(Color.clear)
-                                .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-                                .listRowSeparator(.hidden)
-                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                    Button(role: .destructive) {
-                                        app.player.removeTracksFromQueue(trackIds: [t.id])
-                                    } label: {
-                                        Label("Remove", systemImage: "trash")
-                                    }
-                                }
-                                .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                                    Button {
-                                        if let idx = app.player.queue.firstIndex(where: { $0.id == t.id }) {
-                                            app.player.jumpToQueueItem(at: idx)
-                                        }
-                                    } label: {
-                                        Label("Play Now", systemImage: "play.fill")
-                                    }
-                                    .tint(MusicDesign.accent)
-                                }
-                        }
-                        .onMove { source, destination in
-                            app.player.moveUpNextItem(from: source, to: destination)
-                        }
-                    } header: {
-                        Text("Up Next")
-                            .font(.headline.weight(.bold))
-                            .foregroundStyle(fgPrimary)
-                            .textCase(nil)
-                            .padding(.top, 10)
-                            .padding(.bottom, 2)
-                    }
-                }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
-                #if os(iOS)
-                .environment(\.editMode, .constant(.active))
-                .tint(fgPrimary)
-                .background {
-                    NowPlayingQueueListTableChrome(
-                        reorderTint: UIColor(fgPrimary),
-                        scrollIndicatorStyle: queueScrollIndicatorStyle,
-                    )
-                }
-                #endif
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-
-            progressBlock(track: track)
-                .padding(.horizontal, 24)
-                .padding(.top, 12)
-                .padding(.bottom, 4)
-
-            transportRow
-                .padding(.horizontal, 20)
-                .padding(.top, 14)
-
-            NowPlayingVolumeRow(backdropPalette: backdropPalette)
-                .padding(.top, 24)
-            nowPlayingBottomChrome
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private func queueRow(track: Track) -> some View {
