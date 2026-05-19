@@ -227,6 +227,13 @@ struct SettingsView: View {
             }
             .tint(MusicDesign.accent)
 
+            Picker("Song list items", selection: $app.songListItemSize) {
+                ForEach(SongListItemSize.allCases) { size in
+                    Text(size.title).tag(size)
+                }
+            }
+            .tint(MusicDesign.accent)
+
             VStack(alignment: .leading, spacing: 16) {
                 Text("Accent Color")
                     .font(.subheadline.weight(.medium))

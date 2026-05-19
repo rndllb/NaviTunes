@@ -14,6 +14,7 @@ private enum NowPlayingScrubberMetrics {
 private enum NowPlayingLibraryRoute: Hashable {
     case album(AlbumSummary)
     case artist(String)
+    case playlist
 }
 
 /// Apple Music–style Now Playing: artwork-derived backdrop + luminance handoff (same as album detail).
@@ -21,7 +22,9 @@ struct NowPlayingView: View {
     @EnvironmentObject private var app: AppModel
     @State private var showLyrics = false
     @State private var showQueue = false
-    @State private var libraryPath = NavigationPath()
+    @State private var libraryPath: [NowPlayingLibraryRoute] = []
+    @State private var selectedPlaylist: PlaylistSummary?
+    var onLibraryNavigationDepthChanged: ((Int) -> Void)? = nil
 
     /// Paused — baseline artwork size.
     private let albumArtPausedSide: CGFloat = 256
@@ -165,6 +168,13 @@ struct NowPlayingView: View {
                     AlbumDetailView(album: album)
                 case .artist(let name):
                     ArtistAlbumsView(artistName: name)
+                case .playlist:
+                    if let playlist = selectedPlaylist {
+                        ServerPlaylistDetailView(playlist: playlist)
+                            .environmentObject(app.offline)
+                    } else {
+                        ContentUnavailableView("Playlist unavailable", systemImage: "music.note.list")
+                    }
                 }
             }
             .task(id: artworkURL(for: app.player.activeTrack)?.absoluteString ?? "") {
@@ -178,6 +188,10 @@ struct NowPlayingView: View {
         }
         .onAppear {
             app.player.reconcilePlaybackSessionAfterUIMilestone()
+            onLibraryNavigationDepthChanged?(libraryPath.count)
+        }
+        .onChange(of: libraryPath.count) { _, count in
+            onLibraryNavigationDepthChanged?(count)
         }
     }
 
@@ -366,13 +380,23 @@ struct NowPlayingView: View {
                         albumSubtitle: albumSubtitle,
                         libraryAlbum: libraryAlbum,
                         heroBackdropPalette: backdropPalette,
+                        sourcePlaylist: {
+                            if case .playlist(let p) = app.player.playbackSource { return p }
+                            return nil
+                        }(),
                         onGoToAlbum: {
                             if let album = libraryAlbum {
-                                libraryPath.append(NowPlayingLibraryRoute.album(album))
+                                navigateToLibraryRoute(.album(album))
                             }
                         },
                         onGoToArtist: {
-                            libraryPath.append(NowPlayingLibraryRoute.artist(track.artist))
+                            navigateToLibraryRoute(.artist(track.artist))
+                        },
+                        onGoToPlaylist: {
+                            if case .playlist(let p) = app.player.playbackSource {
+                                selectedPlaylist = playlistForNavigation(id: p.id) ?? p
+                                navigateToLibraryRoute(.playlist)
+                            }
                         }
                     )
                     .fixedSize(horizontal: false, vertical: true)
@@ -406,6 +430,21 @@ struct NowPlayingView: View {
                 }
             }
         }
+    }
+
+    private func navigateToLibraryRoute(_ route: NowPlayingLibraryRoute) {
+        guard libraryPath.last != route else { return }
+        libraryPath.append(route)
+    }
+
+    private func playlistForNavigation(id: String) -> PlaylistSummary? {
+        if let playlist = app.libraryPlaylists.first(where: { $0.id == id }) {
+            return playlist
+        }
+        if case .playlist(let playlist) = app.player.playbackSource, playlist.id == id {
+            return playlist
+        }
+        return nil
     }
 
     private func progressBlock(track: Track) -> some View {

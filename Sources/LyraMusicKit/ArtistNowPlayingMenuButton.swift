@@ -10,8 +10,11 @@ struct ArtistNowPlayingMenuButton: UIViewRepresentable {
     let libraryAlbum: AlbumSummary?
     /// When set, artist line follows album hero **luminance handoff** (black/white vs backdrop).
     var heroBackdropPalette: ArtworkDynamicGradient.BackdropPalette? = nil
+    /// When the current queue came from a playlist, adds a "Go to Playlist" action.
+    var sourcePlaylist: PlaylistSummary? = nil
     let onGoToAlbum: () -> Void
     let onGoToArtist: () -> Void
+    var onGoToPlaylist: (() -> Void)? = nil
 
     func makeUIView(context: Context) -> UIButton {
         let button = UIButton(type: .system)
@@ -58,7 +61,9 @@ struct ArtistNowPlayingMenuButton: UIViewRepresentable {
             image: UIImage(systemName: "square.stack.fill"),
             attributes: libraryAlbum == nil ? [.disabled] : []
         ) { _ in
-            onGoToAlbum()
+            DispatchQueue.main.async {
+                onGoToAlbum()
+            }
         }
 
         let artistAction = UIAction(
@@ -66,10 +71,26 @@ struct ArtistNowPlayingMenuButton: UIViewRepresentable {
             subtitle: artistLine.isEmpty ? "—" : artistLine,
             image: UIImage(systemName: "music.mic")
         ) { _ in
-            onGoToArtist()
+            DispatchQueue.main.async {
+                onGoToArtist()
+            }
         }
 
-        button.menu = UIMenu(children: [artistAction, albumAction])
+        var children: [UIMenuElement] = [artistAction, albumAction]
+        if let sourcePlaylist, let onGoToPlaylist {
+            let playlistAction = UIAction(
+                title: "Go to Playlist",
+                subtitle: sourcePlaylist.name,
+                image: UIImage(systemName: "music.note.list")
+            ) { _ in
+                DispatchQueue.main.async {
+                    onGoToPlaylist()
+                }
+            }
+            children.append(playlistAction)
+        }
+
+        button.menu = UIMenu(children: children)
     }
 }
 
@@ -81,8 +102,10 @@ struct ArtistNowPlayingMenuButton: View {
     let albumSubtitle: String
     let libraryAlbum: AlbumSummary?
     var heroBackdropPalette: ArtworkDynamicGradient.BackdropPalette? = nil
+    var sourcePlaylist: PlaylistSummary? = nil
     let onGoToAlbum: () -> Void
     let onGoToArtist: () -> Void
+    var onGoToPlaylist: (() -> Void)? = nil
 
     var body: some View {
         Menu {
@@ -97,6 +120,13 @@ struct ArtistNowPlayingMenuButton: View {
                 Label("Go to Album", systemImage: "square.stack.fill")
             }
             .disabled(libraryAlbum == nil)
+            if let sourcePlaylist, let onGoToPlaylist {
+                Button {
+                    onGoToPlaylist()
+                } label: {
+                    Label("Go to Playlist — \(sourcePlaylist.name)", systemImage: "music.note.list")
+                }
+            }
         } label: {
             VStack(alignment: .leading, spacing: 2) {
                 Text(artist)

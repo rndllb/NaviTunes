@@ -262,6 +262,7 @@ struct LibrarySongsView: View {
         LibrarySongRow(
             track: track,
             artworkURL: app.resolvedArtworkURL(for: track),
+            itemSize: app.songListItemSize,
             isFavorite: app.favoriteTrackIds.contains(track.id),
             offlineDownload: offline.activeDownloads[track.id],
             isOfflineCached: app.offline.downloadedTrackIds.contains(track.id),
@@ -359,6 +360,7 @@ struct LibrarySongsView: View {
 struct LibrarySongRow: View, Equatable {
     let track: Track
     var artworkURL: URL? = nil
+    var itemSize: SongListItemSize = .medium
     let isFavorite: Bool
     var offlineDownload: OfflineDownloadUIState? = nil
     var isOfflineCached: Bool = false
@@ -377,6 +379,7 @@ struct LibrarySongRow: View, Equatable {
         lhs.track.id == rhs.track.id
             && lhs.artworkURL == rhs.artworkURL
             && lhs.track.artworkURL == rhs.track.artworkURL
+            && lhs.itemSize == rhs.itemSize
             && lhs.isFavorite == rhs.isFavorite
             && lhs.isOfflineCached == rhs.isOfflineCached
             && lhs.canDeleteFromLibrary == rhs.canDeleteFromLibrary
@@ -392,15 +395,15 @@ struct LibrarySongRow: View, Equatable {
             Button(action: onPlay) {
                 HStack(alignment: .center, spacing: 14) {
                     AlbumArtworkView(url: artworkURL ?? track.artworkURL, cornerRadius: 6)
-                        .frame(width: 52, height: 52)
+                        .frame(width: itemSize.artworkSide, height: itemSize.artworkSide)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(track.title)
-                            .font(.body.weight(.semibold))
+                            .font(itemSize.titleFont)
                             .foregroundStyle(.primary)
                             .lineLimit(2)
                             .multilineTextAlignment(.leading)
                         Text(track.artist)
-                            .font(.subheadline)
+                            .font(itemSize.subtitleFont)
                             .foregroundStyle(MusicDesign.secondaryLabel)
                             .lineLimit(1)
                     }
@@ -489,6 +492,6 @@ struct LibrarySongRow: View, Equatable {
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 20)
-        .padding(.vertical, 10)
+        .padding(.vertical, itemSize.libraryVerticalPadding)
     }
 }

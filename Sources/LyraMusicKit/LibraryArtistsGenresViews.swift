@@ -245,6 +245,7 @@ struct LibraryArtistAlbumsView: View {
     private func songRow(_ track: Track) -> some View {
         LibrarySongRow(
             track: track,
+            itemSize: app.songListItemSize,
             isFavorite: app.favoriteTrackIds.contains(track.id),
             offlineDownload: offline.activeDownloads[track.id],
             isOfflineCached: app.offline.downloadedTrackIds.contains(track.id),

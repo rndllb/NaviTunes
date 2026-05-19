@@ -98,6 +98,80 @@ enum DownloadQualityTier: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Song list item size
+
+enum SongListItemSize: String, CaseIterable, Identifiable {
+    case small
+    case medium
+    case large
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .small: return "Small"
+        case .medium: return "Medium"
+        case .large: return "Large"
+        }
+    }
+
+    var artworkSide: CGFloat {
+        switch self {
+        case .small: return 44
+        case .medium: return 52
+        case .large: return 62
+        }
+    }
+
+    var libraryVerticalPadding: CGFloat {
+        switch self {
+        case .small: return 7
+        case .medium: return 10
+        case .large: return 13
+        }
+    }
+
+    var albumVerticalPadding: CGFloat {
+        switch self {
+        case .small: return 5
+        case .medium: return 8
+        case .large: return 12
+        }
+    }
+
+    var titleFont: Font {
+        switch self {
+        case .small: return .subheadline.weight(.semibold)
+        case .medium: return .body.weight(.semibold)
+        case .large: return .title3.weight(.semibold)
+        }
+    }
+
+    var subtitleFont: Font {
+        switch self {
+        case .small: return .caption
+        case .medium: return .subheadline
+        case .large: return .body
+        }
+    }
+
+    var albumTitleFont: Font {
+        switch self {
+        case .small: return .caption.weight(.semibold)
+        case .medium: return .subheadline.weight(.semibold)
+        case .large: return .body.weight(.semibold)
+        }
+    }
+
+    var albumSubtitleFont: Font {
+        switch self {
+        case .small: return .caption2
+        case .medium: return .caption
+        case .large: return .subheadline
+        }
+    }
+}
+
 // MARK: - Library statistics
 
 struct LibraryStatistics: Equatable {

@@ -107,6 +107,7 @@ public final class AppModel: ObservableObject {
     private static let wifiStreamQualityKey = "lyraWifiStreamQuality"
     private static let cellularStreamQualityKey = "lyraCellularStreamQuality"
     private static let downloadQualityKey = "lyraDownloadQuality"
+    private static let songListItemSizeKey = "lyraSongListItemSize"
     private static let lastLibrarySyncAtKey = "lyraLastLibrarySyncAt"
     private static let volumeNormalizationKey = "lyraVolumeNormalization"
     private static let eqMasterEnabledKey = "lyraEQMasterEnabled"
@@ -137,6 +138,12 @@ public final class AppModel: ObservableObject {
         didSet {
             UserDefaults.standard.set(downloadQualityTier.rawValue, forKey: Self.downloadQualityKey)
             pushQualitySettingsToClients()
+        }
+    }
+
+    @Published var songListItemSize: SongListItemSize = .medium {
+        didSet {
+            UserDefaults.standard.set(songListItemSize.rawValue, forKey: Self.songListItemSizeKey)
         }
     }
 
@@ -982,6 +989,10 @@ public final class AppModel: ObservableObject {
         if let raw = UserDefaults.standard.string(forKey: Self.downloadQualityKey),
            let v = DownloadQualityTier(rawValue: raw) {
             downloadQualityTier = v
+        }
+        if let raw = UserDefaults.standard.string(forKey: Self.songListItemSizeKey),
+           let v = SongListItemSize(rawValue: raw) {
+            songListItemSize = v
         }
         let syncTs = UserDefaults.standard.double(forKey: Self.lastLibrarySyncAtKey)
         if syncTs > 0 {
