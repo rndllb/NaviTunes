@@ -2,6 +2,11 @@ import AVFoundation
 import Combine
 import Foundation
 
+enum OfflineDownloadError: Error {
+    case pathEscapesRoot
+    case unrecognizedAudioFormat
+}
+
 /// UI state for an in-flight library offline save (HTTP byte progress when `Content-Length` is known).
 enum OfflineDownloadUIState: Equatable {
     /// Server did not advertise a length — show an indeterminate ring only.
@@ -175,16 +180,52 @@ final class OfflineDownloadManager: ObservableObject {
 
     private static func sanitizedPathSegment(_ raw: String, maxLen: Int) -> String {
         let s = sanitizedFilenameFragment(raw)
-        let trimmed = s.isEmpty ? "Unknown" : s
-        guard trimmed.count > maxLen else { return trimmed }
-        return String(trimmed.prefix(maxLen)).trimmingCharacters(in: CharacterSet(charactersIn: " .-"))
+        let base = s.isEmpty ? "Unknown" : s
+        let bounded: String = {
+            guard base.count > maxLen else { return base }
+            return String(base.prefix(maxLen))
+                .trimmingCharacters(in: CharacterSet(charactersIn: " .-"))
+        }()
+        let final = sanitizedFilenameFragment(bounded)
+        return final.isEmpty ? "Unknown" : final
     }
 
+    /// Single-segment sanitizer. Replaces filesystem-hostile characters AND defangs
+    /// traversal tokens (`.`, `..`, leading dots). Never returns an empty or all-dot
+    /// string; callers can use the result as a single path component without containment risk.
     private static func sanitizedFilenameFragment(_ raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return "" }
-        let banned = CharacterSet(charactersIn: "/:\\?%*|\"<>\u{fffc}\n\t")
-        return String(trimmed.unicodeScalars.map { banned.contains($0) ? "-" : Character($0) })
+        let stripped = raw.unicodeScalars
+            .filter { !CharacterSet.controlCharacters.contains($0) }
+            .reduce(into: "") { $0.append(Character($1)) }
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if stripped.isEmpty { return "" }
+
+        let banned = CharacterSet(charactersIn: "/:\\?%*|\"<>\u{fffc}")
+        var out = String(stripped.unicodeScalars.map { banned.contains($0) ? "-" : Character($0) })
+
+        // Strip leading dots (defeats `.`, `..`, `.hidden`).
+        while let f = out.first, f == "." { out.removeFirst() }
+        // Trim trailing whitespace AND dots (defeats `foo..`, also Windows-unsafe trailing chars).
+        out = out.trimmingCharacters(in: CharacterSet(charactersIn: " ."))
+
+        let onlyDotsOrSpace = out.unicodeScalars.allSatisfy { $0 == "." || $0 == " " }
+        if out.isEmpty || onlyDotsOrSpace { return "" }
+        return out
+    }
+
+    /// Verifies that `dest` resolves inside `root` after standardization (collapses `..`,
+    /// resolves symlinks, normalizes `//`). Throws if `dest` escapes `root`.
+    @discardableResult
+    private static func containmentCheck(dest: URL, root: URL) throws -> URL {
+        let destStd = dest.standardizedFileURL.resolvingSymlinksInPath()
+        let rootStd = root.standardizedFileURL.resolvingSymlinksInPath()
+        var rootPath = rootStd.path
+        if !rootPath.hasSuffix("/") { rootPath += "/" }
+        let destPath = destStd.path
+        guard destPath == rootStd.path || destPath.hasPrefix(rootPath) else {
+            throw OfflineDownloadError.pathEscapesRoot
+        }
+        return destStd
     }
 
     private static func ensureParentDirectory(for fileURL: URL) throws {
@@ -405,11 +446,13 @@ final class OfflineDownloadManager: ObservableObject {
         let ext = Self.fileExtension(forMime: mime, sniffing: sniff)
         let root = try Self.downloadsFolder()
         let relative = Self.uniqueStructuredRelativePath(for: track, ext: ext, root: root)
-        let dest = root.appendingPathComponent(relative)
+        let candidate = root.appendingPathComponent(relative)
+        let dest = try Self.containmentCheck(dest: candidate, root: root)
 
         try removeExistingDownload(for: track.id)
 
         try Self.ensureParentDirectory(for: dest)
+        try Self.containmentCheck(dest: dest, root: root)
         if FileManager.default.fileExists(atPath: dest.path) {
             try FileManager.default.removeItem(at: dest)
         }
@@ -582,8 +625,11 @@ final class OfflineDownloadManager: ObservableObject {
 
         let artDir = downloadsRoot.appendingPathComponent(".artwork/albums", isDirectory: true)
         try? FileManager.default.createDirectory(at: artDir, withIntermediateDirectories: true)
-        let rel = ".artwork/albums/\(sanitizedFilenameFragment(track.albumId)).jpg"
+        let safeAlbumId = sanitizedFilenameFragment(track.albumId)
+        guard !safeAlbumId.isEmpty else { return nil }
+        let rel = ".artwork/albums/\(safeAlbumId).jpg"
         let dest = downloadsRoot.appendingPathComponent(rel)
+        guard (try? containmentCheck(dest: dest, root: downloadsRoot)) != nil else { return nil }
         do {
             try data.write(to: dest, options: .atomic)
             return rel

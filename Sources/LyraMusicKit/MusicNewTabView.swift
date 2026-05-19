@@ -364,6 +364,7 @@ struct MusicNewTabView: View {
     @ViewBuilder
     private func newTabChartOverflowEllipsis(track: LFMTrack) -> some View {
         let song = DowntifySong(lastFmChartTrack: track)
+        let resolvedTrack = resolvedLibraryTrack(for: track)
         if downtifyDownloadingIds.contains(song.songId) {
             VStack(alignment: .trailing, spacing: 3) {
                 if let fr = downtifyDownloadFraction[song.songId] {
@@ -387,6 +388,16 @@ struct MusicNewTabView: View {
                 },
                 onGoToAlbum: {
                     browseLFMSingle = track
+                },
+                onPlayNext: resolvedTrack.map { lib in
+                    {
+                        Task { @MainActor in
+                            try? await app.player.playTracksNext(library: app.activeLibrary, tracks: [lib])
+                        }
+                    }
+                },
+                onToggleFavorite: resolvedTrack.map { lib in
+                    { app.toggleFavoriteTrack(id: lib.id) }
                 }
             )
         }

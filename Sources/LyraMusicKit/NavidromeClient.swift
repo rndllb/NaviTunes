@@ -1,4 +1,6 @@
+import CryptoKit
 import Foundation
+import Security
 
 enum NavidromeClientError: LocalizedError {
     /// Navidrome registers `/api/song/{id}` read-only (`persistable: false`); Subsonic has no delete-song call.
@@ -44,7 +46,7 @@ final class NavidromeClient: MusicLibraryProviding {
         self.password = password
         let ok = try await ping()
         guard ok else { throw URLError(.userAuthenticationRequired) }
-        token = try await fetchToken()
+        try await refreshAdminFlag()
     }
 
     func httpHeadersForMediaRequests() -> [String: String] { [:] }
@@ -809,7 +811,7 @@ final class NavidromeClient: MusicLibraryProviding {
     /// Subsonic ``getAvatar`` for the signed-in user (toolbar profile image).
     func accountAvatarURL(username: String? = nil) -> URL? {
         guard !self.username.isEmpty || username != nil else { return nil }
-        guard token != nil || !password.isEmpty else { return nil }
+        guard !password.isEmpty else { return nil }
         var query: [String: String] = [:]
         let name = (username ?? self.username).trimmingCharacters(in: .whitespacesAndNewlines)
         if !name.isEmpty {
@@ -824,13 +826,39 @@ final class NavidromeClient: MusicLibraryProviding {
         }
     }
 
+    /// Distinguishes "credentials rejected" (Subsonic error 40/41, or wrong-password
+    /// message text) from "server unreachable". Mirrors ``JellyfinMusicClient.probeAuthStatus``.
+    /// Requires a non-empty password to probe; otherwise returns `.authRejected`.
+    func probeAuthStatus() async -> ServerReachabilityProbe {
+        guard !password.isEmpty else { return .authRejected }
+        do {
+            let items = try await subsonicRequest(path: "ping", query: [:])
+            if (items["status"] as? String) == "ok" { return .ok }
+            if let err = items["error"] as? [String: Any] {
+                let code = (err["code"] as? Int) ?? Int(err["code"] as? String ?? "") ?? -1
+                if code == 40 || code == 41 { return .authRejected }
+            }
+            return .unreachable
+        } catch let nsError as NSError where nsError.domain == "Navidrome" {
+            let msg = nsError.localizedDescription.lowercased()
+            if msg.contains("wrong username") || msg.contains("password")
+                || msg.contains("not authorized") || msg.contains("token authentication") {
+                return .authRejected
+            }
+            return .unreachable
+        } catch {
+            return .unreachable
+        }
+    }
+
     private func ping() async throws -> Bool {
         let items = try await subsonicRequest(path: "ping", query: [:])
         if let status = items["status"] as? String { return status == "ok" }
         return false
     }
 
-    private func fetchToken() async throws -> String? {
+    /// Refreshes ``isLibraryAdmin`` from Subsonic ``getUser`` (`adminRole`).
+    private func refreshAdminFlag() async throws {
         let items: [String: Any]
         if let withUser = try? await subsonicRequest(path: "getUser", query: ["username": username]),
            withUser["user"] != nil {
@@ -838,9 +866,8 @@ final class NavidromeClient: MusicLibraryProviding {
         } else {
             items = try await subsonicRequest(path: "getUser", query: [:])
         }
-        guard let user = items["user"] as? [String: Any] else { return nil }
+        guard let user = items["user"] as? [String: Any] else { return }
         isLibraryAdmin = navidromeCoerceBool(user["adminRole"]) || navidromeCoerceBool(user["admin"])
-        return navidromeCoerceString(user["token"])
     }
 
     private func navidromeCoerceBool(_ value: Any?) -> Bool {
@@ -882,11 +909,13 @@ final class NavidromeClient: MusicLibraryProviding {
             URLQueryItem(name: "c", value: "LyraMusicKit"),
             URLQueryItem(name: "f", value: "json"),
         ]
-        if let token {
-            items.append(URLQueryItem(name: "s", value: token))
-        } else {
-            items.append(URLQueryItem(name: "p", value: password))
-        }
+        // Subsonic salted-token auth: `t = md5(password + salt)` with a per-request random salt.
+        // Never send `p=<password>` in the clear.
+        let salt = Self.makeSubsonicSalt()
+        let tokenHex = Self.subsonicMD5Hex(password + salt)
+        items.append(URLQueryItem(name: "t", value: tokenHex))
+        items.append(URLQueryItem(name: "s", value: salt))
+
         for (k, v) in query {
             items.append(URLQueryItem(name: k, value: v))
         }
@@ -896,6 +925,25 @@ final class NavidromeClient: MusicLibraryProviding {
         comps.queryItems = items
         guard let url = comps.url else { throw URLError(.badURL) }
         return url
+    }
+
+    /// 16 random bytes hex-encoded (32 chars). Subsonic recommends >= 6 chars.
+    private static func makeSubsonicSalt() -> String {
+        var bytes = [UInt8](repeating: 0, count: 16)
+        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        if status != errSecSuccess {
+            var rng = SystemRandomNumberGenerator()
+            for i in 0..<bytes.count {
+                bytes[i] = UInt8.random(in: 0...255, using: &rng)
+            }
+        }
+        return bytes.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// MD5 hex of UTF-8 bytes (32 lowercase hex chars). MD5 is mandated by the Subsonic spec.
+    private static func subsonicMD5Hex(_ input: String) -> String {
+        let digest = Insecure.MD5.hash(data: Data(input.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 }
 
