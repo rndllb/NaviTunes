@@ -73,7 +73,7 @@ private struct MainShellView: View {
                 }
             }
             .tint(MusicDesign.accent)
-            .musicNativeTabChrome(isEnabled: app.player.activeTrack != nil) {
+            .musicNativeTabChrome(isEnabled: app.player.showsMiniPlayerChrome) {
                 TabViewMiniPlayerAccessory(
                     showNowPlaying: $showNowPlaying,
                     player: app.player

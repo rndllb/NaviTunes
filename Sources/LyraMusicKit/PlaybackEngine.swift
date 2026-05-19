@@ -34,6 +34,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
     @Published var shuffleMode: ShuffleMode = .off
     @Published var repeatMode: RepeatMode = .off
     @Published private(set) var playbackSource: PlaybackSource?
+    /// Drives the tab-bar mini player pill — false after a cold restore until the user starts playback.
+    @Published private(set) var showsMiniPlayerChrome = false
 
     private var lastEmittedUIProgress: TimeInterval = -10_000
     private var lastNowPlayingInfoRefresh: TimeInterval = -10_000
@@ -148,6 +150,11 @@ final class PlaybackEngine: NSObject, ObservableObject {
         return queue[currentIndex]
     }
 
+    private func revealMiniPlayerChrome() {
+        guard activeTrack != nil else { return }
+        showsMiniPlayerChrome = true
+    }
+
     func reset() {
         teardownPlayer()
         queue = []
@@ -160,6 +167,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         isPlaying = false
         duration = 0
         playbackSource = nil
+        showsMiniPlayerChrome = false
         updateNowPlaying(nil)
     }
 
@@ -210,8 +218,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
         scrobbledForCurrentTrack = false
         isPlaying = false
         duration = activeTrack?.duration ?? 0
+        showsMiniPlayerChrome = false
         configureRemoteCommands()
-        refreshNowPlaying()
+        updateNowPlaying(nil)
     }
 
     private static func encodeRepeatMode(_ mode: RepeatMode) -> String {
@@ -249,6 +258,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             // intact and paused — the user can still skip/jump or try again later.
             isPlaying = false
         }
+        revealMiniPlayerChrome()
     }
 
     func playAlbum(library: MusicLibraryProviding?, tracks: [Track], startIndex: Int = 0, source: PlaybackSource? = nil) async throws {
@@ -266,6 +276,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         isPlaying = true
         scrobbledForCurrentTrack = false
         configureRemoteCommands()
+        revealMiniPlayerChrome()
     }
 
     func playNext(library: MusicLibraryProviding?, track: Track) async throws {
@@ -337,6 +348,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         playbackHead = player.currentTime().seconds
         currentTime = playbackHead
         lastEmittedUIProgress = playbackHead
+        revealMiniPlayerChrome()
         refreshNowPlaying()
     }
 
@@ -569,6 +581,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         player?.play()
         isPlaying = true
         scrobbledForCurrentTrack = false
+        revealMiniPlayerChrome()
     }
 
     private func detachPlayerKeepingQueueState() {
