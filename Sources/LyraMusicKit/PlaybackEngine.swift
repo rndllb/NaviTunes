@@ -63,7 +63,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private var isStartingPlayback = false
 
     private var library: MusicLibraryProviding?
-    private weak var lastFm: LastFmScrobbler?
     private weak var offline: OfflineDownloadManager?
     private var scrobbledForCurrentTrack = false
 
@@ -85,8 +84,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private var didInstallAudioSessionObservers = false
     #endif
 
-    func bind(lastFm: LastFmScrobbler, offline: OfflineDownloadManager? = nil) {
-        self.lastFm = lastFm
+    func bind(offline: OfflineDownloadManager? = nil) {
         self.offline = offline
         #if os(iOS)
         installAudioSessionObserversIfNeeded()
@@ -1033,7 +1031,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
         let half = max(track.duration * 0.5, 30)
         if position >= half {
             scrobbledForCurrentTrack = true
-            Task { await lastFm?.scrobble(track: track, timestamp: Date()) }
             onTrackScrobbled?(track, playbackSource)
         }
     }

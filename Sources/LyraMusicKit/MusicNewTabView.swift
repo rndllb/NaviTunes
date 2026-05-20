@@ -7,7 +7,7 @@ struct MusicNewTabView: View {
     @EnvironmentObject private var app: AppModel
     @State private var navigateLibraryTrack: Track?
     @State private var navigateLibraryAlbum: AlbumSummary?
-    @State private var browseLFMSingle: LFMTrack?
+    @State private var browseChartSingle: ChartTrack?
     @State private var downtifyDownloadingIds: Set<String> = []
     @State private var downtifyDownloadFraction: [String: Double] = [:]
     @State private var downtifyToast: String?
@@ -17,39 +17,31 @@ struct MusicNewTabView: View {
     /// Hide the floating **New** / profile row after this much vertical scroll past the initial resting offset.
     private let newTabFloatingHeaderCollapseSlack: CGFloat = 72
 
-    private var hasLastFmCharts: Bool {
-        !app.lfmTopTracks.isEmpty || !app.lfmTopAlbums.isEmpty
+    private var hasNewTabTracks: Bool {
+        !app.newTabTopTracks.isEmpty || !app.newTabTopAlbums.isEmpty
     }
 
-    /// Last.fm tag-based shelf (see ``LastFmChartsClient.fetchRecentReleaseAlbums``).
     private var hasRecentReleases: Bool {
-        !app.lfmRecentReleases.isEmpty
+        !app.newTabRecentReleases.isEmpty
     }
 
     private var hasAnyNewTabContent: Bool {
-        hasLastFmCharts || hasRecentReleases
+        hasNewTabTracks || hasRecentReleases
     }
 
     private var browseHeroEyebrow: String {
-        switch app.newTabBrowseBackend {
-        case .lastFm: return "Trending Now"
-        default: return "New Releases"
-        }
+        "New Releases"
     }
 
     private var browseHeroBadge: String {
         switch app.newTabBrowseBackend {
-        case .lastFm: return "Trending on Last.fm"
         case .musicBrainz: return "Recent on MusicBrainz"
         case .none: return "Discover"
         }
     }
 
     private var trendingSectionTitle: String {
-        switch app.newTabBrowseBackend {
-        case .lastFm: return "Trending Songs"
-        default: return "New Albums"
-        }
+        "New Albums"
     }
 
     var body: some View {
@@ -67,6 +59,7 @@ struct MusicNewTabView: View {
                     MusicTabTitleHeaderBar(title: "New") {
                         MusicToolbarSettingsAvatarLink(diameter: 45)
                     }
+                    .transition(.opacity)
                 }
             }
             .animation(.easeInOut(duration: 0.22), value: newTabShowFloatingHeader)
@@ -97,8 +90,8 @@ struct MusicNewTabView: View {
             .navigationDestination(item: $navigateLibraryAlbum) { album in
                 ServerPlaylistDetailView(album: album)
             }
-            .navigationDestination(item: $browseLFMSingle) { tr in
-                BrowseAlbumDetailView(source: .lfm(
+            .navigationDestination(item: $browseChartSingle) { tr in
+                BrowseAlbumDetailView(source: .chartBrowse(
                     artistName: tr.artistName,
                     title: tr.name,
                     imageURL: tr.imageURL,
@@ -147,26 +140,26 @@ struct MusicNewTabView: View {
             }
         } else {
             VStack(alignment: .leading, spacing: 0) {
-                if !app.lfmTopTracks.isEmpty {
-                    heroCarousel(Array(app.lfmTopTracks.prefix(6)))
+                if !app.newTabTopTracks.isEmpty {
+                    heroCarousel(Array(app.newTabTopTracks.prefix(6)))
                     gap
                 }
 
-                if !app.lfmTopTracks.isEmpty {
+                if !app.newTabTopTracks.isEmpty {
                     sectionHeader(trendingSectionTitle)
-                    trendingSongsCarousel(Array(app.lfmTopTracks.prefix(10)))
+                    trendingSongsCarousel(Array(app.newTabTopTracks.prefix(10)))
                     gap
                 }
 
                 if hasRecentReleases {
                     sectionHeader("Recent Releases")
-                    albumShelf(Array(app.lfmRecentReleases.prefix(12)))
+                    albumShelf(Array(app.newTabRecentReleases.prefix(12)))
                     gap
                 }
 
-                if !app.lfmTopAlbums.isEmpty {
+                if !app.newTabTopAlbums.isEmpty {
                     sectionHeader("Top Albums")
-                    albumShelf(app.lfmTopAlbums)
+                    albumShelf(app.newTabTopAlbums)
                     gap
                 }
             }
@@ -174,11 +167,11 @@ struct MusicNewTabView: View {
         }
     }
 
-    private func resolvedLibraryTrack(for lfm: LFMTrack) -> Track? {
-        LibraryTrackMatcher.firstLibraryTrack(matching: lfm, in: app.discoveryLibraryTracks)
+    private func resolvedLibraryTrack(for chart: ChartTrack) -> Track? {
+        LibraryTrackMatcher.firstLibraryTrack(matching: chart, in: app.discoveryLibraryTracks)
     }
 
-    private func matchedLibraryAlbum(for chart: LFMAlbum) -> AlbumSummary? {
+    private func matchedLibraryAlbum(for chart: ChartAlbum) -> AlbumSummary? {
         app.libraryAlbums.firstMatchingNewTabRelease(artist: chart.artistName, albumTitle: chart.name)
     }
 
@@ -202,7 +195,7 @@ struct MusicNewTabView: View {
 #endif
     }
 
-    private func heroCarousel(_ items: [LFMTrack]) -> some View {
+    private func heroCarousel(_ items: [ChartTrack]) -> some View {
         GeometryReader { geo in
             let inset = MusicDesign.newTabHorizontalInset
             let peek = MusicDesign.newTabHeroPeek
@@ -228,7 +221,7 @@ struct MusicNewTabView: View {
         .frame(height: newTabHeroCarouselOuterHeight)
     }
 
-    private func heroCarouselPage(track: LFMTrack, cardWidth: CGFloat, imageHeight: CGFloat) -> some View {
+    private func heroCarouselPage(track: ChartTrack, cardWidth: CGFloat, imageHeight: CGFloat) -> some View {
         let lib = resolvedLibraryTrack(for: track)
         return VStack(alignment: .leading, spacing: 10) {
             Text(browseHeroEyebrow)
@@ -257,7 +250,7 @@ struct MusicNewTabView: View {
                     .buttonStyle(.plain)
                 } else {
                     NavigationLink {
-                        BrowseAlbumDetailView(source: .lfm(
+                        BrowseAlbumDetailView(source: .chartBrowse(
                             artistName: track.artistName,
                             title: track.name,
                             imageURL: track.imageURL,
@@ -274,7 +267,7 @@ struct MusicNewTabView: View {
         .frame(width: cardWidth, alignment: .leading)
     }
 
-    private func heroCarouselArtworkCard(track: LFMTrack, imageHeight: CGFloat, showOverflow: Bool, badgeText: String) -> some View {
+    private func heroCarouselArtworkCard(track: ChartTrack, imageHeight: CGFloat, showOverflow: Bool, badgeText: String) -> some View {
         ZStack(alignment: .topTrailing) {
             ZStack(alignment: .bottomLeading) {
                 RemoteArtworkScaledFill(url: track.imageURL, maxPixelSize: 900) {
@@ -314,13 +307,13 @@ struct MusicNewTabView: View {
         return rowHeight * 4 + dividerAllowance
     }
 
-    private func trendingTracksChunked(_ items: [LFMTrack]) -> [[LFMTrack]] {
+    private func trendingTracksChunked(_ items: [ChartTrack]) -> [[ChartTrack]] {
         stride(from: 0, to: items.count, by: 4).map {
             Array(items[$0..<min($0 + 4, items.count)])
         }
     }
 
-    private func trendingSongsCarousel(_ items: [LFMTrack]) -> some View {
+    private func trendingSongsCarousel(_ items: [ChartTrack]) -> some View {
         let chunks = trendingTracksChunked(items)
         return GeometryReader { geo in
             let leadingPad = MusicDesign.newTabHorizontalInset
@@ -345,7 +338,7 @@ struct MusicNewTabView: View {
         .frame(height: trendingSongCarouselHeight)
     }
 
-    private func trendingSongsColumn(_ tracks: [LFMTrack]) -> some View {
+    private func trendingSongsColumn(_ tracks: [ChartTrack]) -> some View {
         VStack(spacing: 0) {
             ForEach(Array(tracks.enumerated()), id: \.element.id) { idx, track in
                 trendingSongRow(track: track)
@@ -362,8 +355,8 @@ struct MusicNewTabView: View {
 
     /// Native ``Menu`` (UIKit `UIMenu`) for chart ⋯ — same pattern as Downtify rows in ``DiscoverySearchView``.
     @ViewBuilder
-    private func newTabChartOverflowEllipsis(track: LFMTrack) -> some View {
-        let song = DowntifySong(lastFmChartTrack: track)
+    private func newTabChartOverflowEllipsis(track: ChartTrack) -> some View {
+        let song = DowntifySong(chartTrack: track)
         let resolvedTrack = resolvedLibraryTrack(for: track)
         if downtifyDownloadingIds.contains(song.songId) {
             VStack(alignment: .trailing, spacing: 3) {
@@ -387,7 +380,7 @@ struct MusicNewTabView: View {
                     Task { await requestDowntifyDownload(for: song) }
                 },
                 onGoToAlbum: {
-                    browseLFMSingle = track
+                    browseChartSingle = track
                 },
                 onPlayNext: resolvedTrack.map { lib in
                     {
@@ -403,7 +396,7 @@ struct MusicNewTabView: View {
         }
     }
 
-    private func trendingSongRow(track: LFMTrack) -> some View {
+    private func trendingSongRow(track: ChartTrack) -> some View {
         let lib = resolvedLibraryTrack(for: track)
         return HStack(spacing: 0) {
             Group {
@@ -416,7 +409,7 @@ struct MusicNewTabView: View {
                     .buttonStyle(.plain)
                 } else {
                     NavigationLink {
-                        BrowseAlbumDetailView(source: .lfm(
+                        BrowseAlbumDetailView(source: .chartBrowse(
                             artistName: track.artistName,
                             title: track.name,
                             imageURL: track.imageURL,
@@ -446,7 +439,7 @@ struct MusicNewTabView: View {
         .contentShape(Rectangle())
     }
 
-    private func trendingSongRowMainContent(track: LFMTrack) -> some View {
+    private func trendingSongRowMainContent(track: ChartTrack) -> some View {
         HStack(spacing: 14) {
             AlbumArtworkView(url: track.imageURL, cornerRadius: 8)
                 .frame(width: 56, height: 56)
@@ -497,9 +490,9 @@ struct MusicNewTabView: View {
         }
     }
 
-    // MARK: - Album Shelves (Last.fm)
+    // MARK: - Album Shelves
 
-    private func albumShelf(_ items: [LFMAlbum]) -> some View {
+    private func albumShelf(_ items: [ChartAlbum]) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(spacing: 16) {
                 ForEach(items) { album in
@@ -513,7 +506,7 @@ struct MusicNewTabView: View {
                             .buttonStyle(.plain)
                         } else {
                             NavigationLink {
-                                BrowseAlbumDetailView(source: .lfm(
+                                BrowseAlbumDetailView(source: .chartBrowse(
                                     artistName: album.artistName,
                                     title: album.name,
                                     imageURL: album.imageURL,
