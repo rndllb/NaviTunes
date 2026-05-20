@@ -1042,6 +1042,119 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         }
     }
 
+    /// One-off summary fetch for a single album id. Used to fill in albums that the
+    /// user added to their library but which fell outside the paged `albums(limit:)`
+    /// catalog (large libraries past the alphabetical cap).
+    func albumSummary(forId id: String) async throws -> AlbumSummary? {
+        try requireSignedInUser()
+        let itemsURL = apiURL("Users", userId, "Items", id)
+        var comps = URLComponents(url: itemsURL, resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "Fields", value: Self.jellyfinAlbumListFields)]
+        var req = URLRequest(url: comps.url!)
+        applyAuth(&req)
+        let (data, res) = try await URLSession.shared.data(for: req)
+        guard let http = res as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+        guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return parseAlbum(dict)
+    }
+
+    // MARK: - Library magic playlist
+
+    /// Full contents of a single playlist for library-membership bookkeeping. Mirror of
+    /// the Navidrome equivalent so ``AppModel`` can route through one shape.
+    struct LibraryPlaylistFetch {
+        let id: String
+        let name: String
+        let trackIds: [String]
+        /// Playlist `Overview` — Jellyfin's counterpart to Subsonic `comment`.
+        let comment: String?
+    }
+
+    /// Finds a playlist by exact name. Used to bind the Lyra magic playlist by
+    /// deterministic name across devices.
+    func findPlaylistByName(_ name: String) async throws -> PlaylistSummary? {
+        try requireSignedInUser()
+        let itemsURL = apiURL("Users", userId, "Items")
+        var comps = URLComponents(url: itemsURL, resolvingAgainstBaseURL: false)!
+        comps.queryItems = [
+            URLQueryItem(name: "IncludeItemTypes", value: "Playlist"),
+            URLQueryItem(name: "Recursive", value: "true"),
+            URLQueryItem(name: "SearchTerm", value: name),
+            URLQueryItem(name: "Limit", value: "50"),
+            URLQueryItem(name: "Fields", value: "ChildCount,IsPublic,DateCreated"),
+        ]
+        var req = URLRequest(url: comps.url!)
+        applyAuth(&req)
+        let (data, res) = try await URLSession.shared.data(for: req)
+        guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let items = json?["Items"] as? [[String: Any]] ?? []
+        for dict in items {
+            if let summary = parsePlaylistSummary(dict), summary.name == name {
+                return summary
+            }
+        }
+        return nil
+    }
+
+    /// Creates an empty, private playlist with the given name. Returns the new id.
+    func createEmptyPrivatePlaylist(name: String) async throws -> String {
+        let summary = try await createPlaylist(name: name, trackIds: [], isPublic: false)
+        return summary.id
+    }
+
+    /// One round-trip combination of `getItem` (for Overview) and `fetchPlaylistRows`
+    /// (for track ids). Used on sign-in to seed library state.
+    func fetchLibraryPlaylist(playlistId: String) async throws -> LibraryPlaylistFetch {
+        try requireSignedInUser()
+        async let metaTask = fetchPlaylistMetadata(playlistId: playlistId)
+        async let rowsTask = fetchPlaylistRows(playlistId: playlistId)
+        let (meta, rows) = try await (metaTask, rowsTask)
+        let name = (meta["Name"] as? String) ?? ""
+        let overview = (meta["Overview"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        return LibraryPlaylistFetch(
+            id: playlistId,
+            name: name,
+            trackIds: rows.map(\.track.id),
+            comment: overview,
+        )
+    }
+
+    /// Updates the playlist's Overview field. Jellyfin's metadata endpoint requires the
+    /// full BaseItemDto, so this does a read-mutate-write.
+    func setPlaylistOverview(playlistId: String, overview: String) async throws {
+        try requireSignedInUser()
+        var meta = try await fetchPlaylistMetadata(playlistId: playlistId)
+        meta["Overview"] = overview
+        let url = apiURL("Items", playlistId)
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        applyAuth(&req)
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: meta)
+        let (data, res) = try await URLSession.shared.data(for: req)
+        guard let http = res as? HTTPURLResponse, (200...299).contains(http.statusCode) || http.statusCode == 204 else {
+            let snippet = Self.humanReadableError(from: data) ?? ""
+            throw JellyfinClientError.badResponse(
+                status: (res as? HTTPURLResponse)?.statusCode ?? -1,
+                message: snippet.isEmpty ? "Could not update playlist metadata." : snippet,
+            )
+        }
+    }
+
+    private func fetchPlaylistMetadata(playlistId: String) async throws -> [String: Any] {
+        let url = apiURL("Users", userId, "Items", playlistId)
+        var req = URLRequest(url: url)
+        applyAuth(&req)
+        let (data, res) = try await URLSession.shared.data(for: req)
+        guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+        return (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+    }
+
     private func parsePlaylistSummary(_ dict: [String: Any]) -> PlaylistSummary? {
         guard let id = dict["Id"] as? String, let name = dict["Name"] as? String else {
             return nil

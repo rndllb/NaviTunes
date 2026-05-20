@@ -816,6 +816,89 @@ final class NavidromeClient: MusicLibraryProviding {
         throw NavidromeClientError.libraryTrackDeleteUnsupported
     }
 
+    /// One-off summary fetch for a single album id. Used to fill in albums that the
+    /// user added to their library but which fell outside the paged `albums(limit:)`
+    /// catalog (large libraries past the alphabetical cap).
+    func albumSummary(forId id: String) async throws -> AlbumSummary? {
+        let items = try await subsonicRequest(path: "getAlbum", query: ["id": id])
+        guard let dict = navidromeDict(items["album"]) else { return nil }
+        return parseAlbumDict(dict)
+    }
+
+    // MARK: - Library magic playlist
+
+    /// Full contents of a single playlist for library-membership bookkeeping.
+    struct LibraryPlaylistFetch {
+        let id: String
+        let name: String
+        /// Ordered song IDs, may contain duplicates if the playlist was modified outside Lyra.
+        let trackIds: [String]
+        /// Free-form comment (used to carry ``LibraryMembershipPayload`` JSON).
+        let comment: String?
+    }
+
+    /// Finds an existing playlist whose name matches `name` (case-sensitive). Used to bind
+    /// the Lyra magic playlist by deterministic name across devices.
+    func findPlaylistByName(_ name: String) async throws -> PlaylistSummary? {
+        let items = try await subsonicRequest(path: "getPlaylists", query: [:])
+        guard let root = navidromeDict(items["playlists"]) else { return nil }
+        let rows = childDictArray(from: root, key: "playlist")
+        for dict in rows {
+            guard let parsed = parsePlaylistDictSummary(dict) else { continue }
+            if parsed.name == name { return parsed }
+        }
+        return nil
+    }
+
+    /// One round-trip `getPlaylist` that returns enough to drive Lyra library state:
+    /// the ordered track id list (for song membership) and the comment field (for
+    /// album / playlist membership and add-dates).
+    func fetchLibraryPlaylist(playlistId: String) async throws -> LibraryPlaylistFetch {
+        let items = try await subsonicRequest(path: "getPlaylist", query: ["id": playlistId])
+        guard let pl = navidromeDict(items["playlist"]) else {
+            throw URLError(.cannotParseResponse)
+        }
+        let name = navidromeCoerceString(pl["name"]) ?? ""
+        let comment = navidromeCoerceString(pl["comment"])
+        let entries = childDictArray(from: pl, key: "entry")
+        let trackIds = entries.compactMap { navidromeCoerceString($0["id"]) }
+        return LibraryPlaylistFetch(id: playlistId, name: name, trackIds: trackIds, comment: comment)
+    }
+
+    /// Creates an empty, private playlist with the given name. Returns the new id.
+    /// Used as the fallback path when find-by-name turns up nothing.
+    func createEmptyPrivatePlaylist(name: String) async throws -> String {
+        let items = try await subsonicRequest(path: "createPlaylist", query: ["name": name])
+        if let pl = navidromeDict(items["playlist"]),
+           let id = navidromeCoerceString(pl["id"]) {
+            // Subsonic creates public-by-default; flip to private immediately. Best-effort
+            // — Navidrome accepts the `public` flag on updatePlaylist.
+            try? await setPlaylistPublic(playlistId: id, isPublic: false)
+            return id
+        }
+        // Some Navidrome builds don't return the new playlist body on create — fall back to listing.
+        if let match = try await findPlaylistByName(name) {
+            try? await setPlaylistPublic(playlistId: match.id, isPublic: false)
+            return match.id
+        }
+        throw URLError(.cannotParseResponse)
+    }
+
+    /// Updates the playlist's comment field. Used to persist ``LibraryMembershipPayload``.
+    func setPlaylistComment(playlistId: String, comment: String) async throws {
+        _ = try await subsonicRequest(path: "updatePlaylist", query: [
+            "playlistId": playlistId,
+            "comment": comment,
+        ])
+    }
+
+    private func setPlaylistPublic(playlistId: String, isPublic: Bool) async throws {
+        _ = try await subsonicRequest(path: "updatePlaylist", query: [
+            "playlistId": playlistId,
+            "public": isPublic ? "true" : "false",
+        ])
+    }
+
     private func parsePlaylistDictSummary(_ dict: [String: Any]) -> PlaylistSummary? {
         guard let id = navidromeCoerceString(dict["id"]),
               let name = navidromeCoerceString(dict["name"]),

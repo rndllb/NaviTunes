@@ -135,13 +135,40 @@ struct LibraryView: View {
     }
 
     private var recentItems: [RecentLibraryItem] {
-        let albums = app.recentlyAddedAlbums.map(RecentLibraryItem.album)
-        let playlists = app.libraryPlaylists.map(RecentLibraryItem.playlist)
-        return Array(
-            (albums + playlists)
-                .sorted { ($0.libraryAddedDate ?? .distantPast) > ($1.libraryAddedDate ?? .distantPast) }
-                .prefix(60)
-        )
+        // Three date sources, all resolved against the in-memory catalogs:
+        //   1. Albums explicitly in the magic-playlist comment → per-user add date.
+        //   2. Playlists explicitly in the magic-playlist comment → per-user add date.
+        //   3. Owned playlists from `getPlaylists` → server `created` date (since making
+        //      a playlist counts as adding it). Deduped against (2) by id; the explicit
+        //      entry date wins when both exist.
+        let albumsById = Dictionary(uniqueKeysWithValues: app.libraryAlbums.map { ($0.id, $0) })
+        let playlistsById = Dictionary(uniqueKeysWithValues: app.libraryPlaylists.map { ($0.id, $0) })
+
+        var dated: [(item: RecentLibraryItem, added: Date)] = []
+
+        for entry in app.libraryAlbumEntries {
+            if let album = albumsById[entry.id] {
+                dated.append((.album(album), entry.added))
+            }
+        }
+
+        var seenPlaylistIds: Set<String> = []
+        for entry in app.libraryPlaylistEntries {
+            if let playlist = playlistsById[entry.id] {
+                dated.append((.playlist(playlist), entry.added))
+                seenPlaylistIds.insert(entry.id)
+            }
+        }
+        for playlist in app.libraryPlaylists where !seenPlaylistIds.contains(playlist.id) {
+            // Use `.distantPast` when the server didn't return a `created` date so the
+            // playlist still appears in Recently Added (just sorted to the bottom).
+            dated.append((.playlist(playlist), playlist.libraryAddedDate ?? .distantPast))
+        }
+
+        return dated
+            .sorted { $0.added > $1.added }
+            .prefix(60)
+            .map(\.item)
     }
 
     private var orderedVisibleRows: [LibraryRow] {
@@ -254,19 +281,7 @@ struct LibraryView: View {
                 .padding(.top, 28)
                 .padding(.bottom, 14)
 
-            if recentItems.isEmpty, app.libraryAlbumsLoadError == nil {
-                ProgressView()
-                    .tint(MusicDesign.accent)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 24)
-            } else {
-                LazyVGrid(columns: recentColumns, spacing: 20) {
-                    ForEach(recentItems) { item in
-                        recentItemLink(item)
-                    }
-                }
-                .padding(.horizontal, 20)
-            }
+            recentlyAddedSectionBody
         }
         .padding(.bottom, 24)
     }
@@ -343,11 +358,53 @@ struct LibraryView: View {
         .contentShape(Rectangle())
     }
 
+    /// Three-way state for the Recently Added grid: still resolving membership → spinner,
+    /// resolved but the user hasn't added anything → empty CTA, populated → grid.
+    @ViewBuilder
+    private var recentlyAddedSectionBody: some View {
+        if recentItems.isEmpty {
+            if app.isResolvingLibraryMembership || app.libraryMagicPlaylistId == nil {
+                ProgressView()
+                    .tint(MusicDesign.accent)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 24)
+            } else {
+                recentlyAddedEmptyState
+            }
+        } else {
+            LazyVGrid(columns: recentColumns, spacing: 20) {
+                ForEach(recentItems) { item in
+                    recentItemLink(item)
+                }
+            }
+            .padding(.horizontal, 20)
+        }
+    }
+
+    private var recentlyAddedEmptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "plus.square.on.square")
+                .font(.system(size: 36, weight: .light))
+                .foregroundStyle(MusicDesign.secondaryLabel)
+                .padding(.bottom, 4)
+            Text("Nothing Added Yet")
+                .font(.headline)
+                .foregroundStyle(.primary)
+            Text("Long-press an album or playlist and tap **Add to Library** to see it here.")
+                .font(.subheadline)
+                .foregroundStyle(MusicDesign.secondaryLabel)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 28)
+    }
+
     @ViewBuilder
     private func recentItemLink(_ item: RecentLibraryItem) -> some View {
         switch item {
         case .album(let album):
-            NavigationLink { AlbumDetailView(album: album) } label: { recentCell(item) }
+            NavigationLink { AlbumDetailView(album: album, librarySource: true) } label: { recentCell(item) }
                 .buttonStyle(.plain)
                 .libraryAlbumContextMenu(album)
         case .playlist(let playlist):
@@ -763,7 +820,7 @@ struct FavoritePlaylistView: View {
         .musicNavigationChrome()
         .musicNavigationBarVisibleWhenPushed()
         .navigationDestination(item: $navigateAlbum) { album in
-            AlbumDetailView(album: album)
+            AlbumDetailView(album: album, librarySource: true)
         }
         .task { await load() }
         .onChange(of: app.libraryCatalogEpoch) { _, _ in
@@ -819,6 +876,8 @@ struct FavoritePlaylistView: View {
             hasActiveQueue: !app.player.queue.isEmpty,
             onGoToAlbum: { navigateAlbum = app.albumSummary(for: track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
+            onRemoveFromLibrary: app.isSongInLibrary(track.id)
+                ? { Task { await app.removeSongFromLibrary(track) } } : nil,
             onDeleteFromLibrary: { app.beginLibraryTrackDeletion(track) },
             canDeleteFromLibrary: app.canDeleteFromLibrary,
             onRemoveDownload: app.offline.downloadedTrackIds.contains(track.id)
@@ -1031,7 +1090,7 @@ struct LibraryDownloadedView: View {
 
                         LazyVGrid(columns: albumColumns, spacing: 16) {
                             ForEach(downloadedAlbums) { album in
-                                NavigationLink { AlbumDetailView(album: album) } label: {
+                                NavigationLink { AlbumDetailView(album: album, librarySource: true) } label: {
                                     albumCell(album)
                                 }
                                 .buttonStyle(.plain)
@@ -1068,7 +1127,7 @@ struct LibraryDownloadedView: View {
         .musicNavigationChrome()
         .musicNavigationBarVisibleWhenPushed()
         .navigationDestination(item: $navigateAlbum) { album in
-            AlbumDetailView(album: album)
+            AlbumDetailView(album: album, librarySource: true)
         }
     }
 
@@ -1131,6 +1190,8 @@ struct LibraryDownloadedView: View {
             hasActiveQueue: !app.player.queue.isEmpty,
             onGoToAlbum: { navigateAlbum = resolvedAlbumSummary(for: track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
+            onRemoveFromLibrary: app.isSongInLibrary(track.id)
+                ? { Task { await app.removeSongFromLibrary(track) } } : nil,
             onDeleteFromLibrary: { app.beginLibraryTrackDeletion(track) },
             canDeleteFromLibrary: app.canDeleteFromLibrary,
             onRemoveDownload: { try? app.offline.remove(trackId: track.id) }
@@ -1215,18 +1276,38 @@ struct AlbumsGridView: View {
         [GridItem(.adaptive(minimum: MusicDesign.gridMinCell), spacing: 16, alignment: .top)]
     }
 
+    /// Albums the user has added to their Lyra library, resolved against the cached
+    /// catalog. Newest-added first (per the magic playlist's per-album timestamps).
+    private var libraryAlbums: [AlbumSummary] {
+        let entriesById = Dictionary(uniqueKeysWithValues: app.libraryAlbumEntries.map { ($0.id, $0.added) })
+        let albumsById = Dictionary(uniqueKeysWithValues: app.libraryAlbums.map { ($0.id, $0) })
+        return app.libraryAlbumEntries
+            .compactMap { entry in albumsById[entry.id] }
+            .sorted { lhs, rhs in
+                (entriesById[lhs.id] ?? .distantPast) > (entriesById[rhs.id] ?? .distantPast)
+            }
+    }
+
     var body: some View {
         ScrollView {
-            if app.libraryAlbums.isEmpty, app.libraryAlbumsLoadError == nil {
+            if libraryAlbums.isEmpty, app.libraryAlbumsLoadError == nil, !app.libraryAlbumEntries.isEmpty {
+                // Catalog hasn't caught up to membership yet — wait for the bootstrap merge.
                 ProgressView()
                     .tint(MusicDesign.accent)
                     .frame(maxWidth: .infinity)
                     .padding(.top, 80)
+            } else if libraryAlbums.isEmpty {
+                ContentUnavailableView(
+                    "No Albums in Library",
+                    systemImage: "square.stack",
+                    description: Text("Long-press an album and tap Add to Library to start your collection.")
+                )
+                .padding(.top, 60)
             } else {
                 LazyVGrid(columns: columns, spacing: 20) {
-                    ForEach(app.libraryAlbums) { album in
+                    ForEach(libraryAlbums) { album in
                         NavigationLink {
-                            AlbumDetailView(album: album)
+                            AlbumDetailView(album: album, librarySource: true)
                         } label: {
                             AlbumGridCell(album: album)
                         }
@@ -1318,7 +1399,7 @@ struct ArtistAlbumsView: View {
                 LazyVGrid(columns: columns, spacing: 20) {
                     ForEach(albums) { album in
                         NavigationLink {
-                            AlbumDetailView(album: album)
+                            AlbumDetailView(album: album, librarySource: true)
                         } label: {
                             AlbumGridCell(album: album)
                         }

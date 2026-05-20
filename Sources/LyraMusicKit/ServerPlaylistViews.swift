@@ -344,7 +344,7 @@ struct ServerPlaylistDetailView: View {
         .musicNewTabNavigationChrome()
         .musicNavigationBarVisibleWhenPushed()
         .navigationDestination(item: $navigateAlbum) { album in
-            AlbumDetailView(album: album)
+            AlbumDetailView(album: album, librarySource: true)
         }
         .onAppear {
             if navigationTitleText.isEmpty {
@@ -734,6 +734,8 @@ struct ServerPlaylistDetailView: View {
             onGoToAlbum: { navigateAlbum = app.albumSummary(for: row.track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [row.track]) },
             onRemoveFromPlaylist: { rowPendingRemoval = row },
+            onRemoveFromLibrary: app.isSongInLibrary(row.track.id)
+                ? { Task { await app.removeSongFromLibrary(row.track) } } : nil,
             onDeleteFromLibrary: { app.beginLibraryTrackDeletion(row.track) },
             canDeleteFromLibrary: app.canDeleteFromLibrary,
             onRemoveDownload: app.offline.downloadedTrackIds.contains(row.track.id)

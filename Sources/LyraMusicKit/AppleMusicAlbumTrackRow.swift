@@ -6,18 +6,42 @@ import UIKit
 import AppKit
 #endif
 
-/// Visual phases for the trailing offline glyph (Apple Music–style ring / dot / arrow).
+/// Visual phases for the trailing row glyph. Combines library-membership state with
+/// offline-cache state into one four-way switch so each row only renders one chip.
+///
+/// Apple-Music-style mapping (per locked design):
+/// - ``addToLibrary``    — server has the song, user hasn't added it → `plus`
+/// - ``notCached``       — in library, not yet on this device → `arrow.down`
+/// - ``downloading*``    — fetching offline copy now
+/// - ``cached``          — in library + on device → filled "downloaded" glyph
+/// - ``missing``         — in library but server no longer resolves it → greyed exclamation
+/// - ``request``         — neither in library nor in server (off-server discovery rows) → `icloud.and.arrow.down`
 enum TrackOfflineIndicatorPhase: Equatable {
-    /// In library, not stored for offline — hollow ring + centered dot.
+    case addToLibrary
     case notCached
-    /// Known byte progress (0…1).
     case downloadingDeterminate(Double)
-    /// Length unknown — spinning arc segment.
     case downloadingIndeterminate
-    /// Cached locally — filled mist circle + arrow.
     case cached
+    case missing
+    case request
 
-    init(offlineDownload: OfflineDownloadUIState?, isOfflineCached: Bool) {
+    /// Convenience initializer that derives the phase from the four orthogonal inputs.
+    /// `isInLibrary` / `isInServerCatalog` default to `true` to preserve legacy behavior
+    /// at call sites that haven't been threaded through yet.
+    init(
+        offlineDownload: OfflineDownloadUIState?,
+        isOfflineCached: Bool,
+        isInLibrary: Bool = true,
+        isInServerCatalog: Bool = true,
+    ) {
+        if !isInServerCatalog {
+            self = isInLibrary ? .missing : .request
+            return
+        }
+        if !isInLibrary {
+            self = .addToLibrary
+            return
+        }
         if let s = offlineDownload {
             switch s {
             case .indeterminate:
@@ -34,7 +58,7 @@ enum TrackOfflineIndicatorPhase: Equatable {
         switch self {
         case .downloadingDeterminate, .downloadingIndeterminate:
             return true
-        case .notCached, .cached:
+        case .addToLibrary, .notCached, .cached, .missing, .request:
             return false
         }
     }
@@ -46,6 +70,10 @@ struct TrackOfflineDownloadIndicator: View {
     var onCancelDownload: (() -> Void)?
     /// Tapping the “not cached” dot starts a library download (same as menu Download).
     var onTapStartDownload: (() -> Void)?
+    /// Tapping the "Add to Library" plus glyph adds the song to the user's library.
+    var onAddToLibrary: (() -> Void)?
+    /// Tapping the "Request" cloud glyph forwards to Downtify (off-server discovery rows).
+    var onRequest: (() -> Void)?
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -56,6 +84,8 @@ struct TrackOfflineDownloadIndicator: View {
     var body: some View {
         ZStack {
             switch phase {
+            case .addToLibrary:
+                addToLibraryGlyph
             case .notCached:
                 notCachedRing
             case .downloadingDeterminate(let fraction):
@@ -64,6 +94,10 @@ struct TrackOfflineDownloadIndicator: View {
                 indeterminateRing
             case .cached:
                 cachedGlyph
+            case .missing:
+                missingGlyph
+            case .request:
+                requestGlyph
             }
         }
         .frame(width: slot, height: slot)
@@ -77,6 +111,12 @@ struct TrackOfflineDownloadIndicator: View {
         if phase == .notCached, onTapStartDownload != nil {
             traits.formUnion(.isButton)
         }
+        if phase == .addToLibrary, onAddToLibrary != nil {
+            traits.formUnion(.isButton)
+        }
+        if phase == .request, onRequest != nil {
+            traits.formUnion(.isButton)
+        }
         if phase.isDownloading, onCancelDownload != nil {
             traits.formUnion(.isButton)
         }
@@ -85,14 +125,20 @@ struct TrackOfflineDownloadIndicator: View {
 
     private var accessibilityLabel: String {
         switch phase {
+        case .addToLibrary:
+            return "Add to library"
         case .notCached:
-            return onTapStartDownload != nil ? "On server – tap to download" : "On server, not downloaded"
+            return onTapStartDownload != nil ? "Tap to download" : "Not downloaded"
         case .downloadingDeterminate(let f):
             return "Downloading, \(Int((min(1, max(0, f)) * 100).rounded())) percent"
         case .downloadingIndeterminate:
             return "Downloading"
         case .cached:
             return "Downloaded"
+        case .missing:
+            return "Missing from server"
+        case .request:
+            return "Request"
         }
     }
 
@@ -109,7 +155,55 @@ struct TrackOfflineDownloadIndicator: View {
         }
     }
 
+    /// In-library, not downloaded — plain arrow per the locked design (no cloud, since
+    /// "cloud + arrow" is reserved for the Request action on off-server rows).
     private var notCachedDiskVisual: some View {
+        Image(systemName: "arrow.down")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(MusicDesign.secondaryLabel)
+    }
+
+    /// Plus glyph — adds the song (and its album as a unit) to the user's library.
+    @ViewBuilder
+    private var addToLibraryGlyph: some View {
+        if let onAddToLibrary {
+            Button(action: onAddToLibrary) {
+                addToLibraryVisual
+            }
+            .buttonStyle(.plain)
+        } else {
+            addToLibraryVisual
+        }
+    }
+
+    private var addToLibraryVisual: some View {
+        Image(systemName: "plus")
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(MusicDesign.accent)
+    }
+
+    /// Greyed exclamation — server lost the file but the user's library still references it.
+    /// Read-only per the locked design.
+    private var missingGlyph: some View {
+        Image(systemName: "exclamationmark.circle")
+            .font(.system(size: 13, weight: .regular))
+            .foregroundStyle(MusicDesign.secondaryLabel.opacity(0.5))
+    }
+
+    /// Cloud + arrow — Request the song via Downtify when it's not on the server at all.
+    @ViewBuilder
+    private var requestGlyph: some View {
+        if let onRequest {
+            Button(action: onRequest) {
+                requestVisual
+            }
+            .buttonStyle(.plain)
+        } else {
+            requestVisual
+        }
+    }
+
+    private var requestVisual: some View {
         Image(systemName: "icloud.and.arrow.down")
             .font(.system(size: 13, weight: .regular))
             .foregroundStyle(MusicDesign.secondaryLabel)
@@ -230,10 +324,16 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
     var offlineDownload: OfflineDownloadUIState? = nil
     /// Local cache file exists for this track.
     var isOfflineCached: Bool = false
+    /// `true` if the song is in the user's Lyra library (magic-playlist membership).
+    /// Drives the row chip into Add-to-Library vs Download states. Defaults to `true`
+    /// so legacy call sites in library-only views keep their current behavior.
+    var isInLibrary: Bool = true
     /// Tap stop square while downloading — cooperatively cancels ``OfflineDownloadManager.cache``.
     var onCancelOfflineDownload: (() -> Void)? = nil
     /// Tap hollow dot to start the same download as the row Download menu action.
     var onTapStartOfflineDownload: (() -> Void)? = nil
+    /// Tap the plus chip — adds the song's album to the user's Lyra library.
+    var onTapAddToLibrary: (() -> Void)? = nil
     /// Hide the offline column (e.g. non-library browse placeholders).
     var showsOfflineIndicator: Bool = true
     /// Album page adaptive chrome (index / subtitle / ⋯ — not fixed grey ``MusicDesign.secondaryLabel``).
@@ -243,7 +343,11 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
     @ViewBuilder let menuContent: () -> MenuItems
 
     private var offlinePhase: TrackOfflineIndicatorPhase {
-        TrackOfflineIndicatorPhase(offlineDownload: offlineDownload, isOfflineCached: isOfflineCached)
+        TrackOfflineIndicatorPhase(
+            offlineDownload: offlineDownload,
+            isOfflineCached: isOfflineCached,
+            isInLibrary: isInLibrary,
+        )
     }
 
     private var itemSize: SongListItemSize { app.songListItemSize }
@@ -299,7 +403,8 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
                 TrackOfflineDownloadIndicator(
                     phase: offlinePhase,
                     onCancelDownload: offlinePhase.isDownloading ? onCancelOfflineDownload : nil,
-                    onTapStartDownload: offlinePhase == .notCached ? onTapStartOfflineDownload : nil
+                    onTapStartDownload: offlinePhase == .notCached ? onTapStartOfflineDownload : nil,
+                    onAddToLibrary: offlinePhase == .addToLibrary ? onTapAddToLibrary : nil,
                 )
                 .padding(.top, 1)
             }

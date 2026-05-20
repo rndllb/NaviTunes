@@ -141,6 +141,29 @@ public final class AppModel: ObservableObject {
     /// Jellyfin / Navidrome playlists (excludes in-app “Favorite Songs”).
     @Published private(set) var libraryPlaylists: [PlaylistSummary] = []
 
+    // MARK: - Lyra "My Library" magic playlist
+    //
+    // One private playlist per (backend, user) acts as the canonical store of what the
+    // user has personally added to *their* library, server-side. The playlist's track
+    // list is the song-membership set; the playlist's `comment` / `Overview` field
+    // carries a JSON ``LibraryMembershipPayload`` covering album + playlist membership.
+    // Filtered out of every user-facing playlist surface by id and by name prefix.
+
+    /// Server-side id of the resolved magic playlist for the active session. `nil` until
+    /// ``refreshLibraryMembership()`` succeeds at least once after sign-in.
+    @Published private(set) var libraryMagicPlaylistId: String?
+    /// Song IDs the user has added to their library (mirrors magic playlist tracks).
+    @Published private(set) var librarySongIds: Set<String> = []
+    /// Album IDs in the user's library, with per-album add date (from the magic
+    /// playlist's JSON comment payload).
+    @Published private(set) var libraryAlbumEntries: [LibraryMembershipPayload.Entry] = []
+    /// Playlist IDs the user has added to their library (separate from the magic
+    /// playlist itself; the magic playlist is never listed here).
+    @Published private(set) var libraryPlaylistEntries: [LibraryMembershipPayload.Entry] = []
+    /// `true` while ``refreshLibraryMembership()`` is in flight. Used by Add/Remove
+    /// buttons to guard against double-tap reentrancy.
+    @Published private(set) var isResolvingLibraryMembership = false
+
     /// When non-nil, ``MainShellView`` presents ``AddToPlaylistSheet``.
     @Published var playlistPickerPayload: PlaylistPickerPayload?
 
@@ -513,6 +536,10 @@ public final class AppModel: ObservableObject {
         discoveryLibraryTracks = []
         libraryTrackIndexLoadError = nil
         isIndexingLibraryTracks = false
+        libraryMagicPlaylistId = nil
+        librarySongIds = []
+        libraryAlbumEntries = []
+        libraryPlaylistEntries = []
         KeychainStore.clear()
         player.reset()
         canDeleteFromLibrary = false
@@ -546,6 +573,10 @@ public final class AppModel: ObservableObject {
                 tracks: discoveryLibraryTracks,
                 playlists: libraryPlaylists,
                 favoriteTrackIds: Array(favoriteTrackIds),
+                libraryMagicPlaylistId: libraryMagicPlaylistId,
+                librarySongIds: Array(librarySongIds),
+                libraryAlbumEntries: libraryAlbumEntries,
+                libraryPlaylistEntries: libraryPlaylistEntries,
             ),
         )
     }
@@ -560,6 +591,21 @@ public final class AppModel: ObservableObject {
             if !snap.playlists.isEmpty { libraryPlaylists = snap.playlists }
             if !snap.favoriteTrackIds.isEmpty {
                 favoriteTrackIds = Set(snap.favoriteTrackIds)
+            }
+            // Restore library-membership state so Library → Songs/Albums/Recently Added
+            // render the user's curated set on cold launch without waiting for the
+            // server round-trip in ``refreshLibraryMembership``.
+            if let id = snap.libraryMagicPlaylistId, !id.isEmpty {
+                libraryMagicPlaylistId = id
+            }
+            if !snap.librarySongIds.isEmpty {
+                librarySongIds = Set(snap.librarySongIds)
+            }
+            if !snap.libraryAlbumEntries.isEmpty {
+                libraryAlbumEntries = snap.libraryAlbumEntries
+            }
+            if !snap.libraryPlaylistEntries.isEmpty {
+                libraryPlaylistEntries = snap.libraryPlaylistEntries
             }
             offline.backfillRecordsIfMissing(knownTracks: snap.tracks)
         } else {
@@ -676,7 +722,377 @@ public final class AppModel: ObservableObject {
         async let home: Void = refreshHome()
         async let stats: Void = refreshLibraryStatistics()
         async let browse: Void = refreshNewTabBrowse()
-        _ = await (home, stats, browse)
+        async let membership: Void = refreshLibraryMembership()
+        _ = await (home, stats, browse, membership)
+    }
+
+    // MARK: - Library membership (magic playlist)
+
+    /// `host` component of the active server URL, lowercased for the membership cache key.
+    private var libraryMagicPlaylistHost: String? {
+        URL(string: baseURLString.trimmingCharacters(in: .whitespacesAndNewlines))?.host?.lowercased()
+    }
+
+    /// Stable per-user identifier used in the magic playlist name hash + cache key.
+    /// Jellyfin: the session user UUID. Navidrome: the lowercased username.
+    private var libraryMagicPlaylistUserKey: String? {
+        switch backendKind {
+        case .jellyfin:
+            let uid = jellyfin?.sessionUserId ?? ""
+            return uid.isEmpty ? nil : uid
+        case .navidrome:
+            let user = username.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return user.isEmpty ? nil : user
+        }
+    }
+
+    /// Convenience tuple of the identifying inputs to the magic playlist + its cache.
+    /// `nil` when sign-in state isn't sufficient to resolve a playlist yet.
+    private var libraryMagicPlaylistIdentity: (name: String, host: String?, userKey: String)? {
+        guard isSignedIn, let userKey = libraryMagicPlaylistUserKey else { return nil }
+        let host = libraryMagicPlaylistHost
+        let name = LibraryMembership.magicPlaylistName(backend: backendKind, host: host, userKey: userKey)
+        return (name, host, userKey)
+    }
+
+    /// Resolves the user's magic playlist (find by deterministic name, create when absent),
+    /// then loads its track ids and JSON membership payload into the published state.
+    /// Cheap on subsequent runs because the resolved id is cached in `UserDefaults`.
+    func refreshLibraryMembership() async {
+        guard let identity = libraryMagicPlaylistIdentity else {
+            libraryMagicPlaylistId = nil
+            librarySongIds = []
+            libraryAlbumEntries = []
+            libraryPlaylistEntries = []
+            return
+        }
+        isResolvingLibraryMembership = true
+        defer { isResolvingLibraryMembership = false }
+        do {
+            let resolvedId = try await resolveMagicPlaylistId(identity: identity)
+            let fetch = try await fetchMagicPlaylistContents(playlistId: resolvedId)
+            if fetch.name != identity.name {
+                // Name drift (user renamed the magic playlist via web UI). Re-resolve from scratch.
+                LibraryMembership.clearCachedPlaylistId(backend: backendKind, host: identity.host, userKey: identity.userKey)
+                let freshId = try await resolveMagicPlaylistId(identity: identity)
+                let freshFetch = try await fetchMagicPlaylistContents(playlistId: freshId)
+                applyMagicPlaylistFetch(playlistId: freshId, fetch: freshFetch)
+            } else {
+                applyMagicPlaylistFetch(playlistId: resolvedId, fetch: fetch)
+            }
+        } catch {
+            // Don't surface this as a global error — library still functions without it,
+            // just without the user-curated overlay. Try again on the next bootstrap.
+            libraryMagicPlaylistId = nil
+        }
+    }
+
+    private struct LibraryPlaylistFetchShape {
+        let id: String
+        let name: String
+        let trackIds: [String]
+        let comment: String?
+    }
+
+    private func resolveMagicPlaylistId(identity: (name: String, host: String?, userKey: String)) async throws -> String {
+        if let cached = LibraryMembership.cachedPlaylistId(
+            backend: backendKind, host: identity.host, userKey: identity.userKey,
+        ) {
+            // Trust the cache without a roundtrip; if the fetch later fails, we re-resolve.
+            return cached
+        }
+        let resolved = try await findOrCreateMagicPlaylist(name: identity.name)
+        LibraryMembership.cachePlaylistId(
+            resolved, backend: backendKind, host: identity.host, userKey: identity.userKey,
+        )
+        return resolved
+    }
+
+    private func findOrCreateMagicPlaylist(name: String) async throws -> String {
+        switch backendKind {
+        case .jellyfin:
+            guard let client = jellyfin else { throw URLError(.userAuthenticationRequired) }
+            if let existing = try await client.findPlaylistByName(name) { return existing.id }
+            return try await client.createEmptyPrivatePlaylist(name: name)
+        case .navidrome:
+            guard let client = navidrome else { throw URLError(.userAuthenticationRequired) }
+            if let existing = try await client.findPlaylistByName(name) { return existing.id }
+            return try await client.createEmptyPrivatePlaylist(name: name)
+        }
+    }
+
+    private func fetchMagicPlaylistContents(playlistId: String) async throws -> LibraryPlaylistFetchShape {
+        switch backendKind {
+        case .jellyfin:
+            guard let client = jellyfin else { throw URLError(.userAuthenticationRequired) }
+            let fetch = try await client.fetchLibraryPlaylist(playlistId: playlistId)
+            return LibraryPlaylistFetchShape(id: fetch.id, name: fetch.name, trackIds: fetch.trackIds, comment: fetch.comment)
+        case .navidrome:
+            guard let client = navidrome else { throw URLError(.userAuthenticationRequired) }
+            let fetch = try await client.fetchLibraryPlaylist(playlistId: playlistId)
+            return LibraryPlaylistFetchShape(id: fetch.id, name: fetch.name, trackIds: fetch.trackIds, comment: fetch.comment)
+        }
+    }
+
+    private func applyMagicPlaylistFetch(playlistId: String, fetch: LibraryPlaylistFetchShape) {
+        let payload = LibraryMembershipPayload.decode(fetch.comment)
+        libraryMagicPlaylistId = playlistId
+        librarySongIds = Set(fetch.trackIds)
+        libraryAlbumEntries = payload.albums
+        libraryPlaylistEntries = payload.playlists
+        Task { await backfillMissingLibraryAlbumSummaries() }
+    }
+
+    /// Fetches AlbumSummary for any library-entry album id that isn't yet in the in-memory
+    /// catalog and merges the results into `libraryAlbums`. Without this, albums the user
+    /// added that fall outside the paged `albums(limit:)` listing would silently fail to
+    /// render in Library → Albums and Recently Added.
+    private func backfillMissingLibraryAlbumSummaries() async {
+        let knownIds = Set(libraryAlbumsById.keys)
+        let missingIds = libraryAlbumEntries.map(\.id).filter { !knownIds.contains($0) }
+        guard !missingIds.isEmpty else { return }
+        var fetched: [AlbumSummary] = []
+        for id in missingIds {
+            let summary: AlbumSummary?
+            switch backendKind {
+            case .jellyfin:
+                summary = try? await jellyfin?.albumSummary(forId: id)
+            case .navidrome:
+                summary = try? await navidrome?.albumSummary(forId: id)
+            }
+            if let summary { fetched.append(summary) }
+        }
+        guard !fetched.isEmpty else { return }
+        // Merge into the catalog in one assignment so the @Published setter only
+        // fires once and `libraryAlbumsById` rebuilds once.
+        var merged = libraryAlbums
+        let existing = Set(merged.map(\.id))
+        for album in fetched where !existing.contains(album.id) {
+            merged.append(album)
+        }
+        libraryAlbums = merged
+        persistLibrarySnapshot()
+    }
+
+    /// Re-encodes the current album/playlist membership and writes it back to the magic
+    /// playlist's comment field. Safe to call after every mutation; idempotent.
+    private func persistLibraryMembershipPayload() async {
+        guard let playlistId = libraryMagicPlaylistId else { return }
+        let payload = LibraryMembershipPayload(
+            albums: libraryAlbumEntries,
+            playlists: libraryPlaylistEntries,
+        )
+        do {
+            switch backendKind {
+            case .jellyfin:
+                try await jellyfin?.setPlaylistOverview(playlistId: playlistId, overview: payload.encoded())
+            case .navidrome:
+                try await navidrome?.setPlaylistComment(playlistId: playlistId, comment: payload.encoded())
+            }
+        } catch {
+            // Best-effort: a write failure leaves the in-memory state out of sync with the
+            // server. Next ``refreshLibraryMembership`` will reconcile.
+        }
+    }
+
+    // MARK: - Library membership: queries + mutations
+
+    /// `true` when the song is in the user's magic playlist (server-backed).
+    func isSongInLibrary(_ id: String) -> Bool { librarySongIds.contains(id) }
+
+    /// `true` when the album appears in the user's library (any track present, or
+    /// the album was added as a unit via ``addAlbumToLibrary``).
+    func isAlbumInLibrary(_ id: String) -> Bool {
+        libraryAlbumEntries.contains(where: { $0.id == id })
+    }
+
+    /// `true` when the playlist is in the user's library (separate from the user's
+    /// owned playlists — only those they explicitly added via ``addPlaylistToLibrary``).
+    func isPlaylistInLibrary(_ id: String) -> Bool {
+        libraryPlaylistEntries.contains(where: { $0.id == id })
+    }
+
+    /// Adds one song to the user's library. Per the locked Apple-Music model:
+    ///   * Only this song is added to the magic playlist's tracks.
+    ///   * The song's album is registered in `comment.albums` so the album appears in
+    ///     Library → Albums; the album detail filters to the added rows.
+    ///   * Other tracks of the album are *not* added — the user must Add the album
+    ///     explicitly (or the song-level "+" on more rows) to grow the set.
+    func addSongToLibrary(_ track: Track) async {
+        guard let playlistId = libraryMagicPlaylistId else { return }
+        guard !librarySongIds.contains(track.id) else { return }
+        let snapshotSongs = librarySongIds
+        let snapshotAlbums = libraryAlbumEntries
+        librarySongIds.insert(track.id)
+        if !track.albumId.isEmpty, !libraryAlbumEntries.contains(where: { $0.id == track.albumId }) {
+            libraryAlbumEntries.append(.init(id: track.albumId, added: Date()))
+            ensureAlbumInCatalog(albumIdOrFallback: track.albumId, derivedFrom: track)
+        }
+        do {
+            try await addTracksToServerMagicPlaylist(playlistId: playlistId, trackIds: [track.id])
+        } catch {
+            librarySongIds = snapshotSongs
+            libraryAlbumEntries = snapshotAlbums
+            return
+        }
+        await persistLibraryMembershipPayload()
+        persistLibrarySnapshot()
+    }
+
+    /// Adds every track of `album` to the magic playlist and records the album entry.
+    /// Caller may supply already-loaded `tracks`; otherwise we fetch them.
+    func addAlbumToLibrary(_ album: AlbumSummary, tracks providedTracks: [Track]? = nil) async {
+        guard let playlistId = libraryMagicPlaylistId, let lib = activeLibrary else { return }
+        let tracks: [Track]
+        if let providedTracks { tracks = providedTracks } else {
+            tracks = (try? await lib.tracks(forAlbumId: album.id)) ?? []
+        }
+        let toAdd = tracks.map(\.id).filter { !librarySongIds.contains($0) }
+        let snapshotSongs = librarySongIds
+        let snapshotAlbums = libraryAlbumEntries
+        librarySongIds.formUnion(toAdd)
+        if !libraryAlbumEntries.contains(where: { $0.id == album.id }) {
+            libraryAlbumEntries.append(.init(id: album.id, added: Date()))
+        }
+        // Make sure the album summary is in the in-memory catalog so Library → Albums
+        // renders it immediately, even when the album was loaded from a source outside
+        // the first `libraryAlbums` page (search results, recently added shelf, etc.).
+        ensureAlbumInCatalog(album)
+        if !toAdd.isEmpty {
+            do {
+                try await addTracksToServerMagicPlaylist(playlistId: playlistId, trackIds: toAdd)
+            } catch {
+                librarySongIds = snapshotSongs
+                libraryAlbumEntries = snapshotAlbums
+                return
+            }
+        }
+        await persistLibraryMembershipPayload()
+        persistLibrarySnapshot()
+    }
+
+    /// Appends an album to `libraryAlbums` if it isn't already cached, so views that
+    /// resolve `libraryAlbumEntries` against the catalog don't drop newly-added albums.
+    private func ensureAlbumInCatalog(_ album: AlbumSummary) {
+        if libraryAlbumsById[album.id] != nil { return }
+        libraryAlbums.append(album)
+    }
+
+    /// Synthesizes a minimal AlbumSummary from a track and inserts it when the album
+    /// isn't already known. Used by ``addSongToLibrary`` so the album appears in
+    /// Library → Albums even when we never loaded its full summary.
+    private func ensureAlbumInCatalog(albumIdOrFallback id: String, derivedFrom track: Track) {
+        if libraryAlbumsById[id] != nil { return }
+        let synthesized = AlbumSummary(
+            id: id,
+            title: track.albumTitle.isEmpty ? "Album" : track.albumTitle,
+            artist: track.artist,
+            artworkURL: track.artworkURL,
+            trackCount: nil,
+            libraryAddedDate: track.libraryAddedDate,
+            genres: track.genres,
+            releaseYear: track.releaseYear,
+        )
+        libraryAlbums.append(synthesized)
+    }
+
+    /// Removes a single song from the user's library (magic playlist tracks). Does NOT
+    /// drop the album entry from `comment.albums` — the album stays in library and its
+    /// detail view simply has one fewer track. Pair with ``removeAlbumFromLibrary`` for
+    /// the full album sweep.
+    func removeSongFromLibrary(_ track: Track) async {
+        guard let playlistId = libraryMagicPlaylistId else { return }
+        guard librarySongIds.contains(track.id) else { return }
+        let snapshotSongs = librarySongIds
+        librarySongIds.remove(track.id)
+        do {
+            try await removeTracksFromServerMagicPlaylist(
+                playlistId: playlistId, trackIds: [track.id],
+            )
+        } catch {
+            librarySongIds = snapshotSongs
+            return
+        }
+        persistLibrarySnapshot()
+    }
+
+    /// Removes every track of `album` from the magic playlist and drops the album entry.
+    func removeAlbumFromLibrary(_ album: AlbumSummary) async {
+        guard let playlistId = libraryMagicPlaylistId, let lib = activeLibrary else { return }
+        // We need the album's full track list to know which IDs to drop; refetch in case
+        // tracks were added on the server since last sync.
+        let albumTracks = (try? await lib.tracks(forAlbumId: album.id)) ?? []
+        let idsToRemove = Set(albumTracks.map(\.id)).intersection(librarySongIds)
+        let snapshotSongs = librarySongIds
+        let snapshotAlbums = libraryAlbumEntries
+        librarySongIds.subtract(idsToRemove)
+        libraryAlbumEntries.removeAll { $0.id == album.id }
+        if !idsToRemove.isEmpty {
+            do {
+                try await removeTracksFromServerMagicPlaylist(
+                    playlistId: playlistId, trackIds: idsToRemove,
+                )
+            } catch {
+                librarySongIds = snapshotSongs
+                libraryAlbumEntries = snapshotAlbums
+                return
+            }
+        }
+        await persistLibraryMembershipPayload()
+        persistLibrarySnapshot()
+    }
+
+    /// Registers a server playlist in the user's Lyra library. The playlist itself is
+    /// untouched on the server — only our `comment` JSON gets a new entry.
+    func addPlaylistToLibrary(_ playlist: PlaylistSummary) async {
+        guard libraryMagicPlaylistId != nil else { return }
+        guard !libraryPlaylistEntries.contains(where: { $0.id == playlist.id }) else { return }
+        libraryPlaylistEntries.append(.init(id: playlist.id, added: Date()))
+        await persistLibraryMembershipPayload()
+        persistLibrarySnapshot()
+    }
+
+    func removePlaylistFromLibrary(_ playlist: PlaylistSummary) async {
+        guard libraryMagicPlaylistId != nil else { return }
+        guard libraryPlaylistEntries.contains(where: { $0.id == playlist.id }) else { return }
+        libraryPlaylistEntries.removeAll { $0.id == playlist.id }
+        await persistLibraryMembershipPayload()
+        persistLibrarySnapshot()
+    }
+
+    private func addTracksToServerMagicPlaylist(playlistId: String, trackIds: [String]) async throws {
+        guard !trackIds.isEmpty else { return }
+        switch backendKind {
+        case .jellyfin:
+            try await jellyfin?.addTracksToPlaylist(playlistId: playlistId, trackIds: trackIds)
+        case .navidrome:
+            try await navidrome?.addTracksToPlaylist(playlistId: playlistId, trackIds: trackIds)
+        }
+    }
+
+    /// Backend-specific quirks: Jellyfin removes by PlaylistItemId (entry id); Navidrome
+    /// by zero-based index in the current playlist. Both require fetching the current
+    /// playlist contents to map track ids → removal keys.
+    private func removeTracksFromServerMagicPlaylist(
+        playlistId: String, trackIds: Set<String>,
+    ) async throws {
+        guard !trackIds.isEmpty else { return }
+        switch backendKind {
+        case .jellyfin:
+            guard let client = jellyfin else { return }
+            let rows = try await client.fetchPlaylistRows(playlistId: playlistId)
+            let entryIds = rows
+                .filter { trackIds.contains($0.track.id) }
+                .compactMap { $0.jellyfinEntryId }
+            try await client.removeTracksFromPlaylist(playlistId: playlistId, entryIds: entryIds)
+        case .navidrome:
+            guard let client = navidrome else { return }
+            let rows = try await client.fetchPlaylistRows(playlistId: playlistId)
+            let indexes = rows
+                .filter { trackIds.contains($0.track.id) }
+                .compactMap(\.navidromeIndex)
+            try await client.removeTracksFromPlaylist(playlistId: playlistId, indexes: indexes)
+        }
     }
 
     private func rebuildLibraryAlbumIndex() {
@@ -712,22 +1128,29 @@ public final class AppModel: ObservableObject {
     }
 
     /// Refreshes ``libraryPlaylists`` from the active server (Jellyfin / Navidrome).
+    /// Filters out the Lyra magic playlist by both id and `__lyra_` name prefix so it
+    /// never appears in user-facing playlist surfaces.
     func refreshLibraryPlaylists() async {
+        let fetched: [PlaylistSummary]
         switch backendKind {
         case .jellyfin:
             guard let client = jellyfin else { libraryPlaylists = []; return }
-            do {
-                libraryPlaylists = try await client.fetchPlaylistSummaries()
-            } catch {
-                libraryPlaylists = []
-            }
+            fetched = (try? await client.fetchPlaylistSummaries()) ?? []
         case .navidrome:
             guard let client = navidrome else { libraryPlaylists = []; return }
-            do {
-                libraryPlaylists = try await client.fetchPlaylistSummaries()
-            } catch {
-                libraryPlaylists = []
-            }
+            fetched = (try? await client.fetchPlaylistSummaries()) ?? []
+        }
+        libraryPlaylists = filterOutMagicPlaylist(fetched)
+    }
+
+    /// Strips the Lyra magic playlist from any list of server playlists. Belt-and-braces:
+    /// matches by cached id when known *and* by `__lyra_` name prefix as a safety net.
+    private func filterOutMagicPlaylist(_ playlists: [PlaylistSummary]) -> [PlaylistSummary] {
+        let magicId = libraryMagicPlaylistId
+        return playlists.filter { p in
+            if let magicId, p.id == magicId { return false }
+            if LibraryMembership.isMagicPlaylistName(p.name) { return false }
+            return true
         }
     }
 
@@ -1439,8 +1862,15 @@ public final class AppModel: ObservableObject {
             // Token / credentials rejected — re-authenticate (also covers "user changed password
             // on server" recovery flow).
             await signIn()
-        case .ok, .unreachable:
-            // Healthy session OR transient outage — never re-leak the password on cold launch.
+        case .ok:
+            // Healthy restored session: kick the same bootstrap fresh sign-ins do so the
+            // library catalog, home shelves, and ``refreshLibraryMembership`` all reconcile
+            // with the server. Without this, cold launches show only what the on-disk
+            // snapshot happened to contain.
+            scheduleLibraryBootstrap()
+        case .unreachable:
+            // Transient outage — never re-leak the password on cold launch. The on-disk
+            // snapshot is what the user sees until connectivity recovers.
             break
         }
     }
