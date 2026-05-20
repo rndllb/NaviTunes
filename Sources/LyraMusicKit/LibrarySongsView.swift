@@ -26,6 +26,7 @@ struct LibrarySongsView: View {
     @State private var libraryFilter = LibrarySongLibraryFilter.allSongs
     @State private var sort = LibrarySongSort.dateAdded
     @State private var navigateAlbum: AlbumSummary?
+    @State private var trackPendingDownloadedDelete: Track?
     @State private var lastPaginationOffset: Int?
     /// Cached projection of `tracks` → filter → search → sort. Recomputed only when an input
     /// changes, so scroll redraws don't re-sort 10k+ items on every body call.
@@ -90,8 +91,8 @@ struct LibrarySongsView: View {
     @ViewBuilder
     private var trackListRows: some View {
         let triggerTrackId = paginationTriggerTrackId
-        ForEach(displayed) { track in
-            songRow(track)
+        ForEach(Array(displayed.enumerated()), id: \.element.id) { index, track in
+            songRow(track, showsBottomDivider: index < displayed.count - 1)
                 .onAppear {
                     if track.id == triggerTrackId {
                         Task { await loadMoreIfNeeded(triggeredBy: track.id) }
@@ -220,6 +221,11 @@ struct LibrarySongsView: View {
         .onChange(of: app.librarySongIds) { _, _ in
             tracks = libraryTracksFromCatalog()
         }
+        .downloadedTrackDeleteSheet(
+            track: $trackPendingDownloadedDelete,
+            app: app,
+            offline: offline
+        )
     }
 
     @ViewBuilder
@@ -313,7 +319,7 @@ struct LibrarySongsView: View {
         )
     }
 
-    private func songRow(_ track: Track) -> some View {
+    private func songRow(_ track: Track, showsBottomDivider: Bool) -> some View {
         LibrarySongRow(
             track: track,
             artworkURL: app.resolvedArtworkURL(for: track),
@@ -338,7 +344,11 @@ struct LibrarySongsView: View {
             onDeleteFromLibrary: { app.beginLibraryTrackDeletion(track) },
             canDeleteFromLibrary: app.canDeleteFromLibrary,
             onRemoveDownload: app.offline.downloadedTrackIds.contains(track.id)
-                ? { try? app.offline.remove(trackId: track.id) } : nil
+                ? { try? app.offline.remove(trackId: track.id) } : nil,
+            showsBottomDivider: showsBottomDivider,
+            onPresentDownloadedDeleteSheet: {
+                trackPendingDownloadedDelete = track
+            }
         )
         .equatable()
         .librarySongListRowStyle()
@@ -479,7 +489,7 @@ struct LibrarySongRow: View, Equatable {
     let onCancelOfflineDownload: () -> Void
     let onFavorite: () -> Void
     let onPlayNext: () -> Void
-    let onGoToAlbum: () -> Void
+    var onGoToAlbum: (() -> Void)? = nil
     var onAddToPlaylist: (() -> Void)? = nil
     var onRemoveFromPlaylist: (() -> Void)? = nil
     /// User-level remove from Lyra library (drops the song from the magic playlist).
@@ -510,6 +520,16 @@ struct LibrarySongRow: View, Equatable {
     var rowBackgroundFill: Color = MusicDesign.background
     /// Indigo/blue pill swipe actions and compact row metrics on album detail.
     var usesAlbumSwipeChrome: Bool = false
+    /// Hairline under the row (inside the cell so it stays put while swiping).
+    var showsBottomDivider: Bool = false
+    /// Album-detail divider tint; ignored unless ``usesAlbumSwipeChrome``.
+    var dividerPalette: ArtworkDynamicGradient.BackdropPalette? = nil
+    /// 1-based track # on album detail rows.
+    var trackDisplayIndex: Int? = nil
+    /// Reserved ★ slot on library song lists (star shown when favorited).
+    var showsLeadingFavoriteStar: Bool = true
+    /// Swipe trash on a downloaded library track — host presents ``downloadedTrackDeleteSheet``.
+    var onPresentDownloadedDeleteSheet: (() -> Void)? = nil
 
     private static let rowArtworkDecodePixels: CGFloat = 192
 
@@ -526,6 +546,8 @@ struct LibrarySongRow: View, Equatable {
             && lhs.showsArtist == rhs.showsArtist
             && lhs.hidesAddToLibraryChip == rhs.hidesAddToLibraryChip
             && lhs.usesAlbumSwipeChrome == rhs.usesAlbumSwipeChrome
+            && lhs.trackDisplayIndex == rhs.trackDisplayIndex
+            && lhs.showsLeadingFavoriteStar == rhs.showsLeadingFavoriteStar
             && (lhs.onRemoveFromPlaylist != nil) == (rhs.onRemoveFromPlaylist != nil)
             && (lhs.onRemoveFromLibrary != nil) == (rhs.onRemoveFromLibrary != nil)
     }
@@ -543,8 +565,67 @@ struct LibrarySongRow: View, Equatable {
         offlinePhase != .notCached
     }
 
-    private var showsDownloadSwipeAction: Bool {
+    fileprivate var showsDownloadSwipeAction: Bool {
         !isOfflineCached && offlineDownload == nil
+    }
+
+    /// In library and on device — trailing trash opens the same sheet as the album hero checkmark.
+    private var confirmsDownloadedDelete: Bool {
+        isInLibrary
+            && isOfflineCached
+            && onRemoveFromLibrary != nil
+            && onPresentDownloadedDeleteSheet != nil
+    }
+
+    fileprivate var trailingDeleteSwipeAction: (() -> Void)? {
+        guard onRemoveFromLibrary != nil else { return nil }
+        if confirmsDownloadedDelete, let onPresentDownloadedDeleteSheet {
+            return onPresentDownloadedDeleteSheet
+        }
+        return onRemoveFromLibrary
+    }
+
+    private var hasArtistSubtitle: Bool {
+        showsArtist && !track.artist.isEmpty
+    }
+
+    private var rowVerticalAlignment: VerticalAlignment {
+        hasArtistSubtitle ? .top : .center
+    }
+
+    private var showsLeadingIndicators: Bool {
+        usesAlbumSwipeChrome || showsLeadingFavoriteStar
+    }
+
+    private var titleForeground: Color {
+        if usesAlbumSwipeChrome, let dividerPalette {
+            return dividerPalette.heroChromePrimary
+        }
+        return .primary
+    }
+
+    private var subtitleForeground: Color {
+        if usesAlbumSwipeChrome, let dividerPalette {
+            return dividerPalette.heroChromeSecondary
+        }
+        return MusicDesign.secondaryLabel
+    }
+
+    private var libraryDividerLeadingInset: CGFloat {
+        let horizontalPadding: CGFloat = usesAlbumSwipeChrome
+            ? AlbumTrackRowLayout.horizontalPadding
+            : 20
+        if usesAlbumSwipeChrome {
+            return AlbumTrackRowLayout.librarySongTitleLeadingFromScreenEdge
+        }
+        var inset = horizontalPadding
+        if showsLeadingFavoriteStar {
+            inset += AlbumTrackIndexColumn.starSlotWidth + 8
+        }
+        if showsArtwork {
+            inset += itemSize.artworkSide + 14
+        }
+        return inset
     }
 
     var body: some View {
@@ -554,16 +635,44 @@ struct LibrarySongRow: View, Equatable {
                 onPlayNext: onPlayNext,
                 onDownload: onDownload,
                 onRemoveFromPlaylist: onRemoveFromPlaylist,
-                onRemoveFromLibrary: onRemoveFromLibrary,
+                onRemoveFromLibrary: trailingDeleteSwipeAction,
                 onDeleteFromLibrary: canDeleteFromLibrary ? onDeleteFromLibrary : nil,
+                trailingLibraryDeleteIsDestructive: !confirmsDownloadedDelete,
                 chipMetrics: usesAlbumSwipeChrome ? .albumTrack : nil
             )
     }
 
-    private var rowContent: some View {
-        HStack(alignment: .center, spacing: 10) {
+    fileprivate var rowContent: some View {
+        rowBody
+            .frame(minHeight: usesAlbumSwipeChrome ? AlbumTrackRowLayout.rowMinHeight : nil)
+            .background(alignment: .bottom) {
+                if showsBottomDivider {
+                    if usesAlbumSwipeChrome, let dividerPalette {
+                        AppleMusicAlbumTrackDivider(
+                            palette: dividerPalette,
+                            titleLeadingInset: AlbumTrackRowLayout.librarySongTitleLeadingFromScreenEdge
+                        )
+                        .allowsHitTesting(false)
+                    } else {
+                        LibrarySongRowDivider(leadingInset: libraryDividerLeadingInset)
+                            .allowsHitTesting(false)
+                    }
+                }
+            }
+    }
+
+    private var rowBody: some View {
+        HStack(alignment: rowVerticalAlignment, spacing: 10) {
             Button(action: onPlay) {
-                HStack(alignment: .center, spacing: 14) {
+                HStack(alignment: rowVerticalAlignment, spacing: usesAlbumSwipeChrome ? AlbumTrackRowLayout.indexToTitleSpacing : 14) {
+                    if showsLeadingIndicators {
+                        SongRowLeadingIndicators(
+                            trackIndex: usesAlbumSwipeChrome ? trackDisplayIndex : nil,
+                            isFavorite: isFavorite,
+                            backdropPalette: usesAlbumSwipeChrome ? dividerPalette : nil,
+                            hasSubtitle: hasArtistSubtitle
+                        )
+                    }
                     if showsArtwork {
                         AlbumArtworkView(
                             url: artworkURL ?? track.artworkURL,
@@ -572,16 +681,16 @@ struct LibrarySongRow: View, Equatable {
                         )
                             .frame(width: itemSize.artworkSide, height: itemSize.artworkSide)
                     }
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: usesAlbumSwipeChrome ? AlbumTrackRowLayout.titleSubtitleSpacing : 4) {
                         Text(track.title)
-                            .font(itemSize.titleFont)
-                            .foregroundStyle(.primary)
-                            .lineLimit(2)
+                            .font(usesAlbumSwipeChrome ? .subheadline.weight(.semibold) : itemSize.titleFont)
+                            .foregroundStyle(titleForeground)
+                            .lineLimit(usesAlbumSwipeChrome ? 1 : 2)
                             .multilineTextAlignment(.leading)
-                        if showsArtist {
+                        if hasArtistSubtitle {
                             Text(track.artist)
                                 .font(itemSize.subtitleFont)
-                                .foregroundStyle(MusicDesign.secondaryLabel)
+                                .foregroundStyle(subtitleForeground)
                                 .lineLimit(1)
                         }
                     }
@@ -596,7 +705,8 @@ struct LibrarySongRow: View, Equatable {
                     phase: offlinePhase,
                     onCancelDownload: offlinePhase.isDownloading ? { onCancelOfflineDownload() } : nil,
                     onTapStartDownload: usesAlbumSwipeChrome ? nil : (offlinePhase == .notCached ? { onDownload() } : nil),
-                    onAddToLibrary: offlinePhase == .addToLibrary ? onAddToLibrary : nil
+                    onAddToLibrary: offlinePhase == .addToLibrary ? onAddToLibrary : nil,
+                    backdropPalette: usesAlbumSwipeChrome ? dividerPalette : nil
                 )
             }
 
@@ -606,11 +716,7 @@ struct LibrarySongRow: View, Equatable {
                             Button(action: onAddToLibrary) {
                                 Label("Add to Library", systemImage: "plus")
                             }
-                        } else if let onRemoveDownload, isOfflineCached {
-                            Button(action: onRemoveDownload) {
-                                Label("Remove Download", systemImage: "arrow.down.circle.dotted")
-                            }
-                        } else if !isOfflineCached {
+                        } else if isInLibrary, !isOfflineCached {
                             Button(action: onDownload) {
                                 Label("Download", systemImage: "arrow.down")
                             }
@@ -646,19 +752,21 @@ struct LibrarySongRow: View, Equatable {
                     }
                     .tint(Color.primary)
 
-                    Section {
-                        Button(action: onGoToAlbum) {
-                            Label("Go to Album", systemImage: "music.note.square")
+                    if let onGoToAlbum {
+                        Section {
+                            Button(action: onGoToAlbum) {
+                                Label("Go to Album", systemImage: "music.note.square")
+                            }
                         }
+                        .tint(Color.primary)
                     }
-                    .tint(Color.primary)
 
                     Section {
                         Button {} label: { Label("Suggest Less", systemImage: "hand.thumbsdown") }
                     }
                     .tint(Color.primary)
 
-                    if isOfflineCached, let onRemoveDownload {
+                    if isInLibrary, isOfflineCached, let onRemoveDownload {
                         Section {
                             Button(action: onRemoveDownload) {
                                 Label("Remove Download", systemImage: "arrow.down.circle.dotted")
@@ -688,9 +796,16 @@ struct LibrarySongRow: View, Equatable {
                     }
                 } label: {
                     Image(systemName: "ellipsis")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(MusicDesign.secondaryLabel)
-                        .frame(width: 32, height: 36)
+                        .font(usesAlbumSwipeChrome ? .caption.weight(.semibold) : .body.weight(.semibold))
+                        .foregroundStyle(
+                            usesAlbumSwipeChrome
+                                ? (dividerPalette?.heroChromeSecondary ?? MusicDesign.secondaryLabel)
+                                : MusicDesign.secondaryLabel
+                        )
+                        .frame(
+                            width: usesAlbumSwipeChrome ? 22 : 32,
+                            height: usesAlbumSwipeChrome ? 22 : 36
+                        )
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -698,6 +813,35 @@ struct LibrarySongRow: View, Equatable {
             .padding(.horizontal, usesAlbumSwipeChrome ? AlbumTrackRowLayout.horizontalPadding : 20)
             .padding(.vertical, usesAlbumSwipeChrome ? AlbumTrackRowLayout.verticalRowPadding : itemSize.libraryVerticalPadding)
             .background(rowBackgroundFill)
+    }
+}
+
+/// Hairline between library song rows — aligns past artwork when shown.
+struct LibrarySongRowDivider: View {
+    var leadingInset: CGFloat
+    var trailingInset: CGFloat = 20
+    var color: Color = MusicDesign.separator
+
+    private var hairlineHeight: CGFloat {
+        #if os(iOS)
+        max(1.0 / UIScreen.main.scale, 1.0 / 3.0)
+        #elseif os(macOS)
+        max(1.0 / (NSScreen.main?.backingScaleFactor ?? 2), 1.0 / 3.0)
+        #else
+        1.0 / 3.0
+        #endif
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Color.clear.frame(width: leadingInset)
+            Rectangle()
+                .fill(color)
+                .frame(maxWidth: .infinity)
+                .frame(height: hairlineHeight)
+        }
+        .padding(.trailing, trailingInset)
+        .frame(height: hairlineHeight)
     }
 }
 
@@ -741,6 +885,8 @@ extension View {
         onRemoveFromPlaylist: (() -> Void)? = nil,
         onRemoveFromLibrary: (() -> Void)? = nil,
         onDeleteFromLibrary: (() -> Void)? = nil,
+        /// When false, trailing trash only presents a confirmation sheet — avoid `List` row-delete animation.
+        trailingLibraryDeleteIsDestructive: Bool = true,
         chipMetrics: SwipeActionChipMetrics? = nil
     ) -> some View {
         swipeActions(edge: .leading, allowsFullSwipe: true) {
@@ -765,8 +911,16 @@ extension View {
                 .tint(chipMetrics?.deleteTint ?? MusicDesign.destructiveAction)
                 .accessibilityLabel("Remove")
             } else if let onRemoveFromLibrary {
-                Button(role: .destructive, action: onRemoveFromLibrary) {
-                    swipeActionIcon("trash", metrics: chipMetrics)
+                Group {
+                    if trailingLibraryDeleteIsDestructive {
+                        Button(role: .destructive, action: onRemoveFromLibrary) {
+                            swipeActionIcon("trash", metrics: chipMetrics)
+                        }
+                    } else {
+                        Button(action: onRemoveFromLibrary) {
+                            swipeActionIcon("trash", metrics: chipMetrics)
+                        }
+                    }
                 }
                 .tint(chipMetrics?.deleteTint ?? MusicDesign.destructiveAction)
                 .accessibilityLabel("Delete from Library")
@@ -798,7 +952,7 @@ extension View {
     func librarySongListRowStyle() -> some View {
         listRowBackground(MusicDesign.background)
             .listRowInsets(EdgeInsets())
-            .listRowSeparatorTint(MusicDesign.separator)
+            .listRowSeparator(.hidden)
     }
 
     /// Album hero track rows — clear cells over ``AlbumHeroBackdropView``, inset narrower than hero.

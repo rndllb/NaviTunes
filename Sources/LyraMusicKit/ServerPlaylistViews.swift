@@ -339,6 +339,8 @@ struct ServerPlaylistDetailView: View {
     // playlist case; ignored when ``source`` is a playlist).
     @State private var backdropPalette: ArtworkDynamicGradient.BackdropPalette = .fallback
     @State private var showCompleteAlbum: Bool = false
+    @State private var showDownloadedAlbumActions = false
+    @State private var trackPendingDownloadedDelete: Track?
     @State private var didScrollToFocusTrack = false
 
     private var filtered: [PlaylistRowItem] {
@@ -387,7 +389,7 @@ struct ServerPlaylistDetailView: View {
                 }
                 .listStyle(.plain)
                 .listSectionSpacing(0)
-                .listRowSpacing(isAlbum ? 6 : 0)
+                .listRowSpacing(isAlbum ? 5 : 0)
                 .modifier(AlbumDetailListContentMargins(isAlbum: isAlbum))
                 .scrollContentBackground(.hidden)
                 .background(isAlbum ? Color.clear : MusicDesign.background)
@@ -397,11 +399,7 @@ struct ServerPlaylistDetailView: View {
                 }
             }
         }
-        #if os(iOS)
-        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search")
-        #else
-        .searchable(text: $searchText, prompt: "Search")
-        #endif
+        .playlistTrackSearchable(enabled: !isAlbum, text: $searchText)
         .navigationTitle("")
         .musicNavigationBarTitleDisplayMode(.inline)
         .modifier(DetailNavigationChrome(isAlbum: isAlbum, palette: backdropPalette))
@@ -476,6 +474,16 @@ struct ServerPlaylistDetailView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+        .modifier(DownloadedAlbumActionPresentation(
+            isPresented: $showDownloadedAlbumActions,
+            onRemoveDownload: { removeAllAlbumOfflineDownloads() },
+            onDeleteFromLibrary: { Task { await deleteAlbumFromLibraryAndOffline() } },
+        ))
+        .downloadedTrackDeleteSheet(
+            track: $trackPendingDownloadedDelete,
+            app: app,
+            offline: offline
+        )
     }
 
     /// Branched rows for the List: empty / loading states + the track ForEach +
@@ -507,15 +515,14 @@ struct ServerPlaylistDetailView: View {
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
         } else {
-            ForEach(visible, id: \.rowId) { row in
+            ForEach(Array(visible.enumerated()), id: \.element.rowId) { index, row in
+                let showsBottomDivider = index < visible.count - 1
                 if isAlbum {
-                    songRow(row)
+                    songRow(row, displayIndex: index + 1, showsBottomDivider: showsBottomDivider)
                         .albumTrackListRowStyle()
                 } else {
-                    songRow(row)
-                        .listRowBackground(MusicDesign.background)
-                        .listRowInsets(EdgeInsets())
-                        .listRowSeparatorTint(MusicDesign.separator)
+                    songRow(row, displayIndex: index + 1, showsBottomDivider: showsBottomDivider)
+                        .librarySongListRowStyle()
                 }
             }
             if isAlbum {
@@ -610,8 +617,22 @@ struct ServerPlaylistDetailView: View {
         }
     }
 
+    /// Full album tracklist (not the library-filtered subset).
+    private var allOrderedTracks: [Track] {
+        rows.map(\.track).sorted {
+            if $0.discNumber != $1.discNumber { return $0.discNumber < $1.discNumber }
+            return $0.indexNumber < $1.indexNumber
+        }
+    }
+
     private var allTracksCached: Bool {
-        !rows.isEmpty && rows.allSatisfy { app.offline.downloadedTrackIds.contains($0.track.id) }
+        let tracks = allOrderedTracks
+        return !tracks.isEmpty && tracks.allSatisfy { app.offline.downloadedTrackIds.contains($0.id) }
+    }
+
+    private var showsDownloadedAlbumCheckmark: Bool {
+        guard isAlbum, let album = albumOrNil else { return false }
+        return app.isAlbumInLibrary(album.id) && allTracksCached
     }
 
     private var allTracksFavorited: Bool {
@@ -801,14 +822,13 @@ struct ServerPlaylistDetailView: View {
         isAlbum ? backdropPalette.heroPlayCapsuleBackground : .white
     }
 
-    /// Right-hand action in the hero triplet. Switches between "Add to Library" (only
-    /// in album mode, when the album isn't in the user's library yet) and "Download All"
-    /// (default — fetch the visible tracks to device for offline playback).
+    /// Right-hand action in the hero triplet. Album mode: `plus` → `arrow.down` → `checkmark`
+    /// when fully downloaded (checkmark opens manage-download sheet). Playlist mode: download all.
     @ViewBuilder
     private var primaryActionButton: some View {
         if let album = albumOrNil, !app.isAlbumInLibrary(album.id) {
             Button {
-                Task { await app.addAlbumToLibrary(album, tracks: rows.map(\.track)) }
+                Task { await app.addAlbumToLibrary(album, tracks: allOrderedTracks) }
             } label: {
                 Image(systemName: "plus")
                     .font(.title3.weight(.semibold))
@@ -819,6 +839,18 @@ struct ServerPlaylistDetailView: View {
             .buttonStyle(.plain)
             .disabled(rows.isEmpty)
             .accessibilityLabel("Add to library")
+        } else if showsDownloadedAlbumCheckmark {
+            Button {
+                showDownloadedAlbumActions = true
+            } label: {
+                Image(systemName: "checkmark")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(heroGlyphColor)
+                    .frame(width: 54, height: 54)
+                    .background(Circle().fill(heroCircleFill))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Manage download and library")
         } else {
             Button {
                 Task { await downloadAllTracks() }
@@ -832,9 +864,7 @@ struct ServerPlaylistDetailView: View {
                         Image(systemName: "arrow.down")
                             .font(.title3.weight(.semibold))
                             .foregroundStyle(
-                                rows.isEmpty || allTracksCached
-                                    ? heroGlyphColor.opacity(0.35)
-                                    : heroGlyphColor
+                                rows.isEmpty ? heroGlyphColor.opacity(0.35) : heroGlyphColor
                             )
                     }
                 }
@@ -842,9 +872,19 @@ struct ServerPlaylistDetailView: View {
                 .background(Circle().fill(heroCircleFill))
             }
             .buttonStyle(.plain)
-            .disabled(rows.isEmpty || isDownloadingAll || allTracksCached)
+            .disabled(rows.isEmpty || isDownloadingAll)
             .accessibilityLabel("Download")
         }
+    }
+
+    private func removeAllAlbumOfflineDownloads() {
+        app.removeOfflineDownloads(trackIds: allOrderedTracks.map(\.id))
+    }
+
+    private func deleteAlbumFromLibraryAndOffline() async {
+        guard let album = albumOrNil else { return }
+        app.removeOfflineDownloads(trackIds: allOrderedTracks.map(\.id))
+        await app.removeAlbumFromLibrary(album)
     }
 
     private func downloadAllTracks() async {
@@ -936,7 +976,7 @@ struct ServerPlaylistDetailView: View {
         }
     }
 
-    private func songRow(_ row: PlaylistRowItem) -> some View {
+    private func songRow(_ row: PlaylistRowItem, displayIndex: Int, showsBottomDivider: Bool) -> some View {
         // Album mode and playlist mode share the exact same row chrome (swipe actions,
         // 3-dot menu options). The only branch is `onRemoveFromPlaylist` — albums don't
         // belong to a playlist that the user can remove tracks from, so the swipe
@@ -958,7 +998,7 @@ struct ServerPlaylistDetailView: View {
                     try? await app.player.playNext(library: lib, track: row.track)
                 }
             },
-            onGoToAlbum: { navigateAlbum = app.albumSummary(for: row.track) },
+            onGoToAlbum: isAlbum ? nil : { navigateAlbum = app.albumSummary(for: row.track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [row.track]) },
             onRemoveFromPlaylist: removeFromPlaylist,
             onRemoveFromLibrary: app.isSongInLibrary(row.track.id)
@@ -974,7 +1014,13 @@ struct ServerPlaylistDetailView: View {
             showsArtwork: !isAlbum,
             showsArtist: !isAlbum,
             rowBackgroundFill: isAlbum ? .clear : MusicDesign.background,
-            usesAlbumSwipeChrome: isAlbum
+            usesAlbumSwipeChrome: isAlbum,
+            showsBottomDivider: showsBottomDivider,
+            dividerPalette: isAlbum ? backdropPalette : nil,
+            trackDisplayIndex: isAlbum ? displayIndex : nil,
+            onPresentDownloadedDeleteSheet: {
+                trackPendingDownloadedDelete = row.track
+            }
         )
         .equatable()
     }
@@ -1077,22 +1123,24 @@ struct ServerPlaylistDetailView: View {
     @ViewBuilder
     private var albumOverflowMenuContent: some View {
         if let album = albumOrNil {
-            ControlGroup {
-                Button {
-                    Task { await downloadAllTracks() }
-                } label: {
-                    Label("Download Album", systemImage: "arrow.down.circle")
-                }
-                .disabled(rows.isEmpty || isDownloadingAll || allTracksCached)
-                if !app.isAlbumInLibrary(album.id) {
+            if !showsDownloadedAlbumCheckmark {
+                ControlGroup {
                     Button {
-                        Task { await app.addAlbumToLibrary(album, tracks: rows.map(\.track)) }
+                        Task { await downloadAllTracks() }
                     } label: {
-                        Label("Add Album to Library", systemImage: "plus.square.on.square")
+                        Label("Download Album", systemImage: "arrow.down.circle")
+                    }
+                    .disabled(rows.isEmpty || isDownloadingAll)
+                    if !app.isAlbumInLibrary(album.id) {
+                        Button {
+                            Task { await app.addAlbumToLibrary(album, tracks: allOrderedTracks) }
+                        } label: {
+                            Label("Add Album to Library", systemImage: "plus.square.on.square")
+                        }
                     }
                 }
+                .tint(Color.primary)
             }
-            .tint(Color.primary)
 
             // Lives outside the tinted ControlGroup so the destructive role renders red.
             if app.isAlbumInLibrary(album.id) {
@@ -1681,6 +1729,22 @@ struct PlaylistHeroOrPillsHeader<Hero: View, Pills: View>: View {
             pills
         } else {
             hero
+        }
+    }
+}
+
+private extension View {
+    /// Playlist detail only — album pages use a fixed tracklist (no in-page search).
+    @ViewBuilder
+    func playlistTrackSearchable(enabled: Bool, text: Binding<String>) -> some View {
+        if enabled {
+            #if os(iOS)
+            searchable(text: text, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search")
+            #else
+            searchable(text: text, prompt: "Search")
+            #endif
+        } else {
+            self
         }
     }
 }

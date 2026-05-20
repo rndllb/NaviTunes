@@ -295,7 +295,7 @@ struct TrackOfflineDownloadIndicator: View {
 }
 
 /// Leading metrics for the track index + optional star.
-private enum AlbumTrackIndexColumn {
+enum AlbumTrackIndexColumn {
     /// Fixed slot so favorited rows don’t shift the number or title vs other tracks.
     static let starSlotWidth: CGFloat = 12
     static let starToNumberSpacing: CGFloat = 4
@@ -328,6 +328,69 @@ enum AlbumTrackRowLayout {
     /// Screen-edge → title leading; dividers start here (past ★ + track number).
     static var titleLeadingFromScreenEdge: CGFloat {
         horizontalPadding + AlbumTrackIndexColumn.totalWidth + indexToTitleSpacing
+    }
+    /// ``LibrarySongRow`` on album detail — past list inset, ★, and track #.
+    static var librarySongTitleLeadingFromScreenEdge: CGFloat {
+        listHorizontalInset + titleLeadingFromScreenEdge
+    }
+}
+
+/// Leading ★ slot and optional track # — shared by album track rows and ``LibrarySongRow``.
+struct SongRowLeadingIndicators: View {
+    var trackIndex: Int? = nil
+    let isFavorite: Bool
+    var showsStarSlot: Bool = true
+    var backdropPalette: ArtworkDynamicGradient.BackdropPalette? = nil
+    var hasSubtitle: Bool = false
+
+    private var starColor: Color {
+        backdropPalette?.heroChromePrimary ?? MusicDesign.accent
+    }
+
+    private var indexColor: Color {
+        backdropPalette?.heroChromeSecondary ?? MusicDesign.secondaryLabel
+    }
+
+    private var rowVerticalAlignment: VerticalAlignment {
+        hasSubtitle ? .top : .center
+    }
+
+    var body: some View {
+        HStack(alignment: rowVerticalAlignment, spacing: AlbumTrackIndexColumn.starToNumberSpacing) {
+            if showsStarSlot {
+                Color.clear
+                    .frame(width: AlbumTrackIndexColumn.starSlotWidth)
+                    .overlay(alignment: hasSubtitle ? .topLeading : .center) {
+                        if isFavorite {
+                            Image(systemName: "star.fill")
+                                .font(.system(size: 7, weight: .semibold))
+                                .foregroundStyle(starColor)
+                                .padding(.top, hasSubtitle ? 4 : 0)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                    }
+            }
+            if let trackIndex {
+                Text("\(trackIndex)")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(indexColor)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .frame(width: AlbumTrackIndexColumn.numberWidth, alignment: .leading)
+            }
+        }
+        .frame(width: leadingWidth, alignment: .leading)
+    }
+
+    private var leadingWidth: CGFloat {
+        if trackIndex != nil {
+            return AlbumTrackIndexColumn.totalWidth
+        }
+        if showsStarSlot {
+            return AlbumTrackIndexColumn.starSlotWidth
+        }
+        return 0
     }
 }
 
@@ -363,6 +426,10 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
     var onDownload: (() -> Void)? = nil
     /// User-level remove from library (trash swipe).
     var onRemoveFromLibrary: (() -> Void)? = nil
+    /// Clears the on-device file when the row is already downloaded.
+    var onRemoveDownload: (() -> Void)? = nil
+    /// Swipe trash on a downloaded library track — host presents ``downloadedTrackDeleteSheet``.
+    var onPresentDownloadedDeleteSheet: (() -> Void)? = nil
     /// Hairline under the row (drawn inside the row, not a separate list cell).
     var showsBottomDivider: Bool = false
 
@@ -386,7 +453,7 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
 
     private var itemSize: SongListItemSize { app.songListItemSize }
 
-    private var showsDownloadSwipeAction: Bool {
+    fileprivate var showsDownloadSwipeAction: Bool {
         isInLibrary
             && !isOfflineCached
             && offlineDownload == nil
@@ -402,15 +469,31 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
         hasSubtitle ? .top : .center
     }
 
+    private var confirmsDownloadedDelete: Bool {
+        isInLibrary
+            && isOfflineCached
+            && onRemoveFromLibrary != nil
+            && onPresentDownloadedDeleteSheet != nil
+    }
+
+    private var trailingDeleteSwipeAction: (() -> Void)? {
+        guard onRemoveFromLibrary != nil else { return nil }
+        if confirmsDownloadedDelete, let onPresentDownloadedDeleteSheet {
+            return onPresentDownloadedDeleteSheet
+        }
+        return onRemoveFromLibrary
+    }
+
     var body: some View {
         Group {
-            if let onPlayNext {
+            if onPlayNext != nil {
                 trackRowContent
                     .librarySongSwipeActions(
                         showsDownload: showsDownloadSwipeAction,
-                        onPlayNext: onPlayNext,
+                        onPlayNext: onPlayNext!,
                         onDownload: onDownload,
-                        onRemoveFromLibrary: onRemoveFromLibrary,
+                        onRemoveFromLibrary: trailingDeleteSwipeAction,
+                        trailingLibraryDeleteIsDestructive: !confirmsDownloadedDelete,
                         chipMetrics: .albumTrack
                     )
             } else {
@@ -419,7 +502,7 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
         }
     }
 
-    private var trackRowContent: some View {
+    fileprivate var trackRowContent: some View {
         trackRowBody
             .frame(minHeight: AlbumTrackRowLayout.rowMinHeight)
             .background(alignment: .bottom) {
@@ -434,28 +517,12 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
         HStack(alignment: rowVerticalAlignment, spacing: 6) {
             Button(action: onRowTap) {
                 HStack(alignment: rowVerticalAlignment, spacing: AlbumTrackRowLayout.indexToTitleSpacing) {
-                    HStack(alignment: rowVerticalAlignment, spacing: AlbumTrackIndexColumn.starToNumberSpacing) {
-                        Color.clear
-                            .frame(width: AlbumTrackIndexColumn.starSlotWidth)
-                            .overlay(alignment: hasSubtitle ? .topLeading : .center) {
-                                if isFavorite {
-                                    Image(systemName: "star.fill")
-                                        .font(.system(size: 7, weight: .semibold))
-                                        .foregroundStyle(backdropPalette.heroChromePrimary)
-                                        .padding(.top, hasSubtitle ? 4 : 0)
-                                        .allowsHitTesting(false)
-                                        .accessibilityHidden(true)
-                                }
-                            }
-
-                        Text("\(index)")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(backdropPalette.heroChromeSecondary)
-                            .monospacedDigit()
-                            .lineLimit(1)
-                            .frame(width: AlbumTrackIndexColumn.numberWidth, alignment: .leading)
-                    }
-                    .frame(width: AlbumTrackIndexColumn.totalWidth, alignment: .leading)
+                    SongRowLeadingIndicators(
+                        trackIndex: index,
+                        isFavorite: isFavorite,
+                        backdropPalette: backdropPalette,
+                        hasSubtitle: hasSubtitle
+                    )
 
                     VStack(alignment: .leading, spacing: AlbumTrackRowLayout.titleSubtitleSpacing) {
                         Text(title)
@@ -536,6 +603,7 @@ struct TrackDownloadProgressStrip: View {
 /// Hairline between hero controls and track list, and between rows — aligns with title text (past ★ + index), same thickness throughout.
 struct AppleMusicAlbumTrackDivider: View {
     let palette: ArtworkDynamicGradient.BackdropPalette
+    var titleLeadingInset: CGFloat = AlbumTrackRowLayout.titleLeadingFromScreenEdge
 
     private var hairlineHeight: CGFloat {
         #if os(iOS)
@@ -549,7 +617,7 @@ struct AppleMusicAlbumTrackDivider: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            Color.clear.frame(width: AlbumTrackRowLayout.titleLeadingFromScreenEdge)
+            Color.clear.frame(width: titleLeadingInset)
             Rectangle()
                 .fill(palette.heroTracklistSeparator)
                 .frame(maxWidth: .infinity)
