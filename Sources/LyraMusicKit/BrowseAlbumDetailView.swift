@@ -20,6 +20,7 @@ struct BrowseAlbumDetailView: View {
     @State private var downloadingPreviewTrackIds: Set<String> = []
     @State private var previewDowntifyFraction: [String: Double] = [:]
     @State private var navigateLibraryAlbum: AlbumSummary?
+    @State private var trackPendingDownloadedDelete: Track?
 
     private var matchedLibraryAlbum: AlbumSummary? {
         app.libraryAlbums.firstMatchingNewTabRelease(artist: matchArtist, albumTitle: matchAlbumTitle)
@@ -196,7 +197,7 @@ struct BrowseAlbumDetailView: View {
             }
             .listStyle(.plain)
             .listSectionSpacing(0)
-            .listRowSpacing(6)
+            .listRowSpacing(5)
             .contentMargins(.vertical, 0, for: .scrollContent)
             .scrollContentBackground(.hidden)
             .environment(\.defaultMinListRowHeight, 0)
@@ -236,6 +237,11 @@ struct BrowseAlbumDetailView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: toast)
+        .downloadedTrackDeleteSheet(
+            track: $trackPendingDownloadedDelete,
+            app: app,
+            offline: offline
+        )
     }
 
     @ViewBuilder
@@ -511,6 +517,11 @@ struct BrowseAlbumDetailView: View {
             onRemoveFromLibrary: app.isSongInLibrary(track.id)
                 ? { Task { await app.removeSongFromLibrary(track) } }
                 : nil,
+            onRemoveDownload: app.offline.downloadedTrackIds.contains(track.id)
+                ? { try? app.offline.remove(trackId: track.id) } : nil,
+            onPresentDownloadedDeleteSheet: {
+                trackPendingDownloadedDelete = track
+            },
             showsBottomDivider: showsBottomDivider,
             onRowTap: { Task { await play(startingAt: track) } },
             menuContent: { browseInLibraryTrackOverflowMenu(track: track) }
@@ -572,8 +583,7 @@ struct BrowseAlbumDetailView: View {
                     onAdd: {
                         Task { await requestPreviewTrackViaDowntify(preview) }
                     },
-                    addDisabled: !app.downtifyConfigured || downloadingPreviewTrackIds.contains(preview.id),
-                    onGoToAlbum: {}
+                    addDisabled: !app.downtifyConfigured || downloadingPreviewTrackIds.contains(preview.id)
                 )
             }
         )
@@ -583,19 +593,16 @@ struct BrowseAlbumDetailView: View {
     /// Same native ``Menu`` / ``ControlGroup`` shape as ``NewTabChartOverflowPanel`` / Downtify search.
     @ViewBuilder
     private func browseInLibraryTrackOverflowMenu(track: Track) -> some View {
+        let isInLibrary = app.isSongInLibrary(track.id)
+        let isOfflineCached = app.offline.downloadedTrackIds.contains(track.id)
+
         ControlGroup {
             Button {
                 Task { await play(startingAt: track) }
             } label: {
                 Label("Play", systemImage: "play.fill")
             }
-            if app.offline.downloadedTrackIds.contains(track.id) {
-                Button {
-                    try? app.offline.remove(trackId: track.id)
-                } label: {
-                    Label("Remove Download", systemImage: "arrow.down.circle.dotted")
-                }
-            } else {
+            if isInLibrary, !isOfflineCached {
                 Button {
                     Task {
                         guard let lib = app.activeLibrary else { return }
@@ -631,17 +638,20 @@ struct BrowseAlbumDetailView: View {
         .tint(Color.primary)
 
         Section {
-            Button {
-                navigateLibraryAlbum = matchedLibraryAlbum
-            } label: { Label("Go to Album", systemImage: "music.note.square") }
-            .disabled(matchedLibraryAlbum == nil)
-        }
-        .tint(Color.primary)
-
-        Section {
             Button {} label: { Label("Suggest Less", systemImage: "hand.thumbsdown") }
         }
         .tint(Color.primary)
+
+        if isInLibrary, isOfflineCached {
+            Section {
+                Button {
+                    try? app.offline.remove(trackId: track.id)
+                } label: {
+                    Label("Remove Download", systemImage: "arrow.down.circle.dotted")
+                }
+            }
+            .tint(Color.primary)
+        }
     }
 
     private var emptySongNote: String {

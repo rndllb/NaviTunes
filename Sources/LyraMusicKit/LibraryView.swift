@@ -756,6 +756,7 @@ struct FavoritePlaylistView: View {
     @State private var loadError: String?
     @State private var searchText = ""
     @State private var navigateAlbum: AlbumSummary?
+    @State private var trackPendingDownloadedDelete: Track?
 
     private var filtered: [Track] {
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -809,8 +810,8 @@ struct FavoritePlaylistView: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
             } else {
-                ForEach(filtered) { track in
-                    songRow(track)
+                ForEach(Array(filtered.enumerated()), id: \.element.id) { index, track in
+                    songRow(track, showsBottomDivider: index < filtered.count - 1)
                 }
             }
         }
@@ -838,6 +839,11 @@ struct FavoritePlaylistView: View {
             }
             tracks = tracks.filter { newIds.contains($0.id) }
         }
+        .downloadedTrackDeleteSheet(
+            track: $trackPendingDownloadedDelete,
+            app: app,
+            offline: offline
+        )
     }
 
     private var searchSection: some View {
@@ -852,7 +858,7 @@ struct FavoritePlaylistView: View {
         )
     }
 
-    private func songRow(_ track: Track) -> some View {
+    private func songRow(_ track: Track, showsBottomDivider: Bool) -> some View {
         LibrarySongRow(
             track: track,
             itemSize: app.songListItemSize,
@@ -876,7 +882,11 @@ struct FavoritePlaylistView: View {
             onDeleteFromLibrary: { app.beginLibraryTrackDeletion(track) },
             canDeleteFromLibrary: app.canDeleteFromLibrary,
             onRemoveDownload: app.offline.downloadedTrackIds.contains(track.id)
-                ? { try? app.offline.remove(trackId: track.id) } : nil
+                ? { try? app.offline.remove(trackId: track.id) } : nil,
+            showsBottomDivider: showsBottomDivider,
+            onPresentDownloadedDeleteSheet: {
+                trackPendingDownloadedDelete = track
+            }
         )
         .equatable()
         .librarySongListRowStyle()
@@ -1024,6 +1034,7 @@ struct LibraryDownloadedView: View {
     @EnvironmentObject private var offline: OfflineDownloadManager
     @State private var searchText = ""
     @State private var navigateAlbum: AlbumSummary?
+    @State private var trackPendingDownloadedDelete: Track?
 
     private let albumColumns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
 
@@ -1107,8 +1118,8 @@ struct LibraryDownloadedView: View {
                         .listRowSeparator(.hidden)
                 } else {
                     Section {
-                        ForEach(filtered) { track in
-                            songRow(track)
+                        ForEach(Array(filtered.enumerated()), id: \.element.id) { index, track in
+                            songRow(track, showsBottomDivider: index < filtered.count - 1)
                         }
                     } header: {
                         sectionLabel("Songs")
@@ -1133,6 +1144,11 @@ struct LibraryDownloadedView: View {
         .onChange(of: offline.downloadedTrackIds) { _, _ in
             app.offline.backfillRecordsIfMissing(knownTracks: app.discoveryLibraryTracks)
         }
+        .downloadedTrackDeleteSheet(
+            track: $trackPendingDownloadedDelete,
+            app: app,
+            offline: offline
+        )
     }
 
     private func sectionLabel(_ title: String) -> some View {
@@ -1169,7 +1185,7 @@ struct LibraryDownloadedView: View {
         }
     }
 
-    private func songRow(_ track: Track) -> some View {
+    private func songRow(_ track: Track, showsBottomDivider: Bool) -> some View {
         LibrarySongRow(
             track: track,
             artworkURL: app.resolvedArtworkURL(for: track),
@@ -1192,7 +1208,11 @@ struct LibraryDownloadedView: View {
                 ? { Task { await app.removeSongFromLibrary(track) } } : nil,
             onDeleteFromLibrary: { app.beginLibraryTrackDeletion(track) },
             canDeleteFromLibrary: app.canDeleteFromLibrary,
-            onRemoveDownload: { try? app.offline.remove(trackId: track.id) }
+            onRemoveDownload: { try? app.offline.remove(trackId: track.id) },
+            showsBottomDivider: showsBottomDivider,
+            onPresentDownloadedDeleteSheet: {
+                trackPendingDownloadedDelete = track
+            }
         )
         .equatable()
         .librarySongListRowStyle()

@@ -125,9 +125,9 @@ enum SongListItemSize: String, CaseIterable, Identifiable {
 
     var libraryVerticalPadding: CGFloat {
         switch self {
-        case .small: return 7
-        case .medium: return 10
-        case .large: return 13
+        case .small: return 6
+        case .medium: return 9
+        case .large: return 12
         }
     }
 

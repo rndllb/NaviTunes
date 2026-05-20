@@ -128,6 +128,7 @@ struct LibraryArtistAlbumsView: View {
     @State private var loadError: String?
     @State private var isLoading = true
     @State private var navigateAlbum: AlbumSummary?
+    @State private var trackPendingDownloadedDelete: Track?
 
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: MusicDesign.gridMinCell), spacing: 16, alignment: .top)]
@@ -187,6 +188,11 @@ struct LibraryArtistAlbumsView: View {
             Task { await load() }
         }
         .refreshable { await load() }
+        .downloadedTrackDeleteSheet(
+            track: $trackPendingDownloadedDelete,
+            app: app,
+            offline: offline
+        )
     }
 
     private var songsSection: some View {
@@ -196,8 +202,8 @@ struct LibraryArtistAlbumsView: View {
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 14, trailing: 20))
 
-            ForEach(tracks) { track in
-                songRow(track)
+            ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
+                songRow(track, showsBottomDivider: index < tracks.count - 1)
             }
         } header: {
             Text("Songs")
@@ -242,7 +248,7 @@ struct LibraryArtistAlbumsView: View {
         }
     }
 
-    private func songRow(_ track: Track) -> some View {
+    private func songRow(_ track: Track, showsBottomDivider: Bool) -> some View {
         LibrarySongRow(
             track: track,
             itemSize: app.songListItemSize,
@@ -266,7 +272,11 @@ struct LibraryArtistAlbumsView: View {
             onDeleteFromLibrary: { app.beginLibraryTrackDeletion(track) },
             canDeleteFromLibrary: app.canDeleteFromLibrary,
             onRemoveDownload: app.offline.downloadedTrackIds.contains(track.id)
-                ? { try? app.offline.remove(trackId: track.id) } : nil
+                ? { try? app.offline.remove(trackId: track.id) } : nil,
+            showsBottomDivider: showsBottomDivider,
+            onPresentDownloadedDeleteSheet: {
+                trackPendingDownloadedDelete = track
+            }
         )
         .equatable()
         .librarySongListRowStyle()
