@@ -1041,30 +1041,6 @@ public final class AppModel: ObservableObject {
 
     // MARK: - Radio (Navidrome)
 
-    /// Starts a shuffled queue of random library tracks, optionally filtered by genre (`getRandomSongs`).
-    func playNavidromeGenreRadio(genreName: String?) async {
-        guard let client = navidrome else {
-            errorMessage = "Radio stations require a Navidrome connection."
-            return
-        }
-        do {
-            let tracks = try await client.fetchRandomSongs(limit: 80, genre: genreName)
-            guard !tracks.isEmpty else {
-                let label = genreName ?? "your library"
-                errorMessage = "No songs found for \(label)."
-                return
-            }
-            player.shuffleMode = .on
-            try await player.playAlbum(
-                library: client,
-                tracks: tracks.shuffled(),
-                startIndex: 0,
-            )
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
     /// Plays a live stream from the server's internet radio list (`getInternetRadioStations`).
     func playInternetRadioStation(_ station: InternetRadioStation) async {
         guard let client = navidrome else {
@@ -1087,8 +1063,17 @@ public final class AppModel: ObservableObject {
         do {
             try await player.playAlbum(library: client, tracks: [track], startIndex: 0)
         } catch {
+            guard !Self.isBenignPlaybackInterruption(error) else { return }
             errorMessage = error.localizedDescription
         }
+    }
+
+    private static func isBenignPlaybackInterruption(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let url = error as? URLError, url.code == .cancelled { return true }
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain, ns.code == URLError.cancelled.rawValue { return true }
+        return false
     }
 
     /// Updates ``favoriteTrackIds`` immediately (stars, menus, rows); Jellyfin / Navidrome persist in the background with revert on failure.

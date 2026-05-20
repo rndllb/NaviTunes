@@ -56,6 +56,11 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private var player: AVPlayer?
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
+    /// Bumped whenever a new load/play cycle begins so in-flight `startCurrentItem` work
+    /// from an earlier tap cannot attach or start another `AVPlayer`.
+    private var playbackEpoch: UInt = 0
+    /// Prevents stacked `startFromPendingRestore` tasks when play is tapped repeatedly.
+    private var isStartingPlayback = false
 
     private var library: MusicLibraryProviding?
     private weak var lastFm: LastFmScrobbler?
@@ -258,12 +263,17 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     private func startFromPendingRestore() async {
+        let epoch = beginPlaybackSession()
         let startAt = pendingRestoreSeconds
         pendingRestoreSeconds = 0
         activateAudioSession()
         do {
-            try await startCurrentItem(startSeconds: startAt)
-            player?.play()
+            try await startCurrentItem(epoch: epoch, startSeconds: startAt)
+            guard isPlaybackEpochCurrent(epoch), let player else {
+                isPlaying = false
+                return
+            }
+            player.play()
             isPlaying = true
         } catch {
             // If the restored stream can't be reached (offline, server moved), leave the queue
@@ -275,6 +285,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
     func playAlbum(library: MusicLibraryProviding?, tracks: [Track], startIndex: Int = 0, source: PlaybackSource? = nil) async throws {
         if let library { self.library = library }
+        let epoch = beginPlaybackSession()
         teardownPlayer()
         queue = tracks
         currentIndex = min(max(0, startIndex), max(tracks.count - 1, 0))
@@ -284,9 +295,11 @@ final class PlaybackEngine: NSObject, ObservableObject {
         lastEmittedUIProgress = -10_000
         playbackHead = 0
         try await loadLyrics()
+        guard isPlaybackEpochCurrent(epoch) else { return }
         activateAudioSession()
-        try await startCurrentItem()
-        player?.play()
+        try await startCurrentItem(epoch: epoch)
+        guard isPlaybackEpochCurrent(epoch), let player else { return }
+        player.play()
         isPlaying = true
         scrobbledForCurrentTrack = false
         configureRemoteCommands()
@@ -361,7 +374,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
     func togglePlayPause() {
         if hasPendingRestore {
-            Task { await startFromPendingRestore() }
+            schedulePendingRestorePlayback()
             return
         }
         guard let player else { return }
@@ -381,7 +394,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
     private func resumePlaybackFromRemoteCommand() {
         if hasPendingRestore {
-            Task { await startFromPendingRestore() }
+            schedulePendingRestorePlayback()
             return
         }
         activateAudioSession()
@@ -601,11 +614,14 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private func advance() async throws {
         // A skip/jump abandons the saved playhead for the previously-active track.
         pendingRestoreSeconds = 0
+        let epoch = beginPlaybackSession()
         teardownPlayer()
         try await loadLyrics()
+        guard isPlaybackEpochCurrent(epoch) else { return }
         activateAudioSession()
-        try await startCurrentItem()
-        player?.play()
+        try await startCurrentItem(epoch: epoch)
+        guard isPlaybackEpochCurrent(epoch), let player else { return }
+        player.play()
         isPlaying = true
         scrobbledForCurrentTrack = false
         revealMiniPlayerChrome()
@@ -617,12 +633,36 @@ final class PlaybackEngine: NSObject, ObservableObject {
         }
     }
 
+    private func beginPlaybackSession() -> UInt {
+        playbackEpoch &+= 1
+        return playbackEpoch
+    }
+
+    private func isPlaybackEpochCurrent(_ epoch: UInt) -> Bool {
+        epoch == playbackEpoch
+    }
+
+    private func schedulePendingRestorePlayback() {
+        guard !isStartingPlayback else { return }
+        isStartingPlayback = true
+        Task {
+            defer { isStartingPlayback = false }
+            await startFromPendingRestore()
+        }
+    }
+
+    private func stopPlayer(_ p: AVPlayer?) {
+        guard let p else { return }
+        p.pause()
+        p.replaceCurrentItem(with: nil)
+    }
+
     private func detachPlayerKeepingQueueState() {
         if let timeObserver { player?.removeTimeObserver(timeObserver) }
         timeObserver = nil
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         endObserver = nil
-        player?.pause()
+        stopPlayer(player)
         player = nil
     }
 
@@ -697,7 +737,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
         return true
     }
 
-    private func startCurrentItem(startSeconds: TimeInterval = 0) async throws {
+    private func startCurrentItem(epoch: UInt, startSeconds: TimeInterval = 0) async throws {
+        guard isPlaybackEpochCurrent(epoch) else { return }
         guard let track = currentTrack else { throw PlaybackEngineError.missingTrack }
 
         var candidates: [(url: URL, headers: [String: String])] = []
@@ -733,9 +774,11 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
         var lastError: Error?
         for candidate in candidates {
+            guard isPlaybackEpochCurrent(epoch) else { return }
             detachPlayerKeepingQueueState()
             do {
                 if try await loadPlayerItem(
+                    epoch: epoch,
                     candidate: candidate,
                     track: track,
                     startSeconds: startSeconds,
@@ -748,15 +791,18 @@ final class PlaybackEngine: NSObject, ObservableObject {
             }
         }
 
+        guard isPlaybackEpochCurrent(epoch) else { return }
         teardownPlayer()
         throw lastError ?? URLError(.cannotLoadFromNetwork)
     }
 
     private func loadPlayerItem(
+        epoch: UInt,
         candidate: (url: URL, headers: [String: String]),
         track: Track,
         startSeconds: TimeInterval,
     ) async throws -> Bool {
+        guard isPlaybackEpochCurrent(epoch) else { return false }
         let asset = makePlaybackAsset(url: candidate.url, headers: candidate.headers)
         if candidate.url.isFileURL, let urlAsset = asset as? AVURLAsset {
             _ = try? await urlAsset.load(.isPlayable, .duration)
@@ -771,9 +817,17 @@ final class PlaybackEngine: NSObject, ObservableObject {
             p.automaticallyWaitsToMinimizeStalling = false
         }
         try await waitForPlayerItemReady(item, timeout: candidate.url.isFileURL ? .seconds(12) : .seconds(22))
+        guard isPlaybackEpochCurrent(epoch) else {
+            stopPlayer(p)
+            return false
+        }
         if resolvedDuration <= 0 {
             let fromAsset = await LocalMediaDuration.seconds(asset: asset)
             if fromAsset > 0 { resolvedDuration = fromAsset }
+        }
+        guard isPlaybackEpochCurrent(epoch) else {
+            stopPlayer(p)
+            return false
         }
         attachPlayer(p, item: item, track: track, initialTime: startSeconds, resolvedDuration: resolvedDuration)
 
@@ -784,9 +838,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
             lastEmittedUIProgress = startSeconds
         }
 
-        p.play()
-        isPlaying = true
-
         let readyBudget: Duration = candidate.url.isFileURL
             ? (startSeconds > 1 ? .seconds(4) : .seconds(2))
             : (startSeconds > 1 ? .seconds(12) : .seconds(10))
@@ -795,6 +846,14 @@ final class PlaybackEngine: NSObject, ObservableObject {
             observeBudget: readyBudget,
             expectedPosition: startSeconds,
         ) {
+            guard isPlaybackEpochCurrent(epoch) else {
+                stopPlayer(p)
+                return false
+            }
+            detachPlayerKeepingQueueState()
+            return false
+        }
+        guard isPlaybackEpochCurrent(epoch) else {
             detachPlayerKeepingQueueState()
             return false
         }
