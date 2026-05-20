@@ -1462,6 +1462,43 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - Radio (Navidrome)
+
+    /// Plays a live stream from the server's internet radio list (`getInternetRadioStations`).
+    func playInternetRadioStation(_ station: InternetRadioStation) async {
+        guard let client = navidrome else {
+            errorMessage = "Internet radio requires a Navidrome connection."
+            return
+        }
+        let track = Track(
+            id: "internet-radio-\(station.id)",
+            title: station.name,
+            albumId: "internet-radio",
+            albumTitle: "Live Radio",
+            artist: station.name,
+            duration: 0,
+            discNumber: 1,
+            indexNumber: 1,
+            artworkURL: nil,
+            streamOverrideURL: station.streamURL,
+        )
+        player.shuffleMode = .off
+        do {
+            try await player.playAlbum(library: client, tracks: [track], startIndex: 0)
+        } catch {
+            guard !Self.isBenignPlaybackInterruption(error) else { return }
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private static func isBenignPlaybackInterruption(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let url = error as? URLError, url.code == .cancelled { return true }
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain, ns.code == URLError.cancelled.rawValue { return true }
+        return false
+    }
+
     /// Updates ``favoriteTrackIds`` immediately (stars, menus, rows); Jellyfin / Navidrome persist in the background with revert on failure.
     func toggleFavoriteTrack(id: String) {
         let targetFavorite = !favoriteTrackIds.contains(id)
