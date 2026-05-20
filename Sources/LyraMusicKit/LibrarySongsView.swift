@@ -702,7 +702,7 @@ struct LibrarySongRow: View, Equatable {
 }
 
 /// Zero vertical content margins on album detail lists only.
-private struct AlbumDetailListContentMargins: ViewModifier {
+struct AlbumDetailListContentMargins: ViewModifier {
     let isAlbum: Bool
 
     func body(content: Content) -> some View {
