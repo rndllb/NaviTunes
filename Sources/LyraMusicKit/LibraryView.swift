@@ -135,11 +135,10 @@ struct LibraryView: View {
     }
 
     private var recentItems: [RecentLibraryItem] {
-        // Albums excluded for now: server `DateCreated` is scan time, not the user's
-        // add-to-library time. Playlists are user-owned, so their `DateCreated` is accurate.
-        Array(
-            app.libraryPlaylists
-                .map { RecentLibraryItem.playlist($0) }
+        let albums = app.recentlyAddedAlbums.map(RecentLibraryItem.album)
+        let playlists = app.libraryPlaylists.map(RecentLibraryItem.playlist)
+        return Array(
+            (albums + playlists)
                 .sorted { ($0.libraryAddedDate ?? .distantPast) > ($1.libraryAddedDate ?? .distantPast) }
                 .prefix(60)
         )

@@ -31,8 +31,54 @@ enum ArtworkImageDecoder {
     }
 }
 
+private final class CachedArtworkImage: NSObject {
+    let cgImage: CGImage
+
+    init(_ cgImage: CGImage) {
+        self.cgImage = cgImage
+    }
+}
+
+enum DecodedArtworkCache {
+    private static let memory = NSCache<NSString, CachedArtworkImage>()
+
+    static func image(for url: URL, maxPixelSize: CGFloat) -> CGImage? {
+        memory.object(forKey: cacheKey(for: url, maxPixelSize: maxPixelSize) as NSString)?.cgImage
+    }
+
+    static func store(_ image: CGImage, for url: URL, maxPixelSize: CGFloat) {
+        let cost = max(1, image.width * image.height * 4)
+        memory.setObject(
+            CachedArtworkImage(image),
+            forKey: cacheKey(for: url, maxPixelSize: maxPixelSize) as NSString,
+            cost: cost,
+        )
+    }
+
+    static func stableID(for url: URL, maxPixelSize: CGFloat) -> String {
+        cacheKey(for: url, maxPixelSize: maxPixelSize)
+    }
+
+    private static func cacheKey(for url: URL, maxPixelSize: CGFloat) -> String {
+        "\(normalizedCacheURLString(for: url))|\(Int(maxPixelSize.rounded(.up)))"
+    }
+
+    private static func normalizedCacheURLString(for url: URL) -> String {
+        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let items = comps.queryItems
+        else { return url.absoluteString }
+        comps.queryItems = items.filter { item in
+            item.name != "t" && item.name != "s"
+        }
+        return comps.url?.absoluteString ?? url.absoluteString
+    }
+}
+
 enum RemoteArtworkLoad {
     static func cgImage(from url: URL, maxPixelSize: CGFloat) async -> CGImage? {
+        if let cached = DecodedArtworkCache.image(for: url, maxPixelSize: maxPixelSize) {
+            return cached
+        }
         let data: Data?
         if url.isFileURL {
             data = try? Data(contentsOf: url)
@@ -42,9 +88,13 @@ enum RemoteArtworkLoad {
             data = await ArtworkURLCache.data(for: url)
         }
         guard let data, !data.isEmpty else { return nil }
-        return await Task.detached(priority: .utility) {
+        let decoded = await Task.detached(priority: .utility) {
             ArtworkImageDecoder.cgImage(from: data, maxPixelSize: maxPixelSize)
         }.value
+        if let decoded {
+            DecodedArtworkCache.store(decoded, for: url, maxPixelSize: maxPixelSize)
+        }
+        return decoded
     }
 }
 

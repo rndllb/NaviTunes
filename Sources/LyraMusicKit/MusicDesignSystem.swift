@@ -273,11 +273,16 @@ enum MusicDesign {
 struct AlbumArtworkView: View {
     let url: URL?
     var cornerRadius: CGFloat = MusicDesign.albumCorner
+    var maxDecodePixels: CGFloat = 768
 
     @State private var decoded: CGImage?
     @State private var loadFailed = false
+    @State private var loadedArtworkID: String?
 
-    private var maxDecodePixels: CGFloat { 768 }
+    private var artworkID: String {
+        guard let url else { return "none" }
+        return DecodedArtworkCache.stableID(for: url, maxPixelSize: maxDecodePixels)
+    }
 
     var body: some View {
         ZStack {
@@ -297,7 +302,7 @@ struct AlbumArtworkView: View {
                         Color.clear
                     }
                 }
-                .task(id: url.absoluteString) {
+                .task(id: artworkID) {
                     await load(url: url)
                 }
             } else {
@@ -309,19 +314,25 @@ struct AlbumArtworkView: View {
     }
 
     private func load(url: URL) async {
-        loadFailed = false
-        decoded = nil
-        let cg: CGImage?
-        if url.isFileURL, let data = try? Data(contentsOf: url) {
-            cg = await Task.detached(priority: .utility) {
-                ArtworkImageDecoder.cgImage(from: data, maxPixelSize: maxDecodePixels)
-            }.value
-        } else {
-            cg = await RemoteArtworkLoad.cgImage(from: url, maxPixelSize: maxDecodePixels)
+        let id = DecodedArtworkCache.stableID(for: url, maxPixelSize: maxDecodePixels)
+        if loadedArtworkID == id, decoded != nil {
+            return
         }
+        if let cached = DecodedArtworkCache.image(for: url, maxPixelSize: maxDecodePixels) {
+            decoded = cached
+            loadFailed = false
+            loadedArtworkID = id
+            return
+        }
+        loadFailed = false
+        if loadedArtworkID != id {
+            decoded = nil
+        }
+        let cg = await RemoteArtworkLoad.cgImage(from: url, maxPixelSize: maxDecodePixels)
         await MainActor.run {
             decoded = cg
             loadFailed = cg == nil
+            loadedArtworkID = id
         }
     }
 

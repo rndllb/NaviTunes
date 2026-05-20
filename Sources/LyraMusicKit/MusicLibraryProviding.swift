@@ -318,6 +318,9 @@ protocol MusicLibraryProviding: AnyObject {
     func tracks(forAlbumId albumId: String) async throws -> [Track]
     /// All playable audio in the library (up to `limit`). Jellyfin uses one recursive query; other backends walk albums.
     func allTracks(limit: Int) async throws -> [Track]
+    /// Page of library tracks (newest-added first when the backend supports server-side sort).
+    /// Used by ``LibrarySongsView`` for scroll-driven pagination on large libraries.
+    func tracksPage(offset: Int, limit: Int) async throws -> [Track]
     func streamURL(for track: Track) throws -> URL
     /// Progressive URLs to try if ``streamURL(for:)`` does not become playable (transcoding / codec mismatches).
     func fallbackStreamURLs(for track: Track) -> [URL]
@@ -361,6 +364,17 @@ extension MusicLibraryProviding {
             if out.count >= cap { break }
         }
         return Array(out.prefix(cap))
+    }
+
+    /// Fallback paginated track listing for backends that don't override. Walks `allTracks`,
+    /// which loads everything up to `offset + limit` and slices — not ideal, but correct.
+    func tracksPage(offset: Int, limit: Int) async throws -> [Track] {
+        let safeOffset = max(0, offset)
+        let safeLimit = max(1, limit)
+        let needed = safeOffset + safeLimit
+        let all = try await allTracks(limit: needed)
+        guard safeOffset < all.count else { return [] }
+        return Array(all[safeOffset..<min(all.count, safeOffset + safeLimit)])
     }
 
     func tracks(forLibraryArtistId artistId: String, limit: Int) async throws -> [Track] {

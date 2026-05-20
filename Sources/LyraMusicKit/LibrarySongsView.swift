@@ -19,13 +19,34 @@ struct LibrarySongsView: View {
 
     @State private var tracks: [Track] = []
     @State private var isLoading = false
+    @State private var isLoadingMore = false
+    @State private var reachedEnd = false
     @State private var loadError: String?
     @State private var searchText = ""
     @State private var libraryFilter = LibrarySongLibraryFilter.allSongs
     @State private var sort = LibrarySongSort.dateAdded
     @State private var navigateAlbum: AlbumSummary?
+    @State private var lastPaginationOffset: Int?
+    /// Cached projection of `tracks` → filter → search → sort. Recomputed only when an input
+    /// changes, so scroll redraws don't re-sort 10k+ items on every body call.
+    @State private var displayed: [Track] = []
 
-    private var filtered: [Track] {
+    private static let initialPageLimit = 300
+    private static let jellyfinNextPageLimit = 500
+    private static let navidromeNextPageLimit = 180
+    private static let paginationPrefetchDistance = 40
+
+    private var nextPageLimit: Int {
+        app.backendKind == .navidrome ? Self.navidromeNextPageLimit : Self.jellyfinNextPageLimit
+    }
+
+    private var paginationTriggerTrackId: String? {
+        guard !displayed.isEmpty, !reachedEnd, !isLoading, !isLoadingMore else { return nil }
+        let triggerIndex = max(0, displayed.count - Self.paginationPrefetchDistance)
+        return displayed[triggerIndex].id
+    }
+
+    private func recomputeDisplayed() {
         let byLibrary: [Track]
         switch libraryFilter {
         case .allSongs:
@@ -49,15 +70,15 @@ struct LibrarySongsView: View {
         }
         switch sort {
         case .title:
-            return base.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+            displayed = base.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         case .artist:
-            return base.sorted {
+            displayed = base.sorted {
                 let cmpArtist = $0.artist.localizedCaseInsensitiveCompare($1.artist)
                 if cmpArtist != .orderedSame { return cmpArtist == .orderedAscending }
                 return $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
             }
         case .dateAdded:
-            return base.sorted { lhs, rhs in
+            displayed = base.sorted { lhs, rhs in
                 let ld = lhs.libraryAddedDate ?? .distantPast
                 let rd = rhs.libraryAddedDate ?? .distantPast
                 if ld != rd { return ld > rd }
@@ -117,7 +138,7 @@ struct LibrarySongsView: View {
                     .padding(.horizontal, 20)
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
-            } else if filtered.isEmpty {
+            } else if displayed.isEmpty {
                 ContentUnavailableView(
                     emptyTitle,
                     systemImage: "music.note",
@@ -127,11 +148,25 @@ struct LibrarySongsView: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
             } else {
-                ForEach(filtered, id: \.id) { track in
+                let triggerTrackId = paginationTriggerTrackId
+                ForEach(displayed) { track in
                     songRow(track)
                         .listRowBackground(MusicDesign.background)
                         .listRowInsets(EdgeInsets())
                         .listRowSeparatorTint(MusicDesign.separator)
+                        .onAppear {
+                            if track.id == triggerTrackId {
+                                Task { await loadMoreIfNeeded(triggeredBy: track.id) }
+                            }
+                        }
+                }
+                if isLoadingMore, !reachedEnd {
+                    ProgressView()
+                        .tint(MusicDesign.accent)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                 }
             }
         }
@@ -169,6 +204,16 @@ struct LibrarySongsView: View {
         }
         .onChange(of: app.libraryCatalogEpoch) { _, _ in
             Task { await load() }
+        }
+        .onChange(of: tracks) { _, _ in recomputeDisplayed() }
+        .onChange(of: searchText) { _, _ in recomputeDisplayed() }
+        .onChange(of: libraryFilter) { _, _ in recomputeDisplayed() }
+        .onChange(of: sort) { _, _ in recomputeDisplayed() }
+        .onChange(of: app.favoriteTrackIds) { _, _ in
+            if libraryFilter == .favorites { recomputeDisplayed() }
+        }
+        .onChange(of: app.offline.downloadedTrackIds) { _, _ in
+            if libraryFilter == .downloads { recomputeDisplayed() }
         }
     }
 
@@ -257,7 +302,7 @@ struct LibrarySongsView: View {
 
     private var playShuffleRow: some View {
         LibraryPlayShuffleRow(
-            isDisabled: filtered.isEmpty,
+            isDisabled: displayed.isEmpty,
             onPlay: { Task { await playAll() } },
             onShuffle: { Task { await shuffleAll() } },
         )
@@ -325,10 +370,13 @@ struct LibrarySongsView: View {
     private func load() async {
         isLoading = true
         loadError = nil
+        reachedEnd = false
+        lastPaginationOffset = nil
         defer { isLoading = false }
 
         if libraryFilter == .downloads {
             tracks = app.offline.cachedTracks()
+            reachedEnd = true
             if tracks.isEmpty, !app.isSignedIn {
                 loadError = "Sign in to browse your library."
             }
@@ -337,14 +385,19 @@ struct LibrarySongsView: View {
 
         guard let lib = app.activeLibrary else {
             tracks = app.offline.cachedTracks()
+            reachedEnd = true
             loadError = tracks.isEmpty ? "Sign in to browse your library." : nil
             return
         }
         do {
-            tracks = try await lib.allTracks(limit: 50_000)
+            let firstPage = try await lib.tracksPage(offset: 0, limit: Self.initialPageLimit)
+            tracks = firstPage
+            reachedEnd = firstPage.count < Self.initialPageLimit
             app.mergeOfflineCatalogFromDownloads()
         } catch {
+            // Fall back to whatever the app already has cached so the screen is at least usable.
             tracks = app.discoveryLibraryTracks
+            reachedEnd = true
             if tracks.isEmpty {
                 tracks = app.offline.cachedTracks()
             }
@@ -352,20 +405,52 @@ struct LibrarySongsView: View {
         }
     }
 
+    private func loadMoreIfNeeded(triggeredBy triggerTrackId: String?) async {
+        guard !reachedEnd, !isLoadingMore, !isLoading else { return }
+        guard libraryFilter != .downloads else { return }
+        guard let lib = app.activeLibrary else { return }
+        guard triggerTrackId == paginationTriggerTrackId else { return }
+        let offset = tracks.count
+        guard lastPaginationOffset != offset else { return }
+        let pageLimit = nextPageLimit
+        lastPaginationOffset = offset
+        isLoadingMore = true
+        defer { isLoadingMore = false }
+        do {
+            let page = try await lib.tracksPage(offset: offset, limit: pageLimit)
+            if page.isEmpty {
+                reachedEnd = true
+                return
+            }
+            // Dedupe in case the backend's pagination overlaps (Subsonic search3 has no stable order guarantee).
+            let existing = Set(tracks.map(\.id))
+            let fresh = page.filter { !existing.contains($0.id) }
+            if fresh.isEmpty {
+                reachedEnd = true
+                return
+            }
+            tracks.append(contentsOf: fresh)
+            if page.count < pageLimit { reachedEnd = true }
+        } catch {
+            // Stop trying to paginate on error so we don't hammer a failing endpoint.
+            reachedEnd = true
+        }
+    }
+
     private func playAll() async {
-        guard !filtered.isEmpty else { return }
-        try? await app.player.playAlbum(library: app.activeLibrary, tracks: filtered, startIndex: 0)
+        guard !displayed.isEmpty else { return }
+        try? await app.player.playAlbum(library: app.activeLibrary, tracks: displayed, startIndex: 0)
     }
 
     private func shuffleAll() async {
-        guard !filtered.isEmpty else { return }
-        let shuffled = filtered.shuffled()
+        guard !displayed.isEmpty else { return }
+        let shuffled = displayed.shuffled()
         try? await app.player.playAlbum(library: app.activeLibrary, tracks: shuffled, startIndex: 0)
     }
 
     private func play(track: Track) async {
-        guard let idx = filtered.firstIndex(where: { $0.id == track.id }) else { return }
-        try? await app.player.playAlbum(library: app.activeLibrary, tracks: filtered, startIndex: idx)
+        guard let idx = displayed.firstIndex(where: { $0.id == track.id }) else { return }
+        try? await app.player.playAlbum(library: app.activeLibrary, tracks: displayed, startIndex: idx)
     }
 }
 
@@ -389,6 +474,8 @@ struct LibrarySongRow: View, Equatable {
     var onDeleteFromLibrary: () -> Void = {}
     var canDeleteFromLibrary: Bool = false
     var onRemoveDownload: (() -> Void)? = nil
+
+    private static let rowArtworkDecodePixels: CGFloat = 192
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.track.id == rhs.track.id
@@ -462,7 +549,11 @@ struct LibrarySongRow: View, Equatable {
         HStack(alignment: .center, spacing: 10) {
             Button(action: onPlay) {
                 HStack(alignment: .center, spacing: 14) {
-                    AlbumArtworkView(url: artworkURL ?? track.artworkURL, cornerRadius: 6)
+                    AlbumArtworkView(
+                        url: artworkURL ?? track.artworkURL,
+                        cornerRadius: 6,
+                        maxDecodePixels: Self.rowArtworkDecodePixels,
+                    )
                         .frame(width: itemSize.artworkSide, height: itemSize.artworkSide)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(track.title)
@@ -564,4 +655,3 @@ struct LibrarySongRow: View, Equatable {
             .background(MusicDesign.background)
     }
 }
-

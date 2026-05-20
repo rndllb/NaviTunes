@@ -512,13 +512,17 @@ final class JellyfinMusicClient: MusicLibraryProviding {
     }
 
     private func fetchAudioItemsPage(startIndex: Int, limit: Int) async throws -> [Track] {
+        try await fetchAudioItemsPage(startIndex: startIndex, limit: limit, sortBy: "SortName", sortOrder: "Ascending")
+    }
+
+    private func fetchAudioItemsPage(startIndex: Int, limit: Int, sortBy: String, sortOrder: String) async throws -> [Track] {
         let itemsURL = apiURL("Users", userId, "Items")
         var comps = URLComponents(url: itemsURL, resolvingAgainstBaseURL: false)!
         comps.queryItems = [
             URLQueryItem(name: "Recursive", value: "true"),
             URLQueryItem(name: "IncludeItemTypes", value: "Audio"),
-            URLQueryItem(name: "SortBy", value: "SortName"),
-            URLQueryItem(name: "SortOrder", value: "Ascending"),
+            URLQueryItem(name: "SortBy", value: sortBy),
+            URLQueryItem(name: "SortOrder", value: sortOrder),
             URLQueryItem(name: "StartIndex", value: "\(startIndex)"),
             URLQueryItem(name: "Limit", value: "\(max(1, limit))"),
             URLQueryItem(name: "Fields", value: Self.jellyfinAudioItemFields),
@@ -536,6 +540,16 @@ final class JellyfinMusicClient: MusicLibraryProviding {
             guard !albumId.isEmpty else { return nil }
             return parseTrack(dict: dict, albumId: albumId)
         }
+    }
+
+    /// Paged track listing (newest-added first) for scroll pagination in Library → Songs.
+    func tracksPage(offset: Int, limit: Int) async throws -> [Track] {
+        try await fetchAudioItemsPage(
+            startIndex: max(0, offset),
+            limit: max(1, min(limit, 2_000)),
+            sortBy: "DateCreated",
+            sortOrder: "Descending",
+        )
     }
 
     private enum BitrateApplication {

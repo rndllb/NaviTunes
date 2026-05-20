@@ -235,6 +235,28 @@ final class NavidromeClient: MusicLibraryProviding {
         return []
     }
 
+    /// Paged track listing for scroll pagination. Subsonic `search3` has no sort param,
+    /// so order is the server's natural order — the UI applies its own sort to what it
+    /// has loaded. Returns `[]` when the server has no more rows past `offset`.
+    func tracksPage(offset: Int, limit: Int) async throws -> [Track] {
+        let safeOffset = max(0, offset)
+        let safeLimit = max(1, min(limit, 2_000))
+        for query in ["*", "a", ""] {
+            let items = try await subsonicRequest(path: "search3", query: [
+                "query": query,
+                "songCount": "\(safeLimit)",
+                "songOffset": "\(safeOffset)",
+                "albumCount": "0",
+                "artistCount": "0",
+            ])
+            guard let result = navidromeDict(items["searchResult3"]) else { continue }
+            let songs = childDictArray(from: result, key: "song")
+            let parsed = songs.compactMap { parseSongFromChildDict($0) }
+            if !parsed.isEmpty { return parsed }
+        }
+        return []
+    }
+
     private func allTracksByWalkingAlbums(limit: Int) async throws -> [Track] {
         let cap = max(1, min(limit, 50_000))
         let albumBudget = min(2_000, max(400, cap))

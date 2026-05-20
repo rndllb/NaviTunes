@@ -44,8 +44,18 @@ enum ArtworkURLCache {
     // MARK: - Private
 
     private static func cacheKey(for url: URL) -> String {
-        let digest = SHA256.hash(data: Data(url.absoluteString.utf8))
+        let digest = SHA256.hash(data: Data(normalizedCacheURLString(for: url).utf8))
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func normalizedCacheURLString(for url: URL) -> String {
+        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let items = comps.queryItems
+        else { return url.absoluteString }
+        comps.queryItems = items.filter { item in
+            item.name != "t" && item.name != "s"
+        }
+        return comps.url?.absoluteString ?? url.absoluteString
     }
 
     private static func cacheDirectory() throws -> URL {
