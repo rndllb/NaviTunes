@@ -27,6 +27,10 @@ enum PlaybackSource: Equatable {
 final class PlaybackEngine: NSObject, ObservableObject {
     @Published private(set) var queue: [Track] = []
     @Published private(set) var currentIndex: Int = 0
+    /// IDs of tracks that were inserted into the queue via "Play Next" / "Add to Queue"
+    /// (vs. items that came from the active source like an album or playlist). Drives the
+    /// Now Playing → Queue → "Queue" vs "Continue Playing" split.
+    @Published private(set) var userQueuedTrackIds: Set<String> = []
     @Published private(set) var isPlaying: Bool = false
     @Published private(set) var currentTime: TimeInterval = 0
     @Published private(set) var duration: TimeInterval = 0
@@ -58,9 +62,16 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private weak var offline: OfflineDownloadManager?
     private var scrobbledForCurrentTrack = false
 
-    /// Fires once per track when scrobble threshold is reached. `AppModel` uses this to
-    /// stamp the played playlist (or album, for ad-hoc queues) into the Recently Played history.
+    /// Fires once per track when scrobble threshold is reached (~50% / 30s). `AppModel`
+    /// uses this to stamp the played playlist (or album, for ad-hoc queues) into the
+    /// Recently Played shelf on the Home tab.
     var onTrackScrobbled: ((Track, PlaybackSource?) -> Void)?
+
+    /// Fires the moment a track becomes the active item at position 0 — whether the
+    /// user tapped it, jumped to it, or auto-advanced. Drives the per-track Now Playing
+    /// → Queue → History list, which records on start (not on scrobble threshold).
+    var onTrackStarted: ((Track) -> Void)?
+
     private var didConfigureRemoteCommands = false
 
     #if os(iOS)
@@ -168,6 +179,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         duration = 0
         playbackSource = nil
         showsMiniPlayerChrome = false
+        userQueuedTrackIds.removeAll()
         updateNowPlaying(nil)
     }
 
@@ -267,6 +279,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
         queue = tracks
         currentIndex = min(max(0, startIndex), max(tracks.count - 1, 0))
         playbackSource = source
+        // Fresh source = no user-queued items yet.
+        userQueuedTrackIds.removeAll()
         lastEmittedUIProgress = -10_000
         playbackHead = 0
         try await loadLyrics()
@@ -277,6 +291,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         scrobbledForCurrentTrack = false
         configureRemoteCommands()
         revealMiniPlayerChrome()
+        if let started = activeTrack { onTrackStarted?(started) }
     }
 
     func playNext(library: MusicLibraryProviding?, track: Track) async throws {
@@ -287,6 +302,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         }
         let insertAt = min(currentIndex + 1, queue.count)
         queue.insert(track, at: insertAt)
+        userQueuedTrackIds.insert(track.id)
     }
 
     func playTracksNext(library: MusicLibraryProviding?, tracks: [Track]) async throws {
@@ -299,6 +315,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         let insertAt = min(currentIndex + 1, queue.count)
         for (i, t) in tracks.enumerated() {
             queue.insert(t, at: insertAt + i)
+            userQueuedTrackIds.insert(t.id)
         }
     }
 
@@ -314,12 +331,22 @@ final class PlaybackEngine: NSObject, ObservableObject {
             return
         }
         queue.append(contentsOf: tracks)
+        for t in tracks { userQueuedTrackIds.insert(t.id) }
+    }
+
+    /// Removes everything in the user-queued section (Now Playing → Queue → "Clear").
+    /// The active track and the source's natural Continue Playing list are preserved.
+    func clearUserQueue() {
+        guard !userQueuedTrackIds.isEmpty else { return }
+        let ids = userQueuedTrackIds
+        removeTracksFromQueue(trackIds: ids)
     }
 
     func removeTracksFromQueue(trackIds: Set<String>) {
         guard !trackIds.isEmpty, !queue.isEmpty else { return }
         let previousId = activeTrack?.id
         queue.removeAll { trackIds.contains($0.id) }
+        userQueuedTrackIds.subtract(trackIds)
         if queue.isEmpty {
             reset()
             return
@@ -582,6 +609,12 @@ final class PlaybackEngine: NSObject, ObservableObject {
         isPlaying = true
         scrobbledForCurrentTrack = false
         revealMiniPlayerChrome()
+        if let started = activeTrack {
+            // Consumed from the user queue (if it was there) — it's now the active
+            // track, no longer "queued".
+            userQueuedTrackIds.remove(started.id)
+            onTrackStarted?(started)
+        }
     }
 
     private func detachPlayerKeepingQueueState() {
