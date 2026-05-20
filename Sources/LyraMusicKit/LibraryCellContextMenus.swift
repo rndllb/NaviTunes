@@ -45,6 +45,19 @@ struct LibraryAlbumContextMenuContent: View {
         }
 
         Section {
+            if app.isAlbumInLibrary(album.id) {
+                Button(role: .destructive) {
+                    Task { await app.removeAlbumFromLibrary(album) }
+                } label: {
+                    Label("Delete from Library", systemImage: "trash")
+                }
+            } else {
+                Button {
+                    Task { await addAlbumToLibrary() }
+                } label: {
+                    Label("Add to Library", systemImage: "plus.square.on.square")
+                }
+            }
             Button {
                 Task { await addToPlaylist() }
             } label: {
@@ -62,6 +75,15 @@ struct LibraryAlbumContextMenuContent: View {
     private func loadTracks() async throws -> [Track] {
         guard let lib = app.activeLibrary else { return [] }
         return try await lib.tracks(forAlbumId: album.id)
+    }
+
+    private func addAlbumToLibrary() async {
+        do {
+            let tracks = try await loadTracks()
+            await app.addAlbumToLibrary(album, tracks: tracks)
+        } catch {
+            app.errorMessage = error.localizedDescription
+        }
     }
 
     private func play() async {
@@ -140,6 +162,19 @@ struct LibraryPlaylistContextMenuContent: View {
         }
 
         Section {
+            if app.isPlaylistInLibrary(playlist.id) {
+                Button(role: .destructive) {
+                    Task { await app.removePlaylistFromLibrary(playlist) }
+                } label: {
+                    Label("Delete from Library", systemImage: "trash")
+                }
+            } else {
+                Button {
+                    Task { await app.addPlaylistToLibrary(playlist) }
+                } label: {
+                    Label("Add to Library", systemImage: "plus.square.on.square")
+                }
+            }
             Button {
                 togglePinned()
             } label: {

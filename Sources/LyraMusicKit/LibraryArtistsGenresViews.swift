@@ -174,7 +174,7 @@ struct LibraryArtistAlbumsView: View {
         .musicNavigationChrome()
         .musicNavigationBarVisibleWhenPushed()
         .navigationDestination(item: $navigateAlbum) { album in
-            AlbumDetailView(album: album)
+            AlbumDetailView(album: album, librarySource: true)
         }
         .task(id: artist.id) { await load() }
         .onChange(of: app.libraryCatalogEpoch) { _, _ in
@@ -230,7 +230,7 @@ struct LibraryArtistAlbumsView: View {
             LazyVGrid(columns: columns, spacing: 20) {
                 ForEach(albums) { album in
                     NavigationLink {
-                        AlbumDetailView(album: album)
+                        AlbumDetailView(album: album, librarySource: true)
                     } label: {
                         LibraryBrowsingAlbumGridCell(album: album)
                     }
@@ -269,6 +269,8 @@ struct LibraryArtistAlbumsView: View {
             hasActiveQueue: !app.player.queue.isEmpty,
             onGoToAlbum: { navigateAlbum = app.albumSummary(for: track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
+            onRemoveFromLibrary: app.isSongInLibrary(track.id)
+                ? { Task { await app.removeSongFromLibrary(track) } } : nil,
             onDeleteFromLibrary: { app.beginLibraryTrackDeletion(track) },
             canDeleteFromLibrary: app.canDeleteFromLibrary,
             onRemoveDownload: app.offline.downloadedTrackIds.contains(track.id)
@@ -491,7 +493,7 @@ struct LibraryGenreAlbumsView: View {
                 LazyVGrid(columns: columns, spacing: 20) {
                     ForEach(albums) { album in
                         NavigationLink {
-                            AlbumDetailView(album: album)
+                            AlbumDetailView(album: album, librarySource: true)
                         } label: {
                             LibraryBrowsingAlbumGridCell(album: album)
                         }

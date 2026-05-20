@@ -11,6 +11,11 @@ struct AlbumDetailView: View {
     let album: AlbumSummary
     /// When set (e.g. deep-linked from Downtify), scrolls the tracklist to this item after load.
     var scrollToTrackId: String? = nil
+    /// `true` when the user navigated here from a library surface (Library tab, library
+    /// playlist, etc.). Enables the Apple-Music behavior of filtering the tracklist to
+    /// only the songs the user has added, with a "Show Complete Album" toggle. Outside
+    /// the library (Home, search, discovery) the tracklist always shows the full album.
+    var librarySource: Bool = false
 
     @State private var tracks: [Track] = []
     @State private var isLoading = false
@@ -18,6 +23,10 @@ struct AlbumDetailView: View {
     @State private var toast: String?
     @State private var backdropPalette: ArtworkDynamicGradient.BackdropPalette = .fallback
     @State private var didScrollToFocusTrack = false
+    /// When the album is in the user's Lyra library, the tracklist defaults to the
+    /// subset they actually added; flipping this exposes the full album so they can
+    /// add the rest (matches Apple Music behavior).
+    @State private var showCompleteAlbum: Bool = false
 
     private var heroArtSide: CGFloat {
         let w: CGFloat = {
@@ -38,11 +47,39 @@ struct AlbumDetailView: View {
         tracks.reduce(0) { $0 + max($1.duration, 0) }
     }
 
-    private var orderedTracks: [Track] {
+    /// All album tracks in playback order, ignoring library membership. Drives playback
+    /// actions (Play / Shuffle / Download All) so those always operate on the full album.
+    private var allOrderedTracks: [Track] {
         tracks.sorted { lhs, rhs in
             if lhs.discNumber != rhs.discNumber { return lhs.discNumber < rhs.discNumber }
             return lhs.indexNumber < rhs.indexNumber
         }
+    }
+
+    /// `true` when the album is in the user's library and the user hasn't flipped the
+    /// "Show Complete Album" toggle. While true, the tracklist filters to just the
+    /// songs the user has actually added to their library. Only effective when the
+    /// view was reached from a library entry point — outside library (Home, browse,
+    /// search) we always show the full album.
+    private var isFilteredToLibraryTracks: Bool {
+        librarySource
+            && app.isAlbumInLibrary(album.id)
+            && !showCompleteAlbum
+            && libraryTracksInAlbum.count < allOrderedTracks.count
+    }
+
+    private var libraryTracksInAlbum: [Track] {
+        allOrderedTracks.filter { app.isSongInLibrary($0.id) }
+    }
+
+    /// Visible tracklist for the UI. Filters when the album is in library and the user
+    /// hasn't asked to see the complete album.
+    private var orderedTracks: [Track] {
+        guard isFilteredToLibraryTracks else { return allOrderedTracks }
+        let filtered = libraryTracksInAlbum
+        // Defensive: if the filter would zero the list (shouldn't happen because
+        // isFilteredToLibraryTracks requires > 0), fall through to showing everything.
+        return filtered.isEmpty ? allOrderedTracks : filtered
     }
 
     /// Toolbar ⋯ leading control — cache all tracks for offline (same as hero download-all).
@@ -176,6 +213,49 @@ struct AlbumDetailView: View {
     private var actionIconColor: Color { backdropPalette.heroGlassIcon }
     private var actionCircleFill: Color { backdropPalette.heroGlassCircleFill }
 
+    /// Right-hand action in the hero triplet. Switches between "Add to Library" (album not
+    /// in user's library) and "Download All" (album in library, fetch remaining tracks to
+    /// device). When everything is already cached or no tracks loaded, the button is
+    /// disabled but stays in the same slot so layout doesn't shift.
+    @ViewBuilder
+    private var albumPrimaryActionButton: some View {
+        let inLibrary = app.isAlbumInLibrary(album.id)
+        let allDownloaded = albumTracksAllSavedOffline
+        let isDisabled = tracks.isEmpty || isDownloadingAll || (inLibrary && allDownloaded)
+        Button {
+            if inLibrary {
+                Task { await downloadAllTracks() }
+            } else {
+                Task { await app.addAlbumToLibrary(album, tracks: tracks) }
+            }
+        } label: {
+            Group {
+                if isDownloadingAll {
+                    ProgressView()
+                        .tint(actionIconColor)
+                        .scaleEffect(0.85)
+                } else {
+                    Image(systemName: inLibrary ? "arrow.down" : "plus")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(
+                            isDisabled ? actionIconColor.opacity(0.35) : actionIconColor,
+                        )
+                }
+            }
+            .frame(width: 54, height: 54)
+            .background(
+                Circle().fill(
+                    isDisabled
+                        ? backdropPalette.heroGlassCircleFillDisabled
+                        : backdropPalette.heroGlassCircleFill,
+                ),
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .accessibilityLabel(inLibrary ? "Download album" : "Add to library")
+    }
+
     private var actionButtonTriplet: some View {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
@@ -205,35 +285,7 @@ struct AlbumDetailView: View {
                 .buttonStyle(.plain)
                 .disabled(tracks.isEmpty)
 
-                Button {
-                    Task { await downloadAllTracks() }
-                } label: {
-                    Group {
-                        if isDownloadingAll {
-                            ProgressView()
-                                .tint(actionIconColor)
-                                .scaleEffect(0.85)
-                        } else {
-                            Image(systemName: "arrow.down")
-                                .font(.title3.weight(.semibold))
-                                .foregroundStyle(
-                                    tracks.isEmpty || albumTracksAllSavedOffline
-                                        ? actionIconColor.opacity(0.35)
-                                        : actionIconColor
-                                )
-                        }
-                    }
-                    .frame(width: 54, height: 54)
-                    .background(
-                        Circle().fill(
-                            tracks.isEmpty || albumTracksAllSavedOffline
-                                ? backdropPalette.heroGlassCircleFillDisabled
-                                : backdropPalette.heroGlassCircleFill
-                        )
-                    )
-                }
-                .buttonStyle(.plain)
-                .disabled(tracks.isEmpty || isDownloadingAll || albumTracksAllSavedOffline)
+                albumPrimaryActionButton
             }
             Spacer(minLength: 0)
         }
@@ -261,6 +313,7 @@ struct AlbumDetailView: View {
                             isFavorite: app.favoriteTrackIds.contains(track.id),
                             offlineDownload: offline.activeDownloads[track.id],
                             isOfflineCached: app.offline.downloadedTrackIds.contains(track.id),
+                            isInLibrary: app.isSongInLibrary(track.id),
                             onCancelOfflineDownload: {
                                 app.offline.cancelDownload(trackId: track.id)
                             },
@@ -269,6 +322,9 @@ struct AlbumDetailView: View {
                                     guard let lib = app.activeLibrary else { return }
                                     try? await cache(track: track, lib: lib)
                                 }
+                            },
+                            onTapAddToLibrary: {
+                                Task { await app.addSongToLibrary(track) }
                             },
                             backdropPalette: backdropPalette,
                             onRowTap: {
@@ -282,15 +338,58 @@ struct AlbumDetailView: View {
                         }
                     }
                 }
+                showCompleteAlbumToggle
             }
         }
         .padding(.top, 6)
     }
 
+    /// Tracklist footer toggle — only present when the album is in the user's library
+    /// and some of its tracks are not, AND the view is being shown from a library
+    /// entry point. Flipping it reveals the rest of the album so the user can add
+    /// more songs without leaving the page.
+    @ViewBuilder
+    private var showCompleteAlbumToggle: some View {
+        let inLibrary = app.isAlbumInLibrary(album.id)
+        let hasHiddenTracks = libraryTracksInAlbum.count < allOrderedTracks.count
+        if librarySource, inLibrary, hasHiddenTracks {
+            HStack(spacing: 6) {
+                Spacer(minLength: 0)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        showCompleteAlbum.toggle()
+                    }
+                } label: {
+                    Text(showCompleteAlbum ? "Show Library Only" : "Show Complete Album")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(backdropPalette.heroChromePrimary)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(
+                            Capsule().fill(backdropPalette.heroGlassCircleFill),
+                        )
+                }
+                .buttonStyle(.plain)
+                Spacer(minLength: 0)
+            }
+            .padding(.top, 14)
+            .padding(.horizontal, 22)
+        }
+    }
+
     @ViewBuilder
     private func libraryTrackOverflowMenu(track: Track) -> some View {
         ControlGroup {
-            if app.offline.downloadedTrackIds.contains(track.id) {
+            if !app.isSongInLibrary(track.id) {
+                // Per the Apple-Music model: adding a single song adds just that track
+                // and registers its album in library (so the album appears in Library →
+                // Albums with the song visible inside).
+                Button {
+                    Task { await app.addSongToLibrary(track) }
+                } label: {
+                    Label("Add to Library", systemImage: "plus")
+                }
+            } else if app.offline.downloadedTrackIds.contains(track.id) {
                 Button {
                     try? app.offline.remove(trackId: track.id)
                 } label: {
@@ -302,7 +401,7 @@ struct AlbumDetailView: View {
                         Task { try? await cache(track: track, lib: lib) }
                     }
                 } label: {
-                    Label("Download", systemImage: "arrow.down.circle")
+                    Label("Download", systemImage: "arrow.down")
                 }
             }
             Button {
@@ -353,12 +452,24 @@ struct AlbumDetailView: View {
         .tint(Color.primary)
 
         Section {
-            Button(role: .destructive) {
-                app.beginLibraryTrackDeletion(track)
-            } label: {
-                Label("Delete from Library", systemImage: "trash")
+            if app.isSongInLibrary(track.id) {
+                // User-level: drops the song from the magic playlist tracks but leaves
+                // the album entry in `comment.albums` intact (album stays in library,
+                // just with one fewer track).
+                Button(role: .destructive) {
+                    Task { await app.removeSongFromLibrary(track) }
+                } label: {
+                    Label("Delete from Library", systemImage: "trash")
+                }
             }
-            .disabled(!app.canDeleteFromLibrary)
+            // Admin-only: removes the audio file from the server entirely.
+            if app.canDeleteFromLibrary {
+                Button(role: .destructive) {
+                    app.beginLibraryTrackDeletion(track)
+                } label: {
+                    Label("Delete File from Server", systemImage: "xmark.bin")
+                }
+            }
         }
     }
 

@@ -87,6 +87,30 @@ struct LibrarySongsView: View {
         }
     }
 
+    @ViewBuilder
+    private var trackListRows: some View {
+        let triggerTrackId = paginationTriggerTrackId
+        ForEach(displayed) { track in
+            songRow(track)
+                .listRowBackground(MusicDesign.background)
+                .listRowInsets(EdgeInsets())
+                .listRowSeparatorTint(MusicDesign.separator)
+                .onAppear {
+                    if track.id == triggerTrackId {
+                        Task { await loadMoreIfNeeded(triggeredBy: track.id) }
+                    }
+                }
+        }
+        if isLoadingMore, !reachedEnd {
+            ProgressView()
+                .tint(MusicDesign.accent)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+        }
+    }
+
     private var emptyTitle: String {
         switch libraryFilter {
         case .allSongs: return "No songs"
@@ -148,26 +172,7 @@ struct LibrarySongsView: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
             } else {
-                let triggerTrackId = paginationTriggerTrackId
-                ForEach(displayed) { track in
-                    songRow(track)
-                        .listRowBackground(MusicDesign.background)
-                        .listRowInsets(EdgeInsets())
-                        .listRowSeparatorTint(MusicDesign.separator)
-                        .onAppear {
-                            if track.id == triggerTrackId {
-                                Task { await loadMoreIfNeeded(triggeredBy: track.id) }
-                            }
-                        }
-                }
-                if isLoadingMore, !reachedEnd {
-                    ProgressView()
-                        .tint(MusicDesign.accent)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 16)
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
-                }
+                trackListRows
             }
         }
         .listStyle(.plain)
@@ -197,7 +202,7 @@ struct LibrarySongsView: View {
             }
         }
         .navigationDestination(item: $navigateAlbum) { album in
-            AlbumDetailView(album: album)
+            AlbumDetailView(album: album, librarySource: true)
         }
         .task {
             await load()
@@ -214,6 +219,9 @@ struct LibrarySongsView: View {
         }
         .onChange(of: app.offline.downloadedTrackIds) { _, _ in
             if libraryFilter == .downloads { recomputeDisplayed() }
+        }
+        .onChange(of: app.librarySongIds) { _, _ in
+            tracks = libraryTracksFromCatalog()
         }
     }
 
@@ -335,6 +343,8 @@ struct LibrarySongsView: View {
             hasActiveQueue: !app.player.queue.isEmpty,
             onGoToAlbum: { navigateAlbum = albumSummary(for: track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
+            onRemoveFromLibrary: app.isSongInLibrary(track.id)
+                ? { Task { await app.removeSongFromLibrary(track) } } : nil,
             onDeleteFromLibrary: { app.beginLibraryTrackDeletion(track) },
             canDeleteFromLibrary: app.canDeleteFromLibrary,
             onRemoveDownload: app.offline.downloadedTrackIds.contains(track.id)
@@ -370,39 +380,47 @@ struct LibrarySongsView: View {
     private func load() async {
         isLoading = true
         loadError = nil
-        reachedEnd = false
+        reachedEnd = true   // Library is a fixed user-curated set; never paginates from the server.
         lastPaginationOffset = nil
         defer { isLoading = false }
 
         if libraryFilter == .downloads {
             tracks = app.offline.cachedTracks()
-            reachedEnd = true
             if tracks.isEmpty, !app.isSignedIn {
                 loadError = "Sign in to browse your library."
             }
             return
         }
 
-        guard let lib = app.activeLibrary else {
+        guard app.activeLibrary != nil else {
             tracks = app.offline.cachedTracks()
-            reachedEnd = true
             loadError = tracks.isEmpty ? "Sign in to browse your library." : nil
             return
         }
-        do {
-            let firstPage = try await lib.tracksPage(offset: 0, limit: Self.initialPageLimit)
-            tracks = firstPage
-            reachedEnd = firstPage.count < Self.initialPageLimit
-            app.mergeOfflineCatalogFromDownloads()
-        } catch {
-            // Fall back to whatever the app already has cached so the screen is at least usable.
-            tracks = app.discoveryLibraryTracks
-            reachedEnd = true
-            if tracks.isEmpty {
-                tracks = app.offline.cachedTracks()
+        // Source of truth = the magic-playlist song set. Resolve IDs against the in-memory
+        // catalog (built by ``AppModel.refreshLibraryTrackMatchIndex``). Anything not yet
+        // indexed will fill in on the next library refresh.
+        tracks = libraryTracksFromCatalog()
+    }
+
+    private func libraryTracksFromCatalog() -> [Track] {
+        let ids = app.librarySongIds
+        guard !ids.isEmpty else { return [] }
+        var seen = Set<String>()
+        var out: [Track] = []
+        out.reserveCapacity(ids.count)
+        for track in app.discoveryLibraryTracks where ids.contains(track.id) {
+            if seen.insert(track.id).inserted {
+                out.append(track)
             }
-            loadError = tracks.isEmpty ? error.localizedDescription : nil
         }
+        // Pick up any cached-offline tracks that haven't been merged into discoveryLibraryTracks yet.
+        for track in app.offline.cachedTracks() where ids.contains(track.id) {
+            if seen.insert(track.id).inserted {
+                out.append(track)
+            }
+        }
+        return out
     }
 
     private func loadMoreIfNeeded(triggeredBy triggerTrackId: String?) async {
@@ -471,6 +489,9 @@ struct LibrarySongRow: View, Equatable {
     let onGoToAlbum: () -> Void
     var onAddToPlaylist: (() -> Void)? = nil
     var onRemoveFromPlaylist: (() -> Void)? = nil
+    /// User-level remove from Lyra library (drops the song from the magic playlist).
+    /// When `nil` the menu item is hidden — useful in non-library surfaces.
+    var onRemoveFromLibrary: (() -> Void)? = nil
     var onDeleteFromLibrary: () -> Void = {}
     var canDeleteFromLibrary: Bool = false
     var onRemoveDownload: (() -> Void)? = nil
@@ -488,6 +509,7 @@ struct LibrarySongRow: View, Equatable {
             && lhs.offlineDownload == rhs.offlineDownload
             && lhs.hasActiveQueue == rhs.hasActiveQueue
             && (lhs.onRemoveFromPlaylist != nil) == (rhs.onRemoveFromPlaylist != nil)
+            && (lhs.onRemoveFromLibrary != nil) == (rhs.onRemoveFromLibrary != nil)
     }
 
     private var offlinePhase: TrackOfflineIndicatorPhase {
@@ -525,10 +547,10 @@ struct LibrarySongRow: View, Equatable {
                     .accessibilityLabel("Remove from Playlist")
                 } else if canDeleteFromLibrary {
                     Button(role: .destructive, action: onDeleteFromLibrary) {
-                        Self.swipeChipIcon("trash")
+                        Self.swipeChipIcon("xmark.bin")
                     }
                     .tint(.red)
-                    .accessibilityLabel("Delete from Library")
+                    .accessibilityLabel("Delete File from Server")
                 }
             }
     }
@@ -636,10 +658,20 @@ struct LibrarySongRow: View, Equatable {
                     .tint(Color.primary)
 
                     Section {
-                        Button(role: .destructive, action: onDeleteFromLibrary) {
-                            Label("Delete from Library", systemImage: "trash")
+                        if let onRemoveFromLibrary {
+                            // User-level (magic playlist) — always available when the
+                            // host view supplied the callback. Album entry is left alone;
+                            // the album stays in library with one fewer track.
+                            Button(role: .destructive, action: onRemoveFromLibrary) {
+                                Label("Delete from Library", systemImage: "trash")
+                            }
                         }
-                        .disabled(!canDeleteFromLibrary)
+                        // Admin-only: removes the file from the server entirely.
+                        if canDeleteFromLibrary {
+                            Button(role: .destructive, action: onDeleteFromLibrary) {
+                                Label("Delete File from Server", systemImage: "xmark.bin")
+                            }
+                        }
                     }
                 } label: {
                     Image(systemName: "ellipsis")

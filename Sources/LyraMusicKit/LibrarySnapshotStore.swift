@@ -6,6 +6,17 @@ struct LibrarySnapshot: Codable {
     var tracks: [Track] = []
     var playlists: [PlaylistSummary] = []
     var favoriteTrackIds: [String] = []
+    /// Resolved server-side id of the user's "Lyra Library" magic playlist. Cached so
+    /// the Library tab can render the user's curated set immediately on cold launch
+    /// without waiting for ``AppModel.refreshLibraryMembership`` to round-trip.
+    var libraryMagicPlaylistId: String?
+    /// Song IDs in the user's library (mirror of the magic playlist's tracks).
+    var librarySongIds: [String] = []
+    /// Album-level library membership with per-album add dates (mirror of the magic
+    /// playlist's `comment` payload).
+    var libraryAlbumEntries: [LibraryMembershipPayload.Entry] = []
+    /// Playlist-level library membership (mirror of `comment.playlists`).
+    var libraryPlaylistEntries: [LibraryMembershipPayload.Entry] = []
     var savedAt: Date = .distantPast
 }
 
