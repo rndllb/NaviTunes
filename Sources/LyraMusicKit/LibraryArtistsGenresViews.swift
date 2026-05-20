@@ -253,6 +253,7 @@ struct LibraryArtistAlbumsView: View {
             track: track,
             itemSize: app.songListItemSize,
             isFavorite: app.favoriteTrackIds.contains(track.id),
+            isNowPlaying: app.player.activeTrack?.id == track.id,
             offlineDownload: offline.activeDownloads[track.id],
             isOfflineCached: app.offline.downloadedTrackIds.contains(track.id),
             onPlay: { Task { await play(track: track) } },

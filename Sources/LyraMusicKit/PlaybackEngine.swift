@@ -40,6 +40,11 @@ final class PlaybackEngine: NSObject, ObservableObject {
     @Published private(set) var playbackSource: PlaybackSource?
     /// Drives the tab-bar mini player pill — false after a cold restore until the user starts playback.
     @Published private(set) var showsMiniPlayerChrome = false
+    /// Stores the pre-shuffle queue order for restoring when shuffle is toggled off.
+    private var unshuffledQueue: [Track]?
+    /// Natural ordered track list from the most recently loaded source — used to detect
+    /// manual queue reordering and to restore order when shuffle is disabled.
+    private var sourceQueueOrder: [Track]?
 
     private var lastEmittedUIProgress: TimeInterval = -10_000
     private var lastNowPlayingInfoRefresh: TimeInterval = -10_000
@@ -183,6 +188,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         playbackSource = nil
         showsMiniPlayerChrome = false
         userQueuedTrackIds.removeAll()
+        unshuffledQueue = nil
         updateNowPlaying(nil)
     }
 
@@ -209,6 +215,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
             shuffle: shuffleMode == .on,
             repeatMode: Self.encodeRepeatMode(repeatMode),
             savedAt: Date(),
+            unshuffledQueue: unshuffledQueue,
+            sourceQueueOrder: sourceQueueOrder,
         )
     }
 
@@ -232,6 +240,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
         lyrics = []
         scrobbledForCurrentTrack = false
         isPlaying = false
+        unshuffledQueue = snapshot.unshuffledQueue
+        sourceQueueOrder = snapshot.sourceQueueOrder
         duration = activeTrack?.duration ?? 0
         // A restored snapshot represents real playback the user wants to resume — surface
         // the mini player so the saved track + playhead are visible on launch. Only the
@@ -284,6 +294,18 @@ final class PlaybackEngine: NSObject, ObservableObject {
         revealMiniPlayerChrome()
     }
 
+    /// Starts a fresh queue from the given natural-order tracks, randomizing playback order
+    /// while remembering the original so the user can disable shuffle later and have the
+    /// queue resume in its original chronological order. Sets ``shuffleMode`` to `.on` so
+    /// the Now Playing shuffle button reflects the hero shuffle action.
+    func playAlbumShuffled(library: MusicLibraryProviding?, tracks: [Track], source: PlaybackSource? = nil) async throws {
+        guard !tracks.isEmpty else { return }
+        try await playAlbum(library: library, tracks: tracks.shuffled(), startIndex: 0, source: source)
+        unshuffledQueue = tracks
+        sourceQueueOrder = tracks
+        shuffleMode = .on
+    }
+
     func playAlbum(library: MusicLibraryProviding?, tracks: [Track], startIndex: Int = 0, source: PlaybackSource? = nil) async throws {
         if let library { self.library = library }
         let epoch = beginPlaybackSession()
@@ -293,6 +315,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
         playbackSource = source
         // Fresh source = no user-queued items yet.
         userQueuedTrackIds.removeAll()
+        unshuffledQueue = nil
+        sourceQueueOrder = tracks
+        // Caller may flip this back to `.on` (e.g. ``playAlbumShuffled``) after the queue lands.
+        shuffleMode = .off
         lastEmittedUIProgress = -10_000
         playbackHead = 0
         try await loadLyrics()
@@ -314,6 +340,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             try await playAlbum(library: library, tracks: [track], startIndex: 0)
             return
         }
+        removeUpcomingOccurrences(of: [track.id])
         let insertAt = min(currentIndex + 1, queue.count)
         queue.insert(track, at: insertAt)
         userQueuedTrackIds.insert(track.id)
@@ -326,6 +353,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             try await playAlbum(library: library, tracks: tracks, startIndex: 0)
             return
         }
+        removeUpcomingOccurrences(of: Set(tracks.map(\.id)))
         let insertAt = min(currentIndex + 1, queue.count)
         for (i, t) in tracks.enumerated() {
             queue.insert(t, at: insertAt + i)
@@ -344,8 +372,20 @@ final class PlaybackEngine: NSObject, ObservableObject {
             try await playAlbum(library: library, tracks: tracks, startIndex: 0)
             return
         }
+        removeUpcomingOccurrences(of: Set(tracks.map(\.id)))
         queue.append(contentsOf: tracks)
         for t in tracks { userQueuedTrackIds.insert(t.id) }
+    }
+
+    /// Strips later occurrences of `ids` from the up-next portion of `queue` so a
+    /// re-insertion (Play Next / Add to Queue) doesn't leave a duplicate in its natural
+    /// Continue Playing position. Active and already-played tracks are untouched.
+    private func removeUpcomingOccurrences<S: Sequence>(of ids: S) where S.Element == String {
+        let idSet = Set(ids)
+        guard !idSet.isEmpty, currentIndex + 1 < queue.count else { return }
+        let head = queue.prefix(currentIndex + 1)
+        let tail = queue.suffix(from: currentIndex + 1).filter { !idSet.contains($0.id) }
+        queue = Array(head) + Array(tail)
     }
 
     /// Removes everything in the user-queued section (Now Playing → Queue → "Clear").
@@ -556,14 +596,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     func skipNext() {
-        if shuffleMode == .on {
-            let remaining = queue.indices.filter { $0 != currentIndex }
-            guard let next = remaining.randomElement() else { return }
-            currentIndex = next
-        } else {
-            guard currentIndex + 1 < queue.count else { return }
-            currentIndex += 1
-        }
+        // Shuffle is a queue-reordering action — advance sequentially regardless of mode.
+        guard currentIndex + 1 < queue.count else { return }
+        currentIndex += 1
         Task { try? await advance() }
     }
 
@@ -572,22 +607,64 @@ final class PlaybackEngine: NSObject, ObservableObject {
             seek(to: 0)
             return
         }
-        if shuffleMode == .on {
-            let remaining = queue.indices.filter { $0 != currentIndex }
-            guard let prev = remaining.randomElement() else { return }
-            currentIndex = prev
-        } else {
-            guard currentIndex > 0 else {
-                seek(to: 0)
-                return
-            }
-            currentIndex -= 1
+        guard currentIndex > 0 else {
+            seek(to: 0)
+            return
         }
+        currentIndex -= 1
         Task { try? await advance() }
     }
 
+    /// True when the "continue playing" section is out of the natural source order, but shuffle
+    /// was not used — e.g. the user dragged tracks in the queue. Also returns true when
+    /// `shuffleMode == .on` so the shuffle button stays lit in both entry paths.
+    var isQueueOutOfNaturalOrder: Bool {
+        if shuffleMode == .on { return true }
+        guard let source = sourceQueueOrder,
+              let current = activeTrack,
+              let sourceIdx = source.firstIndex(where: { $0.id == current.id })
+        else { return false }
+        let continuePlaying = queue[(currentIndex + 1)...].filter { !userQueuedTrackIds.contains($0.id) }
+        let expectedTail = Array(source[(sourceIdx + 1)...])
+        guard continuePlaying.count == expectedTail.count else { return true }
+        return zip(continuePlaying, expectedTail).contains { $0.id != $1.id }
+    }
+
     func toggleShuffle() {
-        shuffleMode = shuffleMode == .off ? .on : .off
+        if shuffleMode == .off {
+            // Turning shuffle ON: save current queue and randomize the rest
+            unshuffledQueue = queue
+            let currentTrack = activeTrack
+            var remaining = queue
+            remaining.remove(at: currentIndex)
+            remaining.shuffle()
+            if let current = currentTrack {
+                queue = [current] + remaining
+                currentIndex = 0
+            }
+            shuffleMode = .on
+        } else {
+            // Turning shuffle OFF: restore original queue order
+            if let original = unshuffledQueue {
+                if let currentTrack = activeTrack, let originalIndex = original.firstIndex(where: { $0.id == currentTrack.id }) {
+                    queue = original
+                    currentIndex = originalIndex
+                } else {
+                    queue = original
+                }
+                unshuffledQueue = nil
+            } else if let source = sourceQueueOrder,
+                      let currentTrack = activeTrack,
+                      let sourceIdx = source.firstIndex(where: { $0.id == currentTrack.id }) {
+                // Manually reordered without using shuffle button — restore natural tail,
+                // keeping user-queued tracks at their current positions.
+                let naturalTail = Array(source[(sourceIdx + 1)...])
+                let userQueued = Array(queue[(currentIndex + 1)...].filter { userQueuedTrackIds.contains($0.id) })
+                let prefix = Array(queue[...currentIndex])
+                queue = prefix + userQueued + naturalTail
+            }
+            shuffleMode = .off
+        }
     }
 
     func cycleRepeat() {
@@ -960,27 +1037,16 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     private func handleEnded() {
+        // Shuffle is a queue-reordering action (see ``toggleShuffle``) — once shuffled,
+        // advance through the queue sequentially, otherwise every track end would re-randomize.
         switch repeatMode {
         case .one:
             Task { try? await advance() }
         case .all:
-            if shuffleMode == .on {
-                let remaining = queue.indices.filter { $0 != currentIndex }
-                currentIndex = remaining.randomElement() ?? 0
-            } else {
-                currentIndex = (currentIndex + 1) % max(queue.count, 1)
-            }
+            currentIndex = (currentIndex + 1) % max(queue.count, 1)
             Task { try? await advance() }
         case .off:
-            if shuffleMode == .on {
-                let remaining = queue.indices.filter { $0 != currentIndex }
-                if let next = remaining.randomElement() {
-                    currentIndex = next
-                    Task { try? await advance() }
-                } else {
-                    isPlaying = false
-                }
-            } else if currentIndex + 1 < queue.count {
+            if currentIndex + 1 < queue.count {
                 currentIndex += 1
                 Task { try? await advance() }
             } else {
