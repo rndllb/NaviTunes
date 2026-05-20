@@ -711,6 +711,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
             seen.insert(key)
             candidates.append((u, h))
         }
+        if let direct = track.streamOverrideURL {
+            appendUnique(direct, [:])
+        }
         if let library {
             let serverHeaders = library.httpHeadersForMediaRequests()
             if let jellyfin = library as? JellyfinMusicClient {
@@ -932,7 +935,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     private func loadLyrics() async throws {
-        guard let library, let track = currentTrack else {
+        guard let library, let track = currentTrack, !track.isInternetRadioStream else {
             lyrics = []
             return
         }
@@ -964,7 +967,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     private func maybeScrobble(track: Track, position: TimeInterval) {
-        guard !scrobbledForCurrentTrack else { return }
+        guard !scrobbledForCurrentTrack, !track.isInternetRadioStream else { return }
         let half = max(track.duration * 0.5, 30)
         if position >= half {
             scrobbledForCurrentTrack = true
