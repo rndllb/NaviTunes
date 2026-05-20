@@ -680,3 +680,41 @@ struct LibraryPlayShuffleRow: View {
         }
     }
 }
+
+// MARK: - Transient toast (snackbar)
+
+/// Bottom-anchored brief notification ("Added to Queue", etc.). Driven by
+/// ``AppModel/transientToast``; auto-dismisses on a timer set inside
+/// ``AppModel/showTransientToast``. Render once at the app root.
+struct MusicTransientToastChrome: ViewModifier {
+    @EnvironmentObject private var app: AppModel
+
+    func body(content: Content) -> some View {
+        content.overlay(alignment: .bottom) {
+            if let message = app.transientToast {
+                Text(message)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 12)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(Color.black.opacity(0.85))
+                    )
+                    .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
+                    .padding(.bottom, 110)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .accessibilityAddTraits(.isStaticText)
+                    .accessibilityLabel(message)
+            }
+        }
+        .animation(.spring(response: 0.42, dampingFraction: 0.85), value: app.transientToast)
+    }
+}
+
+extension View {
+    /// Renders the app-wide transient toast above this view (used at the root).
+    func musicTransientToastChrome() -> some View {
+        modifier(MusicTransientToastChrome())
+    }
+}

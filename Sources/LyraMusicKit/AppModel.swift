@@ -1,6 +1,9 @@
 import Combine
 import Network
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 public enum BackendKind: String, CaseIterable, Identifiable {
     case jellyfin
@@ -65,7 +68,21 @@ public final class AppModel: ObservableObject {
     @Published var isSignedIn: Bool = false
     /// True while ``signIn()`` is in flight (manual or keychain restore).
     @Published var isAuthenticating: Bool = false
-    @Published var selectedTab: Int = 0
+    @Published var selectedTab: AppTab = .home
+    @Published var pendingNavigation: NowPlayingDeepLink? = nil
+
+    /// Scroll signal consumed by an already-visible ``ServerPlaylistDetailView`` so "Go to Playlist"
+    /// scrolls to the now-playing track even when the user is already on that playlist.
+    @Published var pendingPlaylistScroll: PendingPlaylistScroll? = nil
+
+    /// Same as ``pendingPlaylistScroll`` but for album-mode detail views.
+    @Published var pendingAlbumScroll: PendingAlbumScroll? = nil
+
+    /// Brief bottom toast (e.g. "Added to Queue"). Auto-clears after ``showTransientToast``
+    /// is called; the ``MusicTransientToastChrome`` view modifier renders it.
+    @Published var transientToast: String? = nil
+    private var transientToastTask: Task<Void, Never>? = nil
+
     @Published var errorMessage: String?
     @Published private(set) var hasInternetPath: Bool = true
     @Published private(set) var serverConnectionHealth: ServerConnectionHealth = .unknown
@@ -346,6 +363,16 @@ public final class AppModel: ObservableObject {
         player.bind(offline: offline)
         // Only mini-player chrome affects most tabs; avoid rebinding Home/Library on every queue tick.
         player.$showsMiniPlayerChrome
+            .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
+        // User-action driven state — re-emit so NowPlayingView's shuffle/repeat row + up-next
+        // list react to taps. Low frequency, so no scroll-jank cost.
+        player.$shuffleMode
+            .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
+        player.$repeatMode
+            .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
+        player.$queue
+            .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
+        player.$currentIndex
             .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         offline.$downloadedTrackIds
             .sink { [weak self] _ in self?.objectWillChange.send() }
@@ -708,7 +735,7 @@ public final class AppModel: ObservableObject {
         let (playedResult, genresResult) = await (played, genres)
         homeRecentlyPlayedServerAlbums = playedResult
         rebuildHomeRecentlyPlayed()
-        let pickedGenres = Array(genresResult.prefix(4))
+        let pickedGenres = Array(genresResult.shuffled().prefix(4))
         let shelves = await withTaskGroup(of: (genre: String, albums: [AlbumSummary])?.self) { group in
         for g in pickedGenres {
                 group.addTask {
@@ -1154,6 +1181,19 @@ public final class AppModel: ObservableObject {
             librarySongIds = snapshotSongs
             return
         }
+        // If the user has no remaining songs from this album, drop the album entry
+        // too so the album disappears from "My Library" instead of lingering as a
+        // stub that re-opens the full album view.
+        if !track.albumId.isEmpty,
+           libraryAlbumEntries.contains(where: { $0.id == track.albumId }) {
+            let albumStillHasSongs = discoveryLibraryTracks.contains { other in
+                other.albumId == track.albumId && librarySongIds.contains(other.id)
+            }
+            if !albumStillHasSongs {
+                libraryAlbumEntries.removeAll { $0.id == track.albumId }
+                await persistLibraryMembershipPayload()
+            }
+        }
         persistLibrarySnapshot()
     }
 
@@ -1266,6 +1306,23 @@ public final class AppModel: ObservableObject {
     func presentAddToPlaylist(tracks: [Track]) {
         guard !tracks.isEmpty, isSignedIn else { return }
         playlistPickerPayload = PlaylistPickerPayload(tracks: tracks)
+    }
+
+    /// Shows a brief bottom toast (~1.8s) and fires a soft impact haptic. Replaces any
+    /// in-flight toast so rapid actions don't pile up.
+    func showTransientToast(_ message: String) {
+        transientToast = message
+        transientToastTask?.cancel()
+        transientToastTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(1800))
+            guard let self, !Task.isCancelled else { return }
+            await MainActor.run {
+                if self.transientToast == message { self.transientToast = nil }
+            }
+        }
+        #if os(iOS)
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+        #endif
     }
 
     /// Refreshes ``libraryPlaylists`` from the active server (Jellyfin / Navidrome).

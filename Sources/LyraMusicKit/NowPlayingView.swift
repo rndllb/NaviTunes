@@ -20,6 +20,7 @@ private enum NowPlayingLibraryRoute: Hashable {
 /// Apple Music–style Now Playing: artwork-derived backdrop + luminance handoff (same as album detail).
 struct NowPlayingView: View {
     @EnvironmentObject private var app: AppModel
+    @Binding var isPresented: Bool
     @State private var showLyrics = false
     @State private var showQueue = false
     @State private var libraryPath: [NowPlayingLibraryRoute] = []
@@ -30,7 +31,13 @@ struct NowPlayingView: View {
     @State private var queueScrollAnchor: QueueScrollAnchor? = .nowPlayingHeader
     @State private var lastQueueHapticAnchor: QueueScrollAnchor? = .nowPlayingHeader
     @Namespace private var artworkNamespace
-    var onLibraryNavigationDepthChanged: ((Int) -> Void)? = nil
+
+    init(isPresented: Binding<Bool>, onLibraryNavigationDepthChanged: @escaping (Int) -> Void = { _ in }) {
+        self._isPresented = isPresented
+        self.onLibraryNavigationDepthChanged = onLibraryNavigationDepthChanged
+    }
+
+    var onLibraryNavigationDepthChanged: ((Int) -> Void)
 
     private enum QueueScrollAnchor: Hashable {
         case historyTop, nowPlayingHeader
@@ -202,10 +209,10 @@ struct NowPlayingView: View {
         }
         .onAppear {
             app.player.reconcilePlaybackSessionAfterUIMilestone()
-            onLibraryNavigationDepthChanged?(libraryPath.count)
+            onLibraryNavigationDepthChanged(libraryPath.count)
         }
         .onChange(of: libraryPath.count) { _, count in
-            onLibraryNavigationDepthChanged?(count)
+            onLibraryNavigationDepthChanged(count)
         }
     }
 
@@ -560,7 +567,15 @@ struct NowPlayingView: View {
     }
 
     private func nowPlayingHeader(track: Track) -> some View {
-        HStack(spacing: 12) {
+        let artistKey = track.artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        let libraryAlbum = app.libraryAlbums.first { $0.id == track.albumId }
+        let albumSubtitle: String = {
+            let t = track.albumTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty { return t }
+            if let title = libraryAlbum?.title, !title.isEmpty { return title }
+            return "Unknown Album"
+        }()
+        return HStack(spacing: 12) {
             AlbumArtworkView(url: artworkURL(for: track), cornerRadius: 6)
                 .frame(width: 56, height: 56)
                 .matchedGeometryEffect(id: "nowPlayingArtwork", in: artworkNamespace)
@@ -569,10 +584,38 @@ struct NowPlayingView: View {
                     .font(.headline.weight(.bold))
                     .foregroundStyle(fgPrimary)
                     .lineLimit(1)
-                Text(track.artist)
-                    .font(.subheadline)
-                    .foregroundStyle(fgSecondaryStrong)
-                    .lineLimit(1)
+                if artistKey.isEmpty {
+                    Text(track.artist)
+                        .font(.subheadline)
+                        .foregroundStyle(fgSecondaryStrong)
+                        .lineLimit(1)
+                } else {
+                    ArtistNowPlayingMenuButton(
+                        artist: track.artist,
+                        albumSubtitle: albumSubtitle,
+                        libraryAlbum: libraryAlbum,
+                        sourcePlaylist: {
+                            if case .playlist(let p) = app.player.playbackSource { return p }
+                            return nil
+                        }(),
+                        compact: true,
+                        goToAlbumDisabled: libraryAlbum == nil && catalogAlbumFallback(from: track) == nil,
+                        onGoToAlbum: {
+                            if let album = libraryAlbum {
+                                dismissAndNavigate(to: .album(album))
+                            } else if let album = catalogAlbumFallback(from: track) {
+                                dismissAndNavigate(to: .album(album))
+                            }
+                        },
+                        onGoToArtist: {
+                            dismissAndNavigate(to: .artist(track.artist))
+                        },
+                        onGoToPlaylist: {
+                            dismissAndNavigate(to: .playlist)
+                        }
+                    )
+                    .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -719,19 +762,19 @@ struct NowPlayingView: View {
                             if case .playlist(let p) = app.player.playbackSource { return p }
                             return nil
                         }(),
+                        goToAlbumDisabled: libraryAlbum == nil && catalogAlbumFallback(from: track) == nil,
                         onGoToAlbum: {
                             if let album = libraryAlbum {
-                                navigateToLibraryRoute(.album(album))
+                                dismissAndNavigate(to: .album(album))
+                            } else if let album = catalogAlbumFallback(from: track) {
+                                dismissAndNavigate(to: .album(album))
                             }
                         },
                         onGoToArtist: {
-                            navigateToLibraryRoute(.artist(track.artist))
+                            dismissAndNavigate(to: .artist(track.artist))
                         },
                         onGoToPlaylist: {
-                            if case .playlist(let p) = app.player.playbackSource {
-                                selectedPlaylist = playlistForNavigation(id: p.id) ?? p
-                                navigateToLibraryRoute(.playlist)
-                            }
+                            dismissAndNavigate(to: .playlist)
                         }
                     )
                     .fixedSize(horizontal: false, vertical: true)
@@ -764,6 +807,55 @@ struct NowPlayingView: View {
                     }
                 }
             }
+        }
+    }
+
+    /// When the playing track's album isn't in the user's library (so ``libraryAlbum``
+    /// is nil), synthesize an ``AlbumSummary`` from track metadata so "Go to Album"
+    /// can still navigate — `dismissAndNavigate` will set `librarySource: false` on it.
+    private func catalogAlbumFallback(from track: Track) -> AlbumSummary? {
+        guard !track.albumId.isEmpty else { return nil }
+        let title = track.albumTitle.isEmpty ? "Unknown Album" : track.albumTitle
+        return AlbumSummary(
+            id: track.albumId,
+            title: title,
+            artist: track.artist,
+            artworkURL: track.artworkURL
+        )
+    }
+
+    private func dismissAndNavigate(to route: NowPlayingLibraryRoute) {
+        let activeTrackId = app.player.activeTrack?.id
+        let nav: NowPlayingDeepLink?
+        switch route {
+        case .album(let album):
+            // Library-only filtered view is fine when the track is in the user's library;
+            // otherwise the filter would hide it, so fall back to the full album view.
+            let useLibrarySource = activeTrackId.map { app.isSongInLibrary($0) } ?? true
+            nav = .album(album, scrollToTrackId: activeTrackId, librarySource: useLibrarySource)
+            if let activeTrackId {
+                app.pendingAlbumScroll = PendingAlbumScroll(albumId: album.id, trackId: activeTrackId)
+            }
+        case .artist(let name):
+            nav = .artist(name)
+        case .playlist:
+            if case .playlist(let p) = app.player.playbackSource {
+                let playlist = playlistForNavigation(id: p.id) ?? p
+                nav = .playlist(playlist, scrollToTrackId: activeTrackId)
+                if let activeTrackId {
+                    app.pendingPlaylistScroll = PendingPlaylistScroll(playlistId: playlist.id, trackId: activeTrackId)
+                }
+            } else {
+                nav = nil
+            }
+        }
+        app.selectedTab = .library
+        isPresented = false
+        // Defer navigation until the dismiss animation has completed so the
+        // LibraryView NavigationStack is stable when the push is triggered.
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(600))
+            app.pendingNavigation = nav
         }
     }
 
@@ -833,7 +925,7 @@ struct NowPlayingView: View {
         HStack(spacing: 10) {
             queueModeToggle(
                 systemName: "shuffle",
-                isActive: app.player.shuffleMode == .on,
+                isActive: app.player.isQueueOutOfNaturalOrder,
                 action: { app.player.toggleShuffle() },
             )
             queueModeToggle(

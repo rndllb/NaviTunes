@@ -325,6 +325,7 @@ struct LibrarySongsView: View {
             artworkURL: app.resolvedArtworkURL(for: track),
             itemSize: app.songListItemSize,
             isFavorite: app.favoriteTrackIds.contains(track.id),
+            isNowPlaying: app.player.activeTrack?.id == track.id,
             offlineDownload: offline.activeDownloads[track.id],
             isOfflineCached: app.offline.downloadedTrackIds.contains(track.id),
             onPlay: { Task { await play(track: track) } },
@@ -335,8 +336,17 @@ struct LibrarySongsView: View {
                 Task {
                     guard let lib = app.activeLibrary else { return }
                     try? await app.player.playNext(library: lib, track: track)
+                    await MainActor.run { app.showTransientToast("Playing Next") }
                 }
             },
+            onAddToQueue: {
+                Task {
+                    guard let lib = app.activeLibrary else { return }
+                    try? await app.player.addToQueue(library: lib, track: track)
+                    await MainActor.run { app.showTransientToast("Added to Queue") }
+                }
+            },
+            hasActiveQueue: !app.player.queue.isEmpty,
             onGoToAlbum: { navigateAlbum = albumSummary(for: track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
             onRemoveFromLibrary: app.isSongInLibrary(track.id)
@@ -482,6 +492,7 @@ struct LibrarySongRow: View, Equatable {
     var artworkURL: URL? = nil
     var itemSize: SongListItemSize = .medium
     let isFavorite: Bool
+    var isNowPlaying: Bool = false
     var offlineDownload: OfflineDownloadUIState? = nil
     var isOfflineCached: Bool = false
     let onPlay: () -> Void
@@ -489,6 +500,10 @@ struct LibrarySongRow: View, Equatable {
     let onCancelOfflineDownload: () -> Void
     let onFavorite: () -> Void
     let onPlayNext: () -> Void
+    /// When set AND `hasActiveQueue` is true, becomes the outermost leading swipe action.
+    var onAddToQueue: (() -> Void)? = nil
+    /// Drives whether ``onAddToQueue`` is surfaced as the full-swipe leading action.
+    var hasActiveQueue: Bool = false
     var onGoToAlbum: (() -> Void)? = nil
     var onAddToPlaylist: (() -> Void)? = nil
     var onRemoveFromPlaylist: (() -> Void)? = nil
@@ -550,6 +565,8 @@ struct LibrarySongRow: View, Equatable {
             && lhs.showsLeadingFavoriteStar == rhs.showsLeadingFavoriteStar
             && (lhs.onRemoveFromPlaylist != nil) == (rhs.onRemoveFromPlaylist != nil)
             && (lhs.onRemoveFromLibrary != nil) == (rhs.onRemoveFromLibrary != nil)
+            && lhs.isNowPlaying == rhs.isNowPlaying
+            && lhs.hasActiveQueue == rhs.hasActiveQueue
     }
 
     private var offlinePhase: TrackOfflineIndicatorPhase {
@@ -591,12 +608,17 @@ struct LibrarySongRow: View, Equatable {
     }
 
     private var showsLeadingIndicators: Bool {
-        usesAlbumSwipeChrome || showsLeadingFavoriteStar
+        if usesAlbumSwipeChrome { return true }
+        if showsArtwork { return false }
+        return showsLeadingFavoriteStar
     }
 
     private var titleForeground: Color {
         if usesAlbumSwipeChrome, let dividerPalette {
             return dividerPalette.heroChromePrimary
+        }
+        if isNowPlaying && !showsArtwork {
+            return .accentColor
         }
         return .primary
     }
@@ -630,6 +652,7 @@ struct LibrarySongRow: View, Equatable {
             .librarySongSwipeActions(
                 showsDownload: showsDownloadSwipeAction,
                 onPlayNext: onPlayNext,
+                onAddToQueue: (hasActiveQueue ? onAddToQueue : nil),
                 onDownload: onDownload,
                 onRemoveFromPlaylist: onRemoveFromPlaylist,
                 onRemoveFromLibrary: trailingDeleteSwipeAction,
@@ -667,7 +690,8 @@ struct LibrarySongRow: View, Equatable {
                             trackIndex: usesAlbumSwipeChrome ? trackDisplayIndex : nil,
                             isFavorite: isFavorite,
                             backdropPalette: usesAlbumSwipeChrome ? dividerPalette : nil,
-                            hasSubtitle: hasArtistSubtitle
+                            hasSubtitle: hasArtistSubtitle,
+                            isNowPlaying: isNowPlaying
                         )
                     }
                     if showsArtwork {
@@ -676,7 +700,16 @@ struct LibrarySongRow: View, Equatable {
                             cornerRadius: 6,
                             maxDecodePixels: Self.rowArtworkDecodePixels,
                         )
-                            .frame(width: itemSize.artworkSide, height: itemSize.artworkSide)
+                        .frame(width: itemSize.artworkSide, height: itemSize.artworkSide)
+                        .overlay(alignment: .center) {
+                            if isNowPlaying {
+                                ZStack {
+                                    Color.black.opacity(0.45)
+                                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                                    NowPlayingBarsIndicator(color: .white)
+                                }
+                            }
+                        }
                     }
                     VStack(alignment: .leading, spacing: usesAlbumSwipeChrome ? AlbumTrackRowLayout.titleSubtitleSpacing : 4) {
                         Text(track.title)
@@ -862,6 +895,9 @@ struct SwipeActionChipMetrics {
     let playNextTint: Color
     let downloadTint: Color
     let deleteTint: Color
+    let addToQueueTint: Color
+
+    static let addToQueueColor = Color(red: 0.97, green: 0.62, blue: 0.36)
 
     static let albumTrack = SwipeActionChipMetrics(
         width: AlbumTrackSwipeChipMetrics.width,
@@ -869,15 +905,19 @@ struct SwipeActionChipMetrics {
         iconFont: AlbumTrackSwipeChipMetrics.iconFont,
         playNextTint: AlbumTrackSwipeChipMetrics.playNextTint,
         downloadTint: AlbumTrackSwipeChipMetrics.downloadTint,
-        deleteTint: AlbumTrackSwipeChipMetrics.deleteTint
+        deleteTint: AlbumTrackSwipeChipMetrics.deleteTint,
+        addToQueueTint: addToQueueColor
     )
 }
 
 extension View {
     /// Leading Play Next and trailing Download / delete (icon-only) — requires a parent `List`.
+    /// When `onAddToQueue` is provided, it becomes the outermost (full-swipe) leading action
+    /// — caller decides when (e.g. only when an active queue exists).
     func librarySongSwipeActions(
         showsDownload: Bool,
         onPlayNext: @escaping () -> Void,
+        onAddToQueue: (() -> Void)? = nil,
         onDownload: (() -> Void)? = nil,
         onRemoveFromPlaylist: (() -> Void)? = nil,
         onRemoveFromLibrary: (() -> Void)? = nil,
@@ -887,14 +927,27 @@ extension View {
         chipMetrics: SwipeActionChipMetrics? = nil
     ) -> some View {
         swipeActions(edge: .leading, allowsFullSwipe: true) {
+            // First button is the outermost on screen AND the full-swipe target — when
+            // a queue exists, that's "Add to Queue" so the gesture matches the user's
+            // intent to append to the end.
+            if let onAddToQueue {
+                Button(action: onAddToQueue) {
+                    swipeActionIcon("text.append", metrics: chipMetrics)
+                }
+                .tint(chipMetrics?.addToQueueTint ?? SwipeActionChipMetrics.addToQueueColor)
+                .accessibilityLabel("Add to Queue")
+            }
             Button(action: onPlayNext) {
                 swipeActionIcon("text.line.first.and.arrowtriangle.forward", metrics: chipMetrics)
             }
             .tint(chipMetrics?.playNextTint ?? MusicDesign.accent)
             .accessibilityLabel("Play Next")
         }
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            if showsDownload, let onDownload {
+        // Full swipe on the trailing edge commits Remove-from-Playlist in playlist
+        // context (the only button shown there); disabled elsewhere so a wide swipe
+        // can't accidentally trigger a Download/Delete on a library song.
+        .swipeActions(edge: .trailing, allowsFullSwipe: onRemoveFromPlaylist != nil) {
+            if showsDownload, onRemoveFromPlaylist == nil, let onDownload {
                 Button(action: onDownload) {
                     swipeActionIcon("arrow.down", metrics: chipMetrics)
                 }
@@ -902,7 +955,7 @@ extension View {
                 .accessibilityLabel("Download")
             }
             if let onRemoveFromPlaylist {
-                Button(role: .destructive, action: onRemoveFromPlaylist) {
+                Button(action: onRemoveFromPlaylist) {
                     swipeActionIcon("trash", metrics: chipMetrics)
                 }
                 .tint(chipMetrics?.deleteTint ?? MusicDesign.destructiveAction)
@@ -946,17 +999,29 @@ extension View {
     }
 
     /// Plain list row chrome for ``LibrarySongRow`` (requires a parent `List` for swipe actions).
-    func librarySongListRowStyle() -> some View {
-        listRowBackground(MusicDesign.background)
+    /// `highlightOpacity` drives a brief accent flash used by deep-link scroll targets.
+    func librarySongListRowStyle(highlightOpacity: Double = 0) -> some View {
+        listRowBackground(
+            ZStack {
+                MusicDesign.background
+                Color.accentColor.opacity(highlightOpacity)
+            }
+        )
             .listRowInsets(EdgeInsets())
             .listRowSeparator(.hidden)
     }
 
     /// Album hero track rows — clear cells over ``AlbumHeroBackdropView``, inset narrower than hero.
-    func albumTrackListRowStyle() -> some View {
+    /// `highlightOpacity` drives a brief accent flash used by deep-link scroll targets.
+    func albumTrackListRowStyle(highlightOpacity: Double = 0) -> some View {
         let inset = AlbumTrackRowLayout.listHorizontalInset
         return environment(\.defaultMinListRowHeight, 0)
-            .listRowBackground(Color.clear)
+            .listRowBackground(
+                ZStack {
+                    Color.clear
+                    Color.accentColor.opacity(highlightOpacity)
+                }
+            )
             .listRowInsets(EdgeInsets(top: 0, leading: inset, bottom: 0, trailing: inset))
             .listRowSeparator(.hidden)
     }
