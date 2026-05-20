@@ -130,6 +130,14 @@ public final class AppModel: ObservableObject {
     private static let recentlyPlayedEntriesLimit = 50
     @Published private(set) var recentlyPlayedEntries: [RecentPlayedEntry] = []
 
+    /// Track-level play history for Now Playing → Queue → History. Only songs that
+    /// crossed the scrobble threshold (~50% played) are appended, so skipping doesn't
+    /// pollute the list. Survives queue changes since it lives on `AppModel`, not on
+    /// the player's transient queue. Newest first.
+    private static let recentlyPlayedTracksKey = "LyraMusic.recentlyPlayedTracks"
+    private static let recentlyPlayedTracksLimit = 100
+    @Published private(set) var recentlyPlayedTracks: [Track] = []
+
     /// Jellyfin / Navidrome playlists (excludes in-app “Favorite Songs”).
     @Published private(set) var libraryPlaylists: [PlaylistSummary] = []
 
@@ -318,9 +326,15 @@ public final class AppModel: ObservableObject {
         loadKeychain()
         loadFavoriteTrackIdsFromDefaults()
         loadRecentlyPlayedEntriesFromDefaults()
+        loadRecentlyPlayedTracksFromDefaults()
         player.onTrackScrobbled = { [weak self] track, source in
             Task { @MainActor in
                 self?.recordRecentPlay(track: track, source: source)
+            }
+        }
+        player.onTrackStarted = { [weak self] track in
+            Task { @MainActor in
+                self?.recordRecentTrackPlay(track)
             }
         }
         installPlaybackQueueAutosave()
@@ -487,6 +501,8 @@ public final class AppModel: ObservableObject {
         recentlyPlayedEntries = []
         UserDefaults.standard.removeObject(forKey: Self.recentlyPlayedEntriesKey)
         UserDefaults.standard.removeObject(forKey: Self.recentlyPlayedAlbumIdsKey)
+        recentlyPlayedTracks = []
+        UserDefaults.standard.removeObject(forKey: Self.recentlyPlayedTracksKey)
         libraryAlbumsLoadError = nil
         lfmTopTracks = []
         lfmTopAlbums = []
@@ -1113,6 +1129,45 @@ public final class AppModel: ObservableObject {
         }
         recentlyPlayedEntries = next
         saveRecentlyPlayedEntriesToDefaults()
+    }
+
+    private func loadRecentlyPlayedTracksFromDefaults() {
+        guard let data = UserDefaults.standard.data(forKey: Self.recentlyPlayedTracksKey),
+              let decoded = try? JSONDecoder().decode([Track].self, from: data)
+        else { return }
+        recentlyPlayedTracks = decoded
+    }
+
+    private func saveRecentlyPlayedTracksToDefaults() {
+        guard let data = try? JSONEncoder().encode(recentlyPlayedTracks) else { return }
+        UserDefaults.standard.set(data, forKey: Self.recentlyPlayedTracksKey)
+    }
+
+    /// Logs a single track as actually-played. Called by `PlaybackEngine` only when the
+    /// scrobble threshold (~50% of the track) is crossed, so skipping past a song does
+    /// NOT add it to history.
+    func recordRecentTrackPlay(_ track: Track) {
+        let trimmedId = track.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedId.isEmpty else { return }
+        var next = recentlyPlayedTracks.filter { $0.id != trimmedId }
+        next.insert(track, at: 0)
+        if next.count > Self.recentlyPlayedTracksLimit {
+            next = Array(next.prefix(Self.recentlyPlayedTracksLimit))
+        }
+        recentlyPlayedTracks = next
+        saveRecentlyPlayedTracksToDefaults()
+    }
+
+    /// Wipes the track-level Now Playing → Queue → History list (Clear button).
+    func clearRecentlyPlayedTracks() {
+        recentlyPlayedTracks = []
+        UserDefaults.standard.removeObject(forKey: Self.recentlyPlayedTracksKey)
+    }
+
+    /// Wipes the local recently-played history (Now Playing → Queue → History "Clear" button).
+    func clearRecentlyPlayed() {
+        recentlyPlayedEntries = []
+        UserDefaults.standard.removeObject(forKey: Self.recentlyPlayedEntriesKey)
     }
 
     /// Resolves the local recently-played list against the in-memory library / playlist catalogs.

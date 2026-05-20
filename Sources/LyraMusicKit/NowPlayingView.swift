@@ -33,7 +33,7 @@ struct NowPlayingView: View {
     var onLibraryNavigationDepthChanged: ((Int) -> Void)? = nil
 
     private enum QueueScrollAnchor: Hashable {
-        case historyTop, nowPlayingHeader, upNextTop
+        case historyTop, nowPlayingHeader
     }
 
     /// Paused — baseline artwork size.
@@ -282,21 +282,29 @@ struct NowPlayingView: View {
     /// enforces one snap per gesture, so swiping past the now-playing boundary
     /// requires a second deliberate swipe to reach history / up-next — and a
     /// medium haptic fires at each snap.
+    ///
+    /// History here = `app.recentlyPlayedTracks`, the *persistent* track-level history
+    /// fed by the scrobble hook (~50% of the song crossed). That means skipping past
+    /// songs without listening doesn't pollute the list, and the history survives
+    /// queue resets — switching from an album to a single keeps the prior history.
     private func queueScrollContent(track: Track) -> some View {
         let upNext = Array(app.player.queue.dropFirst(app.player.currentIndex + 1))
-        let history = app.localRecentlyPlayed(limit: 50)
+        // Don't duplicate the currently-playing track in the history list.
+        // Storage is newest-first; the queue view reads oldest-at-top so the most
+        // recently played track sits right above the Now Playing line.
+        let queueHistory = app.recentlyPlayedTracks
+            .filter { $0.id != track.id }
+            .reversed()
+            .map { $0 }
 
         return ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(spacing: 0) {
-                historySection(history: history)
+                historySection(history: queueHistory)
                     .containerRelativeFrame(.vertical)
                     .id(QueueScrollAnchor.historyTop)
-                nowPlayingPage(track: track, upNextPeek: upNext)
+                nowPlayingPage(track: track, upNext: upNext)
                     .containerRelativeFrame(.vertical)
                     .id(QueueScrollAnchor.nowPlayingHeader)
-                upNextSection(upNext: upNext)
-                    .containerRelativeFrame(.vertical)
-                    .id(QueueScrollAnchor.upNextTop)
             }
             .scrollTargetLayout()
         }
@@ -311,14 +319,27 @@ struct NowPlayingView: View {
         }
     }
 
-    /// Middle page — Now Playing header anchored at top, with a peek of Up Next
-    /// (and an implicit hint of history above via the page boundary) to read as
-    /// "the queue with the current track as a divider."
-    private func nowPlayingPage(track: Track, upNextPeek: [Track]) -> some View {
-        VStack(spacing: 0) {
+    /// Middle page — Now Playing header (the divider) at top, then shuffle/repeat,
+    /// then a `List` split into two sections: "Queue" (user-queued tracks, with a
+    /// Clear button) and "Continue Playing — From [source]" (the rest of the source).
+    /// Both sections have 3-line drag handles (system-drawn via active edit mode).
+    private func nowPlayingPage(track: Track, upNext: [Track]) -> some View {
+        let userQueueTracks = upNext.filter { app.player.userQueuedTrackIds.contains($0.id) }
+        let continuePlayingTracks = upNext.filter { !app.player.userQueuedTrackIds.contains($0.id) }
+
+        return VStack(spacing: 0) {
             nowPlayingHeader(track: track)
 
-            if upNextPeek.isEmpty {
+            shuffleRepeatRow
+                .padding(.top, 10)
+                .padding(.bottom, 6)
+
+            Rectangle()
+                .fill(fgDivider)
+                .frame(height: 0.5)
+                .padding(.top, 6)
+
+            if userQueueTracks.isEmpty && continuePlayingTracks.isEmpty {
                 Spacer(minLength: 0)
                 Text("Nothing up next")
                     .font(.subheadline.weight(.medium))
@@ -326,50 +347,192 @@ struct NowPlayingView: View {
                     .padding(.vertical, 24)
                 Spacer(minLength: 0)
             } else {
-                shuffleRepeatRow
-                    .padding(.top, 10)
-                    .padding(.bottom, 8)
-
-                ForEach(upNextPeek.prefix(3), id: \.id) { t in
-                    queueRow(track: t)
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 6)
-                }
-                Spacer(minLength: 0)
+                queueAndContinuePlayingList(
+                    userQueue: userQueueTracks,
+                    continuePlaying: continuePlayingTracks
+                )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    @ViewBuilder
-    private func historySection(history: [RecentPlayedItem]) -> some View {
-        if history.isEmpty {
-            EmptyView()
-        } else {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    Text("History")
-                        .font(.title3.weight(.bold))
-                        .foregroundStyle(fgPrimary)
-                    Spacer()
-                }
-                .padding(.horizontal, 20)
-                .padding(.top, 14)
-                .padding(.bottom, 8)
-                .id(QueueScrollAnchor.historyTop)
+    private var continuePlayingSourceLabel: String? {
+        if case .playlist(let p) = app.player.playbackSource { return p.name }
+        let title = app.player.activeTrack?.albumTitle.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return title.isEmpty ? nil : title
+    }
 
-                ForEach(history) { item in
-                    historyRow(item: item)
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 6)
+    /// Single `List` with two reorderable sections — Apple Music's Queue + Continue Playing layout.
+    private func queueAndContinuePlayingList(userQueue: [Track], continuePlaying: [Track]) -> some View {
+        List {
+            if !userQueue.isEmpty {
+                Section {
+                    ForEach(userQueue, id: \.id) { t in
+                        queueListRow(track: t)
+                    }
+                    .onMove { source, destination in
+                        moveWithinSection(tracks: userQueue, source: source, destination: destination)
+                    }
+                } header: {
+                    HStack {
+                        Text("Queue")
+                            .font(.title3.weight(.bold))
+                            .foregroundStyle(fgPrimary)
+                            .textCase(nil)
+                        Spacer()
+                        Button {
+                            app.player.clearUserQueue()
+                        } label: {
+                            Text("Clear")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(fgPrimary)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 6)
+                                .background(Capsule().fill(fgCapsule))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.top, 6)
+                    .padding(.bottom, 2)
                 }
+            }
 
-                Rectangle()
-                    .fill(fgDivider)
-                    .frame(height: 0.5)
-                    .padding(.top, 12)
+            if !continuePlaying.isEmpty {
+                Section {
+                    ForEach(continuePlaying, id: \.id) { t in
+                        queueListRow(track: t)
+                    }
+                    .onMove { source, destination in
+                        moveWithinSection(tracks: continuePlaying, source: source, destination: destination)
+                    }
+                } header: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Continue Playing")
+                            .font(.title3.weight(.bold))
+                            .foregroundStyle(fgPrimary)
+                            .textCase(nil)
+                        if let label = continuePlayingSourceLabel {
+                            Text("From \(label)")
+                                .font(.subheadline)
+                                .foregroundStyle(fgSecondary)
+                                .textCase(nil)
+                        }
+                    }
+                    .padding(.top, 6)
+                    .padding(.bottom, 2)
+                }
             }
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        #if os(iOS)
+        .environment(\.editMode, .constant(.active))
+        .tint(fgPrimary)
+        .background {
+            NowPlayingQueueListTableChrome(
+                reorderTint: UIColor(fgPrimary),
+                scrollIndicatorStyle: queueScrollIndicatorStyle,
+            )
+        }
+        #endif
+    }
+
+    private func queueListRow(track t: Track) -> some View {
+        Button {
+            if let idx = app.player.queue.firstIndex(where: { $0.id == t.id }) {
+                app.player.jumpToQueueItem(at: idx)
+            }
+        } label: {
+            queueRow(track: t)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(Color.clear)
+        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+        .listRowSeparator(.hidden)
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            Button(role: .destructive) {
+                app.player.removeTracksFromQueue(trackIds: [t.id])
+            } label: {
+                Label("Remove", systemImage: "trash")
+            }
+        }
+    }
+
+    /// Translates an `onMove` IndexSet+destination from a section's local coordinates into
+    /// the full `Up Next` index space, then forwards to `PlaybackEngine.moveUpNextItem`.
+    private func moveWithinSection(tracks: [Track], source: IndexSet, destination: Int) {
+        let upNext = Array(app.player.queue.dropFirst(app.player.currentIndex + 1))
+        let upNextIndexById = Dictionary(uniqueKeysWithValues: upNext.enumerated().map { ($1.id, $0) })
+        let mappedSource = source.compactMap { upNextIndexById[tracks[$0].id] }
+        let mappedDestination: Int = {
+            if destination < tracks.count, let idx = upNextIndexById[tracks[destination].id] { return idx }
+            // Append at end of section: place after the last item of the section in full Up Next coords.
+            if let last = tracks.last, let lastIdx = upNextIndexById[last.id] { return lastIdx + 1 }
+            return upNext.count
+        }()
+        app.player.moveUpNextItem(from: IndexSet(mappedSource), to: mappedDestination)
+    }
+
+    @ViewBuilder
+    private func historySection(history: [Track]) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("History")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(fgPrimary)
+                Spacer()
+                if !history.isEmpty {
+                    Button {
+                        app.clearRecentlyPlayedTracks()
+                    } label: {
+                        Text("Clear")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(fgPrimary)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 6)
+                            .background(Capsule().fill(fgCapsule))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 14)
+            .padding(.bottom, 8)
+
+            if history.isEmpty {
+                VStack(spacing: 8) {
+                    Spacer(minLength: 0)
+                    Text("No history yet")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(fgMuted)
+                    Text("Songs you've already played in this queue collect here.")
+                        .font(.caption)
+                        .foregroundStyle(fgSubtle)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 40)
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView(.vertical, showsIndicators: false) {
+                    LazyVStack(spacing: 0) {
+                        ForEach(history, id: \.id) { t in
+                            Button {
+                                Task { await playHistoryTrack(t) }
+                            } label: {
+                                queueRow(track: t)
+                                    .padding(.horizontal, 20)
+                                    .padding(.vertical, 6)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private func nowPlayingHeader(track: Track) -> some View {
@@ -399,94 +562,19 @@ struct NowPlayingView: View {
         }
     }
 
-    @ViewBuilder
-    private func upNextSection(upNext: [Track]) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Up Next")
-                    .font(.title3.weight(.bold))
-                    .foregroundStyle(fgPrimary)
-                Spacer()
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 14)
-            .padding(.bottom, 8)
-            .id(QueueScrollAnchor.upNextTop)
-
-            shuffleRepeatRow
-                .padding(.bottom, 8)
-
-            if upNext.isEmpty {
-                Text("Nothing up next")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(fgMuted)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 24)
-                    .frame(maxWidth: .infinity)
-            } else {
-                ForEach(upNext, id: \.id) { t in
-                    Button {
-                        if let idx = app.player.queue.firstIndex(where: { $0.id == t.id }) {
-                            app.player.jumpToQueueItem(at: idx)
-                        }
-                    } label: {
-                        queueRow(track: t)
-                            .padding(.horizontal, 20)
-                            .padding(.vertical, 6)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
+    /// Plays a single track from the persistent history. If the track is still in the
+    /// current queue we jump to it (preserving Up Next); otherwise we start a fresh
+    /// queue containing just that track.
+    private func playHistoryTrack(_ track: Track) async {
+        if let idx = app.player.queue.firstIndex(where: { $0.id == track.id }) {
+            app.player.jumpToQueueItem(at: idx)
+            return
         }
-    }
-
-    @ViewBuilder
-    private func historyRow(item: RecentPlayedItem) -> some View {
-        switch item {
-        case .album(let album):
-            Button {
-                navigateToLibraryRoute(.album(album))
-            } label: {
-                historyRowContent(
-                    artworkURL: album.artworkURL,
-                    title: album.title,
-                    subtitle: album.artist
-                )
-            }
-            .buttonStyle(.plain)
-        case .playlist(let playlist):
-            Button {
-                selectedPlaylist = playlist
-                navigateToLibraryRoute(.playlist)
-            } label: {
-                historyRowContent(
-                    artworkURL: playlist.artworkURL,
-                    title: playlist.name,
-                    subtitle: playlist.songCount.map { $0 == 1 ? "1 song" : "\($0) songs" } ?? "Playlist"
-                )
-            }
-            .buttonStyle(.plain)
+        do {
+            try await app.player.playAlbum(library: app.activeLibrary, tracks: [track], startIndex: 0)
+        } catch {
+            app.errorMessage = error.localizedDescription
         }
-    }
-
-    private func historyRowContent(artworkURL: URL?, title: String, subtitle: String) -> some View {
-        HStack(spacing: 12) {
-            AlbumArtworkView(url: artworkURL, cornerRadius: 4)
-                .frame(width: 44, height: 44)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(fgPrimary)
-                    .lineLimit(1)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(fgSecondary)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 8)
-        }
-        .contentShape(Rectangle())
     }
 
     /// Pinned beneath the paged scroll: scrubber, transport, volume, bottom chrome.
