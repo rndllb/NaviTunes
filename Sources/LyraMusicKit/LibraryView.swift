@@ -182,7 +182,7 @@ struct LibraryView: View {
             ScrollView {
                 libraryScrollMainContent
             }
-            .modifier(LibraryScrollFloatingHeaderVisibilityModifier(
+            .modifier(MusicTabFloatingHeaderScrollModifier(
                 slack: 72,
                 showFloatingHeader: $showFloatingHeader
             ))
@@ -1006,27 +1006,6 @@ private struct EditLibrarySectionsSheet: View {
     }
 }
 
-// MARK: - Scroll modifier
-
-private struct LibraryScrollFloatingHeaderVisibilityModifier: ViewModifier {
-    var slack: CGFloat
-    @Binding var showFloatingHeader: Bool
-    @State private var anchorContentOffsetY: CGFloat?
-
-    func body(content: Content) -> some View {
-        content.onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y }) { _, y in
-            if anchorContentOffsetY == nil {
-                anchorContentOffsetY = y
-            }
-            let anchor = anchorContentOffsetY ?? y
-            let nearTop = (y - anchor) < slack
-            if showFloatingHeader != nearTop {
-                showFloatingHeader = nearTop
-            }
-        }
-    }
-}
-
 // MARK: - Downloaded
 
 struct LibraryDownloadedView: View {
@@ -1034,6 +1013,7 @@ struct LibraryDownloadedView: View {
     @EnvironmentObject private var offline: OfflineDownloadManager
     @State private var searchText = ""
     @State private var navigateAlbum: AlbumSummary?
+    @State private var navigateAlbumScrollToTrackId: String?
     @State private var trackPendingDownloadedDelete: Track?
 
     private let albumColumns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
@@ -1096,7 +1076,9 @@ struct LibraryDownloadedView: View {
                     Section {
                         LazyVGrid(columns: albumColumns, spacing: 16) {
                             ForEach(downloadedAlbums) { album in
-                                NavigationLink { ServerPlaylistDetailView(album: album, librarySource: true) } label: {
+                                Button {
+                                    openDownloadedAlbum(album)
+                                } label: {
                                     albumCell(album)
                                 }
                                 .buttonStyle(.plain)
@@ -1135,7 +1117,16 @@ struct LibraryDownloadedView: View {
         .musicNavigationChrome()
         .musicNavigationBarVisibleWhenPushed()
         .navigationDestination(item: $navigateAlbum) { album in
-            ServerPlaylistDetailView(album: album, librarySource: true)
+            ServerPlaylistDetailView(
+                album: album,
+                librarySource: true,
+                scrollToTrackId: navigateAlbumScrollToTrackId
+            )
+        }
+        .onChange(of: navigateAlbum?.id) { _, albumId in
+            if albumId == nil {
+                navigateAlbumScrollToTrackId = nil
+            }
         }
         .onAppear {
             app.offline.backfillRecordsIfMissing(knownTracks: app.discoveryLibraryTracks)
@@ -1171,6 +1162,16 @@ struct LibraryDownloadedView: View {
         )
     }
 
+    private func openDownloadedAlbum(_ album: AlbumSummary, scrollToTrackId: String? = nil) {
+        navigateAlbumScrollToTrackId = scrollToTrackId
+        navigateAlbum = album
+    }
+
+    private func isTrackOfflineOnDevice(_ track: Track) -> Bool {
+        app.offline.downloadedTrackIds.contains(track.id)
+            && app.offline.localFile(for: track.id) != nil
+    }
+
     private func albumCell(_ album: AlbumSummary) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             AlbumArtworkView(url: app.resolvedArtworkURL(for: album), cornerRadius: MusicDesign.gridAlbumCorner)
@@ -1192,7 +1193,7 @@ struct LibraryDownloadedView: View {
             itemSize: app.songListItemSize,
             isFavorite: app.favoriteTrackIds.contains(track.id),
             offlineDownload: offline.activeDownloads[track.id],
-            isOfflineCached: true,
+            isOfflineCached: isTrackOfflineOnDevice(track),
             onPlay: { Task { await play(track: track) } },
             onDownload: {},
             onCancelOfflineDownload: {},
@@ -1202,13 +1203,16 @@ struct LibraryDownloadedView: View {
                     try? await app.player.playNext(library: app.activeLibrary, track: track)
                 }
             },
-            onGoToAlbum: { navigateAlbum = resolvedAlbumSummary(for: track) },
+            onGoToAlbum: {
+                openDownloadedAlbum(resolvedAlbumSummary(for: track), scrollToTrackId: track.id)
+            },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
             onRemoveFromLibrary: app.isSongInLibrary(track.id)
                 ? { Task { await app.removeSongFromLibrary(track) } } : nil,
             onDeleteFromLibrary: { app.beginLibraryTrackDeletion(track) },
             canDeleteFromLibrary: app.canDeleteFromLibrary,
             onRemoveDownload: { try? app.offline.remove(trackId: track.id) },
+            isInLibrary: app.isSongInLibrary(track.id),
             showsBottomDivider: showsBottomDivider,
             onPresentDownloadedDeleteSheet: {
                 trackPendingDownloadedDelete = track

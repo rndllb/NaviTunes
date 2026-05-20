@@ -5,7 +5,7 @@ enum MusicBrainzNewReleasesClient {
     private static let userAgent = "LyraMusic/1.0 (https://github.com/randll)"
 
     /// Albums whose first release date falls in the rolling window ending today (newest first).
-    static func fetchRecentAlbums(limit: Int = 50, windowDays: Int = 120) async throws -> [LFMAlbum] {
+    static func fetchRecentAlbums(limit: Int = 50, windowDays: Int = 120) async throws -> [ChartAlbum] {
         let capped = min(max(limit, 1), 80)
         let cal = Calendar(identifier: .gregorian)
         let end = cal.startOfDay(for: Date())
@@ -53,7 +53,7 @@ enum MusicBrainzNewReleasesClient {
             throw NSError(domain: "MusicBrainzNewReleasesClient", code: 5, userInfo: [NSLocalizedDescriptionKey: "Unexpected MusicBrainz JSON"])
         }
 
-        var albums: [LFMAlbum] = []
+        var albums: [ChartAlbum] = []
         var seen = Set<String>()
         for g in groups {
             guard let id = g["id"] as? String, !id.isEmpty,
@@ -62,7 +62,7 @@ enum MusicBrainzNewReleasesClient {
             guard seen.insert(id).inserted else { continue }
             let artist = artistLine(from: g)
             let cover = URL(string: "https://coverartarchive.org/release-group/\(id)/front-250")
-            albums.append(LFMAlbum(id: id, name: title, artistName: artist, imageURL: cover))
+            albums.append(ChartAlbum(id: id, name: title, artistName: artist, imageURL: cover))
         }
 
         let sorted = albums.sorted { firstReleaseDate(for: $0.id, in: groups) > firstReleaseDate(for: $1.id, in: groups) }
