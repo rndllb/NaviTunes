@@ -1,18 +1,33 @@
 import SwiftUI
 
-/// **Radio** tab — Navidrome genre stations (`getRandomSongs`) and server internet radio (`getInternetRadioStations`).
+/// **Radio** tab — Navidrome internet radio with a featured grid and genre-grouped stations.
 struct RadioTabView: View {
     @EnvironmentObject private var app: AppModel
     @State private var showFloatingHeader = true
-    @State private var genreStations: [RadioGenreStation] = []
-    @State private var internetStations: [InternetRadioStation] = []
+    @State private var featuredStations: [InternetRadioStation] = []
+    @State private var liveRadioGroups: [LiveRadioGroup] = []
     @State private var isLoading = false
     @State private var loadError: String?
     @State private var startingStationID: String?
+    @State private var loadGeneration: UInt = 0
 
     private let floatingHeaderCollapseSlack: CGFloat = 72
-    private let columns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
+    private let featuredColumns = [
+        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 12),
+    ]
+    private let browseColumns = [
+        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 12),
+    ]
     private var inset: CGFloat { MusicDesign.newTabHorizontalInset }
+
+    private static let featuredCount = 6
+
+    private var hasLiveRadio: Bool {
+        !featuredStations.isEmpty || liveRadioGroups.contains { !$0.stations.isEmpty }
+    }
 
     private static let tileGradients: [[Color]] = [
         [.red, .black],
@@ -33,64 +48,26 @@ struct RadioTabView: View {
                         signedOutHint
                     } else if app.backendKind != .navidrome {
                         jellyfinHint
-                    } else if isLoading, genreStations.isEmpty, internetStations.isEmpty {
+                    } else if isLoading, !hasLiveRadio {
                         ProgressView()
                             .tint(MusicDesign.accent)
                             .frame(maxWidth: .infinity)
                             .padding(.top, 48)
+                    } else if !hasLiveRadio {
+                        ContentUnavailableView(
+                            "No stations",
+                            systemImage: "dot.radiowaves.left.and.right",
+                            description: Text(loadError ?? "Add internet radio stations in the Navidrome web UI.")
+                        )
+                        .padding(.top, 40)
                     } else {
-                        if let loadError, genreStations.isEmpty, internetStations.isEmpty {
+                        if let loadError, shouldShowLoadError(loadError) {
                             Text(loadError)
                                 .font(.footnote)
                                 .foregroundStyle(MusicDesign.secondaryLabel)
                                 .padding(.horizontal, inset)
                         }
-
-                        if !internetStations.isEmpty {
-                            sectionHeader("Live Radio")
-                            LazyVGrid(columns: columns, spacing: 12) {
-                                ForEach(internetStations) { station in
-                                    stationTile(
-                                        title: station.name,
-                                        subtitle: "Live stream",
-                                        colors: gradient(for: station.name),
-                                        isStarting: startingStationID == "live-\(station.id)",
-                                    ) {
-                                        Task { await playLive(station) }
-                                    }
-                                }
-                            }
-                            .padding(.horizontal, inset)
-                        }
-
-                        sectionHeader("Stations by Genre")
-                        Text("Shuffled tracks from your library matching each genre.")
-                            .font(.footnote)
-                            .foregroundStyle(MusicDesign.secondaryLabel)
-                            .padding(.horizontal, inset)
-
-                        LazyVGrid(columns: columns, spacing: 12) {
-                            stationTile(
-                                title: "Shuffle All",
-                                subtitle: "Your library",
-                                colors: [.purple, .black],
-                                isStarting: startingStationID == "shuffle-all",
-                            ) {
-                                Task { await playGenre(nil) }
-                            }
-
-                            ForEach(genreStations) { station in
-                                stationTile(
-                                    title: station.genre.name,
-                                    subtitle: genreSubtitle(station.genre),
-                                    colors: gradient(for: station.genre.name),
-                                    isStarting: startingStationID == station.id,
-                                ) {
-                                    Task { await playGenre(station.genre.name) }
-                                }
-                            }
-                        }
-                        .padding(.horizontal, inset)
+                        radioContent
                     }
                 }
                 .padding(.bottom, 32)
@@ -118,6 +95,51 @@ struct RadioTabView: View {
         .tint(MusicDesign.accent)
     }
 
+    @ViewBuilder
+    private var radioContent: some View {
+        if !featuredStations.isEmpty {
+            LazyVGrid(columns: featuredColumns, spacing: 12) {
+                ForEach(featuredStations) { station in
+                    stationTile(
+                        title: station.name,
+                        subtitle: "Live stream",
+                        colors: gradient(for: station.name),
+                        isStarting: startingStationID == "live-\(station.id)",
+                    ) {
+                        Task { await playLive(station) }
+                    }
+                }
+            }
+            .padding(.horizontal, inset)
+        }
+
+        ForEach(liveRadioGroups) { group in
+            if !group.stations.isEmpty {
+                if !group.title.isEmpty {
+                    Text(group.title)
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(.primary)
+                        .padding(.horizontal, inset)
+                        .padding(.top, featuredStations.isEmpty ? 0 : 8)
+                }
+
+                LazyVGrid(columns: browseColumns, spacing: 12) {
+                    ForEach(group.stations) { station in
+                        stationTile(
+                            title: station.name,
+                            subtitle: "Live stream",
+                            colors: gradient(for: station.name),
+                            isStarting: startingStationID == "live-\(station.id)",
+                        ) {
+                            Task { await playLive(station) }
+                        }
+                    }
+                }
+                .padding(.horizontal, inset)
+            }
+        }
+    }
+
     private var radioLoadKey: String {
         "\(app.isSignedIn)-\(app.backendKind.rawValue)-\(app.libraryCatalogEpoch)"
     }
@@ -126,7 +148,7 @@ struct RadioTabView: View {
         ContentUnavailableView(
             "Sign in to listen",
             systemImage: "dot.radiowaves.left.and.right",
-            description: Text("Connect to Navidrome to start genre and live radio stations.")
+            description: Text("Connect to Navidrome to listen to your radio stations.")
         )
         .padding(.top, 40)
     }
@@ -135,23 +157,9 @@ struct RadioTabView: View {
         ContentUnavailableView(
             "Navidrome radio",
             systemImage: "dot.radiowaves.left.and.right",
-            description: Text("Genre and live radio stations are available when signed in to Navidrome.")
+            description: Text("Radio stations are available when signed in to Navidrome.")
         )
         .padding(.top, 40)
-    }
-
-    private func sectionHeader(_ title: String) -> some View {
-        Text(title)
-            .font(.title3.weight(.bold))
-            .foregroundStyle(.primary)
-            .padding(.horizontal, inset)
-    }
-
-    private func genreSubtitle(_ genre: LibraryGenreSummary) -> String {
-        if let n = genre.albumCount, n > 0 {
-            return n == 1 ? "1 album" : "\(n) albums"
-        }
-        return "Lyra Music"
     }
 
     private func gradient(for key: String) -> [Color] {
@@ -196,42 +204,102 @@ struct RadioTabView: View {
 
     private func load() async {
         guard app.isSignedIn, app.backendKind == .navidrome, let client = app.activeLibrary as? NavidromeClient else {
-            genreStations = []
-            internetStations = []
+            featuredStations = []
+            liveRadioGroups = []
             loadError = nil
             isLoading = false
             return
         }
-        isLoading = true
-        loadError = nil
-        defer { isLoading = false }
 
-        let rawGenres = (try? await client.libraryGenres(limit: 200)) ?? []
-        let sortedGenres = rawGenres.sorted { lhs, rhs in
-            let lc = lhs.albumCount ?? 0
-            let rc = rhs.albumCount ?? 0
-            if lc != rc { return lc > rc }
-            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        loadGeneration &+= 1
+        let generation = loadGeneration
+        let hadStations = hasLiveRadio
+
+        isLoading = true
+        if !hadStations { loadError = nil }
+        defer {
+            if generation == loadGeneration {
+                isLoading = false
+            }
         }
-        let genres = sortedGenres.prefix(24).map { RadioGenreStation(genre: $0) }
-        let live = (try? await client.fetchInternetRadioStations()) ?? []
-        genreStations = genres
-        internetStations = live
-        if genres.isEmpty, live.isEmpty {
-            loadError = "No genres or live stations found. Add genre tags to your music or configure internet radio in Navidrome."
+
+        let genreNames: [String]
+        do {
+            genreNames = try await client.libraryGenres(limit: 200).map(\.name)
+        } catch {
+            genreNames = []
+        }
+        guard generation == loadGeneration else { return }
+
+        let live: [InternetRadioStation]
+        do {
+            live = try await client.fetchInternetRadioStations()
+        } catch {
+            guard generation == loadGeneration else { return }
+            if isBenignLoadInterruption(error) { return }
+            let message = error.localizedDescription
+            if hadStations {
+                loadError = message
+            } else {
+                featuredStations = []
+                liveRadioGroups = []
+                loadError = message
+            }
+            return
+        }
+        guard generation == loadGeneration else { return }
+
+        if live.isEmpty, hadStations {
+            loadError = "No stations returned from the server."
+            return
+        }
+
+        applyLoadedStations(live, genreNames: genreNames)
+
+        guard generation == loadGeneration else { return }
+        if !hasLiveRadio {
+            loadError = "No stations found. Add internet radio in the Navidrome web UI."
+        } else {
+            loadError = nil
         }
     }
 
-    private func playGenre(_ genreName: String?) async {
-        let key = genreName.map { "genre-\($0)" } ?? "shuffle-all"
-        startingStationID = key
-        defer { startingStationID = nil }
-        await app.playNavidromeGenreRadio(genreName: genreName)
+    private func applyLoadedStations(_ live: [InternetRadioStation], genreNames: [String]) {
+        let featured = Array(live.shuffled().prefix(Self.featuredCount))
+        let featuredIds = Set(featured.map(\.id))
+        let remainder = live
+            .filter { !featuredIds.contains($0.id) }
+            .sorted {
+                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+
+        featuredStations = featured
+        liveRadioGroups = LiveRadioGrouping.group(
+            stations: remainder,
+            libraryGenreNames: genreNames,
+        )
     }
 
     private func playLive(_ station: InternetRadioStation) async {
         startingStationID = "live-\(station.id)"
         defer { startingStationID = nil }
         await app.playInternetRadioStation(station)
+    }
+
+    /// Pull-to-refresh / tab churn can cancel in-flight loads — not a user-visible failure.
+    private func isBenignLoadInterruption(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let url = error as? URLError, url.code == .cancelled { return true }
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain, ns.code == URLError.cancelled.rawValue { return true }
+        return false
+    }
+
+    private func shouldShowLoadError(_ message: String) -> Bool {
+        let lower = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if lower.isEmpty { return false }
+        if lower == "cancelled" || lower == "canceled" { return false }
+        if lower.contains("cancelled") || lower.contains("canceled") { return false }
+        return true
     }
 }
