@@ -31,15 +31,9 @@ enum ChartStyleSongOverflowChrome {
         .tint(Color.primary)
 
         Section {
-            Button {} label: { Label("Create Station", systemImage: "dot.radiowaves.left.and.right") }
-        }
-        .tint(Color.primary)
-
-        Section {
             Button(action: onGoToAlbum) {
                 Label("Go to Album", systemImage: "music.note.square")
             }
-            Button {} label: { Label("View Credits", systemImage: "info.circle") }
         }
         .tint(Color.primary)
 
