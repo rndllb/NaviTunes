@@ -43,6 +43,34 @@ extension ArtworkDynamicGradient.BackdropPalette {
         prefersDarkHeroChrome ? Color.black.opacity(0.14) : Color.white.opacity(0.12)
     }
 
+    // MARK: - Track row trailing actions (＋, download, progress ring)
+
+    /// Primary affordance on the row backdrop (plus, download arrow, cached disk glyph).
+    var trackOfflineActionPrimary: Color { heroGlassIcon }
+
+    /// Secondary affordances (request cloud, muted missing).
+    var trackOfflineActionSecondary: Color { heroChromeSecondary }
+
+    /// Active download ring stroke.
+    var trackOfflineProgressStroke: Color { heroChromePrimary }
+
+    /// Idle download ring track.
+    var trackOfflineRingTrack: Color { heroTracklistSeparator }
+
+    /// Filled disk behind the cached arrow.
+    var trackOfflineCachedDiskFill: Color { heroGlassCircleFill }
+
+    /// Standard library / playlist lists (no artwork backdrop) — handoff from system color scheme.
+    static func listSurface(colorScheme: ColorScheme) -> Self {
+        let prefersDarkChrome = colorScheme == .light
+        return ArtworkDynamicGradient.BackdropPalette(
+            gradientStops: ArtworkDynamicGradient.fallbackStops,
+            heroSolidBackdropColor: MusicDesign.background,
+            backdropRelativeLuminance: prefersDarkChrome ? 0.85 : 0.15,
+            prefersDarkHeroChrome: prefersDarkChrome,
+        )
+    }
+
     // MARK: - Now Playing (same luminance handoff as album hero)
 
     /// Shuffle / repeat capsule when the mode is **on** (stronger than ``heroGlassCircleFill``).

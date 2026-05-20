@@ -179,17 +179,28 @@ struct BrowseAlbumDetailView: View {
         ZStack(alignment: .top) {
             AlbumHeroBackdropView(artworkURL: displayArtworkURL, palette: backdropPalette)
 
-            ScrollView {
-                VStack(spacing: 0) {
+            List {
+                Section {
                     heroBlock
                     AppleMusicAlbumTrackDivider(palette: backdropPalette)
                         .padding(.top, 22)
-                    tracklistBlock
+                }
+                .albumTrackListRowStyle()
+
+                tracklistSection
+
+                Section {
                     footerBlock
                 }
-                .padding(.bottom, 36)
+                .albumTrackListRowStyle()
             }
+            .listStyle(.plain)
+            .listSectionSpacing(0)
+            .listRowSpacing(6)
+            .contentMargins(.vertical, 0, for: .scrollContent)
             .scrollContentBackground(.hidden)
+            .environment(\.defaultMinListRowHeight, 0)
+            .padding(.bottom, 36)
         }
         .navigationTitle("")
         .musicNavigationBarTitleDisplayMode(.inline)
@@ -424,57 +435,86 @@ struct BrowseAlbumDetailView: View {
 
     // MARK: - Tracklist
 
-    private var tracklistBlock: some View {
+    @ViewBuilder
+    private var tracklistSection: some View {
         let rows = browseQueuedRows
-        return VStack(alignment: .leading, spacing: 0) {
-            if isLoadingPreviewTracks, previewTracks.isEmpty, !libraryTracks.isEmpty {
-                browseCatalogLoadingBanner
+        if isLoadingPreviewTracks, previewTracks.isEmpty, !libraryTracks.isEmpty {
+            browseCatalogLoadingBanner
+                .albumTrackListRowStyle()
+        }
+        if rows.isEmpty {
+            if !(isLoadingTracks || isLoadingPreviewTracks), libraryTracks.isEmpty, previewTracks.isEmpty {
+                Text(emptySongNote)
+                    .font(.subheadline)
+                    .foregroundStyle(backdropPalette.heroChromeSecondary.opacity(0.9))
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 20)
+                    .albumTrackListRowStyle()
             }
-            if rows.isEmpty {
-                if !(isLoadingTracks || isLoadingPreviewTracks), libraryTracks.isEmpty, previewTracks.isEmpty {
-                    Text(emptySongNote)
-                        .font(.subheadline)
-                        .foregroundStyle(backdropPalette.heroChromeSecondary.opacity(0.9))
-                        .padding(.horizontal, 22)
-                        .padding(.vertical, 20)
-                }
-            } else {
+        } else {
+            Section {
                 ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                    VStack(spacing: 0) {
+                    Group {
                         switch row.kind {
                         case .library(let track):
-                            AppleMusicAlbumTrackRow(
-                                index: row.displayIndex,
-                                title: track.title,
-                                subtitle: track.artist == displayArtist || track.artist.isEmpty ? nil : track.artist,
-                                isFavorite: app.favoriteTrackIds.contains(track.id),
-                                offlineDownload: offline.activeDownloads[track.id],
-                                isOfflineCached: app.offline.downloadedTrackIds.contains(track.id),
-                                onCancelOfflineDownload: {
-                                    app.offline.cancelDownload(trackId: track.id)
-                                },
-                                onTapStartOfflineDownload: {
-                                    Task {
-                                        guard let lib = app.activeLibrary else { return }
-                                        try? await cache(track: track, lib: lib)
-                                    }
-                                },
-                                backdropPalette: backdropPalette,
-                                onRowTap: { Task { await play(startingAt: track) } },
-                                menuContent: { browseInLibraryTrackOverflowMenu(track: track) }
+                            browseLibraryTrackRow(
+                                track: track,
+                                displayIndex: row.displayIndex,
+                                showsBottomDivider: index < rows.count - 1
                             )
                             .id(track.id)
                         case .missing(let preview):
-                            browseMissingCatalogTrackRow(preview: preview, displayIndex: row.displayIndex)
-                        }
-                        if index < rows.count - 1 {
-                            AppleMusicAlbumTrackDivider(palette: backdropPalette)
+                            browseMissingCatalogTrackRow(
+                                preview: preview,
+                                displayIndex: row.displayIndex,
+                                showsBottomDivider: index < rows.count - 1
+                            )
                         }
                     }
+                    .albumTrackListRowStyle()
                 }
             }
         }
-        .padding(.top, 6)
+    }
+
+    private func browseLibraryTrackRow(track: Track, displayIndex: Int, showsBottomDivider: Bool) -> some View {
+        AppleMusicAlbumTrackRow(
+            index: displayIndex,
+            title: track.title,
+            subtitle: nil,
+            isFavorite: app.favoriteTrackIds.contains(track.id),
+            offlineDownload: offline.activeDownloads[track.id],
+            isOfflineCached: app.offline.downloadedTrackIds.contains(track.id),
+            isInLibrary: app.isSongInLibrary(track.id),
+            onCancelOfflineDownload: {
+                app.offline.cancelDownload(trackId: track.id)
+            },
+            onTapStartOfflineDownload: {
+                Task {
+                    guard let lib = app.activeLibrary else { return }
+                    try? await cache(track: track, lib: lib)
+                }
+            },
+            backdropPalette: backdropPalette,
+            onPlayNext: {
+                Task {
+                    guard let lib = app.activeLibrary else { return }
+                    try? await app.player.playNext(library: lib, track: track)
+                }
+            },
+            onDownload: {
+                Task {
+                    guard let lib = app.activeLibrary else { return }
+                    try? await cache(track: track, lib: lib)
+                }
+            },
+            onRemoveFromLibrary: app.isSongInLibrary(track.id)
+                ? { Task { await app.removeSongFromLibrary(track) } }
+                : nil,
+            showsBottomDivider: showsBottomDivider,
+            onRowTap: { Task { await play(startingAt: track) } },
+            menuContent: { browseInLibraryTrackOverflowMenu(track: track) }
+        )
     }
 
     private var browseCatalogLoadingBanner: some View {
@@ -491,7 +531,11 @@ struct BrowseAlbumDetailView: View {
         .padding(.vertical, 10)
     }
 
-    private func browseMissingCatalogTrackRow(preview: BrowseAlbumPreviewTrack, displayIndex: Int) -> some View {
+    private func browseMissingCatalogTrackRow(
+        preview: BrowseAlbumPreviewTrack,
+        displayIndex: Int,
+        showsBottomDivider: Bool
+    ) -> some View {
         let durationLine = formattedTrackDuration(preview.duration)
         let subtitle: String = {
             var parts = ["Not in library"]
@@ -518,6 +562,7 @@ struct BrowseAlbumDetailView: View {
                 : nil,
             showsOfflineIndicator: true,
             backdropPalette: backdropPalette,
+            showsBottomDivider: showsBottomDivider,
             onRowTap: {
                 Task { await requestPreviewTrackViaDowntify(preview) }
             },
@@ -586,16 +631,10 @@ struct BrowseAlbumDetailView: View {
         .tint(Color.primary)
 
         Section {
-            Button {} label: { Label("Create Station", systemImage: "dot.radiowaves.left.and.right") }
-        }
-        .tint(Color.primary)
-
-        Section {
             Button {
                 navigateLibraryAlbum = matchedLibraryAlbum
             } label: { Label("Go to Album", systemImage: "music.note.square") }
             .disabled(matchedLibraryAlbum == nil)
-            Button {} label: { Label("View Credits", systemImage: "info.circle") }
         }
         .tint(Color.primary)
 

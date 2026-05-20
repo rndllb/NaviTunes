@@ -11,7 +11,7 @@ import AppKit
 ///
 /// Apple-Music-style mapping (per locked design):
 /// - ``addToLibrary``    — server has the song, user hasn't added it → `plus`
-/// - ``notCached``       — in library, not yet on this device → `arrow.down`
+/// - ``notCached``       — in library, not yet on this device → `icloud.and.arrow.down`
 /// - ``downloading*``    — fetching offline copy now
 /// - ``cached``          — in library + on device → filled "downloaded" glyph
 /// - ``missing``         — in library but server no longer resolves it → greyed exclamation
@@ -74,8 +74,14 @@ struct TrackOfflineDownloadIndicator: View {
     var onAddToLibrary: (() -> Void)?
     /// Tapping the "Request" cloud glyph forwards to Downtify (off-server discovery rows).
     var onRequest: (() -> Void)?
+    /// When `nil`, resolves from ``listSurface(colorScheme:)`` (library lists). Album rows pass the hero palette.
+    var backdropPalette: ArtworkDynamicGradient.BackdropPalette? = nil
 
     @Environment(\.colorScheme) private var colorScheme
+
+    private var chrome: ArtworkDynamicGradient.BackdropPalette {
+        backdropPalette ?? .listSurface(colorScheme: colorScheme)
+    }
 
     private let ringDiameter: CGFloat = 17
     private let ringLineWidth: CGFloat = 1.35
@@ -155,12 +161,11 @@ struct TrackOfflineDownloadIndicator: View {
         }
     }
 
-    /// In-library, not downloaded — plain arrow per the locked design (no cloud, since
-    /// "cloud + arrow" is reserved for the Request action on off-server rows).
+    /// In library, available to download — cloud + arrow (Apple Music library download affordance).
     private var notCachedDiskVisual: some View {
-        Image(systemName: "arrow.down")
+        Image(systemName: "icloud.and.arrow.down")
             .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(MusicDesign.secondaryLabel)
+            .foregroundStyle(chrome.trackOfflineActionPrimary)
     }
 
     /// Plus glyph — adds the song (and its album as a unit) to the user's library.
@@ -179,7 +184,7 @@ struct TrackOfflineDownloadIndicator: View {
     private var addToLibraryVisual: some View {
         Image(systemName: "plus")
             .font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(MusicDesign.secondaryLabel)
+            .foregroundStyle(chrome.trackOfflineActionPrimary)
     }
 
     /// Greyed exclamation — server lost the file but the user's library still references it.
@@ -187,7 +192,7 @@ struct TrackOfflineDownloadIndicator: View {
     private var missingGlyph: some View {
         Image(systemName: "exclamationmark.circle")
             .font(.system(size: 13, weight: .regular))
-            .foregroundStyle(MusicDesign.secondaryLabel.opacity(0.5))
+            .foregroundStyle(chrome.trackOfflineActionSecondary.opacity(0.5))
     }
 
     /// Cloud + arrow — Request the song via Downtify when it's not on the server at all.
@@ -206,20 +211,20 @@ struct TrackOfflineDownloadIndicator: View {
     private var requestVisual: some View {
         Image(systemName: "icloud.and.arrow.down")
             .font(.system(size: 13, weight: .regular))
-            .foregroundStyle(MusicDesign.secondaryLabel)
+            .foregroundStyle(chrome.trackOfflineActionSecondary)
     }
 
     /// Filled circle + arrow (on device).
     private var cachedGlyph: some View {
         ZStack {
             Circle()
-                .fill(MusicDesign.chromeCapsuleFill)
+                .fill(chrome.trackOfflineCachedDiskFill)
             Circle()
-                .stroke(MusicDesign.separator, lineWidth: 1)
+                .stroke(chrome.trackOfflineRingTrack, lineWidth: 1)
                 .frame(width: ringDiameter, height: ringDiameter)
             Image(systemName: "arrow.down")
                 .font(.system(size: 8.5, weight: .semibold))
-                .foregroundStyle(MusicDesign.accent)
+                .foregroundStyle(chrome.trackOfflineActionPrimary)
         }
         .frame(width: ringDiameter, height: ringDiameter)
     }
@@ -227,13 +232,13 @@ struct TrackOfflineDownloadIndicator: View {
     private func downloadingRing(fraction: Double) -> some View {
         ZStack {
             Circle()
-                .stroke(MusicDesign.separator, lineWidth: ringLineWidth)
+                .stroke(chrome.trackOfflineRingTrack, lineWidth: ringLineWidth)
                 .frame(width: ringDiameter, height: ringDiameter)
 
             Circle()
                 .trim(from: 0, to: max(0.02, fraction))
                 .stroke(
-                    MusicDesign.accent,
+                    chrome.trackOfflineProgressStroke,
                     style: StrokeStyle(lineWidth: ringLineWidth + 0.35, lineCap: .round)
                 )
                 .frame(width: ringDiameter, height: ringDiameter)
@@ -249,12 +254,12 @@ struct TrackOfflineDownloadIndicator: View {
             let angle = (t.truncatingRemainder(dividingBy: 1.15)) / 1.15 * 360
             ZStack {
                 Circle()
-                    .stroke(MusicDesign.separator, lineWidth: ringLineWidth)
+                    .stroke(chrome.trackOfflineRingTrack, lineWidth: ringLineWidth)
                     .frame(width: ringDiameter, height: ringDiameter)
                 Circle()
                     .trim(from: 0, to: 0.22)
                     .stroke(
-                        MusicDesign.accent,
+                        chrome.trackOfflineProgressStroke,
                         style: StrokeStyle(lineWidth: ringLineWidth, lineCap: .round)
                     )
                     .frame(width: ringDiameter, height: ringDiameter)
@@ -268,7 +273,7 @@ struct TrackOfflineDownloadIndicator: View {
     /// Apple Music uses a small square “stop” while a download is active.
     @ViewBuilder
     private var stopControl: some View {
-        let stopFill = Color.primary
+        let stopFill = chrome.trackOfflineProgressStroke
         if let onCancelDownload {
             Button(action: onCancelDownload) {
                 ZStack {
@@ -276,14 +281,14 @@ struct TrackOfflineDownloadIndicator: View {
                         .frame(width: slot, height: slot)
                         .contentShape(Rectangle())
                     RoundedRectangle(cornerRadius: 1.0, style: .continuous)
-                        .fill(stopFill.opacity(colorScheme == .dark ? 0.88 : 0.75))
+                        .fill(stopFill.opacity(0.88))
                         .frame(width: 4.2, height: 4.2)
                 }
             }
             .buttonStyle(.plain)
         } else {
             RoundedRectangle(cornerRadius: 1.0, style: .continuous)
-                .fill(stopFill.opacity(colorScheme == .dark ? 0.88 : 0.75))
+                .fill(stopFill.opacity(0.88))
                 .frame(width: 4.2, height: 4.2)
         }
     }
@@ -298,15 +303,28 @@ private enum AlbumTrackIndexColumn {
     static var totalWidth: CGFloat { starSlotWidth + starToNumberSpacing + numberWidth }
 }
 
+/// Compact pill behind album track swipe icons (width > height → capsule, not a circle).
+enum AlbumTrackSwipeChipMetrics {
+    static let width: CGFloat = 40
+    static let height: CGFloat = 22
+    static let iconFont: Font = .caption2.weight(.semibold)
+    static let playNextTint: Color = .indigo
+    static let downloadTint: Color = .blue
+    static let deleteTint: Color = .red
+}
+
 /// Shared album tracklist layout — row padding, spacing, and divider alignment with title text.
-/// Exposed module-wide so list-based hosts (e.g. `AlbumDetailView`) can align row separators
-/// past the index column the same way the in-row divider does.
+/// Exposed module-wide so list-based hosts (e.g. ``ServerPlaylistDetailView``) can align row separators.
 enum AlbumTrackRowLayout {
-    static let horizontalPadding: CGFloat = 20
+    /// Inset of each track list row from the screen edge.
+    static let listHorizontalInset: CGFloat = 8
+    static let horizontalPadding: CGFloat = 10
     /// Between track # and title — same as ★–# spacing for even rhythm (must match outer ``HStack`` spacing).
     static let indexToTitleSpacing: CGFloat = AlbumTrackIndexColumn.starToNumberSpacing
-    static let verticalPadding: CGFloat = 8
-    static let titleSubtitleSpacing: CGFloat = 3
+    /// Per-track vertical padding — balanced density (not cramped, not airy).
+    static let verticalRowPadding: CGFloat = 8
+    static let rowMinHeight: CGFloat = 40
+    static let titleSubtitleSpacing: CGFloat = 2
     /// Screen-edge → title leading; dividers start here (past ★ + track number).
     static var titleLeadingFromScreenEdge: CGFloat {
         horizontalPadding + AlbumTrackIndexColumn.totalWidth + indexToTitleSpacing
@@ -340,6 +358,13 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
     var showsOfflineIndicator: Bool = true
     /// Album page adaptive chrome (index / subtitle / ⋯ — not fixed grey ``MusicDesign.secondaryLabel``).
     var backdropPalette: ArtworkDynamicGradient.BackdropPalette = .fallback
+    /// When set, enables native leading/trailing swipe actions (requires parent `List`).
+    var onPlayNext: (() -> Void)? = nil
+    var onDownload: (() -> Void)? = nil
+    /// User-level remove from library (trash swipe).
+    var onRemoveFromLibrary: (() -> Void)? = nil
+    /// Hairline under the row (drawn inside the row, not a separate list cell).
+    var showsBottomDivider: Bool = false
 
     let onRowTap: () -> Void
     @ViewBuilder let menuContent: () -> MenuItems
@@ -352,21 +377,72 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
         )
     }
 
+    /// In library but not on device — hide cloud; download via overflow menu.
+    private var showsTrailingOfflineGlyph: Bool {
+        guard showsOfflineIndicator else { return false }
+        if isInLibrary, offlinePhase == .notCached { return false }
+        return true
+    }
+
     private var itemSize: SongListItemSize { app.songListItemSize }
 
+    private var showsDownloadSwipeAction: Bool {
+        isInLibrary
+            && !isOfflineCached
+            && offlineDownload == nil
+            && onDownload != nil
+    }
+
+    private var hasSubtitle: Bool {
+        guard let subtitle else { return false }
+        return !subtitle.isEmpty
+    }
+
+    private var rowVerticalAlignment: VerticalAlignment {
+        hasSubtitle ? .top : .center
+    }
+
     var body: some View {
-        HStack(alignment: .top, spacing: 6) {
+        Group {
+            if let onPlayNext {
+                trackRowContent
+                    .librarySongSwipeActions(
+                        showsDownload: showsDownloadSwipeAction,
+                        onPlayNext: onPlayNext,
+                        onDownload: onDownload,
+                        onRemoveFromLibrary: onRemoveFromLibrary,
+                        chipMetrics: .albumTrack
+                    )
+            } else {
+                trackRowContent
+            }
+        }
+    }
+
+    private var trackRowContent: some View {
+        trackRowBody
+            .frame(minHeight: AlbumTrackRowLayout.rowMinHeight)
+            .background(alignment: .bottom) {
+                if showsBottomDivider {
+                    AppleMusicAlbumTrackDivider(palette: backdropPalette)
+                        .allowsHitTesting(false)
+                }
+            }
+    }
+
+    private var trackRowBody: some View {
+        HStack(alignment: rowVerticalAlignment, spacing: 6) {
             Button(action: onRowTap) {
-                HStack(alignment: .top, spacing: AlbumTrackRowLayout.indexToTitleSpacing) {
-                    HStack(alignment: .top, spacing: AlbumTrackIndexColumn.starToNumberSpacing) {
+                HStack(alignment: rowVerticalAlignment, spacing: AlbumTrackRowLayout.indexToTitleSpacing) {
+                    HStack(alignment: rowVerticalAlignment, spacing: AlbumTrackIndexColumn.starToNumberSpacing) {
                         Color.clear
                             .frame(width: AlbumTrackIndexColumn.starSlotWidth)
-                            .overlay(alignment: .topLeading) {
+                            .overlay(alignment: hasSubtitle ? .topLeading : .center) {
                                 if isFavorite {
                                     Image(systemName: "star.fill")
                                         .font(.system(size: 7, weight: .semibold))
                                         .foregroundStyle(backdropPalette.heroChromePrimary)
-                                        .padding(.top, 4)
+                                        .padding(.top, hasSubtitle ? 4 : 0)
                                         .allowsHitTesting(false)
                                         .accessibilityHidden(true)
                                 }
@@ -378,16 +454,16 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
                             .monospacedDigit()
                             .lineLimit(1)
                             .frame(width: AlbumTrackIndexColumn.numberWidth, alignment: .leading)
-                            .padding(.top, 1)
                     }
                     .frame(width: AlbumTrackIndexColumn.totalWidth, alignment: .leading)
 
                     VStack(alignment: .leading, spacing: AlbumTrackRowLayout.titleSubtitleSpacing) {
                         Text(title)
-                            .font(itemSize.albumTitleFont)
+                            .font(.subheadline.weight(.semibold))
                             .foregroundStyle(backdropPalette.heroChromePrimary)
                             .multilineTextAlignment(.leading)
-                        if let subtitle, !subtitle.isEmpty {
+                            .lineLimit(1)
+                        if hasSubtitle, let subtitle {
                             Text(subtitle)
                                 .font(itemSize.albumSubtitleFont)
                                 .foregroundStyle(backdropPalette.heroChromeSecondary)
@@ -401,50 +477,56 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
             }
             .buttonStyle(.plain)
 
-            if showsOfflineIndicator {
+            if showsTrailingOfflineGlyph {
                 TrackOfflineDownloadIndicator(
                     phase: offlinePhase,
                     onCancelDownload: offlinePhase.isDownloading ? onCancelOfflineDownload : nil,
-                    onTapStartDownload: offlinePhase == .notCached ? onTapStartOfflineDownload : nil,
+                    onTapStartDownload: nil,
                     onAddToLibrary: offlinePhase == .addToLibrary ? onTapAddToLibrary : nil,
+                    backdropPalette: backdropPalette,
                 )
-                .padding(.top, 1)
             }
 
             Menu {
                 menuContent()
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.subheadline.weight(.semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(backdropPalette.heroChromeSecondary)
-                    .frame(width: 26, height: 26)
+                    .frame(width: 22, height: 22)
                     .contentShape(Rectangle())
             }
-            .padding(.top, 1)
         }
         .padding(.horizontal, AlbumTrackRowLayout.horizontalPadding)
-        .padding(.vertical, itemSize.albumVerticalPadding)
+        .padding(.vertical, AlbumTrackRowLayout.verticalRowPadding)
     }
 }
 
 /// Compact horizontal progress under a title (library song list).
 struct TrackDownloadProgressStrip: View {
     let state: OfflineDownloadUIState
+    var backdropPalette: ArtworkDynamicGradient.BackdropPalette? = nil
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var chrome: ArtworkDynamicGradient.BackdropPalette {
+        backdropPalette ?? .listSurface(colorScheme: colorScheme)
+    }
 
     var body: some View {
         switch state {
         case .indeterminate:
             ProgressView()
-                .tint(MusicDesign.accent)
+                .tint(chrome.trackOfflineProgressStroke)
                 .scaleEffect(x: 1, y: 0.72, anchor: .center)
                 .padding(.top, 2)
         case .progress(let fraction):
             VStack(alignment: .leading, spacing: 3) {
                 ProgressView(value: min(1, fraction))
-                    .tint(MusicDesign.accent)
+                    .tint(chrome.trackOfflineProgressStroke)
                 Text("\(Int((min(1, fraction) * 100).rounded()))%")
                     .font(.caption2.weight(.medium).monospacedDigit())
-                    .foregroundStyle(MusicDesign.secondaryLabel)
+                    .foregroundStyle(chrome.trackOfflineActionSecondary)
             }
             .padding(.top, 2)
         }
@@ -474,5 +556,6 @@ struct AppleMusicAlbumTrackDivider: View {
                 .frame(height: hairlineHeight)
         }
         .padding(.trailing, AlbumTrackRowLayout.horizontalPadding)
+        .frame(height: hairlineHeight)
     }
 }

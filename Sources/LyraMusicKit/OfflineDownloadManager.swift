@@ -338,11 +338,25 @@ final class OfflineDownloadManager: ObservableObject {
         http.value(forHTTPHeaderField: "Content-Type")?.split(separator: ";").first.map { String($0).trimmingCharacters(in: .whitespaces) }
     }
 
+    /// Navidrome/Subsonic may return HTTP 200 with a JSON error when `f=json` was mistakenly sent on a media endpoint.
+    private static func looksLikeSubsonicJSONError(_ sniff: Data) -> Bool {
+        guard sniff.first == UInt8(ascii: "{") || sniff.first == UInt8(ascii: "[") else { return false }
+        guard let prefix = String(data: sniff.prefix(256), encoding: .utf8)?.lowercased() else { return false }
+        return prefix.contains("subsonic-response") || prefix.contains("\"status\":\"failed\"") || prefix.contains("\"status\": \"failed\"")
+    }
+
+    /// Re-reads the on-disk manifest into ``downloadedTrackIds`` (e.g. after external changes).
+    func reloadDownloadedTrackIdsFromManifest() {
+        downloadedTrackIds = (try? Self.manifestTrackIds()) ?? []
+    }
+
     private func downloadToTemporary(request: URLRequest, trackId: String) async throws -> (URL, URLResponse) {
         try await withCheckedThrowingContinuation { continuation in
             let task = URLSession.shared.downloadTask(with: request) { [weak self] url, response, error in
-                Task { @MainActor in
-                    self?.tearDownDownloadObservation(trackId: trackId)
+                defer {
+                    Task { @MainActor in
+                        self?.tearDownDownloadObservation(trackId: trackId)
+                    }
                 }
                 if let error {
                     continuation.resume(throwing: error)
@@ -352,7 +366,13 @@ final class OfflineDownloadManager: ObservableObject {
                     continuation.resume(throwing: URLError(.badServerResponse))
                     return
                 }
-                continuation.resume(returning: (url, response))
+                // CFNetwork deletes the temp file when this handler returns — relocate synchronously.
+                do {
+                    let stable = try Self.relocateURLSessionDownloadTemp(url, trackId: trackId)
+                    continuation.resume(returning: (stable, response))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
             }
             inflightDownloadTasks[trackId] = task
             downloadProgressObservations[trackId] = task.progress.observe(\.fractionCompleted) { [weak self] progress, _ in
@@ -362,6 +382,25 @@ final class OfflineDownloadManager: ObservableObject {
             }
             task.resume()
         }
+    }
+
+    /// Moves a `URLSession` download out of `CFNetworkDownload_*.tmp` before the completion handler returns.
+    private static func relocateURLSessionDownloadTemp(_ source: URL, trackId: String) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LyraOfflineDownloads", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let safeId = sanitizedFilenameFragment(trackId)
+        let dest = dir.appendingPathComponent("\(safeId.isEmpty ? "track" : safeId)-\(UUID().uuidString).part")
+        if FileManager.default.fileExists(atPath: dest.path) {
+            try FileManager.default.removeItem(at: dest)
+        }
+        do {
+            try FileManager.default.moveItem(at: source, to: dest)
+        } catch {
+            try FileManager.default.copyItem(at: source, to: dest)
+            try? FileManager.default.removeItem(at: source)
+        }
+        return dest
     }
 
     private func applyDownloadProgress(trackId: String, fraction: Double) {
@@ -429,7 +468,7 @@ final class OfflineDownloadManager: ObservableObject {
             }
         }
 
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw URLError(.badServerResponse)
         }
 
@@ -441,6 +480,9 @@ final class OfflineDownloadManager: ObservableObject {
         let sniff = try Self.peekFileHead(url: tmpURL, max: Self.sniffPrefixBytes)
         guard !sniff.isEmpty else {
             throw URLError(.zeroByteResource)
+        }
+        if Self.looksLikeSubsonicJSONError(sniff) {
+            throw URLError(.cannotDecodeContentData)
         }
 
         let ext = Self.fileExtension(forMime: mime, sniffing: sniff)

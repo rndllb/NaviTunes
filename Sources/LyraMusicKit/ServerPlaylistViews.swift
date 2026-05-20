@@ -386,8 +386,12 @@ struct ServerPlaylistDetailView: View {
                     trackRows
                 }
                 .listStyle(.plain)
+                .listSectionSpacing(0)
+                .listRowSpacing(isAlbum ? 6 : 0)
+                .modifier(AlbumDetailListContentMargins(isAlbum: isAlbum))
                 .scrollContentBackground(.hidden)
                 .background(isAlbum ? Color.clear : MusicDesign.background)
+                .environment(\.defaultMinListRowHeight, isAlbum ? 0 : 44)
                 .onChange(of: rows.map(\.track.id)) { _, _ in
                     if isAlbum { scrollToFocusedTrackIfNeeded(proxy: proxy) }
                 }
@@ -504,10 +508,15 @@ struct ServerPlaylistDetailView: View {
             .listRowSeparator(.hidden)
         } else {
             ForEach(visible, id: \.rowId) { row in
-                songRow(row)
-                    .listRowBackground(isAlbum ? Color.clear : MusicDesign.background)
-                    .listRowInsets(EdgeInsets())
-                    .listRowSeparatorTint(isAlbum ? backdropPalette.heroTracklistSeparator : MusicDesign.separator)
+                if isAlbum {
+                    songRow(row)
+                        .albumTrackListRowStyle()
+                } else {
+                    songRow(row)
+                        .listRowBackground(MusicDesign.background)
+                        .listRowInsets(EdgeInsets())
+                        .listRowSeparatorTint(MusicDesign.separator)
+                }
             }
             if isAlbum {
                 showCompleteAlbumToggle
@@ -949,13 +958,6 @@ struct ServerPlaylistDetailView: View {
                     try? await app.player.playNext(library: lib, track: row.track)
                 }
             },
-            onAddToQueue: {
-                Task {
-                    guard let lib = app.activeLibrary else { return }
-                    try? await app.player.addToQueue(library: lib, track: row.track)
-                }
-            },
-            hasActiveQueue: !app.player.queue.isEmpty,
             onGoToAlbum: { navigateAlbum = app.albumSummary(for: row.track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [row.track]) },
             onRemoveFromPlaylist: removeFromPlaylist,
@@ -971,6 +973,7 @@ struct ServerPlaylistDetailView: View {
             hidesAddToLibraryChip: !isAlbum,
             showsArtwork: !isAlbum,
             showsArtist: !isAlbum,
+            usesAlbumSwipeChrome: isAlbum,
             rowBackgroundFill: isAlbum ? .clear : MusicDesign.background
         )
         .equatable()

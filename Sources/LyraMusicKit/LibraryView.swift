@@ -768,52 +768,54 @@ struct FavoritePlaylistView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+        List {
+            Section {
                 searchSection
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 14)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 14, trailing: 20))
 
                 playShuffleRow
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 16)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 16, trailing: 20))
+            }
 
-                if isLoading, tracks.isEmpty {
-                    ProgressView()
-                        .tint(MusicDesign.accent)
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 40)
-                } else if let loadError, tracks.isEmpty {
-                    Text(loadError)
-                        .font(.subheadline)
-                        .foregroundStyle(MusicDesign.secondaryLabel)
-                        .padding(.horizontal, 20)
-                } else if filtered.isEmpty {
-                    ContentUnavailableView(
-                        "No favorite songs",
-                        systemImage: "star",
-                        description: Text(
-                            searchText.isEmpty
-                                ? "For Navidrome this matches Favourites (starred songs and albums). Jellyfin uses audio favorites."
-                                : "Nothing matches your search."
-                        )
+            if isLoading, tracks.isEmpty {
+                ProgressView()
+                    .tint(MusicDesign.accent)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 40)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            } else if let loadError, tracks.isEmpty {
+                Text(loadError)
+                    .font(.subheadline)
+                    .foregroundStyle(MusicDesign.secondaryLabel)
+                    .padding(.horizontal, 20)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            } else if filtered.isEmpty {
+                ContentUnavailableView(
+                    "No favorite songs",
+                    systemImage: "star",
+                    description: Text(
+                        searchText.isEmpty
+                            ? "For Navidrome this matches Favourites (starred songs and albums). Jellyfin uses audio favorites."
+                            : "Nothing matches your search."
                     )
-                    .padding(.top, 32)
-                } else {
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(filtered.enumerated()), id: \.element.id) { index, track in
-                            songRow(track)
-                            if index < filtered.count - 1 {
-                                Divider()
-                                    .background(MusicDesign.separator)
-                            }
-                        }
-                    }
-                    .padding(.bottom, 24)
+                )
+                .padding(.top, 32)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            } else {
+                ForEach(filtered) { track in
+                    songRow(track)
                 }
             }
-            .padding(.top, 8)
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
         .background(MusicDesign.background)
         .navigationTitle("Favorite Songs")
         .musicNavigationBarTitleDisplayMode(.large)
@@ -867,13 +869,6 @@ struct FavoritePlaylistView: View {
                     try? await app.player.playNext(library: lib, track: track)
                 }
             },
-            onAddToQueue: {
-                Task {
-                    guard let lib = app.activeLibrary else { return }
-                    try? await app.player.addToQueue(library: lib, track: track)
-                }
-            },
-            hasActiveQueue: !app.player.queue.isEmpty,
             onGoToAlbum: { navigateAlbum = app.albumSummary(for: track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
             onRemoveFromLibrary: app.isSongInLibrary(track.id)
@@ -884,6 +879,7 @@ struct FavoritePlaylistView: View {
                 ? { try? app.offline.remove(trackId: track.id) } : nil
         )
         .equatable()
+        .librarySongListRowStyle()
     }
 
     private func cacheOffline(track: Track) async {
@@ -891,7 +887,11 @@ struct FavoritePlaylistView: View {
         do {
             let url = try lib.offlineDownloadURL(for: track)
             try await app.offline.cache(track: track, remote: url, headers: lib.httpHeadersForMediaRequests())
-        } catch {}
+        } catch is CancellationError {
+            return
+        } catch {
+            app.errorMessage = error.localizedDescription
+        }
     }
 
     private func load() async {
@@ -1028,16 +1028,7 @@ struct LibraryDownloadedView: View {
     private let albumColumns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
 
     private var downloadedTracks: [Track] {
-        let cached = app.offline.cachedTracks()
-        if !cached.isEmpty { return cached }
-        return app.discoveryLibraryTracks
-            .filter { app.offline.downloadedTrackIds.contains($0.id) }
-            .sorted {
-                let ac = $0.albumTitle.localizedCaseInsensitiveCompare($1.albumTitle)
-                if ac != .orderedSame { return ac == .orderedAscending }
-                if $0.discNumber != $1.discNumber { return $0.discNumber < $1.discNumber }
-                return $0.indexNumber < $1.indexNumber
-            }
+        app.tracksForDownloadedLibrary()
     }
 
     private var filtered: [Track] {
@@ -1063,31 +1054,35 @@ struct LibraryDownloadedView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                if downloadedTracks.isEmpty {
-                    ContentUnavailableView(
-                        app.offline.downloadedTrackIds.isEmpty ? "No Downloads" : "Loading Downloads",
-                        systemImage: "arrow.down.circle",
-                        description: Text(
-                            app.offline.downloadedTrackIds.isEmpty
-                                ? "Tap the cloud icon next to any song to save it for offline playback."
-                                : "Open the app once while online to refresh download metadata, or sync your library."
-                        )
+        List {
+            if downloadedTracks.isEmpty {
+                ContentUnavailableView(
+                    app.offline.downloadedTrackIds.isEmpty ? "No Downloads" : "Loading Downloads",
+                    systemImage: "arrow.down.circle",
+                    description: Text(
+                        app.offline.downloadedTrackIds.isEmpty
+                            ? "Swipe a library song right-to-left and tap Download to save it for offline playback."
+                            : "Open the app once while online to refresh download metadata, or sync your library."
                     )
-                    .padding(.top, 48)
-                } else {
+                )
+                .padding(.top, 48)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            } else {
+                Section {
                     searchBar
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 14)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 14, trailing: 20))
 
                     playShuffleRow
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 28)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 20, trailing: 20))
+                }
 
-                    if !downloadedAlbums.isEmpty {
-                        sectionLabel("Albums")
-
+                if !downloadedAlbums.isEmpty {
+                    Section {
                         LazyVGrid(columns: albumColumns, spacing: 16) {
                             ForEach(downloadedAlbums) { album in
                                 NavigationLink { ServerPlaylistDetailView(album: album, librarySource: true) } label: {
@@ -1097,30 +1092,32 @@ struct LibraryDownloadedView: View {
                                 .libraryAlbumContextMenu(album)
                             }
                         }
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 32)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 24, trailing: 20))
+                    } header: {
+                        sectionLabel("Albums")
                     }
+                }
 
-                    if filtered.isEmpty {
-                        ContentUnavailableView("No Results", systemImage: "magnifyingglass")
-                            .padding(.top, 32)
-                    } else {
-                        sectionLabel("Songs")
-
-                        LazyVStack(spacing: 0) {
-                            ForEach(Array(filtered.enumerated()), id: \.element.id) { i, track in
-                                songRow(track)
-                                if i < filtered.count - 1 {
-                                    Divider().background(MusicDesign.separator)
-                                }
-                            }
+                if filtered.isEmpty {
+                    ContentUnavailableView("No Results", systemImage: "magnifyingglass")
+                        .padding(.top, 32)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                } else {
+                    Section {
+                        ForEach(filtered) { track in
+                            songRow(track)
                         }
+                    } header: {
+                        sectionLabel("Songs")
                     }
                 }
             }
-            .padding(.top, 8)
-            .padding(.bottom, 24)
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
         .background(MusicDesign.background)
         .navigationTitle("Downloaded")
         .musicNavigationBarTitleDisplayMode(.large)
@@ -1129,14 +1126,21 @@ struct LibraryDownloadedView: View {
         .navigationDestination(item: $navigateAlbum) { album in
             ServerPlaylistDetailView(album: album, librarySource: true)
         }
+        .onAppear {
+            app.offline.backfillRecordsIfMissing(knownTracks: app.discoveryLibraryTracks)
+            app.offline.reloadDownloadedTrackIdsFromManifest()
+        }
+        .onChange(of: offline.downloadedTrackIds) { _, _ in
+            app.offline.backfillRecordsIfMissing(knownTracks: app.discoveryLibraryTracks)
+        }
     }
 
     private func sectionLabel(_ title: String) -> some View {
         Text(title)
             .font(.title2.bold())
             .foregroundStyle(.primary)
-            .padding(.horizontal, 20)
-            .padding(.bottom, 12)
+            .textCase(nil)
+            .padding(.bottom, 4)
     }
 
     private var searchBar: some View {
@@ -1182,12 +1186,6 @@ struct LibraryDownloadedView: View {
                     try? await app.player.playNext(library: app.activeLibrary, track: track)
                 }
             },
-            onAddToQueue: {
-                Task {
-                    try? await app.player.addToQueue(library: app.activeLibrary, track: track)
-                }
-            },
-            hasActiveQueue: !app.player.queue.isEmpty,
             onGoToAlbum: { navigateAlbum = resolvedAlbumSummary(for: track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
             onRemoveFromLibrary: app.isSongInLibrary(track.id)
@@ -1197,6 +1195,7 @@ struct LibraryDownloadedView: View {
             onRemoveDownload: { try? app.offline.remove(trackId: track.id) }
         )
         .equatable()
+        .librarySongListRowStyle()
     }
 
     private func resolvedAlbumSummary(for track: Track) -> AlbumSummary {

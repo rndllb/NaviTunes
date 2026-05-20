@@ -138,18 +138,22 @@ struct LibraryArtistAlbumsView: View {
     }
 
     var body: some View {
-        ScrollView {
+        List {
             if isLoading, !hasAnyContent {
                 ProgressView()
                     .tint(MusicDesign.accent)
                     .frame(maxWidth: .infinity)
                     .padding(.top, 80)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
             } else if let loadError, !hasAnyContent {
                 Text(loadError)
                     .font(.subheadline)
                     .foregroundStyle(MusicDesign.secondaryLabel)
                     .padding(.horizontal, 24)
                     .padding(.top, 40)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
             } else if !hasAnyContent {
                 ContentUnavailableView(
                     "No music",
@@ -157,17 +161,19 @@ struct LibraryArtistAlbumsView: View {
                     description: Text("No songs or albums for this artist were found in your library.")
                 )
                 .padding(.top, 48)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
             } else {
-                VStack(alignment: .leading, spacing: 0) {
-                    if !tracks.isEmpty {
-                        songsSection
-                    }
-                    if !albums.isEmpty {
-                        albumsSection
-                    }
+                if !tracks.isEmpty {
+                    songsSection
+                }
+                if !albums.isEmpty {
+                    albumsSection
                 }
             }
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
         .background(MusicDesign.background)
         .navigationTitle(artist.name)
         .musicNavigationBarTitleDisplayMode(.inline)
@@ -184,29 +190,21 @@ struct LibraryArtistAlbumsView: View {
     }
 
     private var songsSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        Section {
+            playShuffleTracksRow
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 14, trailing: 20))
+
+            ForEach(tracks) { track in
+                songRow(track)
+            }
+        } header: {
             Text("Songs")
                 .font(.title3.bold())
                 .foregroundStyle(.primary)
-                .padding(.horizontal, 20)
-                .padding(.top, 16)
-                .padding(.bottom, 12)
-
-            playShuffleTracksRow
-                .padding(.horizontal, 20)
-                .padding(.bottom, 14)
-
-            LazyVStack(spacing: 0) {
-                ForEach(Array(tracks.enumerated()), id: \.offset) { index, track in
-                    songRow(track)
-                    if index < tracks.count - 1 {
-                        Divider()
-                            .background(MusicDesign.separator)
-                            .padding(.leading, 86)
-                    }
-                }
-            }
-            .padding(.bottom, 24)
+                .textCase(nil)
+                .padding(.top, 8)
         }
     }
 
@@ -219,14 +217,7 @@ struct LibraryArtistAlbumsView: View {
     }
 
     private var albumsSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Albums")
-                .font(.title3.bold())
-                .foregroundStyle(.primary)
-                .padding(.horizontal, 20)
-                .padding(.top, tracks.isEmpty ? 16 : 8)
-                .padding(.bottom, 14)
-
+        Section {
             LazyVGrid(columns: columns, spacing: 20) {
                 ForEach(albums) { album in
                     NavigationLink {
@@ -238,8 +229,16 @@ struct LibraryArtistAlbumsView: View {
                     .libraryAlbumContextMenu(album)
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 16)
+            .padding(.horizontal, 4)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 16, trailing: 12))
+        } header: {
+            Text("Albums")
+                .font(.title3.bold())
+                .foregroundStyle(.primary)
+                .textCase(nil)
+                .padding(.top, tracks.isEmpty ? 8 : 0)
         }
     }
 
@@ -260,13 +259,6 @@ struct LibraryArtistAlbumsView: View {
                     try? await app.player.playNext(library: lib, track: track)
                 }
             },
-            onAddToQueue: {
-                Task {
-                    guard let lib = app.activeLibrary else { return }
-                    try? await app.player.addToQueue(library: lib, track: track)
-                }
-            },
-            hasActiveQueue: !app.player.queue.isEmpty,
             onGoToAlbum: { navigateAlbum = app.albumSummary(for: track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
             onRemoveFromLibrary: app.isSongInLibrary(track.id)
@@ -277,6 +269,7 @@ struct LibraryArtistAlbumsView: View {
                 ? { try? app.offline.remove(trackId: track.id) } : nil
         )
         .equatable()
+        .librarySongListRowStyle()
     }
 
     private func cacheOffline(track: Track) async {

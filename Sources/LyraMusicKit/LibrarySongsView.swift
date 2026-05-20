@@ -92,9 +92,6 @@ struct LibrarySongsView: View {
         let triggerTrackId = paginationTriggerTrackId
         ForEach(displayed) { track in
             songRow(track)
-                .listRowBackground(MusicDesign.background)
-                .listRowInsets(EdgeInsets())
-                .listRowSeparatorTint(MusicDesign.separator)
                 .onAppear {
                     if track.id == triggerTrackId {
                         Task { await loadMoreIfNeeded(triggeredBy: track.id) }
@@ -334,13 +331,6 @@ struct LibrarySongsView: View {
                     try? await app.player.playNext(library: lib, track: track)
                 }
             },
-            onAddToQueue: {
-                Task {
-                    guard let lib = app.activeLibrary else { return }
-                    try? await app.player.addToQueue(library: lib, track: track)
-                }
-            },
-            hasActiveQueue: !app.player.queue.isEmpty,
             onGoToAlbum: { navigateAlbum = albumSummary(for: track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
             onRemoveFromLibrary: app.isSongInLibrary(track.id)
@@ -351,6 +341,7 @@ struct LibrarySongsView: View {
                 ? { try? app.offline.remove(trackId: track.id) } : nil
         )
         .equatable()
+        .librarySongListRowStyle()
     }
 
     private func cacheOffline(track: Track) async {
@@ -358,7 +349,11 @@ struct LibrarySongsView: View {
         do {
             let url = try lib.offlineDownloadURL(for: track)
             try await app.offline.cache(track: track, remote: url, headers: lib.httpHeadersForMediaRequests())
-        } catch {}
+        } catch is CancellationError {
+            return
+        } catch {
+            app.errorMessage = error.localizedDescription
+        }
     }
 
     private func albumSummary(for track: Track) -> AlbumSummary {
@@ -385,7 +380,7 @@ struct LibrarySongsView: View {
         defer { isLoading = false }
 
         if libraryFilter == .downloads {
-            tracks = app.offline.cachedTracks()
+            tracks = app.tracksForDownloadedLibrary()
             if tracks.isEmpty, !app.isSignedIn {
                 loadError = "Sign in to browse your library."
             }
@@ -484,8 +479,6 @@ struct LibrarySongRow: View, Equatable {
     let onCancelOfflineDownload: () -> Void
     let onFavorite: () -> Void
     let onPlayNext: () -> Void
-    var onAddToQueue: (() -> Void)? = nil
-    var hasActiveQueue: Bool = false
     let onGoToAlbum: () -> Void
     var onAddToPlaylist: (() -> Void)? = nil
     var onRemoveFromPlaylist: (() -> Void)? = nil
@@ -515,6 +508,8 @@ struct LibrarySongRow: View, Equatable {
     /// list surface; album-detail rows pass `.clear` so the dynamic backdrop palette
     /// shows through the List.
     var rowBackgroundFill: Color = MusicDesign.background
+    /// Indigo/blue pill swipe actions and compact row metrics on album detail.
+    var usesAlbumSwipeChrome: Bool = false
 
     private static let rowArtworkDecodePixels: CGFloat = 192
 
@@ -527,10 +522,10 @@ struct LibrarySongRow: View, Equatable {
             && lhs.isOfflineCached == rhs.isOfflineCached
             && lhs.canDeleteFromLibrary == rhs.canDeleteFromLibrary
             && lhs.offlineDownload == rhs.offlineDownload
-            && lhs.hasActiveQueue == rhs.hasActiveQueue
             && lhs.showsArtwork == rhs.showsArtwork
             && lhs.showsArtist == rhs.showsArtist
             && lhs.hidesAddToLibraryChip == rhs.hidesAddToLibraryChip
+            && lhs.usesAlbumSwipeChrome == rhs.usesAlbumSwipeChrome
             && (lhs.onRemoveFromPlaylist != nil) == (rhs.onRemoveFromPlaylist != nil)
             && (lhs.onRemoveFromLibrary != nil) == (rhs.onRemoveFromLibrary != nil)
     }
@@ -543,55 +538,26 @@ struct LibrarySongRow: View, Equatable {
         )
     }
 
-    var body: some View {
-        // Wrapping the icon over a transparent sizing rectangle gives the Button a
-        // hard intrinsic size — the swipe drawer reads that and the chip background
-        // becomes a horizontal capsule (because chip corner radius = height/2, and
-        // width > height).
-        // The first button in the closure is the outermost on screen AND the one the
-        // full-swipe gesture commits — when a queue exists that's "Add to Queue".
-        rowContent
-            .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                if hasActiveQueue, let onAddToQueue {
-                    Button(action: onAddToQueue) {
-                        Self.swipeChipIcon("text.badge.plus")
-                    }
-                    .tint(Self.addToQueueTint)
-                    .accessibilityLabel("Add to Queue")
-                }
-                Button(action: onPlayNext) {
-                    Self.swipeChipIcon("text.line.first.and.arrowtriangle.forward")
-                }
-                .tint(MusicDesign.accent)
-                .accessibilityLabel("Play Next")
-            }
-            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                if let onRemoveFromPlaylist {
-                    Button(role: .destructive, action: onRemoveFromPlaylist) {
-                        Self.swipeChipIcon("trash")
-                    }
-                    .tint(.red)
-                    .accessibilityLabel("Remove from Playlist")
-                } else if canDeleteFromLibrary {
-                    Button(role: .destructive, action: onDeleteFromLibrary) {
-                        Self.swipeChipIcon("xmark.bin")
-                    }
-                    .tint(.red)
-                    .accessibilityLabel("Delete File from Server")
-                }
-            }
+    /// In-library songs that are not on device yet — no cloud glyph; use swipe-to-download instead.
+    private var showsTrailingOfflineGlyph: Bool {
+        offlinePhase != .notCached
     }
 
-    private static let swipeChipWidth: CGFloat = 96
-    private static let swipeChipHeight: CGFloat = 34
-    private static let addToQueueTint = Color(red: 0.97, green: 0.62, blue: 0.36)
+    private var showsDownloadSwipeAction: Bool {
+        !isOfflineCached && offlineDownload == nil
+    }
 
-    @ViewBuilder
-    private static func swipeChipIcon(_ systemName: String) -> some View {
-        ZStack {
-            Color.clear.frame(width: swipeChipWidth, height: swipeChipHeight)
-            Image(systemName: systemName)
-        }
+    var body: some View {
+        rowContent
+            .librarySongSwipeActions(
+                showsDownload: showsDownloadSwipeAction,
+                onPlayNext: onPlayNext,
+                onDownload: onDownload,
+                onRemoveFromPlaylist: onRemoveFromPlaylist,
+                onRemoveFromLibrary: onRemoveFromLibrary,
+                onDeleteFromLibrary: canDeleteFromLibrary ? onDeleteFromLibrary : nil,
+                chipMetrics: usesAlbumSwipeChrome ? .albumTrack : nil
+            )
     }
 
     private var rowContent: some View {
@@ -625,21 +591,18 @@ struct LibrarySongRow: View, Equatable {
             }
             .buttonStyle(.plain)
 
-            if !(hidesAddToLibraryChip && offlinePhase == .addToLibrary) {
+            if showsTrailingOfflineGlyph, !(hidesAddToLibraryChip && offlinePhase == .addToLibrary) {
                 TrackOfflineDownloadIndicator(
                     phase: offlinePhase,
                     onCancelDownload: offlinePhase.isDownloading ? { onCancelOfflineDownload() } : nil,
-                    onTapStartDownload: offlinePhase == .notCached ? { onDownload() } : nil,
-                    onAddToLibrary: offlinePhase == .addToLibrary ? onAddToLibrary : nil,
+                    onTapStartDownload: usesAlbumSwipeChrome ? nil : (offlinePhase == .notCached ? { onDownload() } : nil),
+                    onAddToLibrary: offlinePhase == .addToLibrary ? onAddToLibrary : nil
                 )
             }
 
                 Menu {
                     ControlGroup {
                         if !isInLibrary, let onAddToLibrary {
-                            // Out-of-library context (e.g. browse album detail) — the
-                            // first menu action gets the user to add it before letting
-                            // them download it.
                             Button(action: onAddToLibrary) {
                                 Label("Add to Library", systemImage: "plus")
                             }
@@ -647,11 +610,10 @@ struct LibrarySongRow: View, Equatable {
                             Button(action: onRemoveDownload) {
                                 Label("Remove Download", systemImage: "arrow.down.circle.dotted")
                             }
-                        } else {
+                        } else if !isOfflineCached {
                             Button(action: onDownload) {
                                 Label("Download", systemImage: "arrow.down")
                             }
-                            .disabled(isOfflineCached)
                         }
                         Button(action: onFavorite) {
                             Label(
@@ -681,7 +643,6 @@ struct LibrarySongRow: View, Equatable {
                         Button(action: onPlayNext) {
                             Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
                         }
-                        Button {} label: { Label("Create Station", systemImage: "dot.radiowaves.left.and.right") }
                     }
                     .tint(Color.primary)
 
@@ -689,7 +650,6 @@ struct LibrarySongRow: View, Equatable {
                         Button(action: onGoToAlbum) {
                             Label("Go to Album", systemImage: "music.note.square")
                         }
-                        Button {} label: { Label("View Credits", systemImage: "info.circle") }
                     }
                     .tint(Color.primary)
 
@@ -698,21 +658,33 @@ struct LibrarySongRow: View, Equatable {
                     }
                     .tint(Color.primary)
 
-                    Section {
-                        if let onRemoveFromLibrary {
-                            // User-level (magic playlist) — always available when the
-                            // host view supplied the callback. Album entry is left alone;
-                            // the album stays in library with one fewer track.
-                            Button(role: .destructive, action: onRemoveFromLibrary) {
-                                Label("Delete from Library", systemImage: "trash")
+                    if isOfflineCached, let onRemoveDownload {
+                        Section {
+                            Button(action: onRemoveDownload) {
+                                Label("Remove Download", systemImage: "arrow.down.circle.dotted")
                             }
                         }
-                        // Admin-only: removes the file from the server entirely.
-                        if canDeleteFromLibrary {
-                            Button(role: .destructive, action: onDeleteFromLibrary) {
-                                Label("Delete File from Server", systemImage: "xmark.bin")
+                        .tint(Color.primary)
+                    }
+
+                    if onRemoveFromLibrary != nil || canDeleteFromLibrary {
+                        Section {
+                            if let onRemoveFromLibrary {
+                                // User-level (magic playlist) — always available when the
+                                // host view supplied the callback. Album entry is left alone;
+                                // the album stays in library with one fewer track.
+                                Button(role: .destructive, action: onRemoveFromLibrary) {
+                                    Label("Delete from Library", systemImage: "trash")
+                                }
+                            }
+                            // Admin-only: removes the file from the server entirely.
+                            if canDeleteFromLibrary {
+                                Button(role: .destructive, action: onDeleteFromLibrary) {
+                                    Label("Delete File from Server", systemImage: "xmark.bin")
+                                }
                             }
                         }
+                        .tint(MusicDesign.destructiveAction)
                     }
                 } label: {
                     Image(systemName: "ellipsis")
@@ -723,8 +695,119 @@ struct LibrarySongRow: View, Equatable {
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, itemSize.libraryVerticalPadding)
+            .padding(.horizontal, usesAlbumSwipeChrome ? AlbumTrackRowLayout.horizontalPadding : 20)
+            .padding(.vertical, usesAlbumSwipeChrome ? AlbumTrackRowLayout.verticalRowPadding : itemSize.libraryVerticalPadding)
             .background(rowBackgroundFill)
     }
+}
+
+/// Zero vertical content margins on album detail lists only.
+private struct AlbumDetailListContentMargins: ViewModifier {
+    let isAlbum: Bool
+
+    func body(content: Content) -> some View {
+        if isAlbum {
+            content.contentMargins(.vertical, 0, for: .scrollContent)
+        } else {
+            content
+        }
+    }
+}
+
+struct SwipeActionChipMetrics {
+    let width: CGFloat
+    let height: CGFloat
+    let iconFont: Font
+    let playNextTint: Color
+    let downloadTint: Color
+    let deleteTint: Color
+
+    static let albumTrack = SwipeActionChipMetrics(
+        width: AlbumTrackSwipeChipMetrics.width,
+        height: AlbumTrackSwipeChipMetrics.height,
+        iconFont: AlbumTrackSwipeChipMetrics.iconFont,
+        playNextTint: AlbumTrackSwipeChipMetrics.playNextTint,
+        downloadTint: AlbumTrackSwipeChipMetrics.downloadTint,
+        deleteTint: AlbumTrackSwipeChipMetrics.deleteTint
+    )
+}
+
+extension View {
+    /// Leading Play Next and trailing Download / delete (icon-only) — requires a parent `List`.
+    func librarySongSwipeActions(
+        showsDownload: Bool,
+        onPlayNext: @escaping () -> Void,
+        onDownload: (() -> Void)? = nil,
+        onRemoveFromPlaylist: (() -> Void)? = nil,
+        onRemoveFromLibrary: (() -> Void)? = nil,
+        onDeleteFromLibrary: (() -> Void)? = nil,
+        chipMetrics: SwipeActionChipMetrics? = nil
+    ) -> some View {
+        swipeActions(edge: .leading, allowsFullSwipe: true) {
+            Button(action: onPlayNext) {
+                swipeActionIcon("text.line.first.and.arrowtriangle.forward", metrics: chipMetrics)
+            }
+            .tint(chipMetrics?.playNextTint ?? MusicDesign.accent)
+            .accessibilityLabel("Play Next")
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            if showsDownload, let onDownload {
+                Button(action: onDownload) {
+                    swipeActionIcon("arrow.down", metrics: chipMetrics)
+                }
+                .tint(chipMetrics?.downloadTint ?? MusicDesign.accent)
+                .accessibilityLabel("Download")
+            }
+            if let onRemoveFromPlaylist {
+                Button(role: .destructive, action: onRemoveFromPlaylist) {
+                    swipeActionIcon("trash", metrics: chipMetrics)
+                }
+                .tint(chipMetrics?.deleteTint ?? MusicDesign.destructiveAction)
+                .accessibilityLabel("Remove")
+            } else if let onRemoveFromLibrary {
+                Button(role: .destructive, action: onRemoveFromLibrary) {
+                    swipeActionIcon("trash", metrics: chipMetrics)
+                }
+                .tint(chipMetrics?.deleteTint ?? MusicDesign.destructiveAction)
+                .accessibilityLabel("Delete from Library")
+            } else if let onDeleteFromLibrary {
+                Button(role: .destructive, action: onDeleteFromLibrary) {
+                    swipeActionIcon("trash", metrics: chipMetrics)
+                }
+                .tint(chipMetrics?.deleteTint ?? MusicDesign.destructiveAction)
+                .accessibilityLabel("Delete")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func swipeActionIcon(_ systemName: String, metrics: SwipeActionChipMetrics?) -> some View {
+        if let metrics {
+            ZStack {
+                Color.clear
+                    .frame(width: metrics.width, height: metrics.height)
+                Image(systemName: systemName)
+                    .font(metrics.iconFont)
+            }
+        } else {
+            Image(systemName: systemName)
+        }
+    }
+
+    /// Plain list row chrome for ``LibrarySongRow`` (requires a parent `List` for swipe actions).
+    func librarySongListRowStyle() -> some View {
+        listRowBackground(MusicDesign.background)
+            .listRowInsets(EdgeInsets())
+            .listRowSeparatorTint(MusicDesign.separator)
+    }
+
+    /// Album hero track rows — clear cells over ``AlbumHeroBackdropView``, inset narrower than hero.
+    func albumTrackListRowStyle() -> some View {
+        let inset = AlbumTrackRowLayout.listHorizontalInset
+        return environment(\.defaultMinListRowHeight, 0)
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: 0, leading: inset, bottom: 0, trailing: inset))
+            .listRowSeparator(.hidden)
+    }
+
 }

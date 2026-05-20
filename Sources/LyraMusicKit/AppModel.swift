@@ -1027,6 +1027,38 @@ public final class AppModel: ObservableObject {
         libraryAlbumEntries.contains(where: { $0.id == id })
     }
 
+    /// Removes cached offline files for the given track IDs (no-op when not downloaded).
+    func removeOfflineDownloads<S: Sequence>(trackIds: S) where S.Element == String {
+        for id in trackIds {
+            try? offline.remove(trackId: id)
+        }
+    }
+
+    /// Tracks to show under Library → Downloaded: manifest records first, then library catalog matches.
+    func tracksForDownloadedLibrary() -> [Track] {
+        let cached = offline.cachedTracks()
+        if !cached.isEmpty { return cached }
+        let ids = offline.downloadedTrackIds
+        guard !ids.isEmpty else { return [] }
+        var seen = Set<String>()
+        var out: [Track] = []
+        for track in discoveryLibraryTracks where ids.contains(track.id) {
+            if seen.insert(track.id).inserted { out.append(track) }
+        }
+        for id in ids where !seen.contains(id) {
+            if let track = offline.cachedTrack(id: id) {
+                out.append(track)
+                seen.insert(id)
+            }
+        }
+        return out.sorted {
+            let ac = $0.albumTitle.localizedCaseInsensitiveCompare($1.albumTitle)
+            if ac != .orderedSame { return ac == .orderedAscending }
+            if $0.discNumber != $1.discNumber { return $0.discNumber < $1.discNumber }
+            return $0.indexNumber < $1.indexNumber
+        }
+    }
+
     /// `true` when the playlist is in the user's library (separate from the user's
     /// owned playlists — only those they explicitly added via ``addPlaylistToLibrary``).
     func isPlaylistInLibrary(_ id: String) -> Bool {
