@@ -45,13 +45,7 @@ struct LibraryAlbumContextMenuContent: View {
         }
 
         Section {
-            if app.isAlbumInLibrary(album.id) {
-                Button(role: .destructive) {
-                    Task { await app.removeAlbumFromLibrary(album) }
-                } label: {
-                    Label("Delete from Library", systemImage: "trash")
-                }
-            } else {
+            if !app.isAlbumInLibrary(album.id) {
                 Button {
                     Task { await addAlbumToLibrary() }
                 } label: {
@@ -63,6 +57,17 @@ struct LibraryAlbumContextMenuContent: View {
             } label: {
                 Label("Add to Playlist", systemImage: "rectangle.stack.badge.plus")
             }
+        }
+
+        if app.isAlbumInLibrary(album.id) {
+            Section {
+                Button(role: .destructive) {
+                    Task { await app.removeAlbumFromLibrary(album) }
+                } label: {
+                    Label("Delete from Library", systemImage: "trash")
+                }
+            }
+            .tint(MusicDesign.destructiveAction)
         }
 
         Section {
@@ -162,13 +167,7 @@ struct LibraryPlaylistContextMenuContent: View {
         }
 
         Section {
-            if app.isPlaylistInLibrary(playlist.id) {
-                Button(role: .destructive) {
-                    Task { await app.removePlaylistFromLibrary(playlist) }
-                } label: {
-                    Label("Delete from Library", systemImage: "trash")
-                }
-            } else {
+            if !app.isPlaylistInLibrary(playlist.id) {
                 Button {
                     Task { await app.addPlaylistToLibrary(playlist) }
                 } label: {
@@ -188,6 +187,17 @@ struct LibraryPlaylistContextMenuContent: View {
             } label: {
                 Label("Add to Playlist", systemImage: "rectangle.stack.badge.plus")
             }
+        }
+
+        if app.isPlaylistInLibrary(playlist.id) {
+            Section {
+                Button(role: .destructive) {
+                    Task { await app.removePlaylistFromLibrary(playlist) }
+                } label: {
+                    Label("Delete from Library", systemImage: "trash")
+                }
+            }
+            .tint(MusicDesign.destructiveAction)
         }
 
         Section {

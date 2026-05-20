@@ -192,6 +192,17 @@ enum MusicDesign {
         #endif
     }
 
+    /// Delete-from-library actions — always system red, never artwork/luminance-adaptive.
+    static var destructiveAction: Color {
+        #if os(iOS)
+        Color(uiColor: .systemRed)
+        #elseif os(macOS)
+        Color(nsColor: .systemRed)
+        #else
+        Color.red
+        #endif
+    }
+
     static var separator: Color {
         #if os(iOS)
         Color(UIColor.separator)

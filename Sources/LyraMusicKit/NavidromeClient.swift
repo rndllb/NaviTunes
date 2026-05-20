@@ -463,18 +463,18 @@ final class NavidromeClient: MusicLibraryProviding {
     }
 
     func streamURL(for track: Track) throws -> URL {
-        try buildURL(path: "stream", query: ["id": track.id, "maxBitRate": "\(streamingMaxBitRate)"])
+        try buildMediaURL(path: "stream", query: ["id": track.id, "maxBitRate": "\(streamingMaxBitRate)"])
     }
 
     func fallbackStreamURLs(for track: Track) -> [URL] {
         var urls: [URL] = []
-        if let mp3 = try? buildURL(
+        if let mp3 = try? buildMediaURL(
             path: "stream",
             query: ["id": track.id, "format": "mp3", "maxBitRate": "\(streamingMaxBitRate)"],
         ) {
             urls.append(mp3)
         }
-        if let aac = try? buildURL(
+        if let aac = try? buildMediaURL(
             path: "stream",
             query: ["id": track.id, "format": "aac", "maxBitRate": "\(streamingMaxBitRate)"],
         ) {
@@ -486,7 +486,7 @@ final class NavidromeClient: MusicLibraryProviding {
     func offlineDownloadURL(for track: Track) throws -> URL {
         // Request MP3 explicitly so the saved file is always AVPlayer-compatible,
         // regardless of the source format (OGG, Opus, etc.).
-        try buildURL(path: "stream", query: ["id": track.id, "format": "mp3", "maxBitRate": "\(offlineMaxBitRate)"])
+        try buildMediaURL(path: "stream", query: ["id": track.id, "format": "mp3", "maxBitRate": "\(offlineMaxBitRate)"])
     }
 
     /// Approximate totals by fetching up to 50k rows per category (large libraries may plateau at the cap).
@@ -757,7 +757,7 @@ final class NavidromeClient: MusicLibraryProviding {
     }
 
     private func streamURLForCover(coverArt: String) -> URL? {
-        try? buildURL(path: "getCoverArt", query: ["id": coverArt, "size": "400"])
+        try? buildMediaURL(path: "getCoverArt", query: ["id": coverArt, "size": "400"])
     }
 
     /// Public Subsonic `getCoverArt` URL for a given cover-art id (e.g. a playlist id).
@@ -1269,6 +1269,20 @@ final class NavidromeClient: MusicLibraryProviding {
     }
 
     private func buildURL(path: String, query: [String: String] = [:], repeatedQuery: [(String, String)] = []) throws -> URL {
+        try buildRESTURL(path: path, query: query, repeatedQuery: repeatedQuery, responseFormatJSON: true)
+    }
+
+    /// Binary Subsonic endpoints (`stream`, `getCoverArt`, …) must not send `f=json` or the server may return a JSON error body instead of media bytes.
+    private func buildMediaURL(path: String, query: [String: String] = [:], repeatedQuery: [(String, String)] = []) throws -> URL {
+        try buildRESTURL(path: path, query: query, repeatedQuery: repeatedQuery, responseFormatJSON: false)
+    }
+
+    private func buildRESTURL(
+        path: String,
+        query: [String: String] = [:],
+        repeatedQuery: [(String, String)] = [],
+        responseFormatJSON: Bool,
+    ) throws -> URL {
         var comps = URLComponents(
             url: baseURL.appendingPathComponent("rest/\(path)"),
             resolvingAgainstBaseURL: false,
@@ -1278,8 +1292,10 @@ final class NavidromeClient: MusicLibraryProviding {
             URLQueryItem(name: "u", value: username),
             URLQueryItem(name: "v", value: "1.16.1"),
             URLQueryItem(name: "c", value: "LyraMusicKit"),
-            URLQueryItem(name: "f", value: "json"),
         ]
+        if responseFormatJSON {
+            items.append(URLQueryItem(name: "f", value: "json"))
+        }
         // Subsonic salted-token auth: `t = md5(password + salt)` with a per-request random salt.
         // Never send `p=<password>` in the clear.
         let salt = Self.makeSubsonicSalt()

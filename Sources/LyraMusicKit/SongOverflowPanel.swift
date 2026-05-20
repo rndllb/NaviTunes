@@ -38,14 +38,16 @@ struct SongOverflowPanel: View {
         app.offline.downloadedTrackIds.contains(track.id)
     }
 
-    private var destructiveForeground: Color {
-        #if os(iOS)
-        Color(uiColor: .systemRed)
-        #elseif os(macOS)
-        Color(nsColor: .systemRed)
-        #else
-        Color.red
-        #endif
+    private var isInLibrary: Bool {
+        app.isSongInLibrary(track.id)
+    }
+
+    private var showsDownloadInPalette: Bool {
+        isInLibrary && !isOfflineCached
+    }
+
+    private var showsRemoveDownloadRow: Bool {
+        isInLibrary && isOfflineCached
     }
 
     var body: some View {
@@ -65,12 +67,17 @@ struct SongOverflowPanel: View {
             listActionRow(icon: "text.line.first.and.arrowtriangle.forward", title: "Play Next") {
                 onPlayNext(); onDismiss()
             }
-            listPlaceholderRow(icon: "dot.radiowaves.left.and.right", title: "Create Station")
             listDivider
             goToAlbumRow
-            listPlaceholderRow(icon: "info.circle", title: "View Credits")
             listDivider
             listPlaceholderRow(icon: "hand.thumbsdown", title: "Suggest Less")
+            if showsRemoveDownloadRow {
+                listDivider
+                listActionRow(icon: "arrow.down.circle.dotted", title: "Remove Download") {
+                    try? app.offline.remove(trackId: track.id)
+                    onDismiss()
+                }
+            }
             listDivider
             deleteRow
         }
@@ -80,15 +87,16 @@ struct SongOverflowPanel: View {
 
     // MARK: - Palette strip
 
+    @ViewBuilder
     private var paletteStrip: some View {
         HStack(spacing: 0) {
-            Button(action: onDownload) {
-                paletteColumnLabel(icon: "arrow.down.circle", title: "Download")
+            if showsDownloadInPalette {
+                Button(action: onDownload) {
+                    paletteColumnLabel(icon: "arrow.down.circle", title: "Download")
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.plain)
-            .disabled(isOfflineCached)
-            .opacity(isOfflineCached ? 0.38 : 1)
-            .frame(maxWidth: .infinity)
             paletteColumn(icon: isFavorite ? "star.fill" : "star", title: "Favorite") { onFavorite() }
             ShareLink(item: "\(track.title) — \(track.artist)") {
                 paletteColumnLabel(icon: "square.and.arrow.up", title: "Share")
@@ -219,7 +227,7 @@ struct SongOverflowPanel: View {
                     .font(.system(size: 17, weight: .regular))
                 Spacer(minLength: 0)
             }
-            .foregroundStyle(app.canDeleteFromLibrary ? destructiveForeground : MusicDesign.secondaryLabel.opacity(0.45))
+            .foregroundStyle(app.canDeleteFromLibrary ? MusicDesign.destructiveAction : MusicDesign.secondaryLabel.opacity(0.45))
             .padding(.horizontal, rowHPadding)
             .padding(.vertical, 13)
             .padding(.bottom, 2)
@@ -259,10 +267,8 @@ struct DowntifySongOverflowPanel: View {
             listActionRow(icon: "arrow.down.circle.fill", title: "Request") {
                 onDownload(); onDismiss()
             }
-            listPlaceholderRow(icon: "dot.radiowaves.left.and.right", title: "Create Station")
             listDivider
             albumRow
-            listPlaceholderRow(icon: "info.circle", title: "View Credits")
             listDivider
             listPlaceholderRow(icon: "hand.thumbsdown", title: "Suggest Less")
         }
