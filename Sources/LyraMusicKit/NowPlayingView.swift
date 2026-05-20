@@ -43,8 +43,9 @@ struct NowPlayingView: View {
         case historyTop, nowPlayingHeader
     }
 
-    /// Paused — baseline artwork size.
-    private let albumArtPausedSide: CGFloat = 256
+    /// Paused — baseline artwork size. Tuned so paused is visibly smaller than
+    /// playing (~80%) without the dramatic shrink the older 256pt value caused.
+    private let albumArtPausedSide: CGFloat = 310
     /// Playing — base artwork size before play-state overscale.
     private let albumArtPlayingSide: CGFloat = 340
     /// Scales past ``albumArtPlayingSide`` when playback resumes (Apple Music–style pulse).
@@ -252,7 +253,6 @@ struct NowPlayingView: View {
     private func standardPlayerContent(track: Track) -> some View {
         VStack(spacing: 0) {
             albumBlock(track: track)
-                .matchedGeometryEffect(id: "nowPlayingArtwork", in: artworkNamespace)
 
             metadataRow(track: track)
                 .padding(.horizontal, 24)
@@ -645,18 +645,23 @@ struct NowPlayingView: View {
     }
 
     /// Pinned beneath the paged scroll: scrubber, transport, volume, bottom chrome.
+    /// Spacings tuned to match Apple Music's Now Playing — progress bar floats
+    /// well above the home indicator, transport sits with symmetric breathing
+    /// room above (from progress) and below (to volume), and the bottom icon
+    /// row gets a generous gap so it doesn't crowd the safe-area edge.
     private func pinnedBottomChrome(track: Track) -> some View {
         VStack(spacing: 0) {
             progressBlock(track: track)
                 .padding(.horizontal, 24)
-                .padding(.top, 8)
-                .padding(.bottom, 4)
+                .padding(.top, 12)
+                .padding(.bottom, 22)
 
             transportRow
                 .padding(.horizontal, 20)
+                .padding(.bottom, 28)
 
             NowPlayingVolumeRow(backdropPalette: backdropPalette)
-                .padding(.top, 20)
+                .padding(.top, 22)
 
             nowPlayingBottomChrome
         }
@@ -719,6 +724,7 @@ struct NowPlayingView: View {
             Spacer(minLength: 0)
             AlbumArtworkView(url: artworkURL(for: track), cornerRadius: 12)
                 .frame(width: base, height: base)
+                .matchedGeometryEffect(id: "nowPlayingArtwork", in: artworkNamespace)
                 .scaleEffect(app.player.isPlaying ? playingScale : pausedScale, anchor: .center)
                 .animation(.smooth(duration: 0.5), value: app.player.isPlaying)
                 .frame(width: maxSide, height: maxSide)
@@ -981,7 +987,7 @@ struct NowPlayingView: View {
     }
 
     private var nowPlayingBottomChrome: some View {
-        HStack(spacing: 52) {
+        HStack(spacing: 84) {
             bottomChromeIconButton(
                 showLyrics ? "quote.bubble.fill" : "quote.bubble",
                 isActive: showLyrics,
@@ -1004,8 +1010,8 @@ struct NowPlayingView: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .padding(.top, 10)
-        .padding(.bottom, 18)
+        .padding(.top, 28)
+        .padding(.bottom, 30)
     }
 
     private var dragIndicator: some View {

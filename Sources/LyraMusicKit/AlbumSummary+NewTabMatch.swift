@@ -53,3 +53,69 @@ extension Array where Element == AlbumSummary {
         first { $0.matchesNewTabRelease(artist: artist, albumTitle: albumTitle) }
     }
 }
+
+/// O(1) lookup for "is this chart album in the user's catalog?". Built once when
+/// ``AppModel.libraryAlbums`` is reassigned; replaces per-cell linear scans through
+/// thousands of albums in ``MusicNewTabView`` (each comparison ran multiple regex
+/// substitutions, which dominated main-thread time when entering the New tab).
+struct LibraryAlbumReleaseIndex {
+    /// Each entry stores the album plus its pre-normalized artist so lookup
+    /// only does the cheap equal/contains check, not full normalization.
+    private struct Entry {
+        let album: AlbumSummary
+        let artistKey: String
+    }
+    /// Strict album title key → entries. Same album may appear under both maps.
+    private let byStrictAlbumKey: [String: [Entry]]
+    /// Loose album title key (trailing "(Deluxe)" etc. stripped) → entries.
+    private let byLooseAlbumKey: [String: [Entry]]
+
+    static let empty = LibraryAlbumReleaseIndex(albums: [])
+
+    init(albums: [AlbumSummary]) {
+        var strict: [String: [Entry]] = [:]
+        var loose: [String: [Entry]] = [:]
+        for album in albums {
+            let strictAlbum = AlbumSummary.normalizedReleaseKey(album.title)
+            let artistKey = AlbumSummary.normalizedReleaseKey(album.artist)
+            guard !strictAlbum.isEmpty, !artistKey.isEmpty else { continue }
+            let entry = Entry(album: album, artistKey: artistKey)
+            strict[strictAlbum, default: []].append(entry)
+            let looseAlbum = AlbumSummary.normalizedAlbumTitleLoose(album.title)
+            if !looseAlbum.isEmpty, looseAlbum != strictAlbum {
+                loose[looseAlbum, default: []].append(entry)
+            }
+        }
+        self.byStrictAlbumKey = strict
+        self.byLooseAlbumKey = loose
+    }
+
+    /// Mirror of ``AlbumSummary.matchesNewTabRelease`` — equality on title (strict
+    /// or loose), with artist match permitting an equal-or-substring relation.
+    func firstMatch(artist: String, albumTitle: String) -> AlbumSummary? {
+        let wantArtist = AlbumSummary.normalizedReleaseKey(artist)
+        let wantStrict = AlbumSummary.normalizedReleaseKey(albumTitle)
+        guard !wantArtist.isEmpty, !wantStrict.isEmpty else { return nil }
+        if let hit = matchEntries(byStrictAlbumKey[wantStrict], wantArtist: wantArtist) {
+            return hit
+        }
+        let wantLoose = AlbumSummary.normalizedAlbumTitleLoose(albumTitle)
+        if !wantLoose.isEmpty, wantLoose != wantStrict {
+            if let hit = matchEntries(byLooseAlbumKey[wantLoose], wantArtist: wantArtist) {
+                return hit
+            }
+        }
+        return nil
+    }
+
+    private func matchEntries(_ entries: [Entry]?, wantArtist: String) -> AlbumSummary? {
+        guard let entries else { return nil }
+        for entry in entries {
+            if entry.artistKey == wantArtist { return entry.album }
+            if entry.artistKey.contains(wantArtist) || wantArtist.contains(entry.artistKey) {
+                return entry.album
+            }
+        }
+        return nil
+    }
+}

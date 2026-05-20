@@ -87,6 +87,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private var audioSessionInterruptionObserver: NSObjectProtocol?
     private var audioSessionRouteObserver: NSObjectProtocol?
     private var didInstallAudioSessionObservers = false
+    /// Captures `isPlaying` when an interruption begins so we can decide on
+    /// `.ended` whether to resume — `isPlaying` itself is flipped to `false`
+    /// on `.began` to keep the transport button in sync with the system pause.
+    private var wasPlayingBeforeInterruption = false
     #endif
 
     func bind(offline: OfflineDownloadManager? = nil) {
@@ -147,13 +151,27 @@ final class PlaybackEngine: NSObject, ObservableObject {
               let typeRaw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: typeRaw)
         else { return }
-        if case .ended = type {
+        switch type {
+        case .began:
+            // iOS has already paused AVPlayer (phone call, Siri, another app
+            // taking the audio session). Mirror that into ``isPlaying`` so the
+            // transport button stops showing the pause glyph while playback
+            // is silently halted.
+            wasPlayingBeforeInterruption = isPlaying
+            isPlaying = false
+            refreshNowPlaying()
+        case .ended:
             let optsRaw = info[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
             let opts = AVAudioSession.InterruptionOptions(rawValue: optsRaw)
-            guard opts.contains(.shouldResume), isPlaying else { return }
+            let shouldResume = wasPlayingBeforeInterruption && opts.contains(.shouldResume)
+            wasPlayingBeforeInterruption = false
+            guard shouldResume else { return }
             activateAudioSession()
             player?.play()
+            isPlaying = true
             refreshNowPlaying()
+        @unknown default:
+            break
         }
     }
 
