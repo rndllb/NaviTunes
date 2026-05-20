@@ -294,8 +294,9 @@ struct ServerPlaylistDetailView: View {
     /// Album-mode deep-link: when set, scrolls the tracklist to this id after load.
     var scrollToTrackId: String? = nil
 
-    init(playlist: PlaylistSummary) {
+    init(playlist: PlaylistSummary, scrollToTrackId: String? = nil) {
         self.source = .playlist(playlist)
+        self.scrollToTrackId = scrollToTrackId
     }
 
     init(album: AlbumSummary, librarySource: Bool = false, scrollToTrackId: String? = nil) {
@@ -342,6 +343,10 @@ struct ServerPlaylistDetailView: View {
     @State private var showDownloadedAlbumActions = false
     @State private var trackPendingDownloadedDelete: Track?
     @State private var didScrollToFocusTrack = false
+    @State private var highlightedRowId: String? = nil
+    /// Live scroll target that can be re-driven by ``AppModel/pendingPlaylistScroll``
+    /// after the initial ``scrollToTrackId`` (from the init) has been consumed.
+    @State private var activeScrollTrackId: String? = nil
 
     private var filtered: [PlaylistRowItem] {
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -395,8 +400,17 @@ struct ServerPlaylistDetailView: View {
                 .background(isAlbum ? Color.clear : MusicDesign.background)
                 .environment(\.defaultMinListRowHeight, isAlbum ? 0 : 44)
                 .onChange(of: rows.map(\.track.id)) { _, _ in
-                    if isAlbum { scrollToFocusedTrackIfNeeded(proxy: proxy) }
+                    scrollToFocusedTrackIfNeeded(proxy: proxy)
                 }
+                .modifier(DetailScrollSignalObserver(
+                    playlistId: source.playlistOrNil?.id,
+                    albumId: source.albumOrNil?.id,
+                    onScrollRequested: { trackId in
+                        activeScrollTrackId = trackId
+                        didScrollToFocusTrack = false
+                        scrollToFocusedTrackIfNeeded(proxy: proxy)
+                    }
+                ))
             }
         }
         .playlistTrackSearchable(enabled: !isAlbum, text: $searchText)
@@ -412,6 +426,12 @@ struct ServerPlaylistDetailView: View {
                 navigationTitleText = source.displayName
             }
         }
+        .modifier(LibraryAlbumDismissObserver(
+            isAlbum: isAlbum,
+            librarySource: librarySource,
+            albumId: albumOrNil?.id,
+            dismiss: { dismiss() }
+        ))
         .task { await load() }
         .task(id: source.artworkURL?.absoluteString ?? "") {
             // Album-mode dynamic backdrop palette derivation. No-op for playlists since
@@ -424,21 +444,20 @@ struct ServerPlaylistDetailView: View {
             Task { await load() }
         }
         .refreshable { await load() }
-        .confirmationDialog(
+        .alert(
             "Remove from Playlist?",
             isPresented: Binding(
                 get: { rowPendingRemoval != nil },
                 set: { if !$0 { rowPendingRemoval = nil } }
-            ),
-            titleVisibility: .visible
+            )
         ) {
+            Button("Cancel", role: .cancel) {
+                rowPendingRemoval = nil
+            }
             Button("Remove", role: .destructive) {
                 guard let row = rowPendingRemoval else { return }
                 rowPendingRemoval = nil
                 Task { await removeRow(row) }
-            }
-            Button("Cancel", role: .cancel) {
-                rowPendingRemoval = nil
             }
         } message: {
             Text("Would you like to remove this song from this playlist?")
@@ -517,12 +536,13 @@ struct ServerPlaylistDetailView: View {
         } else {
             ForEach(Array(visible.enumerated()), id: \.element.rowId) { index, row in
                 let showsBottomDivider = index < visible.count - 1
+                let highlightOpacity: Double = row.rowId == highlightedRowId ? 0.28 : 0
                 if isAlbum {
                     songRow(row, displayIndex: index + 1, showsBottomDivider: showsBottomDivider)
-                        .albumTrackListRowStyle()
+                        .albumTrackListRowStyle(highlightOpacity: highlightOpacity)
                 } else {
                     songRow(row, displayIndex: index + 1, showsBottomDivider: showsBottomDivider)
-                        .librarySongListRowStyle()
+                        .librarySongListRowStyle(highlightOpacity: highlightOpacity)
                 }
             }
             if isAlbum {
@@ -986,6 +1006,7 @@ struct ServerPlaylistDetailView: View {
             track: row.track,
             itemSize: app.songListItemSize,
             isFavorite: app.favoriteTrackIds.contains(row.track.id),
+            isNowPlaying: app.player.activeTrack?.id == row.track.id,
             offlineDownload: offline.activeDownloads[row.track.id],
             isOfflineCached: app.offline.downloadedTrackIds.contains(row.track.id),
             onPlay: { Task { await play(row: row) } },
@@ -996,8 +1017,17 @@ struct ServerPlaylistDetailView: View {
                 Task {
                     guard let lib = app.activeLibrary else { return }
                     try? await app.player.playNext(library: lib, track: row.track)
+                    await MainActor.run { app.showTransientToast("Playing Next") }
                 }
             },
+            onAddToQueue: {
+                Task {
+                    guard let lib = app.activeLibrary else { return }
+                    try? await app.player.addToQueue(library: lib, track: row.track)
+                    await MainActor.run { app.showTransientToast("Added to Queue") }
+                }
+            },
+            hasActiveQueue: !app.player.queue.isEmpty,
             onGoToAlbum: isAlbum ? nil : { navigateAlbum = app.albumSummary(for: row.track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [row.track]) },
             onRemoveFromPlaylist: removeFromPlaylist,
@@ -1100,8 +1130,7 @@ struct ServerPlaylistDetailView: View {
 
     private func shuffleAll() async {
         guard let lib = app.activeLibrary, !tracksForPlayback.isEmpty else { return }
-        let shuffled = tracksForPlayback.shuffled()
-        try? await app.player.playAlbum(library: lib, tracks: shuffled, startIndex: 0, source: playbackSource)
+        try? await app.player.playAlbumShuffled(library: lib, tracks: tracksForPlayback, source: playbackSource)
     }
 
     private func playPlaylistNext() async {
@@ -1217,19 +1246,75 @@ struct ServerPlaylistDetailView: View {
         return "\(n) songs, \(totalMin) minutes"
     }
 
-    /// Album-mode helper: scroll the tracklist to ``scrollToTrackId`` after the
-    /// initial load. Defers when the focus track isn't yet in `rows`.
+    /// Scroll the tracklist to the active scroll target after the initial load and
+    /// flash a brief highlight over the focused row. Defers when the focus track
+    /// isn't yet in `rows`.
     private func scrollToFocusedTrackIfNeeded(proxy: ScrollViewProxy) {
+        let targetId = activeScrollTrackId ?? scrollToTrackId
         guard !didScrollToFocusTrack,
-              let target = scrollToTrackId,
-              rows.contains(where: { $0.track.id == target })
+              let trackId = targetId,
+              let matchingRow = rows.first(where: { $0.track.id == trackId })
         else { return }
         didScrollToFocusTrack = true
+        let targetRowId = matchingRow.rowId
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             withAnimation(.easeInOut(duration: 0.35)) {
-                proxy.scrollTo(target, anchor: .center)
+                proxy.scrollTo(targetRowId, anchor: .center)
             }
         }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            withAnimation(.easeIn(duration: 0.18)) {
+                highlightedRowId = targetRowId
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                withAnimation(.easeOut(duration: 0.9)) {
+                    highlightedRowId = nil
+                }
+            }
+        }
+    }
+}
+
+/// Library-mode album view auto-pop: when the user removes the last song of an album
+/// from their library, ``libraryAlbumEntries`` loses the entry — at which point an
+/// already-pushed library album view is stale and should pop back. Kept as its own
+/// modifier so the parent body stays under the SwiftUI type-check budget.
+private struct LibraryAlbumDismissObserver: ViewModifier {
+    @EnvironmentObject private var app: AppModel
+    let isAlbum: Bool
+    let librarySource: Bool
+    let albumId: String?
+    let dismiss: () -> Void
+
+    func body(content: Content) -> some View {
+        content.onChange(of: app.libraryAlbumEntries) { _, _ in
+            guard isAlbum, librarySource, let albumId, !app.isAlbumInLibrary(albumId) else { return }
+            dismiss()
+        }
+    }
+}
+
+/// Watches ``AppModel/pendingPlaylistScroll`` and ``AppModel/pendingAlbumScroll`` and
+/// triggers a scroll callback when the signal matches this detail view's source. Kept
+/// in its own modifier so the parent body stays under the SwiftUI type-check budget.
+private struct DetailScrollSignalObserver: ViewModifier {
+    @EnvironmentObject private var app: AppModel
+    let playlistId: String?
+    let albumId: String?
+    let onScrollRequested: (String) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: app.pendingPlaylistScroll) { _, request in
+                guard let request, let playlistId, request.playlistId == playlistId else { return }
+                app.pendingPlaylistScroll = nil
+                onScrollRequested(request.trackId)
+            }
+            .onChange(of: app.pendingAlbumScroll) { _, request in
+                guard let request, let albumId, request.albumId == albumId else { return }
+                app.pendingAlbumScroll = nil
+                onScrollRequested(request.trackId)
+            }
     }
 }
 

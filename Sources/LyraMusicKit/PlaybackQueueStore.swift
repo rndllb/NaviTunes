@@ -10,6 +10,12 @@ struct PlaybackQueueSnapshot: Codable {
     var shuffle: Bool
     var repeatMode: String
     var savedAt: Date
+    /// Pre-shuffle queue order — restored so toggling shuffle off after relaunch returns
+    /// the queue to its natural order.
+    var unshuffledQueue: [Track]? = nil
+    /// Natural ordered track list from the most recently loaded source — used to detect
+    /// manual queue reordering and to restore order when shuffle is disabled.
+    var sourceQueueOrder: [Track]? = nil
 }
 
 enum PlaybackQueueStore {

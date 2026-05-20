@@ -46,6 +46,11 @@ private enum RecentLibraryItem: Identifiable {
 
 // MARK: - Section config
 
+struct DeepLinkArtist: Identifiable, Hashable {
+    let name: String
+    var id: String { name }
+}
+
 struct LibrarySectionItem: Codable, Identifiable, Equatable {
     var id: String
     var isVisible: Bool
@@ -114,6 +119,13 @@ struct LibraryView: View {
     @State private var showNewPlaylistSheet = false
     @State private var showEditSections = false
     @State private var showFloatingHeader = true
+    @State private var deepLinkAlbum: AlbumSummary? = nil
+    /// Honored by the deep-link album destination — `false` opens the full catalog
+    /// album view when "Go to Album" is followed for a non-library track.
+    @State private var deepLinkAlbumLibrarySource: Bool = true
+    @State private var deepLinkArtist: DeepLinkArtist? = nil
+    @State private var deepLinkPlaylist: PlaylistSummary? = nil
+    @State private var pendingScrollToTrackId: String? = nil
 
     private let pinnedColumns = [
         GridItem(.flexible(), spacing: 12),
@@ -207,8 +219,32 @@ struct LibraryView: View {
             .sheet(isPresented: $showEditSections) {
                 EditLibrarySectionsSheet(configRaw: $sectionConfigRaw)
             }
+            .navigationDestination(item: $deepLinkAlbum) { album in
+                ServerPlaylistDetailView(album: album, librarySource: deepLinkAlbumLibrarySource, scrollToTrackId: pendingScrollToTrackId)
+            }
+            .navigationDestination(item: $deepLinkArtist) { artist in
+                ArtistAlbumsView(artistName: artist.name)
+            }
+            .navigationDestination(item: $deepLinkPlaylist) { playlist in
+                ServerPlaylistDetailView(playlist: playlist, scrollToTrackId: pendingScrollToTrackId)
+            }
         }
         .tint(MusicDesign.accent)
+        .onChange(of: app.pendingNavigation) { _, nav in
+            guard let nav else { return }
+            app.pendingNavigation = nil
+            switch nav {
+            case .album(let album, let scrollToTrackId, let librarySource):
+                pendingScrollToTrackId = scrollToTrackId
+                deepLinkAlbumLibrarySource = librarySource
+                deepLinkAlbum = album
+            case .artist(let name):
+                deepLinkArtist = DeepLinkArtist(name: name)
+            case .playlist(let playlist, let scrollToTrackId):
+                pendingScrollToTrackId = scrollToTrackId
+                deepLinkPlaylist = playlist
+            }
+        }
     }
 
     private var libraryHeaderBar: some View {
@@ -863,6 +899,7 @@ struct FavoritePlaylistView: View {
             track: track,
             itemSize: app.songListItemSize,
             isFavorite: app.favoriteTrackIds.contains(track.id),
+            isNowPlaying: app.player.activeTrack?.id == track.id,
             offlineDownload: offline.activeDownloads[track.id],
             isOfflineCached: app.offline.downloadedTrackIds.contains(track.id),
             onPlay: { Task { await play(track: track) } },
@@ -1192,6 +1229,7 @@ struct LibraryDownloadedView: View {
             artworkURL: app.resolvedArtworkURL(for: track),
             itemSize: app.songListItemSize,
             isFavorite: app.favoriteTrackIds.contains(track.id),
+            isNowPlaying: app.player.activeTrack?.id == track.id,
             offlineDownload: offline.activeDownloads[track.id],
             isOfflineCached: isTrackOfflineOnDevice(track),
             onPlay: { Task { await play(track: track) } },

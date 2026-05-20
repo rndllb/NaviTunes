@@ -20,6 +20,29 @@ public struct RootView: View {
 
 // MARK: - Tab model
 
+enum NowPlayingDeepLink: Equatable {
+    /// `librarySource: false` opens the full album view (server catalog tracks); `true`
+    /// opens the library-only filtered view. "Go to Album" from Now Playing flips to
+    /// `false` when the active track isn't in the user's library, so the user lands on
+    /// a view that actually contains the track they're playing.
+    case album(AlbumSummary, scrollToTrackId: String? = nil, librarySource: Bool = true)
+    case artist(String)
+    case playlist(PlaylistSummary, scrollToTrackId: String? = nil)
+}
+
+/// Scroll request emitted by "Go to Playlist" so an already-visible ``ServerPlaylistDetailView``
+/// can scroll to the now-playing track without being re-pushed onto the nav stack.
+struct PendingPlaylistScroll: Equatable {
+    let playlistId: String
+    let trackId: String
+}
+
+/// Same as ``PendingPlaylistScroll`` but keyed to an album id for album-mode detail views.
+struct PendingAlbumScroll: Equatable {
+    let albumId: String
+    let trackId: String
+}
+
 enum AppTab: Int, Hashable, CaseIterable {
     case home, new, radio, library, search
 
@@ -49,11 +72,10 @@ enum AppTab: Int, Hashable, CaseIterable {
 private struct MainShellView: View {
     @EnvironmentObject private var app: AppModel
     @State private var showNowPlaying = false
-    @State private var selectedTab: AppTab = .home
 
     var body: some View {
         ZStack {
-            TabView(selection: $selectedTab) {
+            TabView(selection: $app.selectedTab) {
                 Tab("Home", systemImage: AppTab.home.systemImage, value: AppTab.home) {
                     HomeView()
                 }
@@ -74,7 +96,7 @@ private struct MainShellView: View {
             }
             .tint(MusicDesign.accent)
             #if os(iOS)
-            .tabBarMinimizeBehavior(selectedTab == .search ? .never : .onScrollDown)
+            .tabBarMinimizeBehavior(app.selectedTab == .search ? .never : .onScrollDown)
             #endif
             .musicNativeTabChrome(isEnabled: app.player.showsMiniPlayerChrome) {
                 TabViewMiniPlayerAccessory(
@@ -102,6 +124,7 @@ private struct MainShellView: View {
             }
         }
         .animation(.spring(response: 0.45, dampingFraction: 0.85), value: showNowPlaying)
+        .musicTransientToastChrome()
     }
 }
 
@@ -201,8 +224,14 @@ private struct LibraryTrackDeletionChrome: ViewModifier {
 private struct NowPlayingGestureHost: View {
     @Binding var isPresented: Bool
     @EnvironmentObject private var app: AppModel
-    @State private var dragOffset: CGFloat = 0
+    /// `@GestureState` so the live offset auto-resets to 0 on any interrupt — prevents
+    /// the sheet from sticking at a half-open position when the gesture is cancelled
+    /// mid-drag (e.g. a tap landing during the present animation).
+    @GestureState private var dragOffset: CGFloat = 0
     @State private var libraryNavigationDepth = 0
+    /// Guards the drag-to-dismiss gesture until the present animation has settled,
+    /// so incidental touches during the slide-up can't park the sheet at half height.
+    @State private var fullyPresented = false
 
     /// 0…1 progress driving the Apple Music–style scale + corner-radius reveal.
     private var dragProgress: CGFloat {
@@ -211,7 +240,7 @@ private struct NowPlayingGestureHost: View {
     }
 
     var body: some View {
-        NowPlayingView { depth in
+        NowPlayingView(isPresented: $isPresented) { depth in
             libraryNavigationDepth = depth
         }
             .environmentObject(app)
@@ -221,27 +250,27 @@ private struct NowPlayingGestureHost: View {
             .offset(y: max(0, dragOffset))
             .gesture(
                 DragGesture(minimumDistance: 18)
-                    .onChanged { value in
-                        guard libraryNavigationDepth == 0 else { return }
+                    .updating($dragOffset) { value, state, _ in
+                        guard fullyPresented, libraryNavigationDepth == 0 else { return }
                         let dy = value.translation.height
                         let dx = value.translation.width
                         guard dy > 0, abs(dy) > abs(dx) else { return }
-                        dragOffset = dy
+                        state = dy
                     }
                     .onEnded { value in
+                        guard fullyPresented else { return }
                         let dy = value.translation.height
                         let predictedDy = value.predictedEndTranslation.height
                         let shouldDismiss = libraryNavigationDepth == 0
                             && (dy > 140 || predictedDy > 280)
                         if shouldDismiss {
                             isPresented = false
-                        } else {
-                            withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
-                                dragOffset = 0
-                            }
                         }
                     }
             )
-            .onDisappear { dragOffset = 0 }
+            .task {
+                try? await Task.sleep(for: .milliseconds(500))
+                fullyPresented = true
+            }
     }
 }

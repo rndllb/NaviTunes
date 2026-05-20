@@ -12,6 +12,12 @@ struct ArtistNowPlayingMenuButton: UIViewRepresentable {
     var heroBackdropPalette: ArtworkDynamicGradient.BackdropPalette? = nil
     /// When the current queue came from a playlist, adds a "Go to Playlist" action.
     var sourcePlaylist: PlaylistSummary? = nil
+    /// Compact mode: subheadline font + secondaryLabel tint — for the Up Next page header.
+    var compact: Bool = false
+    /// Caller-controlled disable for the Go to Album action — true only when no nav path
+    /// exists at all (neither a library album nor a usable catalog fallback). Defaults to
+    /// disabling when `libraryAlbum == nil`, matching legacy behavior.
+    var goToAlbumDisabled: Bool? = nil
     let onGoToAlbum: () -> Void
     let onGoToArtist: () -> Void
     var onGoToPlaylist: (() -> Void)? = nil
@@ -38,9 +44,10 @@ struct ArtistNowPlayingMenuButton: UIViewRepresentable {
             cfg.baseForegroundColor = isDarkSystem ? UIColor.white.withAlphaComponent(0.55) : UIColor.secondaryLabel
         }
         cfg.titleLineBreakMode = .byTruncatingTail
+        let textStyle: UIFont.TextStyle = compact ? .subheadline : .title3
         cfg.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var out = incoming
-            out.font = UIFont.preferredFont(forTextStyle: .title3)
+            out.font = UIFont.preferredFont(forTextStyle: textStyle)
             return out
         }
         cfg.contentInsets = .zero
@@ -55,11 +62,12 @@ struct ArtistNowPlayingMenuButton: UIViewRepresentable {
         let albumLine = albumSubtitle.trimmingCharacters(in: .whitespacesAndNewlines)
         let artistLine = artist.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        let disabled = goToAlbumDisabled ?? (libraryAlbum == nil)
         let albumAction = UIAction(
             title: "Go to Album",
             subtitle: albumLine.isEmpty ? "—" : albumLine,
             image: UIImage(systemName: "square.stack.fill"),
-            attributes: libraryAlbum == nil ? [.disabled] : []
+            attributes: disabled ? [.disabled] : []
         ) { _ in
             DispatchQueue.main.async {
                 onGoToAlbum()
@@ -103,6 +111,8 @@ struct ArtistNowPlayingMenuButton: View {
     let libraryAlbum: AlbumSummary?
     var heroBackdropPalette: ArtworkDynamicGradient.BackdropPalette? = nil
     var sourcePlaylist: PlaylistSummary? = nil
+    var compact: Bool = false
+    var goToAlbumDisabled: Bool? = nil
     let onGoToAlbum: () -> Void
     let onGoToArtist: () -> Void
     var onGoToPlaylist: (() -> Void)? = nil
@@ -119,7 +129,7 @@ struct ArtistNowPlayingMenuButton: View {
             } label: {
                 Label("Go to Album", systemImage: "square.stack.fill")
             }
-            .disabled(libraryAlbum == nil)
+            .disabled(goToAlbumDisabled ?? (libraryAlbum == nil))
             if let sourcePlaylist, let onGoToPlaylist {
                 Button {
                     onGoToPlaylist()

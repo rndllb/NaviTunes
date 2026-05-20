@@ -342,6 +342,7 @@ struct SongRowLeadingIndicators: View {
     var showsStarSlot: Bool = true
     var backdropPalette: ArtworkDynamicGradient.BackdropPalette? = nil
     var hasSubtitle: Bool = false
+    var isNowPlaying: Bool = false
 
     private var starColor: Color {
         backdropPalette?.heroChromePrimary ?? MusicDesign.accent
@@ -349,6 +350,10 @@ struct SongRowLeadingIndicators: View {
 
     private var indexColor: Color {
         backdropPalette?.heroChromeSecondary ?? MusicDesign.secondaryLabel
+    }
+
+    private var barsColor: Color {
+        backdropPalette?.heroChromePrimary ?? MusicDesign.accent
     }
 
     private var rowVerticalAlignment: VerticalAlignment {
@@ -372,12 +377,17 @@ struct SongRowLeadingIndicators: View {
                     }
             }
             if let trackIndex {
-                Text("\(trackIndex)")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(indexColor)
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .frame(width: AlbumTrackIndexColumn.numberWidth, alignment: .leading)
+                if isNowPlaying {
+                    NowPlayingBarsIndicator(color: barsColor)
+                        .frame(width: AlbumTrackIndexColumn.numberWidth, alignment: .leading)
+                } else {
+                    Text("\(trackIndex)")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(indexColor)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .frame(width: AlbumTrackIndexColumn.numberWidth, alignment: .leading)
+                }
             }
         }
         .frame(width: leadingWidth, alignment: .leading)
@@ -432,6 +442,8 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
     var onPresentDownloadedDeleteSheet: (() -> Void)? = nil
     /// Hairline under the row (drawn inside the row, not a separate list cell).
     var showsBottomDivider: Bool = false
+    /// When true, replaces the track number with an animated now-playing bars indicator.
+    var isNowPlaying: Bool = false
 
     let onRowTap: () -> Void
     @ViewBuilder let menuContent: () -> MenuItems
@@ -521,7 +533,8 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
                         trackIndex: index,
                         isFavorite: isFavorite,
                         backdropPalette: backdropPalette,
-                        hasSubtitle: hasSubtitle
+                        hasSubtitle: hasSubtitle,
+                        isNowPlaying: isNowPlaying
                     )
 
                     VStack(alignment: .leading, spacing: AlbumTrackRowLayout.titleSubtitleSpacing) {

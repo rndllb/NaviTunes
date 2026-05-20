@@ -523,6 +523,7 @@ struct BrowseAlbumDetailView: View {
                 trackPendingDownloadedDelete = track
             },
             showsBottomDivider: showsBottomDivider,
+            isNowPlaying: app.player.activeTrack?.id == track.id,
             onRowTap: { Task { await play(startingAt: track) } },
             menuContent: { browseInLibraryTrackOverflowMenu(track: track) }
         )
@@ -844,7 +845,7 @@ struct BrowseAlbumDetailView: View {
 
     private func playShuffled() async {
         guard let lib = app.activeLibrary, !libraryTracks.isEmpty else { return }
-        try? await app.player.playAlbum(library: lib, tracks: libraryTracks.shuffled(), startIndex: 0)
+        try? await app.player.playAlbumShuffled(library: lib, tracks: libraryTracks)
     }
 
     private func browseDownloadLibraryTracksForOffline() async {
