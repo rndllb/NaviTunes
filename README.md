@@ -99,10 +99,6 @@ Settings → Media Quality has three independent pickers:
 - **Cellular streaming** — same tiers, defaulted to `320` to be polite on data plans.
 - **Downloads** — `DownloadQualityTier` (`Original` / `320` / `256` / `128 kbps`), with per-backend mapping to Jellyfin's `audioBitRate` and Navidrome's `maxBitRate`.
 
-### Last.fm scrobbling
-
-Currently configured via the `LastFmScrobbler.configure(apiKey:secret:sessionKey:)` API only — there is no Settings UI for this yet. Secrets live in the Keychain after first run; a one-time migration moves any older plaintext values out of `UserDefaults`.
-
 ### Downtify
 
 If you run the Downtify companion app, point Lyra at it under Settings → Plugins → Downtify. When configured, a download button appears on track rows that opens a search sheet in Downtify.
