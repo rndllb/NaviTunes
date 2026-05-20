@@ -973,8 +973,8 @@ struct ServerPlaylistDetailView: View {
             hidesAddToLibraryChip: !isAlbum,
             showsArtwork: !isAlbum,
             showsArtist: !isAlbum,
-            usesAlbumSwipeChrome: isAlbum,
-            rowBackgroundFill: isAlbum ? .clear : MusicDesign.background
+            rowBackgroundFill: isAlbum ? .clear : MusicDesign.background,
+            usesAlbumSwipeChrome: isAlbum
         )
         .equatable()
     }
