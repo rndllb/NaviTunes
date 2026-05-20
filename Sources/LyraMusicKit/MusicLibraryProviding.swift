@@ -228,6 +228,8 @@ struct Track: Identifiable, Hashable, Codable {
     let audioBitDepth: Int?
     /// Reported bitrate in kbps (Subsonic `bitRate`); Jellyfin often omits on Child items.
     let audioBitRateKbps: Int?
+    /// Direct stream URL for internet radio (bypasses Subsonic ``stream`` for this item).
+    let streamOverrideURL: URL?
 
     init(
         id: String,
@@ -247,6 +249,7 @@ struct Track: Identifiable, Hashable, Codable {
         audioCodec: String? = nil,
         audioBitDepth: Int? = nil,
         audioBitRateKbps: Int? = nil,
+        streamOverrideURL: URL? = nil,
     ) {
         self.id = id
         self.title = title
@@ -265,7 +268,10 @@ struct Track: Identifiable, Hashable, Codable {
         self.audioCodec = audioCodec
         self.audioBitDepth = audioBitDepth
         self.audioBitRateKbps = audioBitRateKbps
+        self.streamOverrideURL = streamOverrideURL
     }
+
+    var isInternetRadioStream: Bool { streamOverrideURL != nil }
 
     func withDuration(_ newDuration: TimeInterval) -> Track {
         Track(
@@ -286,6 +292,7 @@ struct Track: Identifiable, Hashable, Codable {
             audioCodec: audioCodec,
             audioBitDepth: audioBitDepth,
             audioBitRateKbps: audioBitRateKbps,
+            streamOverrideURL: streamOverrideURL,
         )
     }
 }

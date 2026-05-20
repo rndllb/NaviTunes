@@ -1039,6 +1039,58 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - Radio (Navidrome)
+
+    /// Starts a shuffled queue of random library tracks, optionally filtered by genre (`getRandomSongs`).
+    func playNavidromeGenreRadio(genreName: String?) async {
+        guard let client = navidrome else {
+            errorMessage = "Radio stations require a Navidrome connection."
+            return
+        }
+        do {
+            let tracks = try await client.fetchRandomSongs(limit: 80, genre: genreName)
+            guard !tracks.isEmpty else {
+                let label = genreName ?? "your library"
+                errorMessage = "No songs found for \(label)."
+                return
+            }
+            player.shuffleMode = .on
+            try await player.playAlbum(
+                library: client,
+                tracks: tracks.shuffled(),
+                startIndex: 0,
+            )
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Plays a live stream from the server's internet radio list (`getInternetRadioStations`).
+    func playInternetRadioStation(_ station: InternetRadioStation) async {
+        guard let client = navidrome else {
+            errorMessage = "Internet radio requires a Navidrome connection."
+            return
+        }
+        let track = Track(
+            id: "internet-radio-\(station.id)",
+            title: station.name,
+            albumId: "internet-radio",
+            albumTitle: "Live Radio",
+            artist: station.name,
+            duration: 0,
+            discNumber: 1,
+            indexNumber: 1,
+            artworkURL: nil,
+            streamOverrideURL: station.streamURL,
+        )
+        player.shuffleMode = .off
+        do {
+            try await player.playAlbum(library: client, tracks: [track], startIndex: 0)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     /// Updates ``favoriteTrackIds`` immediately (stars, menus, rows); Jellyfin / Navidrome persist in the background with revert on failure.
     func toggleFavoriteTrack(id: String) {
         let targetFavorite = !favoriteTrackIds.contains(id)
