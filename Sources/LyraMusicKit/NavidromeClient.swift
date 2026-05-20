@@ -811,6 +811,59 @@ final class NavidromeClient: MusicLibraryProviding {
         _ = try await subsonicRequest(path: "deletePlaylist", query: ["id": playlistId])
     }
 
+    // MARK: - Radio (Subsonic)
+
+    /// Random tracks from the library, optionally filtered by genre tag (`getRandomSongs`).
+    func fetchRandomSongs(limit: Int = 50, genre: String? = nil) async throws -> [Track] {
+        let cap = max(1, min(limit, 500))
+        var query: [String: String] = ["size": "\(cap)"]
+        if let genre {
+            let trimmed = genre.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { query["genre"] = trimmed }
+        }
+        let items = try await subsonicRequest(path: "getRandomSongs", query: query)
+        guard let root = navidromeDict(items["randomSongs"]) else { return [] }
+        let songs = childDictArray(from: root, key: "song")
+        var seen = Set<String>()
+        var out: [Track] = []
+        out.reserveCapacity(songs.count)
+        for dict in songs {
+            guard let track = parseSongFromChildDict(dict) else { continue }
+            if seen.insert(track.id).inserted {
+                out.append(track)
+            }
+        }
+        return out
+    }
+
+    /// Internet radio stations configured on the Navidrome server (`getInternetRadioStations`).
+    func fetchInternetRadioStations() async throws -> [InternetRadioStation] {
+        let items = try await subsonicRequest(path: "getInternetRadioStations", query: [:])
+        guard let root = navidromeDict(items["internetRadioStations"]) else { return [] }
+        let rows = childDictArray(from: root, key: "internetRadioStation")
+        return rows.compactMap(parseInternetRadioStation)
+    }
+
+    private func parseInternetRadioStation(_ dict: [String: Any]) -> InternetRadioStation? {
+        guard let id = navidromeCoerceString(dict["id"]),
+              let name = navidromeCoerceString(dict["name"]),
+              !name.isEmpty
+        else { return nil }
+        let streamRaw =
+            navidromeCoerceString(dict["streamUrl"])
+            ?? navidromeCoerceString(dict["streamURL"])
+        guard let streamRaw,
+              let streamURL = URL(string: streamRaw),
+              let scheme = streamURL.scheme?.lowercased(),
+              scheme == "http" || scheme == "https"
+        else { return nil }
+        let homeRaw =
+            navidromeCoerceString(dict["homePageUrl"])
+            ?? navidromeCoerceString(dict["homepageUrl"])
+        let homepageURL = homeRaw.flatMap { URL(string: $0) }
+        return InternetRadioStation(id: id, name: name, streamURL: streamURL, homepageURL: homepageURL)
+    }
+
     func deleteTrackFromLibrary(trackId: String) async throws {
         _ = trackId
         throw NavidromeClientError.libraryTrackDeleteUnsupported
