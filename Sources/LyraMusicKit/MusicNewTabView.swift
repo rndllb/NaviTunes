@@ -92,10 +92,10 @@ struct MusicNewTabView: View {
                 await app.refreshNewTabBrowse()
             }
             .navigationDestination(item: $navigateLibraryTrack) { track in
-                AlbumDetailView(album: app.albumSummary(for: track), scrollToTrackId: track.id)
+                ServerPlaylistDetailView(album: app.albumSummary(for: track), scrollToTrackId: track.id)
             }
             .navigationDestination(item: $navigateLibraryAlbum) { album in
-                AlbumDetailView(album: album)
+                ServerPlaylistDetailView(album: album)
             }
             .navigationDestination(item: $browseLFMSingle) { tr in
                 BrowseAlbumDetailView(source: .lfm(

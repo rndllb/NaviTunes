@@ -174,7 +174,7 @@ struct LibraryArtistAlbumsView: View {
         .musicNavigationChrome()
         .musicNavigationBarVisibleWhenPushed()
         .navigationDestination(item: $navigateAlbum) { album in
-            AlbumDetailView(album: album, librarySource: true)
+            ServerPlaylistDetailView(album: album, librarySource: true)
         }
         .task(id: artist.id) { await load() }
         .onChange(of: app.libraryCatalogEpoch) { _, _ in
@@ -230,7 +230,7 @@ struct LibraryArtistAlbumsView: View {
             LazyVGrid(columns: columns, spacing: 20) {
                 ForEach(albums) { album in
                     NavigationLink {
-                        AlbumDetailView(album: album, librarySource: true)
+                        ServerPlaylistDetailView(album: album, librarySource: true)
                     } label: {
                         LibraryBrowsingAlbumGridCell(album: album)
                     }
@@ -493,7 +493,7 @@ struct LibraryGenreAlbumsView: View {
                 LazyVGrid(columns: columns, spacing: 20) {
                     ForEach(albums) { album in
                         NavigationLink {
-                            AlbumDetailView(album: album, librarySource: true)
+                            ServerPlaylistDetailView(album: album, librarySource: true)
                         } label: {
                             LibraryBrowsingAlbumGridCell(album: album)
                         }
