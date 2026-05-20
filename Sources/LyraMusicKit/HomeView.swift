@@ -91,6 +91,7 @@ struct HomeView: View {
                     MusicTabTitleHeaderBar(title: "Home") {
                         MusicToolbarSettingsAvatarLink(diameter: 45)
                     }
+                    .transition(.opacity)
                 }
             }
             .animation(.easeInOut(duration: 0.22), value: showFloatingHeader)

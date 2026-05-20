@@ -569,19 +569,16 @@ struct LibrarySongRow: View, Equatable {
         !isOfflineCached && offlineDownload == nil
     }
 
-    /// In library and on device — trailing trash opens the same sheet as the album hero checkmark.
+    /// On device — trailing trash opens the downloaded-delete sheet (library or downloads-only).
     private var confirmsDownloadedDelete: Bool {
-        isInLibrary
-            && isOfflineCached
-            && onRemoveFromLibrary != nil
-            && onPresentDownloadedDeleteSheet != nil
+        isOfflineCached && onPresentDownloadedDeleteSheet != nil
     }
 
     fileprivate var trailingDeleteSwipeAction: (() -> Void)? {
-        guard onRemoveFromLibrary != nil else { return nil }
         if confirmsDownloadedDelete, let onPresentDownloadedDeleteSheet {
             return onPresentDownloadedDeleteSheet
         }
+        guard let onRemoveFromLibrary else { return nil }
         return onRemoveFromLibrary
     }
 
@@ -766,7 +763,7 @@ struct LibrarySongRow: View, Equatable {
                     }
                     .tint(Color.primary)
 
-                    if isInLibrary, isOfflineCached, let onRemoveDownload {
+                    if isOfflineCached, let onRemoveDownload {
                         Section {
                             Button(action: onRemoveDownload) {
                                 Label("Remove Download", systemImage: "arrow.down.circle.dotted")

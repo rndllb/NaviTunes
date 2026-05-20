@@ -573,7 +573,9 @@ final class OfflineDownloadManager: ObservableObject {
 
     func cachedTracks() -> [Track] {
         let payload = (try? Self.loadManifest()) ?? OfflineManifestPayload()
-        return payload.records.values.map(\.track).sorted {
+        return payload.records.values.compactMap { record -> Track? in
+            localFile(for: record.track.id) != nil ? record.track : nil
+        }.sorted {
             if $0.albumTitle != $1.albumTitle {
                 return $0.albumTitle.localizedCaseInsensitiveCompare($1.albumTitle) == .orderedAscending
             }

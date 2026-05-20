@@ -118,11 +118,11 @@ struct ChartStyleSongOverflowMenu: View {
     }
 }
 
-// MARK: - Last.fm chart ⋯
+// MARK: - Chart browse ⋯
 
-/// Last.fm chart ⋯ on the **New** tab (same layout as missing-catalog / Downtify-not-in-library rows).
+/// Chart browse ⋯ on the **New** tab (same layout as missing-catalog / Downtify-not-in-library rows).
 struct NewTabChartOverflowPanel: View {
-    let track: LFMTrack
+    let track: ChartTrack
     let onAdd: () -> Void
     let onGoToAlbum: () -> Void
     var onAddToPlaylist: (() -> Void)? = nil

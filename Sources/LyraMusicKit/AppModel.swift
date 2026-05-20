@@ -18,7 +18,6 @@ public enum BackendKind: String, CaseIterable, Identifiable {
 
 enum NewTabBrowseBackend: Equatable {
     case none
-    case lastFm
     case musicBrainz
 }
 
@@ -73,7 +72,10 @@ public final class AppModel: ObservableObject {
 
     /// Shared catalog for Listen / Library / Search tabs.
     @Published private(set) var libraryAlbums: [AlbumSummary] = [] {
-        didSet { rebuildLibraryAlbumIndex() }
+        didSet {
+            rebuildLibraryAlbumIndex()
+            rebuildHomeRecentlyPlayed()
+        }
     }
     @Published private(set) var recentlyAddedAlbums: [AlbumSummary] = []
     /// Backend-side play history (Jellyfin `DatePlayed`, Subsonic `getAlbumList2?type=recent`).
@@ -81,16 +83,8 @@ public final class AppModel: ObservableObject {
     @Published private(set) var homeRecentlyPlayedServerAlbums: [AlbumSummary] = []
     @Published private(set) var homeGenreShelves: [(genre: String, albums: [AlbumSummary])] = []
 
-    /// Live merge of the local play log and the server's recently-played albums. Recomputed every
-    /// SwiftUI evaluation, so the Home shelf reflects new scrobbles or a late-arriving playlist sync
-    /// without waiting for the next `refreshHome()` pass.
-    var homeRecentlyPlayed: [RecentPlayedItem] {
-        let local = localRecentlyPlayed(limit: 24)
-        let server = homeRecentlyPlayedServerAlbums.map(RecentPlayedItem.album)
-        var seen = Set<String>()
-        let merged = (local + server).filter { seen.insert($0.id).inserted }
-        return Array(merged.prefix(12))
-    }
+    /// Live merge of the local play log and the server's recently-played albums.
+    @Published private(set) var homeRecentlyPlayed: [RecentPlayedItem] = []
     @Published private(set) var libraryAlbumsLoadError: String?
 
     /// Normalized track titles → normalized artist strings (for Downtify vs library matching).
@@ -100,19 +94,18 @@ public final class AppModel: ObservableObject {
     @Published private(set) var isIndexingLibraryTracks = false
     @Published private(set) var libraryTrackIndexLoadError: String?
 
-    /// Last.fm chart feeds + tag-based “recent releases” shelf for the New tab.
-    @Published private(set) var lfmTopTracks: [LFMTrack] = []
-    @Published private(set) var lfmTopAlbums: [LFMAlbum] = []
-    @Published private(set) var lfmRecentReleases: [LFMAlbum] = []
+    /// MusicBrainz / external browse shelves for the New tab.
+    @Published private(set) var newTabTopTracks: [ChartTrack] = []
+    @Published private(set) var newTabTopAlbums: [ChartAlbum] = []
+    @Published private(set) var newTabRecentReleases: [ChartAlbum] = []
     @Published private(set) var newTabBrowseLoading = false
-    /// Set when Last.fm / MusicBrainz browse fails so the New tab can show a concrete reason instead of an empty shelf.
+    /// Set when MusicBrainz browse fails so the New tab can show a concrete reason instead of an empty shelf.
     @Published private(set) var newTabBrowseError: String?
     /// Which catalog populated the **New** tab on the last successful refresh (drives labels like “MusicBrainz”).
     @Published private(set) var newTabBrowseBackend: NewTabBrowseBackend = .none
 
     let player = PlaybackEngine()
     let offline = OfflineDownloadManager()
-    let lastFm = LastFmScrobbler()
 
     private var libraryAlbumsById: [String: AlbumSummary] = [:]
     private var libraryBootstrapTask: Task<Void, Never>?
@@ -350,20 +343,9 @@ public final class AppModel: ObservableObject {
     }
 
     public init() {
-        player.bind(lastFm: lastFm, offline: offline)
-        player.$queue
-            .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
-        player.$currentIndex
-            .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
-        player.$isPlaying
-            .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
+        player.bind(offline: offline)
+        // Only mini-player chrome affects most tabs; avoid rebinding Home/Library on every queue tick.
         player.$showsMiniPlayerChrome
-            .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
-        player.$lyrics
-            .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
-        player.$shuffleMode
-            .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
-        player.$repeatMode
             .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         offline.$downloadedTrackIds
             .sink { [weak self] _ in self?.objectWillChange.send() }
@@ -472,7 +454,6 @@ public final class AppModel: ObservableObject {
             isSignedIn = true
             updateDeleteCapability()
             prefetchAccountAvatar()
-            lastFm.restoreSession()
             pushQualitySettingsToClients()
             scheduleLibraryBootstrap()
         } catch {
@@ -562,9 +543,9 @@ public final class AppModel: ObservableObject {
         recentlyPlayedTracks = []
         UserDefaults.standard.removeObject(forKey: Self.recentlyPlayedTracksKey)
         libraryAlbumsLoadError = nil
-        lfmTopTracks = []
-        lfmTopAlbums = []
-        lfmRecentReleases = []
+        newTabTopTracks = []
+        newTabTopAlbums = []
+        newTabRecentReleases = []
         newTabBrowseError = nil
         newTabBrowseBackend = .none
         libraryTrackTitleIndex = [:]
@@ -576,6 +557,10 @@ public final class AppModel: ObservableObject {
         libraryAlbumEntries = []
         libraryPlaylistEntries = []
         KeychainStore.clear()
+        UserDefaults.standard.removeObject(forKey: "lastfm_api_key")
+        ["lastfm_secret", "lastfm_session"].forEach {
+            UserDefaults.standard.removeObject(forKey: $0)
+        }
         player.reset()
         canDeleteFromLibrary = false
         favoriteTrackIds = []
@@ -722,6 +707,7 @@ public final class AppModel: ObservableObject {
         async let genres = (try? await lib.libraryGenres(limit: 20)) ?? []
         let (playedResult, genresResult) = await (played, genres)
         homeRecentlyPlayedServerAlbums = playedResult
+        rebuildHomeRecentlyPlayed()
         let pickedGenres = Array(genresResult.prefix(4))
         let shelves = await withTaskGroup(of: (genre: String, albums: [AlbumSummary])?.self) { group in
         for g in pickedGenres {
@@ -1043,9 +1029,11 @@ public final class AppModel: ObservableObject {
         var seen = Set<String>()
         var out: [Track] = []
         for track in discoveryLibraryTracks where ids.contains(track.id) {
+            guard offline.localFile(for: track.id) != nil else { continue }
             if seen.insert(track.id).inserted { out.append(track) }
         }
         for id in ids where !seen.contains(id) {
+            guard offline.localFile(for: id) != nil else { continue }
             if let track = offline.cachedTrack(id: id) {
                 out.append(track)
                 seen.insert(id)
@@ -1294,6 +1282,7 @@ public final class AppModel: ObservableObject {
             fetched = (try? await client.fetchPlaylistSummaries()) ?? []
         }
         libraryPlaylists = filterOutMagicPlaylist(fetched)
+        rebuildHomeRecentlyPlayed()
     }
 
     /// Strips the Lyra magic playlist from any list of server playlists. Belt-and-braces:
@@ -1528,20 +1517,8 @@ public final class AppModel: ObservableObject {
     }
 
     public func refreshNewTabBrowse() async {
-        let lastFmOn = LastFmChartsClient.storedApiKey != nil
-
         newTabBrowseLoading = true
         defer { newTabBrowseLoading = false }
-
-        if lastFmOn {
-            newTabBrowseError = nil
-            let pack = await LastFmChartsClient.fetchAll()
-            lfmTopTracks = pack.tracks
-            lfmTopAlbums = pack.albums
-            lfmRecentReleases = pack.recentAlbums
-            newTabBrowseBackend = .lastFm
-            return
-        }
 
         guard musicBrainzEnabled else {
             clearNewTabBrowseGrid()
@@ -1560,20 +1537,20 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    private func applyNewTabGrid(fromAlbums albums: [LFMAlbum], backend: NewTabBrowseBackend) {
-        lfmRecentReleases = albums
-        lfmTopTracks = Array(albums.prefix(20)).map {
-            LFMTrack(id: $0.id, name: $0.name, artistName: $0.artistName,
-                     imageURL: $0.imageURL, playcount: 0, browseKind: "Album")
+    private func applyNewTabGrid(fromAlbums albums: [ChartAlbum], backend: NewTabBrowseBackend) {
+        newTabRecentReleases = albums
+        newTabTopTracks = Array(albums.prefix(20)).map {
+            ChartTrack(id: $0.id, name: $0.name, artistName: $0.artistName,
+                       imageURL: $0.imageURL, playcount: 0, browseKind: "Album")
         }
-        lfmTopAlbums = []
+        newTabTopAlbums = []
         newTabBrowseBackend = backend
     }
 
     private func clearNewTabBrowseGrid() {
-        lfmTopTracks = []
-        lfmTopAlbums = []
-        lfmRecentReleases = []
+        newTabTopTracks = []
+        newTabTopAlbums = []
+        newTabRecentReleases = []
     }
 
     // MARK: - Downtify
@@ -1594,7 +1571,7 @@ public final class AppModel: ObservableObject {
     /// Preview track listing for **New tab / browse** flows (MusicBrainz → release → recordings). Not used for ``AlbumDetailView``.
     func resolveBrowseAlbumPreviewTracks(source: BrowseAlbumDetailSource) async -> [BrowseAlbumPreviewTrack] {
         switch source {
-        case .lfm(let artist, let title, _, let kind):
+        case .chartBrowse(let artist, let title, _, let kind):
             try? await Task.sleep(nanoseconds: 350_000_000)
             if let rg = await MusicBrainzTracklistClient.findReleaseGroupId(artist: artist, albumTitle: title) {
                 try? await Task.sleep(nanoseconds: 350_000_000)
@@ -1604,7 +1581,7 @@ public final class AppModel: ObservableObject {
             if kind.lowercased() == "single" {
                 return [
                     BrowseAlbumPreviewTrack(
-                        id: "lfm-single:\(artist):\(title)",
+                        id: "chart-single:\(artist):\(title)",
                         position: 1,
                         title: title,
                         duration: nil,
@@ -1703,6 +1680,7 @@ public final class AppModel: ObservableObject {
         if let data = defaults.data(forKey: Self.recentlyPlayedEntriesKey),
            let decoded = try? JSONDecoder().decode([RecentPlayedEntry].self, from: data) {
             recentlyPlayedEntries = decoded
+            rebuildHomeRecentlyPlayed()
             return
         }
         // Migrate the legacy album-only string array, then drop the old key.
@@ -1711,6 +1689,7 @@ public final class AppModel: ObservableObject {
             recentlyPlayedEntries = migrated
             saveRecentlyPlayedEntriesToDefaults()
             defaults.removeObject(forKey: Self.recentlyPlayedAlbumIdsKey)
+            rebuildHomeRecentlyPlayed()
         }
     }
 
@@ -1742,6 +1721,15 @@ public final class AppModel: ObservableObject {
         }
         recentlyPlayedEntries = next
         saveRecentlyPlayedEntriesToDefaults()
+        rebuildHomeRecentlyPlayed()
+    }
+
+    private func rebuildHomeRecentlyPlayed() {
+        let local = localRecentlyPlayed(limit: 24)
+        let server = homeRecentlyPlayedServerAlbums.map(RecentPlayedItem.album)
+        var seen = Set<String>()
+        let merged = (local + server).filter { seen.insert($0.id).inserted }
+        homeRecentlyPlayed = Array(merged.prefix(12))
     }
 
     private func loadRecentlyPlayedTracksFromDefaults() {
@@ -1781,6 +1769,7 @@ public final class AppModel: ObservableObject {
     func clearRecentlyPlayed() {
         recentlyPlayedEntries = []
         UserDefaults.standard.removeObject(forKey: Self.recentlyPlayedEntriesKey)
+        rebuildHomeRecentlyPlayed()
     }
 
     /// Resolves the local recently-played list against the in-memory library / playlist catalogs.

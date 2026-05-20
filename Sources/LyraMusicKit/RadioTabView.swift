@@ -81,6 +81,7 @@ struct RadioTabView: View {
                     MusicTabTitleHeaderBar(title: "Radio") {
                         MusicToolbarSettingsAvatarLink(diameter: 45)
                     }
+                    .transition(.opacity)
                 }
             }
             .animation(.easeInOut(duration: 0.22), value: showFloatingHeader)

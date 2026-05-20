@@ -1,6 +1,6 @@
 import Foundation
 
-/// Fuzzy title / artist matching between external metadata (Downtify, Last.fm charts, …) and Jellyfin/Navidrome `Track` rows.
+/// Fuzzy title / artist matching between external metadata (Downtify, chart browse, …) and Jellyfin/Navidrome `Track` rows.
 enum LibraryTrackMatcher {
     /// Split on punctuation while keeping words with apostrophes / hyphens intact.
     private static let tokenBoundary =
@@ -96,14 +96,14 @@ enum LibraryTrackMatcher {
         return artistsOverlap(songArtists, Set([libArtist]))
     }
 
-    // MARK: - Last.fm chart tracks
+    // MARK: - External chart tracks
 
-    /// True when this Last.fm chart row matches a library track (same rules as Downtify).
-    static func matchesLibrary(_ lfm: LFMTrack, titleIndex: [String: Set<String>]) -> Bool {
-        let songArtists = normalizedChartArtists(lfm.artistName)
+    /// True when this chart row matches a library track (same rules as Downtify).
+    static func matchesLibrary(_ chart: ChartTrack, titleIndex: [String: Set<String>]) -> Bool {
+        let songArtists = normalizedChartArtists(chart.artistName)
         guard !songArtists.isEmpty else { return false }
 
-        let titleKeys = normalizedTitleKeys(from: lfm.name)
+        let titleKeys = normalizedTitleKeys(from: chart.name)
         guard !titleKeys.isEmpty else { return false }
 
         for tk in titleKeys {
@@ -113,14 +113,14 @@ enum LibraryTrackMatcher {
         return false
     }
 
-    static func firstLibraryTrack(matching lfm: LFMTrack, in tracks: [Track]) -> Track? {
-        tracks.first { trackMatchesLFM($0, lfm: lfm) }
+    static func firstLibraryTrack(matching chart: ChartTrack, in tracks: [Track]) -> Track? {
+        tracks.first { trackMatchesChart($0, chart: chart) }
     }
 
-    static func trackMatchesLFM(_ track: Track, lfm: LFMTrack) -> Bool {
-        let songArtists = normalizedChartArtists(lfm.artistName)
+    static func trackMatchesChart(_ track: Track, chart: ChartTrack) -> Bool {
+        let songArtists = normalizedChartArtists(chart.artistName)
         guard !songArtists.isEmpty else { return false }
-        let songKeys = Set(normalizedTitleKeys(from: lfm.name))
+        let songKeys = Set(normalizedTitleKeys(from: chart.name))
         let trackKeys = Set(normalizedTitleKeys(from: track.title))
         guard !songKeys.isDisjoint(with: trackKeys) else { return false }
         let libArtist = normalize(track.artist)

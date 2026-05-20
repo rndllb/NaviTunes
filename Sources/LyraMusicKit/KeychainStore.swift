@@ -59,22 +59,6 @@ enum KeychainStore {
         ["jellyfin", "navidrome"].forEach { delete(key: $0) }
     }
 
-    // MARK: - Last.fm secrets
-
-    static func saveLastFmSecret(_ value: String) throws {
-        try saveString(key: "lastfm_secret", value: value)
-    }
-
-    static func saveLastFmSession(_ value: String) throws {
-        try saveString(key: "lastfm_session", value: value)
-    }
-
-    static func loadLastFmSecret() -> String? { loadString(key: "lastfm_secret") }
-    static func loadLastFmSession() -> String? { loadString(key: "lastfm_session") }
-
-    static func clearLastFm() {
-        ["lastfm_secret", "lastfm_session"].forEach { delete(key: $0) }
-    }
 
     private static func saveString(key: String, value: String) throws {
         guard let data = value.data(using: .utf8) else {

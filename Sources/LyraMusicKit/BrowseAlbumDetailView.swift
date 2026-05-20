@@ -27,12 +27,12 @@ struct BrowseAlbumDetailView: View {
     }
 
     private var matchArtist: String {
-        if case .lfm(let a, _, _, _) = source { return a }
+        if case .chartBrowse(let a, _, _, _) = source { return a }
         return ""
     }
 
     private var matchAlbumTitle: String {
-        if case .lfm(_, let t, _, _) = source { return t }
+        if case .chartBrowse(_, let t, _, _) = source { return t }
         return ""
     }
 
@@ -45,12 +45,12 @@ struct BrowseAlbumDetailView: View {
 
     private var displayArtworkURL: URL? {
         if let a = matchedLibraryAlbum { return a.artworkURL }
-        if case .lfm(_, _, let url, _) = source { return url }
+        if case .chartBrowse(_, _, let url, _) = source { return url }
         return nil
     }
 
     private var albumKindLabel: String {
-        if case .lfm(_, _, _, let kind) = source { return kind }
+        if case .chartBrowse(_, _, _, let kind) = source { return kind }
         return "Album"
     }
 

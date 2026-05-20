@@ -1,6 +1,6 @@
 # Lyra Music
 
-An iOS music client for self-hosted libraries. Connects to **Jellyfin** and **Navidrome** (Subsonic API), with discovery powered by Last.fm, MusicBrainz, TheAudioDB, and the iTunes Search API.
+An iOS music client for self-hosted libraries. Connects to **Jellyfin** and **Navidrome** (Subsonic API), with discovery powered by MusicBrainz, TheAudioDB, and the iTunes Search API.
 
 Built in SwiftUI for iOS 26, with an Apple Music–style layout: Home / New / Radio / Library / Search tabs, a full-screen Now Playing sheet, persistent mini player, and offline downloads.
 
@@ -10,8 +10,7 @@ Built in SwiftUI for iOS 26, with an Apple Music–style layout: Home / New / Ra
 - **Subsonic salted-token auth** for Navidrome — the password never travels in the URL.
 - **Streaming + offline** — stream FLAC/MP3/AAC over your server's native APIs, or save tracks/albums for offline playback with a structured `Artist/Album/track.ext` layout. Bitrate tiers (`Original`, `320`, `256`, `128 kbps`) configurable separately for Wi-Fi streaming, cellular streaming, and downloads.
 - **Now Playing** — Lock Screen, Control Center, AirPlay route picker, and (on iPhone) the system volume bridge.
-- **Discovery** — Last.fm top charts, MusicBrainz new releases (toggleable), TheAudioDB regional trending, and an iTunes-backed artwork resolver for chart entries.
-- **Last.fm scrobbling** — once configured, plays scrobble automatically at the spec-correct threshold; secrets are stored in the Keychain.
+- **Discovery** — MusicBrainz new releases (toggleable), TheAudioDB regional trending, and an iTunes-backed artwork resolver for chart entries.
 - **Library tools** — favorites, server playlists (read/write where supported), per-album hero artwork with dynamic gradients, recently added / recently played shelves, 6-band graphic EQ with savable presets.
 - **Search** — across library + remote discovery sources, with track-resolution against your local library so chart hits link back to your own copy.
 - **Settings tab** — User profile + live server-health pill, library statistics, sync status, media-quality picker (per-network bitrate), appearance (theme + accent + alternate app icon), plugins (MusicBrainz toggle, Downtify companion-app integration), about.
@@ -36,7 +35,7 @@ Lyra-Music/
 │   │   ├── NavidromeClient.swift       # Navidrome / Subsonic backend
 │   │   ├── PlaybackEngine.swift        # AVPlayer wrapper + remote command center
 │   │   ├── OfflineDownloadManager.swift
-│   │   └── …                           # Tabs, browse, search, scrobbler, etc.
+│   │   └── …                           # Tabs, browse, search, playback, etc.
 │   └── LyraMusic/                      # Tiny SwiftPM executable shim (for `swift build`)
 └── LyraMusicHost/
     ├── LyraMusicHost.xcodeproj         # The iOS app target
@@ -105,14 +104,13 @@ If you run the Downtify companion app, point Lyra at it under Settings → Plugi
 
 ### Discovery sources
 
-- **Last.fm** charts use a publishable API key (no user auth needed).
 - **MusicBrainz** is contacted with a project-identifying `User-Agent` per their TOS.
 - **TheAudioDB** uses the publisher's documented demo key.
 - **iTunes Search API** is used for artwork enrichment on chart entries.
 
 ## Architecture notes
 
-- `AppModel` (a `@MainActor` `ObservableObject`) owns the active client (`jellyfin` or `navidrome`), library snapshot, playback engine, offline manager, Last.fm scrobbler, and all user-tweakable settings (`themePreference`, `accentPresetId`, `wifiStreamQuality`, `cellularStreamQuality`, `downloadQualityTier`, `musicBrainzEnabled`, EQ state, etc.).
+- `AppModel` (a `@MainActor` `ObservableObject`) owns the active client (`jellyfin` or `navidrome`), library snapshot, playback engine, offline manager, and all user-tweakable settings (`themePreference`, `accentPresetId`, `wifiStreamQuality`, `cellularStreamQuality`, `downloadQualityTier`, `musicBrainzEnabled`, EQ state, etc.).
 - `MusicLibraryProviding` is the cross-backend abstraction; `JellyfinMusicClient` and `NavidromeClient` implement it. Both expose `probeAuthStatus() -> ServerReachabilityProbe` for cold-launch session reconciliation.
 - `PlaybackEngine` wraps `AVPlayer` + `MPNowPlayingInfoCenter` + `MPRemoteCommandCenter` and feeds Lock Screen / AirPlay metadata. Bitrate selection respects the active streaming tier and the current network class.
 - `OfflineDownloadManager` writes a structured download tree under `Documents/LyraMusic/Downloads/` with a JSON manifest mapping track IDs to relative paths. Filenames are sanitized (control chars / leading dots / traversal tokens / trailing dots stripped) and a containment check verifies the resolved destination is inside the downloads root before every write.
@@ -126,7 +124,6 @@ If you run the Downtify companion app, point Lyra at it under Settings → Plugi
 - **Credentials**: Keychain only (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, `kSecAttrSynchronizable=false`).
 - **Navidrome auth**: per-request salted-token (`t=md5(password+salt)` with a fresh 16-byte salt) — the password is never in the URL.
 - **Jellyfin auth**: `Authorization: MediaBrowser Token=...` header on every request, including media and artwork. The token is not appended to URLs.
-- **Last.fm secret + session key**: Keychain, with a one-time migration from any older `UserDefaults` entry.
 - **Cold launch**: a restored session is probed with `probeAuthStatus()` before the app re-POSTs credentials, so the password is only sent again when the server explicitly rejected the existing session.
 - **Offline downloads**: server-supplied artist/album/title strings are sanitized (rejecting `.`, `..`, leading/trailing dots, control chars) and the destination path is bounds-checked against the downloads root before every write.
 

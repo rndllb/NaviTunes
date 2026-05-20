@@ -51,7 +51,7 @@ struct DowntifySong: Decodable, Identifiable, Hashable {
         }
     }
 
-    /// Values for UI / downloads when only Last.fm chart metadata exists (no Downtify ``url`` yet — use ``DowntifyClient/download(artist:title:)``).
+    /// Values for UI / downloads when only external chart metadata exists (no Downtify ``url`` yet — use ``DowntifyClient/download(artist:title:)``).
     init(songId: String, name: String, artists: [String], albumName: String, url: String, coverURL: URL?, year: Int?, explicit: Bool) {
         self.songId = songId
         self.name = name
@@ -63,9 +63,9 @@ struct DowntifySong: Decodable, Identifiable, Hashable {
         self.explicit = explicit
     }
 
-    init(lastFmChartTrack track: LFMTrack) {
+    init(chartTrack track: ChartTrack) {
         self.init(
-            songId: "lfm-chart:\(track.id)",
+            songId: "chart:\(track.id)",
             name: track.name,
             artists: [track.artistName],
             albumName: "",

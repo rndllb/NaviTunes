@@ -573,6 +573,8 @@ struct MusicTabFloatingHeaderScrollModifier: ViewModifier {
     var slack: CGFloat
     @Binding var showFloatingHeader: Bool
     @State private var anchorContentOffsetY: CGFloat?
+    /// Hysteresis avoids toggling header visibility every frame when offset hovers near the threshold.
+    private let hysteresis: CGFloat = 12
 
     func body(content: Content) -> some View {
         content.onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y }) { _, y in
@@ -580,10 +582,11 @@ struct MusicTabFloatingHeaderScrollModifier: ViewModifier {
                 anchorContentOffsetY = y
             }
             let anchor = anchorContentOffsetY ?? y
-            let nearTop = (y - anchor) < slack
-            if showFloatingHeader != nearTop {
-                showFloatingHeader = nearTop
-            }
+            let delta = y - anchor
+            let threshold = showFloatingHeader ? slack + hysteresis : slack - hysteresis
+            let nearTop = delta < threshold
+            guard showFloatingHeader != nearTop else { return }
+            showFloatingHeader = nearTop
         }
     }
 }
