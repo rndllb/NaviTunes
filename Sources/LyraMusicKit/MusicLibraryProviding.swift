@@ -317,6 +317,19 @@ struct LibraryGenreSummary: Identifiable, Hashable {
     let albumCount: Int?
 }
 
+/// Server-wide catalog search results. Songs / albums / artists across the entire
+/// connected Navidrome / Jellyfin instance — **not** scoped to the user's personal
+/// library. Use this for "find anything on the server"; use ``AppModel`` personal-
+/// library state to scope to "what I've added".
+struct CatalogSearchResults {
+    var songs: [Track]
+    var albums: [AlbumSummary]
+    var artists: [LibraryArtistSummary]
+
+    static let empty = CatalogSearchResults(songs: [], albums: [], artists: [])
+    var isEmpty: Bool { songs.isEmpty && albums.isEmpty && artists.isEmpty }
+}
+
 protocol MusicLibraryProviding: AnyObject {
     var displayName: String { get }
     func albums(limit: Int) async throws -> [AlbumSummary]
@@ -351,10 +364,21 @@ protocol MusicLibraryProviding: AnyObject {
 
     /// Permanently removes a library audio item on the server (supported backends only).
     func deleteTrackFromLibrary(trackId: String) async throws
+
+    /// Server-wide catalog search. Returns songs / albums / artists matching `query`,
+    /// **not** scoped to the user's personal library. Caps each kind at `limit`.
+    /// Used by the Discovery → Downtify hybrid tab to surface "already on the server,
+    /// just not in your library yet" candidates alongside Downtify download results.
+    func searchCatalog(query: String, limit: Int) async throws -> CatalogSearchResults
 }
 
 extension MusicLibraryProviding {
     func lyrics(for track: Track) async throws -> [LyricLine] { [] }
+
+    /// Default no-op so backends without server-side search compile.
+    func searchCatalog(query: String, limit: Int) async throws -> CatalogSearchResults {
+        .empty
+    }
 
     func fallbackStreamURLs(for track: Track) -> [URL] { [] }
     func offlineDownloadURL(for track: Track) throws -> URL { try streamURL(for: track) }

@@ -199,7 +199,7 @@ struct BrowseAlbumDetailView: View {
             ToolbarItemGroup(placement: MusicToolbar.trailingItemPlacement) { toolbarButtons }
         }
         .navigationDestination(item: $navigateLibraryAlbum) { album in
-            AlbumDetailView(album: album)
+            ServerPlaylistDetailView(album: album)
         }
         .task(id: matchedLibraryAlbum?.id ?? "none") { await loadLibraryTracks() }
         .task(id: "\(isLibraryPlayback)-\(matchArtist)-\(matchAlbumTitle)") { await loadPreviewTracksIfNeeded() }

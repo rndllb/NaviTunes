@@ -277,6 +277,21 @@ public final class AppModel: ObservableObject {
     /// Navidrome: no deletion API.
     @Published private(set) var canDeleteFromLibrary: Bool = false
 
+    /// Full Subsonic `getUser` payload for the signed-in Navidrome account. `nil` on Jellyfin
+    /// or before the first sign-in / metadata refresh completes.
+    @Published private(set) var navidromeUserMetadata: NavidromeUserMetadata?
+
+    /// `getCoverArt` URL for the Lyra magic playlist when Navidrome reports a user-uploaded /
+    /// external image on it (i.e. *not* the auto-generated mosaic). Used to override the
+    /// account avatar so users can manage their PFP by setting the magic playlist's cover.
+    @Published private(set) var navidromeMagicPlaylistAvatarURL: URL?
+
+    /// `true` while ``updateProfilePictureFromImageData(_:)`` is in flight, so Settings can
+    /// disable the picker and show a spinner.
+    @Published private(set) var isUpdatingProfilePicture: Bool = false
+    /// Most-recent profile-picture upload error (cleared by the next successful upload).
+    @Published var profilePictureUpdateError: String?
+
     private func updateDeleteCapability() {
         guard isSignedIn else { canDeleteFromLibrary = false; return }
         switch backendKind {
@@ -302,17 +317,26 @@ public final class AppModel: ObservableObject {
         case .navidrome:
             let user = username.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !user.isEmpty else { return nil }
-            return AccountAvatarCache.identity(backend: .navidrome, baseURL: base, userKey: user.lowercased())
+            // Suffix the user key when the avatar is sourced from the magic playlist's
+            // cover so cached bytes for the two sources never collide on disk.
+            let suffix = navidromeMagicPlaylistAvatarURL != nil ? "@magicpl" : ""
+            return AccountAvatarCache.identity(
+                backend: .navidrome,
+                baseURL: base,
+                userKey: user.lowercased() + suffix,
+            )
         }
     }
 
-    /// Remote URL for the signed-in user's profile image (Jellyfin primary image or Navidrome getAvatar).
+    /// Remote URL for the signed-in user's profile image. On Navidrome, prefers the magic
+    /// playlist's cover art when the user has uploaded a custom image for it; otherwise
+    /// falls back to the Subsonic `getAvatar` URL. Jellyfin uses the primary user image.
     var accountAvatarURL: URL? {
         switch backendKind {
         case .jellyfin:
             return jellyfin?.accountPrimaryImageURL(maxWidth: 256)
         case .navidrome:
-            return navidrome?.accountAvatarURL(username: username)
+            return navidromeMagicPlaylistAvatarURL ?? navidrome?.accountAvatarURL(username: username)
         }
     }
 
@@ -436,6 +460,7 @@ public final class AppModel: ObservableObject {
                 try await client.signIn(username: username, password: password)
                 navidrome = client
                 jellyfin = nil
+                navidromeUserMetadata = client.currentUserMetadata
                 try KeychainStore.saveNavidrome(
                     base: base,
                     user: username,
@@ -462,6 +487,14 @@ public final class AppModel: ObservableObject {
                 errorMessage = nil
                 serverConnectionHealth = connectionHealth(for: error)
             }
+        }
+    }
+
+    /// Refreshes ``navidromeUserMetadata`` from the server. No-op on Jellyfin or when signed out.
+    public func refreshNavidromeUserMetadata() async {
+        guard isSignedIn, backendKind == .navidrome, let client = navidrome else { return }
+        if let metadata = try? await client.refreshUserMetadata() {
+            navidromeUserMetadata = metadata
         }
     }
 
@@ -516,6 +549,8 @@ public final class AppModel: ObservableObject {
         }
         jellyfin = nil
         navidrome = nil
+        navidromeUserMetadata = nil
+        navidromeMagicPlaylistAvatarURL = nil
         isSignedIn = false
         libraryAlbums = []
         recentlyAddedAlbums = []
@@ -841,6 +876,73 @@ public final class AppModel: ObservableObject {
         libraryAlbumEntries = payload.albums
         libraryPlaylistEntries = payload.playlists
         Task { await backfillMissingLibraryAlbumSummaries() }
+        if backendKind == .navidrome {
+            Task { await refreshMagicPlaylistAvatar(playlistId: playlistId) }
+        }
+    }
+
+    /// Asks Navidrome's native API whether the magic playlist has a user-uploaded /
+    /// external image, and routes the account avatar to its `getCoverArt` URL when so.
+    /// Falls back to the Subsonic `getAvatar` when there's only the auto-generated mosaic.
+    ///
+    /// When the cover actually changes between runs (and we already had a prior value), we
+    /// kick off ``syncLibraryNow()`` — a PFP change means the user has been editing the
+    /// magic playlist via Navidrome's web UI, so anything else they touched there should be
+    /// pulled too. The first-ever discovery (`nil` → URL during bootstrap) is suppressed so
+    /// we don't cascade a sync into the sync that just fetched the membership.
+    private func refreshMagicPlaylistAvatar(playlistId: String) async {
+        guard backendKind == .navidrome, let client = navidrome else { return }
+        let hasCustom = (try? await client.playlistHasCustomCover(playlistId: playlistId)) ?? false
+        let newURL: URL? = hasCustom ? client.coverArtURL(forId: playlistId, size: 256) : nil
+        let previousURL = navidromeMagicPlaylistAvatarURL
+        guard previousURL != newURL else { return }
+        navidromeMagicPlaylistAvatarURL = newURL
+        accountAvatarRevision &+= 1
+        prefetchAccountAvatar()
+        let isFirstDiscovery = (previousURL == nil)
+        if !isFirstDiscovery, !isLibrarySyncing {
+            Task { await syncLibraryNow() }
+        }
+    }
+
+    /// Sets the user's Lyra profile picture by uploading `imageData` as the cover art of
+    /// the magic playlist on Navidrome. The PFP everywhere in the app then reflects that
+    /// cover automatically via ``accountAvatarURL``. Jellyfin / signed-out are no-ops.
+    func updateProfilePictureFromImageData(_ imageData: Data) async {
+        guard isSignedIn, backendKind == .navidrome,
+              let client = navidrome,
+              let playlistId = libraryMagicPlaylistId
+        else {
+            profilePictureUpdateError = "Sign in to Navidrome and let your library sync before changing your profile picture."
+            return
+        }
+        isUpdatingProfilePicture = true
+        defer { isUpdatingProfilePicture = false }
+        do {
+            try await client.uploadPlaylistImage(playlistId: playlistId, imageData: imageData)
+            profilePictureUpdateError = nil
+            // Force a fresh fetch by busting both our on-disk cache and URLSession's cache:
+            // the `getCoverArt?id=<playlistId>` URL stays stable across uploads, so without
+            // a bust the toolbar would keep serving the old bytes.
+            if let identity = accountAvatarIdentity {
+                AccountAvatarCache.remove(identity: identity)
+            }
+            let bustedURL = client.coverArtURL(forId: playlistId, size: 256)
+                .map { appendCacheBust(to: $0) }
+            navidromeMagicPlaylistAvatarURL = bustedURL
+            accountAvatarRevision &+= 1
+            prefetchAccountAvatar()
+        } catch {
+            profilePictureUpdateError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    private func appendCacheBust(to url: URL) -> URL {
+        var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) ?? URLComponents()
+        var items = comps.queryItems ?? []
+        items.append(URLQueryItem(name: "_ts", value: "\(Int(Date().timeIntervalSince1970))"))
+        comps.queryItems = items
+        return comps.url ?? url
     }
 
     /// Fetches AlbumSummary for any library-entry album id that isn't yet in the in-memory
@@ -896,6 +998,25 @@ public final class AppModel: ObservableObject {
     }
 
     // MARK: - Library membership: queries + mutations
+
+    /// In-memory search across the user's personal library (magic playlist contents).
+    /// Empty `query` returns the full personal-library snapshot. Pure local — never
+    /// hits the network. Songs are pulled from ``discoveryLibraryTracks`` (best-effort
+    /// cache); items the cache hasn't loaded yet simply won't appear until it has.
+    func searchPersonalLibrary(query: String) -> PersonalLibrarySearchResults {
+        let albumIds = Set(libraryAlbumEntries.map(\.id))
+        let playlistIds = Set(libraryPlaylistEntries.map(\.id))
+        let playlistCache = Dictionary(uniqueKeysWithValues: libraryPlaylists.map { ($0.id, $0) })
+        return PersonalLibrarySearch.search(
+            query: query,
+            songIds: librarySongIds,
+            albumIds: albumIds,
+            playlistIds: playlistIds,
+            trackCache: discoveryLibraryTracks,
+            albumCache: libraryAlbumsById,
+            playlistCache: playlistCache,
+        )
+    }
 
     /// `true` when the song is in the user's magic playlist (server-backed).
     func isSongInLibrary(_ id: String) -> Bool { librarySongIds.contains(id) }
@@ -1791,6 +1912,7 @@ public final class AppModel: ObservableObject {
         defer { isLibrarySyncing = false }
         await refreshLibraryAlbums()
         await refreshLibraryPlaylists()
+        await refreshLibraryMembership()
         await refreshHome()
         scheduleLibraryTrackMatchIndexRefresh()
         await refreshLibraryStatistics()
@@ -1862,6 +1984,12 @@ public final class AppModel: ObservableObject {
                 restoreLibraryFromDisk()
                 restorePlaybackQueueFromDisk()
                 serverConnectionHealth = .unknown
+                Task { [weak self, weak client] in
+                    guard let client else { return }
+                    if let metadata = try? await client.refreshUserMetadata() {
+                        await MainActor.run { self?.navidromeUserMetadata = metadata }
+                    }
+                }
             }
             Task { await reconcileRestoredSession(hasRestoredToken: hasCredentials) }
         }

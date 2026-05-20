@@ -235,7 +235,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
         scrobbledForCurrentTrack = false
         isPlaying = false
         duration = activeTrack?.duration ?? 0
-        showsMiniPlayerChrome = false
+        // A restored snapshot represents real playback the user wants to resume — surface
+        // the mini player so the saved track + playhead are visible on launch. Only the
+        // never-played cold-launch path leaves this `false`.
+        showsMiniPlayerChrome = activeTrack != nil
         configureRemoteCommands()
         updateNowPlaying(nil)
     }

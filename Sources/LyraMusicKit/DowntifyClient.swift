@@ -1,6 +1,6 @@
 import Foundation
 
-struct DowntifySong: Decodable, Identifiable {
+struct DowntifySong: Decodable, Identifiable, Hashable {
     var id: String { songId }
     let songId: String
     let name: String

@@ -202,7 +202,7 @@ struct LibrarySongsView: View {
             }
         }
         .navigationDestination(item: $navigateAlbum) { album in
-            AlbumDetailView(album: album, librarySource: true)
+            ServerPlaylistDetailView(album: album, librarySource: true)
         }
         .task {
             await load()
@@ -495,6 +495,26 @@ struct LibrarySongRow: View, Equatable {
     var onDeleteFromLibrary: () -> Void = {}
     var canDeleteFromLibrary: Bool = false
     var onRemoveDownload: (() -> Void)? = nil
+    /// Adds the song to the user's Lyra library (magic playlist). When supplied AND the
+    /// song isn't currently in library, the 3-dot menu's leading item switches from
+    /// "Download" to "Add to Library."
+    var onAddToLibrary: (() -> Void)? = nil
+    /// `true` when the song is part of the user's Lyra library. Used to pick the right
+    /// leading menu item (Download vs Add to Library) and the matching inline chip state.
+    var isInLibrary: Bool = true
+    /// Hide the inline trailing "+" chip when the song isn't in library. The 3-dot menu's
+    /// "Add to Library" item is unaffected. Used in playlist rows where the inline plus
+    /// is redundant with the menu and visually noisy alongside other playlist chrome.
+    var hidesAddToLibraryChip: Bool = false
+    /// Hide the leading square artwork (album-detail rows; every row would have the
+    /// same cover, which is redundant).
+    var showsArtwork: Bool = true
+    /// Hide the artist subtitle (album-detail rows — artist already shown in the hero).
+    var showsArtist: Bool = true
+    /// Solid background the row renders behind its content. Defaults to the standard
+    /// list surface; album-detail rows pass `.clear` so the dynamic backdrop palette
+    /// shows through the List.
+    var rowBackgroundFill: Color = MusicDesign.background
 
     private static let rowArtworkDecodePixels: CGFloat = 192
 
@@ -508,12 +528,19 @@ struct LibrarySongRow: View, Equatable {
             && lhs.canDeleteFromLibrary == rhs.canDeleteFromLibrary
             && lhs.offlineDownload == rhs.offlineDownload
             && lhs.hasActiveQueue == rhs.hasActiveQueue
+            && lhs.showsArtwork == rhs.showsArtwork
+            && lhs.showsArtist == rhs.showsArtist
+            && lhs.hidesAddToLibraryChip == rhs.hidesAddToLibraryChip
             && (lhs.onRemoveFromPlaylist != nil) == (rhs.onRemoveFromPlaylist != nil)
             && (lhs.onRemoveFromLibrary != nil) == (rhs.onRemoveFromLibrary != nil)
     }
 
     private var offlinePhase: TrackOfflineIndicatorPhase {
-        TrackOfflineIndicatorPhase(offlineDownload: offlineDownload, isOfflineCached: isOfflineCached)
+        TrackOfflineIndicatorPhase(
+            offlineDownload: offlineDownload,
+            isOfflineCached: isOfflineCached,
+            isInLibrary: isInLibrary,
+        )
     }
 
     var body: some View {
@@ -571,22 +598,26 @@ struct LibrarySongRow: View, Equatable {
         HStack(alignment: .center, spacing: 10) {
             Button(action: onPlay) {
                 HStack(alignment: .center, spacing: 14) {
-                    AlbumArtworkView(
-                        url: artworkURL ?? track.artworkURL,
-                        cornerRadius: 6,
-                        maxDecodePixels: Self.rowArtworkDecodePixels,
-                    )
-                        .frame(width: itemSize.artworkSide, height: itemSize.artworkSide)
+                    if showsArtwork {
+                        AlbumArtworkView(
+                            url: artworkURL ?? track.artworkURL,
+                            cornerRadius: 6,
+                            maxDecodePixels: Self.rowArtworkDecodePixels,
+                        )
+                            .frame(width: itemSize.artworkSide, height: itemSize.artworkSide)
+                    }
                     VStack(alignment: .leading, spacing: 4) {
                         Text(track.title)
                             .font(itemSize.titleFont)
                             .foregroundStyle(.primary)
                             .lineLimit(2)
                             .multilineTextAlignment(.leading)
-                        Text(track.artist)
-                            .font(itemSize.subtitleFont)
-                            .foregroundStyle(MusicDesign.secondaryLabel)
-                            .lineLimit(1)
+                        if showsArtist {
+                            Text(track.artist)
+                                .font(itemSize.subtitleFont)
+                                .foregroundStyle(MusicDesign.secondaryLabel)
+                                .lineLimit(1)
+                        }
                     }
                     Spacer(minLength: 8)
                 }
@@ -594,21 +625,31 @@ struct LibrarySongRow: View, Equatable {
             }
             .buttonStyle(.plain)
 
-            TrackOfflineDownloadIndicator(
+            if !(hidesAddToLibraryChip && offlinePhase == .addToLibrary) {
+                TrackOfflineDownloadIndicator(
                     phase: offlinePhase,
                     onCancelDownload: offlinePhase.isDownloading ? { onCancelOfflineDownload() } : nil,
-                    onTapStartDownload: offlinePhase == .notCached ? { onDownload() } : nil
+                    onTapStartDownload: offlinePhase == .notCached ? { onDownload() } : nil,
+                    onAddToLibrary: offlinePhase == .addToLibrary ? onAddToLibrary : nil,
                 )
+            }
 
                 Menu {
                     ControlGroup {
-                        if let onRemoveDownload, isOfflineCached {
+                        if !isInLibrary, let onAddToLibrary {
+                            // Out-of-library context (e.g. browse album detail) — the
+                            // first menu action gets the user to add it before letting
+                            // them download it.
+                            Button(action: onAddToLibrary) {
+                                Label("Add to Library", systemImage: "plus")
+                            }
+                        } else if let onRemoveDownload, isOfflineCached {
                             Button(action: onRemoveDownload) {
                                 Label("Remove Download", systemImage: "arrow.down.circle.dotted")
                             }
                         } else {
                             Button(action: onDownload) {
-                                Label("Download", systemImage: "arrow.down.circle")
+                                Label("Download", systemImage: "arrow.down")
                             }
                             .disabled(isOfflineCached)
                         }
@@ -684,6 +725,6 @@ struct LibrarySongRow: View, Equatable {
             }
             .padding(.horizontal, 20)
             .padding(.vertical, itemSize.libraryVerticalPadding)
-            .background(MusicDesign.background)
+            .background(rowBackgroundFill)
     }
 }

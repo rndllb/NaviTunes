@@ -1042,6 +1042,89 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         }
     }
 
+    func searchCatalog(query: String, limit: Int) async throws -> CatalogSearchResults {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return .empty }
+        try requireSignedInUser()
+        let cap = max(1, min(limit, 100))
+
+        async let songsTask = searchAudioItems(query: q, limit: cap)
+        async let albumsTask = searchAlbumItems(query: q, limit: cap)
+        async let artistsTask = searchArtistItems(query: q, limit: cap)
+
+        let songs = (try? await songsTask) ?? []
+        let albums = (try? await albumsTask) ?? []
+        let artists = (try? await artistsTask) ?? []
+        return CatalogSearchResults(songs: songs, albums: albums, artists: artists)
+    }
+
+    private func searchAudioItems(query: String, limit: Int) async throws -> [Track] {
+        var comps = URLComponents(url: apiURL("Users", userId, "Items"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [
+            URLQueryItem(name: "Recursive", value: "true"),
+            URLQueryItem(name: "IncludeItemTypes", value: "Audio"),
+            URLQueryItem(name: "SearchTerm", value: query),
+            URLQueryItem(name: "Limit", value: "\(limit)"),
+            URLQueryItem(name: "Fields", value: Self.jellyfinAudioItemFields),
+        ]
+        var req = URLRequest(url: comps.url!)
+        applyAuth(&req)
+        let (data, res) = try await URLSession.shared.data(for: req)
+        guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let items = json?["Items"] as? [[String: Any]] ?? []
+        return items.compactMap { dict -> Track? in
+            let albumId =
+                (dict["AlbumId"] as? String)
+                    ?? (dict["ParentId"] as? String)
+                    ?? ""
+            guard !albumId.isEmpty else { return nil }
+            return parseTrack(dict: dict, albumId: albumId)
+        }
+    }
+
+    private func searchAlbumItems(query: String, limit: Int) async throws -> [AlbumSummary] {
+        var comps = URLComponents(url: apiURL("Users", userId, "Items"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [
+            URLQueryItem(name: "Recursive", value: "true"),
+            URLQueryItem(name: "IncludeItemTypes", value: "MusicAlbum"),
+            URLQueryItem(name: "SearchTerm", value: query),
+            URLQueryItem(name: "Limit", value: "\(limit)"),
+            URLQueryItem(name: "Fields", value: Self.jellyfinAlbumListFields),
+        ]
+        var req = URLRequest(url: comps.url!)
+        applyAuth(&req)
+        let (data, res) = try await URLSession.shared.data(for: req)
+        guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let items = json?["Items"] as? [[String: Any]] ?? []
+        return items.compactMap(parseAlbum)
+    }
+
+    private func searchArtistItems(query: String, limit: Int) async throws -> [LibraryArtistSummary] {
+        var comps = URLComponents(url: apiURL("Artists", "AlbumArtists"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [
+            URLQueryItem(name: "UserId", value: userId),
+            URLQueryItem(name: "Recursive", value: "true"),
+            URLQueryItem(name: "SearchTerm", value: query),
+            URLQueryItem(name: "Limit", value: "\(limit)"),
+            URLQueryItem(name: "Fields", value: "ImageTags"),
+        ]
+        var req = URLRequest(url: comps.url!)
+        applyAuth(&req)
+        let (data, res) = try await URLSession.shared.data(for: req)
+        guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let items = json?["Items"] as? [[String: Any]] ?? []
+        return items.compactMap(parseLibraryArtist)
+    }
+
     /// One-off summary fetch for a single album id. Used to fill in albums that the
     /// user added to their library but which fell outside the paged `albums(limit:)`
     /// catalog (large libraries past the alphabetical cap).
