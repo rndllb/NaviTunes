@@ -179,7 +179,7 @@ struct TrackOfflineDownloadIndicator: View {
     private var addToLibraryVisual: some View {
         Image(systemName: "plus")
             .font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(MusicDesign.accent)
+            .foregroundStyle(MusicDesign.secondaryLabel)
     }
 
     /// Greyed exclamation — server lost the file but the user's library still references it.
@@ -299,7 +299,9 @@ private enum AlbumTrackIndexColumn {
 }
 
 /// Shared album tracklist layout — row padding, spacing, and divider alignment with title text.
-private enum AlbumTrackRowLayout {
+/// Exposed module-wide so list-based hosts (e.g. `AlbumDetailView`) can align row separators
+/// past the index column the same way the in-row divider does.
+enum AlbumTrackRowLayout {
     static let horizontalPadding: CGFloat = 20
     /// Between track # and title — same as ★–# spacing for even rhythm (must match outer ``HStack`` spacing).
     static let indexToTitleSpacing: CGFloat = AlbumTrackIndexColumn.starToNumberSpacing

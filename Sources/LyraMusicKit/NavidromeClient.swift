@@ -14,6 +14,29 @@ enum NavidromeClientError: LocalizedError {
     }
 }
 
+/// Parsed Subsonic ``getUser`` payload for the signed-in account.
+struct NavidromeUserMetadata: Equatable {
+    var username: String
+    var email: String?
+    var scrobblingEnabled: Bool
+    var maxBitRate: Int?
+    var avatarLastChanged: Date?
+    var allowedFolderIds: [String]
+
+    var adminRole: Bool
+    var settingsRole: Bool
+    var streamRole: Bool
+    var downloadRole: Bool
+    var uploadRole: Bool
+    var playlistRole: Bool
+    var coverArtRole: Bool
+    var commentRole: Bool
+    var podcastRole: Bool
+    var jukeboxRole: Bool
+    var shareRole: Bool
+    var videoConversionRole: Bool
+}
+
 final class NavidromeClient: MusicLibraryProviding {
     private let baseURL: URL
     private(set) var token: String?
@@ -21,6 +44,12 @@ final class NavidromeClient: MusicLibraryProviding {
     private var password: String = ""
     /// From Subsonic ``getUser`` (`adminRole`).
     private(set) var isLibraryAdmin: Bool = false
+    /// Full Subsonic ``getUser`` payload for the signed-in account. Populated on sign-in
+    /// and refreshable via ``refreshUserMetadata()``.
+    private(set) var currentUserMetadata: NavidromeUserMetadata?
+    /// JWT for Navidrome's native (non-Subsonic) REST API at ``/api/...``. Lazily obtained
+    /// the first time we need to call a native endpoint (e.g. detecting custom playlist art).
+    private var nativeAuthToken: String?
 
     /// Subsonic `maxBitRate` for streaming (`0` = original / unlimited).
     var streamingMaxBitRate: Int = 0
@@ -46,7 +75,7 @@ final class NavidromeClient: MusicLibraryProviding {
         self.password = password
         let ok = try await ping()
         guard ok else { throw URLError(.userAuthenticationRequired) }
-        try await refreshAdminFlag()
+        try await refreshUserMetadata()
     }
 
     func httpHeadersForMediaRequests() -> [String: String] { [:] }
@@ -731,6 +760,124 @@ final class NavidromeClient: MusicLibraryProviding {
         try? buildURL(path: "getCoverArt", query: ["id": coverArt, "size": "400"])
     }
 
+    /// Public Subsonic `getCoverArt` URL for a given cover-art id (e.g. a playlist id).
+    /// Mirrors ``streamURLForCover(coverArt:)`` but is exposed so callers can render the
+    /// magic playlist's cover as the user's profile picture.
+    func coverArtURL(forId coverArtId: String, size: Int? = 400) -> URL? {
+        var query = ["id": coverArtId]
+        if let size, size > 0 { query["size"] = "\(size)" }
+        return try? buildURL(path: "getCoverArt", query: query)
+    }
+
+    // MARK: - Native (non-Subsonic) API
+
+    /// Logs in against Navidrome's native `/auth/login` endpoint and caches the JWT.
+    /// Re-runs if a previous request was rejected (401) so callers can simply retry.
+    @discardableResult
+    private func nativeAuthenticate(force: Bool = false) async throws -> String {
+        if !force, let token = nativeAuthToken, !token.isEmpty { return token }
+        guard !username.isEmpty, !password.isEmpty else {
+            throw URLError(.userAuthenticationRequired)
+        }
+        let url = baseURL.appendingPathComponent("auth/login")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: String] = ["username": username, "password": password]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200 ..< 300).contains(http.statusCode) else {
+            throw URLError(.userAuthenticationRequired)
+        }
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let token = json["token"] as? String, !token.isEmpty
+        else {
+            throw URLError(.cannotParseResponse)
+        }
+        nativeAuthToken = token
+        return token
+    }
+
+    /// Returns `true` when the playlist has a user-uploaded image or an external image URL set —
+    /// i.e. Navidrome is NOT falling back to its auto-generated 4-up mosaic. Uses the native
+    /// `/api/playlist/<id>` endpoint and the `uploadedImage` / `externalImageUrl` fields.
+    func playlistHasCustomCover(playlistId: String) async throws -> Bool {
+        let dict = try await fetchNativePlaylist(id: playlistId)
+        let uploaded = (dict["uploadedImage"] as? String) ?? ""
+        let external = (dict["externalImageUrl"] as? String) ?? ""
+        return !uploaded.isEmpty || !external.isEmpty
+    }
+
+    /// Uploads an image as the cover of a playlist via Navidrome's native API. The server
+    /// detects the format from the bytes (PNG/JPEG/GIF/WebP). On 403, Navidrome's
+    /// `EnableArtworkUpload` is off and the caller isn't admin.
+    func uploadPlaylistImage(playlistId: String, imageData: Data, filename: String = "avatar.jpg") async throws {
+        do {
+            try await uploadPlaylistImageRequest(playlistId: playlistId, imageData: imageData, filename: filename)
+        } catch let urlError as URLError where urlError.code == .userAuthenticationRequired {
+            nativeAuthToken = nil
+            try await uploadPlaylistImageRequest(playlistId: playlistId, imageData: imageData, filename: filename)
+        }
+    }
+
+    private func uploadPlaylistImageRequest(playlistId: String, imageData: Data, filename: String) async throws {
+        let token = try await nativeAuthenticate()
+        let url = baseURL.appendingPathComponent("api/playlist/\(playlistId)/image")
+        let boundary = "LyraMusicBoundary-\(UUID().uuidString)"
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "X-ND-Authorization")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        var body = Data()
+        let crlf = "\r\n"
+        body.append("--\(boundary)\(crlf)".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"image\"; filename=\"\(filename)\"\(crlf)".data(using: .utf8)!)
+        body.append("Content-Type: application/octet-stream\(crlf)\(crlf)".data(using: .utf8)!)
+        body.append(imageData)
+        body.append("\(crlf)--\(boundary)--\(crlf)".data(using: .utf8)!)
+        request.httpBody = body
+
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        if http.statusCode == 401 { throw URLError(.userAuthenticationRequired) }
+        if http.statusCode == 403 {
+            throw NSError(
+                domain: "Navidrome",
+                code: 403,
+                userInfo: [NSLocalizedDescriptionKey: "Artwork upload is disabled for this account. Ask your Navidrome admin to enable EnableArtworkUpload or grant admin role."],
+            )
+        }
+        guard (200 ..< 300).contains(http.statusCode) else { throw URLError(.badServerResponse) }
+    }
+
+    private func fetchNativePlaylist(id: String) async throws -> [String: Any] {
+        do {
+            return try await nativeRequest(path: "api/playlist/\(id)")
+        } catch let urlError as URLError where urlError.code == .userAuthenticationRequired {
+            // Token may have expired — re-login once and retry.
+            nativeAuthToken = nil
+            return try await nativeRequest(path: "api/playlist/\(id)")
+        }
+    }
+
+    private func nativeRequest(path: String) async throws -> [String: Any] {
+        let token = try await nativeAuthenticate()
+        let url = baseURL.appendingPathComponent(path)
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "X-ND-Authorization")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        if http.statusCode == 401 || http.statusCode == 403 {
+            throw URLError(.userAuthenticationRequired)
+        }
+        guard (200 ..< 300).contains(http.statusCode) else { throw URLError(.badServerResponse) }
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw URLError(.cannotParseResponse)
+        }
+        return json
+    }
+
     // MARK: - Playlists (Subsonic)
 
     func fetchPlaylistSummaries(limit: Int = 500) async throws -> [PlaylistSummary] {
@@ -867,6 +1014,32 @@ final class NavidromeClient: MusicLibraryProviding {
     func deleteTrackFromLibrary(trackId: String) async throws {
         _ = trackId
         throw NavidromeClientError.libraryTrackDeleteUnsupported
+    }
+
+    func searchCatalog(query: String, limit: Int) async throws -> CatalogSearchResults {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return .empty }
+        let cap = max(1, min(limit, 100))
+        let items = try await subsonicRequest(path: "search3", query: [
+            "query": q,
+            "songCount": "\(cap)",
+            "albumCount": "\(cap)",
+            "artistCount": "\(cap)",
+        ])
+        guard let result = navidromeDict(items["searchResult3"]) else { return .empty }
+
+        let songDicts = childDictArray(from: result, key: "song")
+        let songs = songDicts.compactMap { parseSongFromChildDict($0) }
+
+        let albumDicts = childDictArray(from: result, key: "album")
+        let albums = albumDicts.compactMap(parseAlbumDict)
+
+        let artistDicts = childDictArray(from: result, key: "artist")
+        var artists: [LibraryArtistSummary] = []
+        artists.reserveCapacity(artistDicts.count)
+        appendLibraryArtists(from: artistDicts, into: &artists)
+
+        return CatalogSearchResults(songs: songs, albums: albums, artists: artists)
     }
 
     /// One-off summary fetch for a single album id. Used to fill in albums that the
@@ -1015,8 +1188,11 @@ final class NavidromeClient: MusicLibraryProviding {
         return false
     }
 
-    /// Refreshes ``isLibraryAdmin`` from Subsonic ``getUser`` (`adminRole`).
-    private func refreshAdminFlag() async throws {
+    /// Refreshes ``currentUserMetadata`` (and ``isLibraryAdmin``) from Subsonic ``getUser``.
+    /// Non-admin accounts are only allowed to query their own user record, so we try a scoped
+    /// call first and fall back to the unscoped form (which the server resolves to the caller).
+    @discardableResult
+    func refreshUserMetadata() async throws -> NavidromeUserMetadata? {
         let items: [String: Any]
         if let withUser = try? await subsonicRequest(path: "getUser", query: ["username": username]),
            withUser["user"] != nil {
@@ -1024,8 +1200,45 @@ final class NavidromeClient: MusicLibraryProviding {
         } else {
             items = try await subsonicRequest(path: "getUser", query: [:])
         }
-        guard let user = items["user"] as? [String: Any] else { return }
-        isLibraryAdmin = navidromeCoerceBool(user["adminRole"]) || navidromeCoerceBool(user["admin"])
+        guard let user = items["user"] as? [String: Any] else { return nil }
+        let metadata = parseUserMetadata(user)
+        currentUserMetadata = metadata
+        isLibraryAdmin = metadata.adminRole
+        return metadata
+    }
+
+    private func parseUserMetadata(_ dict: [String: Any]) -> NavidromeUserMetadata {
+        let folders: [String] = {
+            let raw = dict["folder"]
+            if let arr = raw as? [Any] {
+                return arr.compactMap { navidromeCoerceString($0) }
+            }
+            if let single = navidromeCoerceString(raw) {
+                return [single]
+            }
+            return []
+        }()
+        let maxBitRate = navidromeInt(dict["maxBitRate"]).flatMap { $0 > 0 ? $0 : nil }
+        return NavidromeUserMetadata(
+            username: navidromeCoerceString(dict["username"]) ?? username,
+            email: navidromeCoerceString(dict["email"]),
+            scrobblingEnabled: navidromeCoerceBool(dict["scrobblingEnabled"]),
+            maxBitRate: maxBitRate,
+            avatarLastChanged: navidromeCreatedDate(dict["avatarLastChanged"]),
+            allowedFolderIds: folders,
+            adminRole: navidromeCoerceBool(dict["adminRole"]) || navidromeCoerceBool(dict["admin"]),
+            settingsRole: navidromeCoerceBool(dict["settingsRole"]),
+            streamRole: navidromeCoerceBool(dict["streamRole"]),
+            downloadRole: navidromeCoerceBool(dict["downloadRole"]),
+            uploadRole: navidromeCoerceBool(dict["uploadRole"]),
+            playlistRole: navidromeCoerceBool(dict["playlistRole"]),
+            coverArtRole: navidromeCoerceBool(dict["coverArtRole"]),
+            commentRole: navidromeCoerceBool(dict["commentRole"]),
+            podcastRole: navidromeCoerceBool(dict["podcastRole"]),
+            jukeboxRole: navidromeCoerceBool(dict["jukeboxRole"]),
+            shareRole: navidromeCoerceBool(dict["shareRole"]),
+            videoConversionRole: navidromeCoerceBool(dict["videoConversionRole"]),
+        )
     }
 
     private func navidromeCoerceBool(_ value: Any?) -> Bool {

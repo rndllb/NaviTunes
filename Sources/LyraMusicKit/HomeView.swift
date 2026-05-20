@@ -132,7 +132,7 @@ struct HomeView: View {
                 LazyHStack(spacing: 16) {
                     ForEach(albums) { album in
                         NavigationLink {
-                            AlbumDetailView(album: album)
+                            ServerPlaylistDetailView(album: album)
                         } label: {
                             heroCard(album: album)
                         }
@@ -154,7 +154,7 @@ struct HomeView: View {
                 LazyHStack(spacing: 14) {
                     ForEach(albums) { album in
                         NavigationLink {
-                            AlbumDetailView(album: album)
+                            ServerPlaylistDetailView(album: album)
                         } label: {
                             shelfCard(album: album)
                         }
@@ -179,7 +179,7 @@ struct HomeView: View {
                         switch item {
                         case .album(let album):
                             NavigationLink {
-                                AlbumDetailView(album: album)
+                                ServerPlaylistDetailView(album: album)
                             } label: {
                                 shelfCard(album: album)
                             }

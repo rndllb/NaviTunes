@@ -179,7 +179,7 @@ struct NowPlayingView: View {
             .navigationDestination(for: NowPlayingLibraryRoute.self) { route in
                 switch route {
                 case .album(let album):
-                    AlbumDetailView(album: album)
+                    ServerPlaylistDetailView(album: album)
                 case .artist(let name):
                     ArtistAlbumsView(artistName: name)
                 case .playlist:
@@ -529,6 +529,30 @@ struct NowPlayingView: View {
                             .buttonStyle(.plain)
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .top)
+                }
+                .defaultScrollAnchor(.bottom)
+                .overlay(alignment: .top) {
+                    let bgColor = app.player.activeTrack != nil
+                        ? backdropPalette.heroSolidBackdropColor
+                        : (colorScheme == .dark ? Color(red: 0.11, green: 0.11, blue: 0.12) : MusicDesign.background)
+                    return LinearGradient(gradient: Gradient(stops: [
+                        .init(color: bgColor, location: 0),
+                        .init(color: bgColor.opacity(0), location: 1)
+                    ]), startPoint: .top, endPoint: .bottom)
+                    .frame(height: 20)
+                    .allowsHitTesting(false)
+                }
+                .overlay(alignment: .bottom) {
+                    let bgColor = app.player.activeTrack != nil
+                        ? backdropPalette.heroSolidBackdropColor
+                        : (colorScheme == .dark ? Color(red: 0.11, green: 0.11, blue: 0.12) : MusicDesign.background)
+                    return LinearGradient(gradient: Gradient(stops: [
+                        .init(color: bgColor.opacity(0), location: 0),
+                        .init(color: bgColor, location: 1)
+                    ]), startPoint: .top, endPoint: .bottom)
+                    .frame(height: 20)
+                    .allowsHitTesting(false)
                 }
             }
         }

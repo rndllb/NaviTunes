@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 
 struct SettingsView: View {
@@ -5,10 +6,12 @@ struct SettingsView: View {
     @State private var isCheckingConnection = false
     @State private var connectionSuccess = false
     @State private var serverDraft = ServerConnectionDraft()
+    @State private var profilePickerItem: PhotosPickerItem?
 
     var body: some View {
         Form {
             userProfileSection
+            navidromeAccountSection
             serverSection
             librarySection
             syncSection
@@ -27,6 +30,7 @@ struct SettingsView: View {
             SettingsFormDrafts.pullServer(from: app, into: &serverDraft)
             app.prefetchAccountAvatar()
             Task { await app.refreshServerConnectionHealth() }
+            Task { await app.refreshNavidromeUserMetadata() }
         }
         .onChange(of: app.isSignedIn) { _, _ in
             SettingsFormDrafts.pullServer(from: app, into: &serverDraft)
@@ -38,7 +42,7 @@ struct SettingsView: View {
     private var userProfileSection: some View {
         Section {
             VStack(spacing: 12) {
-                AccountProfileAvatarView(diameter: 88)
+                profileAvatar
 
                 VStack(spacing: 4) {
                     Text(profileDisplayName)
@@ -51,11 +55,55 @@ struct SettingsView: View {
                 if app.isSignedIn {
                     connectionStatusPill
                 }
+
+                if let err = app.profilePictureUpdateError {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 16)
+                }
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 8)
             .listRowBackground(Color.clear)
             .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+        }
+    }
+
+    @ViewBuilder
+    private var profileAvatar: some View {
+        if app.isSignedIn, app.backendKind == .navidrome {
+            PhotosPicker(selection: $profilePickerItem, matching: .images, photoLibrary: .shared()) {
+                ZStack(alignment: .bottomTrailing) {
+                    AccountProfileAvatarView(diameter: 88)
+                        .opacity(app.isUpdatingProfilePicture ? 0.5 : 1)
+                    if app.isUpdatingProfilePicture {
+                        ProgressView()
+                            .tint(MusicDesign.accent)
+                    } else {
+                        Image(systemName: "pencil.circle.fill")
+                            .font(.system(size: 26, weight: .semibold))
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, MusicDesign.accent)
+                            .background(Circle().fill(MusicDesign.background))
+                            .offset(x: 4, y: 4)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(app.isUpdatingProfilePicture || app.libraryMagicPlaylistId == nil)
+            .onChange(of: profilePickerItem) { _, newItem in
+                guard let newItem else { return }
+                Task {
+                    if let data = try? await newItem.loadTransferable(type: Data.self) {
+                        await app.updateProfilePictureFromImageData(data)
+                    }
+                    profilePickerItem = nil
+                }
+            }
+        } else {
+            AccountProfileAvatarView(diameter: 88)
         }
     }
 
@@ -106,6 +154,78 @@ struct SettingsView: View {
             return "\(serverKindName) · \(status)"
         }
         return "\(serverKindName) · \(host) · \(status)"
+    }
+
+    // MARK: - Account (Navidrome)
+
+    @ViewBuilder
+    private var navidromeAccountSection: some View {
+        if app.backendKind == .navidrome, app.isSignedIn, let user = app.navidromeUserMetadata {
+            Section {
+                accountRow(title: "Username", value: user.username)
+                if let email = user.email, !email.isEmpty {
+                    accountRow(title: "Email", value: email)
+                }
+                accountRow(title: "Scrobbling", value: user.scrobblingEnabled ? "Enabled" : "Disabled")
+                if let maxBitRate = user.maxBitRate {
+                    accountRow(title: "Max bit rate", value: "\(maxBitRate) kbps")
+                }
+                if let changed = user.avatarLastChanged {
+                    accountRow(
+                        title: "Avatar updated",
+                        value: changed.formatted(date: .abbreviated, time: .shortened),
+                    )
+                }
+                if !user.allowedFolderIds.isEmpty {
+                    accountRow(title: "Music folders", value: "\(user.allowedFolderIds.count)")
+                }
+
+                DisclosureGroup("Roles") {
+                    ForEach(navidromeRoleRows(for: user), id: \.title) { row in
+                        roleRow(title: row.title, granted: row.granted)
+                    }
+                }
+                .tint(MusicDesign.accent)
+            } header: {
+                Text("Account")
+            } footer: {
+                Text("Reported by Navidrome via the Subsonic getUser API.")
+            }
+        }
+    }
+
+    private func accountRow(title: String, value: String) -> some View {
+        LabeledContent(title) {
+            Text(value)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+
+    private func roleRow(title: String, granted: Bool) -> some View {
+        HStack {
+            Text(title)
+            Spacer(minLength: 8)
+            Image(systemName: granted ? "checkmark.circle.fill" : "minus.circle")
+                .foregroundStyle(granted ? .green : .secondary)
+        }
+    }
+
+    private func navidromeRoleRows(for user: NavidromeUserMetadata) -> [(title: String, granted: Bool)] {
+        [
+            ("Admin", user.adminRole),
+            ("Settings", user.settingsRole),
+            ("Stream", user.streamRole),
+            ("Download", user.downloadRole),
+            ("Upload", user.uploadRole),
+            ("Playlist", user.playlistRole),
+            ("Cover art", user.coverArtRole),
+            ("Comment", user.commentRole),
+            ("Podcast", user.podcastRole),
+            ("Jukebox", user.jukeboxRole),
+            ("Share", user.shareRole),
+            ("Video conversion", user.videoConversionRole),
+        ]
     }
 
     // MARK: - Library

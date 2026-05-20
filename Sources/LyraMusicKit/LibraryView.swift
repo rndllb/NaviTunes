@@ -404,7 +404,7 @@ struct LibraryView: View {
     private func recentItemLink(_ item: RecentLibraryItem) -> some View {
         switch item {
         case .album(let album):
-            NavigationLink { AlbumDetailView(album: album, librarySource: true) } label: { recentCell(item) }
+            NavigationLink { ServerPlaylistDetailView(album: album, librarySource: true) } label: { recentCell(item) }
                 .buttonStyle(.plain)
                 .libraryAlbumContextMenu(album)
         case .playlist(let playlist):
@@ -820,7 +820,7 @@ struct FavoritePlaylistView: View {
         .musicNavigationChrome()
         .musicNavigationBarVisibleWhenPushed()
         .navigationDestination(item: $navigateAlbum) { album in
-            AlbumDetailView(album: album, librarySource: true)
+            ServerPlaylistDetailView(album: album, librarySource: true)
         }
         .task { await load() }
         .onChange(of: app.libraryCatalogEpoch) { _, _ in
@@ -1090,7 +1090,7 @@ struct LibraryDownloadedView: View {
 
                         LazyVGrid(columns: albumColumns, spacing: 16) {
                             ForEach(downloadedAlbums) { album in
-                                NavigationLink { AlbumDetailView(album: album, librarySource: true) } label: {
+                                NavigationLink { ServerPlaylistDetailView(album: album, librarySource: true) } label: {
                                     albumCell(album)
                                 }
                                 .buttonStyle(.plain)
@@ -1127,7 +1127,7 @@ struct LibraryDownloadedView: View {
         .musicNavigationChrome()
         .musicNavigationBarVisibleWhenPushed()
         .navigationDestination(item: $navigateAlbum) { album in
-            AlbumDetailView(album: album, librarySource: true)
+            ServerPlaylistDetailView(album: album, librarySource: true)
         }
     }
 
@@ -1307,7 +1307,7 @@ struct AlbumsGridView: View {
                 LazyVGrid(columns: columns, spacing: 20) {
                     ForEach(libraryAlbums) { album in
                         NavigationLink {
-                            AlbumDetailView(album: album, librarySource: true)
+                            ServerPlaylistDetailView(album: album, librarySource: true)
                         } label: {
                             AlbumGridCell(album: album)
                         }
@@ -1399,7 +1399,7 @@ struct ArtistAlbumsView: View {
                 LazyVGrid(columns: columns, spacing: 20) {
                     ForEach(albums) { album in
                         NavigationLink {
-                            AlbumDetailView(album: album, librarySource: true)
+                            ServerPlaylistDetailView(album: album, librarySource: true)
                         } label: {
                             AlbumGridCell(album: album)
                         }

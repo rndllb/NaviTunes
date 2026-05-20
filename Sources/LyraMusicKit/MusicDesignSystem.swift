@@ -433,20 +433,19 @@ extension View {
     }
 
     /// Native liquid-glass tab bar + Now Playing bottom accessory (iOS 26.1+).
-    /// Tab bar scroll-minimize runs only while the accessory is enabled (user has started playback).
+    /// The modifier chain is always applied — `isEnabled` only gates the accessory visibility.
+    /// Wrapping in an `if/else` changes the view identity when `isEnabled` flips, which would
+    /// tear down the entire `TabView` subtree (losing pushed navigation state and triggering
+    /// SwiftUI's "misplaced navigationDestination" warning the moment playback begins).
     @ViewBuilder
     func musicNativeTabChrome<Accessory: View>(
         isEnabled: Bool,
         @ViewBuilder accessory: () -> Accessory
     ) -> some View {
         #if os(iOS)
-        if isEnabled {
-            self
-                .tabBarMinimizeBehavior(.onScrollDown)
-                .tabViewBottomAccessory(isEnabled: true, content: accessory)
-        } else {
-            self
-        }
+        self
+            .tabBarMinimizeBehavior(.onScrollDown)
+            .tabViewBottomAccessory(isEnabled: isEnabled, content: accessory)
         #else
         self
         #endif
