@@ -144,7 +144,7 @@ enum LibraryTrackMatcher {
         return Set(pieces)
     }
 
-    private static func artistsOverlap(_ songArtists: Set<String>, _ libArtists: Set<String>) -> Bool {
+    static func artistsOverlap(_ songArtists: Set<String>, _ libArtists: Set<String>) -> Bool {
         for sa in songArtists {
             if libArtists.contains(sa) { return true }
             for la in libArtists {
@@ -155,5 +155,60 @@ enum LibraryTrackMatcher {
             }
         }
         return false
+    }
+
+    /// Split a chart artist string into normalized tokens (`"A & B"` → `{"a", "b"}`).
+    /// Mirrors the private helper used internally, exposed so callers can reuse the
+    /// same set across many lookups.
+    static func normalizedChartArtistTokens(_ artistLine: String) -> Set<String> {
+        normalizedChartArtists(artistLine)
+    }
+}
+
+/// O(1) lookup of chart rows → library `Track`. Built once when
+/// ``AppModel.discoveryLibraryTracks`` is reassigned; replaces per-cell scans
+/// over up to 50k tracks (each comparison ran multiple regex substitutions),
+/// which made the New tab unresponsive on large libraries.
+struct LibraryChartTrackIndex {
+    private struct Entry {
+        let track: Track
+        let artistKey: String
+    }
+    /// Normalized title key → entries. A track is inserted under every key its
+    /// title produces (strict + featured-stripped) so chart variants line up.
+    private let byTitleKey: [String: [Entry]]
+
+    static let empty = LibraryChartTrackIndex(tracks: [])
+
+    init(tracks: [Track]) {
+        var map: [String: [Entry]] = [:]
+        for track in tracks {
+            let artistKey = LibraryTrackMatcher.normalize(track.artist)
+            guard !artistKey.isEmpty else { continue }
+            let entry = Entry(track: track, artistKey: artistKey)
+            for titleKey in LibraryTrackMatcher.normalizedTitleKeys(from: track.title) {
+                map[titleKey, default: []].append(entry)
+            }
+        }
+        self.byTitleKey = map
+    }
+
+    /// Mirrors ``LibraryTrackMatcher.trackMatchesChart``: title-key overlap +
+    /// `artistsOverlap` over the chart's tokenized artist string.
+    func firstMatch(chart: ChartTrack) -> Track? {
+        let chartArtists = LibraryTrackMatcher.normalizedChartArtistTokens(chart.artistName)
+        guard !chartArtists.isEmpty else { return nil }
+        let titleKeys = LibraryTrackMatcher.normalizedTitleKeys(from: chart.name)
+        guard !titleKeys.isEmpty else { return nil }
+        var seenTrackIds = Set<String>()
+        for titleKey in titleKeys {
+            guard let entries = byTitleKey[titleKey] else { continue }
+            for entry in entries where seenTrackIds.insert(entry.track.id).inserted {
+                if LibraryTrackMatcher.artistsOverlap(chartArtists, Set([entry.artistKey])) {
+                    return entry.track
+                }
+            }
+        }
+        return nil
     }
 }

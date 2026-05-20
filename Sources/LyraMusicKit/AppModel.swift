@@ -107,7 +107,11 @@ public final class AppModel: ObservableObject {
     /// Normalized track titles → normalized artist strings (for Downtify vs library matching).
     @Published private(set) var libraryTrackTitleIndex: [String: Set<String>] = [:]
     /// Snapshot of tracks used to build ``libraryTrackTitleIndex`` (resolve Downtify rows → `Track`).
-    @Published private(set) var discoveryLibraryTracks: [Track] = []
+    @Published private(set) var discoveryLibraryTracks: [Track] = [] {
+        didSet { rebuildDiscoveryTrackIndices() }
+    }
+    /// O(1) "is this chart row in the user's library?" lookup. Rebuilt with ``libraryTrackTitleIndex``.
+    private(set) var libraryChartTrackIndex: LibraryChartTrackIndex = .empty
     @Published private(set) var isIndexingLibraryTracks = false
     @Published private(set) var libraryTrackIndexLoadError: String?
 
@@ -125,6 +129,8 @@ public final class AppModel: ObservableObject {
     let offline = OfflineDownloadManager()
 
     private var libraryAlbumsById: [String: AlbumSummary] = [:]
+    /// O(1) "is this chart album in the user's library?" lookup. Rebuilt alongside ``libraryAlbumsById``.
+    private(set) var libraryAlbumReleaseIndex: LibraryAlbumReleaseIndex = .empty
     private var libraryBootstrapTask: Task<Void, Never>?
     private var trackIndexTask: Task<Void, Never>?
 
@@ -575,7 +581,6 @@ public final class AppModel: ObservableObject {
         newTabRecentReleases = []
         newTabBrowseError = nil
         newTabBrowseBackend = .none
-        libraryTrackTitleIndex = [:]
         discoveryLibraryTracks = []
         libraryTrackIndexLoadError = nil
         isIndexingLibraryTracks = false
@@ -633,7 +638,6 @@ public final class AppModel: ObservableObject {
             if !snap.albums.isEmpty { libraryAlbums = snap.albums }
             if !snap.tracks.isEmpty {
                 discoveryLibraryTracks = snap.tracks
-                libraryTrackTitleIndex = LibraryTrackMatcher.titleIndex(from: snap.tracks)
             }
             if !snap.playlists.isEmpty { libraryPlaylists = snap.playlists }
             if !snap.favoriteTrackIds.isEmpty {
@@ -678,7 +682,6 @@ public final class AppModel: ObservableObject {
             trackById[t.id] = t
         }
         discoveryLibraryTracks = Array(trackById.values)
-        libraryTrackTitleIndex = LibraryTrackMatcher.titleIndex(from: discoveryLibraryTracks)
 
         var albumById = Dictionary(uniqueKeysWithValues: libraryAlbums.map { ($0.id, $0) })
         for album in offline.cachedAlbums() {
@@ -1278,6 +1281,16 @@ public final class AppModel: ObservableObject {
 
     private func rebuildLibraryAlbumIndex() {
         libraryAlbumsById = Dictionary(uniqueKeysWithValues: libraryAlbums.map { ($0.id, $0) })
+        libraryAlbumReleaseIndex = LibraryAlbumReleaseIndex(albums: libraryAlbums)
+    }
+
+    /// Rebuild both the title-index (used by Downtify match-Bool checks) and the
+    /// chart-track index (used by New tab `Track` lookups) when the discovery
+    /// snapshot is reassigned. Centralized so no caller can update one and forget
+    /// the other.
+    private func rebuildDiscoveryTrackIndices() {
+        libraryTrackTitleIndex = LibraryTrackMatcher.titleIndex(from: discoveryLibraryTracks)
+        libraryChartTrackIndex = LibraryChartTrackIndex(tracks: discoveryLibraryTracks)
     }
 
     public func refreshLibraryAlbums(limit: Int = AppModel.defaultLibraryAlbumFetchLimit) async {
@@ -1532,7 +1545,6 @@ public final class AppModel: ObservableObject {
         do {
             let tracks = try await lib.allTracks(limit: limit)
             discoveryLibraryTracks = tracks
-            libraryTrackTitleIndex = LibraryTrackMatcher.titleIndex(from: tracks)
             offline.backfillRecordsIfMissing(knownTracks: tracks)
             mergeOfflineCatalog()
             persistLibrarySnapshot()

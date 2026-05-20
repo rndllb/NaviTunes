@@ -168,11 +168,11 @@ struct MusicNewTabView: View {
     }
 
     private func resolvedLibraryTrack(for chart: ChartTrack) -> Track? {
-        LibraryTrackMatcher.firstLibraryTrack(matching: chart, in: app.discoveryLibraryTracks)
+        app.libraryChartTrackIndex.firstMatch(chart: chart)
     }
 
     private func matchedLibraryAlbum(for chart: ChartAlbum) -> AlbumSummary? {
-        app.libraryAlbums.firstMatchingNewTabRelease(artist: chart.artistName, albumTitle: chart.name)
+        app.libraryAlbumReleaseIndex.firstMatch(artist: chart.artistName, albumTitle: chart.name)
     }
 
     // MARK: - Hero Carousel (Apple Music–style: labels above rounded card + horizontal peek)
