@@ -73,6 +73,9 @@ private struct MainShellView: View {
                 }
             }
             .tint(MusicDesign.accent)
+            #if os(iOS)
+            .tabBarMinimizeBehavior(selectedTab == .search ? .never : .onScrollDown)
+            #endif
             .musicNativeTabChrome(isEnabled: app.player.showsMiniPlayerChrome) {
                 TabViewMiniPlayerAccessory(
                     showNowPlaying: $showNowPlaying,

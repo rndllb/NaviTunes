@@ -406,6 +406,23 @@ extension View {
         modifier(MusicNavigationChromeModifier())
     }
 
+    /// Plain lists on the search tab.
+    @ViewBuilder
+    func musicDiscoverySearchListStyle(discoverRows: Bool = false) -> some View {
+        if discoverRows {
+            listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .listSectionSeparator(.hidden)
+                .listRowSeparator(.hidden)
+        } else {
+            listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .listSectionSeparator(.hidden)
+        }
+    }
+}
+
+extension View {
     /// **New** tab only: transparent nav bar; toolbar appearance follows app theme.
     @ViewBuilder
     func musicNewTabNavigationChrome() -> some View {
@@ -455,7 +472,6 @@ extension View {
     ) -> some View {
         #if os(iOS)
         self
-            .tabBarMinimizeBehavior(.onScrollDown)
             .tabViewBottomAccessory(isEnabled: isEnabled, content: accessory)
         #else
         self

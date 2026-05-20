@@ -6,7 +6,7 @@ import SwiftUI
 enum ChartStyleSongOverflowChrome {
     @ViewBuilder
     static func trailingMenuSections(
-        onGoToAlbum: @escaping () -> Void,
+        onGoToAlbum: (() -> Void)? = nil,
         onAddToPlaylist: (() -> Void)? = nil,
         onPlayNext: (() -> Void)? = nil
     ) -> some View {
@@ -30,12 +30,14 @@ enum ChartStyleSongOverflowChrome {
         }
         .tint(Color.primary)
 
-        Section {
-            Button(action: onGoToAlbum) {
-                Label("Go to Album", systemImage: "music.note.square")
+        if let onGoToAlbum {
+            Section {
+                Button(action: onGoToAlbum) {
+                    Label("Go to Album", systemImage: "music.note.square")
+                }
             }
+            .tint(Color.primary)
         }
-        .tint(Color.primary)
 
         Section {
             Button {} label: { Label("Suggest Less", systemImage: "hand.thumbsdown") }
@@ -49,7 +51,7 @@ struct ChartStyleSongOverflowMenuContent: View {
     let shareItem: String
     let onAdd: () -> Void
     var addDisabled: Bool = false
-    let onGoToAlbum: () -> Void
+    var onGoToAlbum: (() -> Void)? = nil
     var onAddToPlaylist: (() -> Void)? = nil
     var onPlayNext: (() -> Void)? = nil
     var onToggleFavorite: (() -> Void)? = nil

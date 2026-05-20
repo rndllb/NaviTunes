@@ -724,9 +724,9 @@ public final class AppModel: ObservableObject {
         homeRecentlyPlayedServerAlbums = playedResult
         let pickedGenres = Array(genresResult.prefix(4))
         let shelves = await withTaskGroup(of: (genre: String, albums: [AlbumSummary])?.self) { group in
-            for g in pickedGenres {
+        for g in pickedGenres {
                 group.addTask {
-                    let albums = (try? await lib.albums(inGenre: g, limit: 8)) ?? []
+            let albums = (try? await lib.albums(inGenre: g, limit: 8)) ?? []
                     guard !albums.isEmpty else { return nil }
                     return (genre: g.name, albums: albums)
                 }
@@ -2042,9 +2042,9 @@ public final class AppModel: ObservableObject {
     /// On healthy or merely-unreachable probes we do NOT re-POST credentials — preserving the
     /// password's privacy across cold launches on hostile networks.
     private func reconcileRestoredSession(hasRestoredToken: Bool) async {
-        await refreshServerConnectionHealth()
+                await refreshServerConnectionHealth()
         guard hasRestoredToken else {
-            await signIn()
+                await signIn()
             return
         }
         let probe: ServerReachabilityProbe

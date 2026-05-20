@@ -1,18 +1,25 @@
 import SwiftUI
 
-private enum SearchScope: String, CaseIterable {
+enum SearchScope: String, CaseIterable {
     case discover = "Discover"
     case library = "Library"
+}
+
+/// Layout constants for the Search tab (`Tab(role: .search)`).
+enum DiscoverySearchLayout {
+    /// Reserved height for the pinned Discover / Library pill (`SearchLibraryView` overlay).
+    static let scopeBarClearance: CGFloat = 56
 }
 
 /// Unified navigation target so every Button-based row in Discovery search can
 /// route through one `.navigationDestination(item:)` modifier — multiple
 /// stacked modifiers conflict.
-private enum SearchNavTarget: Hashable {
+enum SearchNavTarget: Hashable {
     case song(Track)
     case album(AlbumSummary)
     case playlist(PlaylistSummary)
     case artist(LibraryArtistSummary)
+    case genre(LibraryGenreSummary)
     case downtify(DowntifySong)
 }
 
@@ -179,8 +186,9 @@ private enum HybridRow: Identifiable {
 
 struct DiscoverySearchView: View {
     @EnvironmentObject private var app: AppModel
-    @State private var scope: SearchScope = .discover
-    @State private var searchText = ""
+    @Binding var searchText: String
+    @Binding var scope: SearchScope
+    @Binding var navigationPath: NavigationPath
     @State private var recentDiscover: [RecentSearchEntity] = RecentSearchEntityStore.load(for: .discover)
     @State private var recentLibrary: [RecentSearchEntity] = RecentSearchEntityStore.load(for: .library)
 
@@ -201,7 +209,8 @@ struct DiscoverySearchView: View {
 
     // Idle-state genre tiles (Discover tab).
     @State private var serverGenres: [LibraryGenreSummary] = []
-    @State private var didLoadGenres = false
+    @State private var isLoadingGenres = false
+    @State private var genresLoadError: String?
 
     // Per-row interaction state.
     @State private var downloadingIds: Set<String> = []
@@ -214,9 +223,13 @@ struct DiscoverySearchView: View {
     /// Stacking multiple `.navigationDestination(item:)` modifiers on one view
     /// breaks them in practice — one combined modifier off a single binding
     /// avoids the issue entirely.
-    @State private var pushTarget: SearchNavTarget?
-
     private var trimmedQuery: String { searchText.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    /// Re-run genre fetch when sign-in completes or the active server client is replaced.
+    private var genreLoadTaskKey: String {
+        let clientKey = app.activeLibrary.map { "\(ObjectIdentifier($0))" } ?? "none"
+        return "\(app.isSignedIn)-\(app.backendKind)-\(clientKey)"
+    }
 
     // Single source of truth for row metrics across every Discovery search row
     // (Top Results, Library results, Recently Searched, per-genre shelves).
@@ -235,8 +248,10 @@ struct DiscoverySearchView: View {
     /// (10pt at medium) was visibly too generous in search lists.
     private var entityVerticalPadding: CGFloat { 2 }
     private var songVerticalPadding: CGFloat { 2 }
-    /// Shared tinted row background so every Discovery search row reads as a card.
-    private var resultRowBackground: Color { MusicDesign.tertiarySurfaceFill.opacity(0.55) }
+    /// Discover rows sit flush on the page background (no card tint).
+    private var discoverRowBackground: Color { MusicDesign.background }
+    /// Library search rows keep a subtle card tint for separation.
+    private var libraryRowBackground: Color { MusicDesign.tertiarySurfaceFill.opacity(0.55) }
 
     private var personalResults: PersonalLibrarySearchResults {
         app.searchPersonalLibrary(query: trimmedQuery)
@@ -319,27 +334,17 @@ struct DiscoverySearchView: View {
     }
 
     var body: some View {
-        Group {
-            listContent
-        }
-        .background(MusicDesign.background)
-        .navigationTitle("")
-        /// Hide system nav chrome so the scope bar can sit directly under the status bar (Apple Music–style).
-        #if os(iOS)
-        .toolbar(.hidden, for: .navigationBar)
-        #endif
-        .musicNavigationChrome()
-        .searchable(
-            text: $searchText,
-            prompt: scope == .discover
-                ? "Server catalog & Downtify"
-                : "Your library",
-        )
-        .safeAreaInset(edge: .top, spacing: 0) {
-            scopePickerChrome
-        }
-        .onSubmit(of: .search) { submitSearch() }
-        .onChange(of: scope) { _, newScope in
+        listContent
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(MusicDesign.background)
+            .searchable(
+                text: $searchText,
+                prompt: scope == .discover
+                    ? "Server catalog & Downtify"
+                    : "Your library",
+            )
+            .onSubmit(of: .search) { submitSearch() }
+            .onChange(of: scope) { _, newScope in
             if newScope == .discover {
                 scheduleHybridSearch()
             } else {
@@ -368,42 +373,12 @@ struct DiscoverySearchView: View {
                 await app.refreshLibraryTrackMatchIndex()
             }
         }
-        .navigationDestination(item: $pushTarget) { target in
-            switch target {
-            case .song(let track):
-                ServerPlaylistDetailView(album: app.albumSummary(for: track), scrollToTrackId: track.id)
-            case .album(let album):
-                ServerPlaylistDetailView(album: album)
-            case .playlist(let playlist):
-                ServerPlaylistDetailView(playlist: playlist)
-            case .artist(let artist):
-                LibraryArtistAlbumsView(artist: artist)
-            case .downtify(let song):
-                DowntifySongDetailView(song: song)
+        .task(id: genreLoadTaskKey) {
+            await loadServerGenresIfNeeded()
+            if app.homeGenreShelves.isEmpty {
+                await app.refreshHome()
             }
         }
-    }
-
-    // MARK: - Scope picker
-
-    /// Full-width segmented control pinned under the status bar (nav bar hidden on iOS).
-    private var scopePickerChrome: some View {
-        scopePicker
-            .padding(.horizontal, 16)
-            .padding(.top, 10)
-            .padding(.bottom, 14)
-            .frame(maxWidth: .infinity)
-            .background(MusicDesign.background)
-    }
-
-    private var scopePicker: some View {
-        Picker("Scope", selection: $scope) {
-            ForEach(SearchScope.allCases, id: \.self) { s in
-                Text(s.rawValue).tag(s)
-            }
-        }
-        .pickerStyle(.segmented)
-        .controlSize(.large)
     }
 
     // MARK: - Content
@@ -452,7 +427,7 @@ struct DiscoverySearchView: View {
                         .foregroundStyle(.primary)
                         .padding(.horizontal, 16)
 
-                    if serverGenres.isEmpty {
+                    if isLoadingGenres {
                         HStack {
                             ProgressView().tint(MusicDesign.accent)
                             Text("Loading categories…")
@@ -460,6 +435,16 @@ struct DiscoverySearchView: View {
                                 .foregroundStyle(MusicDesign.secondaryLabel)
                         }
                         .padding(.horizontal, 16)
+                    } else if let genresLoadError {
+                        Text(genresLoadError)
+                            .font(.subheadline)
+                            .foregroundStyle(MusicDesign.secondaryLabel)
+                            .padding(.horizontal, 16)
+                    } else if serverGenres.isEmpty {
+                        Text("No genres returned from your server.")
+                            .font(.subheadline)
+                            .foregroundStyle(MusicDesign.secondaryLabel)
+                            .padding(.horizontal, 16)
                     } else {
                         LazyVGrid(
                             columns: [
@@ -469,8 +454,8 @@ struct DiscoverySearchView: View {
                             spacing: 12,
                         ) {
                             ForEach(serverGenres) { genre in
-                                NavigationLink {
-                                    LibraryGenreAlbumsView(genre: genre)
+                                Button {
+                                    navigationPath.append(SearchNavTarget.genre(genre))
                                 } label: {
                                     SearchGenreTile(title: genre.name)
                                 }
@@ -491,10 +476,9 @@ struct DiscoverySearchView: View {
                 }
             }
             .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .task {
-            await loadServerGenresIfNeeded()
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private func discoverGenreShelf(title: String, albums: [AlbumSummary]) -> some View {
@@ -515,7 +499,7 @@ struct DiscoverySearchView: View {
                                 subtitle: album.artist,
                                 artworkURL: album.artworkURL,
                             ))
-                            pushTarget = .album(album)
+                            navigationPath.append(SearchNavTarget.album(album))
                         } label: {
                             shelfAlbumCard(album)
                         }
@@ -562,7 +546,7 @@ struct DiscoverySearchView: View {
                             recentEntityRow(item)
                         }
                         .buttonStyle(.plain)
-                        .listRowBackground(resultRowBackground)
+                        .listRowBackground(discoverRowBackground)
                     }
                 }
             }
@@ -575,8 +559,7 @@ struct DiscoverySearchView: View {
                 }
             }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
+        .musicDiscoverySearchListStyle(discoverRows: true)
     }
 
     private var hybridResultsList: some View {
@@ -615,22 +598,29 @@ struct DiscoverySearchView: View {
                 }
             }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
+        .musicDiscoverySearchListStyle(discoverRows: true)
     }
 
     private func loadServerGenresIfNeeded() async {
-        guard !didLoadGenres else { return }
-        guard let lib = app.activeLibrary else { return }
-        didLoadGenres = true
-        // Cap chosen to fill 4-6 vertical screens of tiles on iPhone; lets the
-        // grid scroll like Apple Music's deep Browse experience.
-        let fetched = (try? await lib.libraryGenres(limit: 60)) ?? []
-        serverGenres = fetched
-        // The per-genre shelves below the tile grid rely on `homeGenreShelves`.
-        // Trigger a refresh if Home hasn't been visited this session.
-        if app.homeGenreShelves.isEmpty {
-            await app.refreshHome()
+        guard let lib = app.activeLibrary else {
+            serverGenres = []
+            genresLoadError = nil
+            isLoadingGenres = false
+            return
+        }
+
+        isLoadingGenres = true
+        genresLoadError = nil
+        defer { isLoadingGenres = false }
+
+        do {
+            // Cap chosen to fill 4-6 vertical screens of tiles on iPhone.
+            serverGenres = try await lib.libraryGenres(limit: 60)
+        } catch is CancellationError {
+            return
+        } catch {
+            genresLoadError = error.localizedDescription
+            serverGenres = []
         }
     }
 
@@ -660,7 +650,7 @@ struct DiscoverySearchView: View {
                 subtitle: album.artist,
                 artworkURL: album.artworkURL,
             ))
-            pushTarget = .album(album)
+            navigationPath.append(SearchNavTarget.album(album))
         } label: {
             HStack(spacing: 12) {
                 AlbumArtworkView(url: album.artworkURL)
@@ -682,7 +672,7 @@ struct DiscoverySearchView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .listRowBackground(resultRowBackground)
+        .listRowBackground(discoverRowBackground)
         .libraryAlbumContextMenu(album)
     }
 
@@ -705,7 +695,7 @@ struct DiscoverySearchView: View {
                 subtitle: track.artist,
                 artworkURL: track.artworkURL,
             ))
-            pushTarget = .song(track)
+            navigationPath.append(SearchNavTarget.song(track))
         } label: {
             HStack(spacing: 12) {
                 AlbumArtworkView(url: track.artworkURL)
@@ -727,7 +717,7 @@ struct DiscoverySearchView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .listRowBackground(resultRowBackground)
+        .listRowBackground(discoverRowBackground)
         .contextMenu {
             serverSongContextMenu(track)
         }
@@ -740,7 +730,7 @@ struct DiscoverySearchView: View {
     private func serverSongContextMenu(_ track: Track) -> some View {
         Section {
             Button {
-                pushTarget = .song(track)
+                navigationPath.append(SearchNavTarget.song(track))
             } label: {
                 Label("Play", systemImage: "play")
             }
@@ -782,7 +772,7 @@ struct DiscoverySearchView: View {
         }
         Section {
             Button {
-                pushTarget = .album(app.albumSummary(for: track))
+                navigationPath.append(SearchNavTarget.album(app.albumSummary(for: track)))
             } label: {
                 Label("Go to Album", systemImage: "music.note.square")
             }
@@ -807,7 +797,7 @@ struct DiscoverySearchView: View {
                     subtitle: song.artists.joined(separator: ", "),
                     artworkURL: song.coverURL,
                 ))
-                pushTarget = .downtify(song)
+                navigationPath.append(SearchNavTarget.downtify(song))
             } label: {
                 HStack {
                     downtifyRowArtworkAndTitles(song)
@@ -844,7 +834,7 @@ struct DiscoverySearchView: View {
             }
         }
         .padding(.vertical, songVerticalPadding)
-        .listRowBackground(resultRowBackground)
+        .listRowBackground(discoverRowBackground)
     }
 
     @ViewBuilder
@@ -951,7 +941,7 @@ struct DiscoverySearchView: View {
                     .padding(.horizontal, 16)
             }
             .padding(.vertical, 12)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
     }
 
@@ -982,13 +972,12 @@ struct DiscoverySearchView: View {
                             recentEntityRow(item)
                         }
                         .buttonStyle(.plain)
-                        .listRowBackground(resultRowBackground)
+                        .listRowBackground(libraryRowBackground)
                     }
                 }
             }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
+        .musicDiscoverySearchListStyle()
     }
 
     private var libraryResultsList: some View {
@@ -1014,7 +1003,7 @@ struct DiscoverySearchView: View {
                                     subtitle: track.artist,
                                     artworkURL: track.artworkURL,
                                 ))
-                                pushTarget = .song(track)
+                                navigationPath.append(SearchNavTarget.song(track))
                             } label: {
                                 HStack {
                                     personalSongRow(track)
@@ -1024,7 +1013,7 @@ struct DiscoverySearchView: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-                            .listRowBackground(resultRowBackground)
+                            .listRowBackground(libraryRowBackground)
                             .contextMenu { serverSongContextMenu(track) }
                         }
                     }
@@ -1040,7 +1029,7 @@ struct DiscoverySearchView: View {
                                     subtitle: album.artist,
                                     artworkURL: album.artworkURL,
                                 ))
-                                pushTarget = .album(album)
+                                navigationPath.append(SearchNavTarget.album(album))
                             } label: {
                                 HStack {
                                     albumRow(album)
@@ -1050,7 +1039,7 @@ struct DiscoverySearchView: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-                            .listRowBackground(resultRowBackground)
+                            .listRowBackground(libraryRowBackground)
                             .libraryAlbumContextMenu(album)
                         }
                     }
@@ -1066,7 +1055,7 @@ struct DiscoverySearchView: View {
                                     subtitle: playlist.songCount.map { $0 == 1 ? "1 song" : "\($0) songs" },
                                     artworkURL: playlist.artworkURL,
                                 ))
-                                pushTarget = .playlist(playlist)
+                                navigationPath.append(SearchNavTarget.playlist(playlist))
                             } label: {
                                 HStack {
                                     playlistRow(playlist)
@@ -1076,7 +1065,7 @@ struct DiscoverySearchView: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-                            .listRowBackground(resultRowBackground)
+                            .listRowBackground(libraryRowBackground)
                             .libraryPlaylistContextMenu(playlist)
                         }
                     }
@@ -1091,7 +1080,7 @@ struct DiscoverySearchView: View {
                                     title: artist.name,
                                     artworkURL: artist.artworkURL,
                                 ))
-                                pushTarget = .artist(artist)
+                                navigationPath.append(SearchNavTarget.artist(artist))
                             } label: {
                                 HStack(spacing: 12) {
                                     AlbumArtworkView(url: artist.artworkURL, cornerRadius: 6)
@@ -1106,14 +1095,13 @@ struct DiscoverySearchView: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-                            .listRowBackground(resultRowBackground)
+                            .listRowBackground(libraryRowBackground)
                         }
                     }
                 }
             }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
+        .musicDiscoverySearchListStyle()
     }
 
     private var recentHeader: some View {
@@ -1236,7 +1224,7 @@ struct DiscoverySearchView: View {
             let albumId = entity.secondaryId ?? ""
             // Stub Track is enough for `ServerPlaylistDetailView` to load the
             // album and scroll to the original row by id.
-            pushTarget = .song(Track(
+            navigationPath.append(SearchNavTarget.song(Track(
                 id: entity.primaryId,
                 title: entity.title,
                 albumId: albumId,
@@ -1246,26 +1234,26 @@ struct DiscoverySearchView: View {
                 discNumber: 1,
                 indexNumber: 0,
                 artworkURL: entity.artworkURL,
-            ))
+            )))
         case .album:
-            pushTarget = .album(AlbumSummary(
+            navigationPath.append(SearchNavTarget.album(AlbumSummary(
                 id: entity.primaryId,
                 title: entity.title,
                 artist: entity.subtitle ?? "",
                 artworkURL: entity.artworkURL,
-            ))
+            )))
         case .playlist:
-            pushTarget = .playlist(PlaylistSummary(
+            navigationPath.append(SearchNavTarget.playlist(PlaylistSummary(
                 id: entity.primaryId,
                 name: entity.title,
                 artworkURL: entity.artworkURL,
-            ))
+            )))
         case .artist:
-            pushTarget = .artist(LibraryArtistSummary(
+            navigationPath.append(SearchNavTarget.artist(LibraryArtistSummary(
                 id: entity.primaryId,
                 name: entity.title,
                 artworkURL: entity.artworkURL,
-            ))
+            )))
         }
     }
 
@@ -1381,6 +1369,29 @@ struct DiscoverySearchView: View {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             toast = nil
         }
+    }
+}
+
+// MARK: - Discover / Library scope pill (pinned in `SearchLibraryView`)
+
+/// Floating liquid-glass Discover / Library control; overlay is outside `isSearching` layout shifts.
+struct DiscoverLibraryScopeBar: View {
+    @Binding var scope: SearchScope
+
+    var body: some View {
+        Picker("Scope", selection: $scope) {
+            ForEach(SearchScope.allCases, id: \.self) { s in
+                Text(s.rawValue).tag(s)
+            }
+        }
+        .pickerStyle(.segmented)
+        .controlSize(.large)
+        .frame(maxWidth: .infinity)
+        .padding(6)
+        .musicGlassCapsuleInteractiveChrome()
+        .padding(.horizontal, 8)
+        .padding(.top, 4)
+        .padding(.bottom, 8)
     }
 }
 

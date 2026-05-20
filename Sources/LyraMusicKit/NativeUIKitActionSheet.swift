@@ -3,22 +3,34 @@ import SwiftUI
 import UIKit
 #endif
 
-/// Presents the **system** downloaded-album action sheet (`UIAlertController`, `.actionSheet`).
+enum DownloadedLibraryItemKind {
+    case album
+    case song
+
+    var confirmationTitle: String {
+        switch self {
+        case .album:
+            return "Do you want to remove this album from your downloads or delete it from your library?"
+        case .song:
+            return "Do you want to remove this song from your downloads or delete it from your library?"
+        }
+    }
+}
+
+/// Presents the **system** downloaded-library action sheet (`UIAlertController`, `.actionSheet`).
 /// On current iOS versions a long title is laid out as a centered card by UIKit — no custom chrome.
 struct DownloadedAlbumActionPresentation: ViewModifier {
     @Binding var isPresented: Bool
+    var itemKind: DownloadedLibraryItemKind = .album
     let onRemoveDownload: () -> Void
     let onDeleteFromLibrary: () -> Void
-
-    private static let title =
-        "Do you want to remove this album from your downloads or delete it from your library?"
 
     func body(content: Content) -> some View {
         #if os(iOS)
         content.background {
             NativeUIAlertActionSheetBridge(
                 isPresented: $isPresented,
-                title: Self.title,
+                title: itemKind.confirmationTitle,
                 onRemoveDownload: onRemoveDownload,
                 onDeleteFromLibrary: onDeleteFromLibrary,
             )
@@ -26,12 +38,47 @@ struct DownloadedAlbumActionPresentation: ViewModifier {
         }
         #else
         content
-            .confirmationDialog(Self.title, isPresented: $isPresented, titleVisibility: .visible) {
+            .confirmationDialog(itemKind.confirmationTitle, isPresented: $isPresented, titleVisibility: .visible) {
                 Button("Only Remove Download", action: onRemoveDownload)
                 Button("Delete from Library", role: .destructive, action: onDeleteFromLibrary)
                 Button("Cancel", role: .cancel) {}
             }
         #endif
+    }
+}
+
+extension View {
+    /// Presents the downloaded-song delete sheet from the screen root (reliable inside `List` rows).
+    func downloadedTrackDeleteSheet(
+        track: Binding<Track?>,
+        app: AppModel,
+        offline: OfflineDownloadManager
+    ) -> some View {
+        modifier(
+            DownloadedAlbumActionPresentation(
+                isPresented: Binding(
+                    get: { track.wrappedValue != nil },
+                    set: { isPresented in
+                        if !isPresented { track.wrappedValue = nil }
+                    }
+                ),
+                itemKind: .song,
+                onRemoveDownload: {
+                    guard let id = track.wrappedValue?.id else { return }
+                    try? offline.remove(trackId: id)
+                    track.wrappedValue = nil
+                },
+                onDeleteFromLibrary: {
+                    guard let pending = track.wrappedValue else { return }
+                    let trackToRemove = pending
+                    Task { @MainActor in
+                        try? offline.remove(trackId: trackToRemove.id)
+                        await app.removeSongFromLibrary(trackToRemove)
+                        track.wrappedValue = nil
+                    }
+                },
+            )
+        )
     }
 }
 
@@ -131,13 +178,13 @@ struct NativeUIAlertActionSheetBridge: UIViewControllerRepresentable {
         }
 
         private func finish(dismissAnimated: Bool, action: (() -> Void)? = nil) {
+            action?()
             parent.isPresented = false
             if dismissAnimated {
                 dismiss(animated: true)
             } else {
                 alert = nil
             }
-            action?()
         }
 
         func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
