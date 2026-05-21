@@ -367,7 +367,7 @@ struct LibraryGenresView: View {
                     systemImage: "paintbrush.pointed",
                     description: Text(
                         app.backendKind == .navidrome
-                            ? "Add GENRE tags to your audio files (or tag albums in Navidrome), run a full library scan, then pull to refresh here."
+                            ? "Try refreshing after tagging albums, or confirm your server supports getGenres."
                             : "Jellyfin didn’t return genre items or album genre tags for the sampled library."
                     )
                 )
