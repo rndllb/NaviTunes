@@ -225,21 +225,10 @@ struct DiscoverySearchView: View {
     /// avoids the issue entirely.
     private var trimmedQuery: String { searchText.trimmingCharacters(in: .whitespacesAndNewlines) }
 
-    /// Re-run genre fetch when sign-in completes, the server client is replaced, or library metadata grows.
+    /// Re-run genre fetch when sign-in completes or the active server client is replaced.
     private var genreLoadTaskKey: String {
         let clientKey = app.activeLibrary.map { "\(ObjectIdentifier($0))" } ?? "none"
-        return "\(app.isSignedIn)-\(app.backendKind)-\(clientKey)-\(app.libraryAlbums.count)-\(app.discoveryLibraryTracks.count)"
-    }
-
-    private var discoverGenresEmptyMessage: String {
-        switch app.backendKind {
-        case .navidrome:
-            return """
-            No genres in your Navidrome library yet. Add GENRE metadata to your audio files (or tag albums in the Navidrome web UI), run a full library scan, then reopen Search.
-            """
-        case .jellyfin:
-            return "No genres returned from your Jellyfin server. Tag albums with genres in Jellyfin, then try again."
-        }
+        return "\(app.isSignedIn)-\(app.backendKind)-\(clientKey)"
     }
 
     // Single source of truth for row metrics across every Discovery search row
@@ -452,7 +441,7 @@ struct DiscoverySearchView: View {
                             .foregroundStyle(MusicDesign.secondaryLabel)
                             .padding(.horizontal, 16)
                     } else if serverGenres.isEmpty {
-                        Text(discoverGenresEmptyMessage)
+                        Text("No genres returned from your server.")
                             .font(.subheadline)
                             .foregroundStyle(MusicDesign.secondaryLabel)
                             .padding(.horizontal, 16)
@@ -626,15 +615,7 @@ struct DiscoverySearchView: View {
 
         do {
             // Cap chosen to fill 4-6 vertical screens of tiles on iPhone.
-            var genres = try await lib.libraryGenres(limit: 60)
-            if genres.isEmpty {
-                genres = LibraryGenreAggregation.summaries(
-                    from: app.libraryAlbums,
-                    tracks: app.discoveryLibraryTracks,
-                    limit: 60,
-                )
-            }
-            serverGenres = genres
+            serverGenres = try await lib.libraryGenres(limit: 60)
         } catch is CancellationError {
             return
         } catch {

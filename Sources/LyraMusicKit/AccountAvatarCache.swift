@@ -1,3 +1,4 @@
+import CoreGraphics
 import CryptoKit
 import Foundation
 
@@ -11,6 +12,8 @@ struct AccountAvatarIdentity: Hashable, Codable, Sendable {
 /// On-disk cache for Jellyfin / Navidrome profile images so the toolbar avatar survives poor or no connectivity.
 enum AccountAvatarCache {
     private static let folderName = "LyraMusic/AccountAvatar"
+    private static let decodedLock = NSLock()
+    private static var decodedImages: [String: CGImage] = [:]
 
     static func identity(backend: BackendKind, baseURL: URL, userKey: String) -> AccountAvatarIdentity {
         AccountAvatarIdentity(
@@ -31,11 +34,35 @@ enum AccountAvatarCache {
     static func remove(identity: AccountAvatarIdentity) {
         guard let url = try? fileURL(for: identity) else { return }
         try? FileManager.default.removeItem(at: url)
+        clearDecodedImages(matching: identity)
     }
 
     static func clearAll() {
         guard let dir = try? cacheDirectory() else { return }
         try? FileManager.default.removeItem(at: dir)
+        decodedLock.lock()
+        decodedImages.removeAll()
+        decodedLock.unlock()
+    }
+
+    /// Decoded avatar kept in memory so toolbar headers can show/hide without re-decoding.
+    static func cachedDecodedImage(identity: AccountAvatarIdentity, maxPixelSize: CGFloat) -> CGImage? {
+        let key = decodedCacheKey(identity: identity, maxPixelSize: maxPixelSize)
+        decodedLock.lock()
+        if let hit = decodedImages[key] {
+            decodedLock.unlock()
+            return hit
+        }
+        decodedLock.unlock()
+
+        guard let data = loadData(identity: identity),
+              let cg = ArtworkImageDecoder.cgImage(from: data, maxPixelSize: maxPixelSize)
+        else { return nil }
+
+        decodedLock.lock()
+        decodedImages[key] = cg
+        decodedLock.unlock()
+        return cg
     }
 
     /// Downloads and stores avatar bytes when online; keeps the previous file on failure.
@@ -92,6 +119,17 @@ enum AccountAvatarCache {
 
     private static func cacheSeed(_ identity: AccountAvatarIdentity) -> Data {
         Data("\(identity.backend)|\(identity.serverKey)|\(identity.userKey)".utf8)
+    }
+
+    private static func decodedCacheKey(identity: AccountAvatarIdentity, maxPixelSize: CGFloat) -> String {
+        "\(identity.backend)|\(identity.serverKey)|\(identity.userKey)|\(Int(maxPixelSize))"
+    }
+
+    private static func clearDecodedImages(matching identity: AccountAvatarIdentity) {
+        let prefix = "\(identity.backend)|\(identity.serverKey)|\(identity.userKey)|"
+        decodedLock.lock()
+        decodedImages = decodedImages.filter { !$0.key.hasPrefix(prefix) }
+        decodedLock.unlock()
     }
 
     private static func save(data: Data, identity: AccountAvatarIdentity) {

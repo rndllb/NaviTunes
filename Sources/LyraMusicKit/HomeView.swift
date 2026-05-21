@@ -86,15 +86,11 @@ struct HomeView: View {
                 slack: 72,
                 showFloatingHeader: $showFloatingHeader
             ))
-            .safeAreaInset(edge: .top, spacing: 0) {
-                if showFloatingHeader {
-                    MusicTabTitleHeaderBar(title: "Home") {
-                        MusicToolbarSettingsAvatarLink(diameter: 45)
-                    }
-                    .transition(.opacity)
+            .musicTabFloatingHeaderInset(isVisible: showFloatingHeader) {
+                MusicTabTitleHeaderBar(title: "Home") {
+                    MusicToolbarSettingsAvatarLink(diameter: 45)
                 }
             }
-            .animation(.easeInOut(duration: 0.22), value: showFloatingHeader)
             .background(MusicDesign.background)
             .musicNewTabNavigationChrome()
             .musicNewTabRootHidesNavigationBar()
