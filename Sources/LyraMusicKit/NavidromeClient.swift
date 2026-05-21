@@ -917,18 +917,20 @@ final class NavidromeClient: MusicLibraryProviding {
         return out
     }
 
-    func createPlaylist(name: String, trackIds: [String]) async throws -> PlaylistSummary {
+    func createPlaylist(name: String, trackIds: [String], isPublic: Bool = false) async throws -> PlaylistSummary {
         let repeated = trackIds.map { ("songId", $0) }
         let items = try await subsonicRequest(path: "createPlaylist", query: ["name": name], repeatedQuery: repeated)
+        let summary: PlaylistSummary
         if let pl = navidromeDict(items["playlist"]),
-           let summary = parsePlaylistDictSummary(pl) {
-            return summary
+           let parsed = parsePlaylistDictSummary(pl) {
+            summary = parsed
+        } else if let match = try await fetchPlaylistSummaries(limit: 500).first(where: { $0.name == name }) {
+            summary = match
+        } else {
+            throw URLError(.cannotParseResponse)
         }
-        let all = try await fetchPlaylistSummaries(limit: 500)
-        if let match = all.first(where: { $0.name == name }) {
-            return match
-        }
-        throw URLError(.cannotParseResponse)
+        try await setPlaylistPublic(playlistId: summary.id, isPublic: isPublic)
+        return playlistSummary(summary, isPublic: isPublic)
     }
 
     func addTracksToPlaylist(playlistId: String, trackIds: [String]) async throws {
@@ -947,11 +949,15 @@ final class NavidromeClient: MusicLibraryProviding {
         }
     }
 
-    func renamePlaylist(playlistId: String, name: String) async throws {
-        _ = try await subsonicRequest(path: "updatePlaylist", query: [
+    func renamePlaylist(playlistId: String, name: String, isPublic: Bool? = nil) async throws {
+        var query: [String: String] = [
             "playlistId": playlistId,
             "name": name,
-        ])
+        ]
+        if let isPublic {
+            query["public"] = isPublic ? "true" : "false"
+        }
+        _ = try await subsonicRequest(path: "updatePlaylist", query: query)
     }
 
     func deletePlaylist(playlistId: String) async throws {
@@ -1136,7 +1142,26 @@ final class NavidromeClient: MusicLibraryProviding {
         let coverId = navidromeCoerceString(dict["coverArt"])
         let art = coverId.flatMap { streamURLForCover(coverArt: $0) }
         let created = navidromeCreatedDate(dict["created"])
-        return PlaylistSummary(id: id, name: name, songCount: count, artworkURL: art, libraryAddedDate: created)
+        let isPublic = navidromeCoerceBool(dict["public"])
+        return PlaylistSummary(
+            id: id,
+            name: name,
+            songCount: count,
+            artworkURL: art,
+            isPublic: isPublic,
+            libraryAddedDate: created,
+        )
+    }
+
+    private func playlistSummary(_ summary: PlaylistSummary, isPublic: Bool) -> PlaylistSummary {
+        PlaylistSummary(
+            id: summary.id,
+            name: summary.name,
+            songCount: summary.songCount,
+            artworkURL: summary.artworkURL,
+            isPublic: isPublic,
+            libraryAddedDate: summary.libraryAddedDate,
+        )
     }
 
     /// Subsonic ``getAvatar`` for the signed-in user (toolbar profile image).
