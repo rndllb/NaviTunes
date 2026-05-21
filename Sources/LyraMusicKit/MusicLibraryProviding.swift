@@ -317,6 +317,30 @@ struct LibraryGenreSummary: Identifiable, Hashable {
     let albumCount: Int?
 }
 
+/// Build browse categories from already-loaded album / track tag metadata.
+enum LibraryGenreAggregation {
+    static func summaries(from albums: [AlbumSummary], tracks: [Track], limit: Int) -> [LibraryGenreSummary] {
+        var counts: [String: Int] = [:]
+        func add(_ raw: String) {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            counts[trimmed, default: 0] += 1
+        }
+        for album in albums {
+            for genre in album.genres { add(genre) }
+        }
+        for track in tracks {
+            for genre in track.genres { add(genre) }
+        }
+        let cap = max(1, min(limit, 5000))
+        return counts
+            .map { LibraryGenreSummary(id: $0.key, name: $0.key, albumCount: $0.value) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .prefix(cap)
+            .map { $0 }
+    }
+}
+
 /// Server-wide catalog search results. Songs / albums / artists across the entire
 /// connected Navidrome / Jellyfin instance — **not** scoped to the user's personal
 /// library. Use this for "find anything on the server"; use ``AppModel`` personal-
