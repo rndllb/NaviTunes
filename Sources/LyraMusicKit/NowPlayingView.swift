@@ -1704,23 +1704,98 @@ private struct HiddenSystemVolumeBridge: UIViewRepresentable {
 #endif
 
 /// Apple Music–style synced lyrics: large active line, dimmed/blurred upcoming lines, auto-scroll.
+/// One row in the lyrics scroll — either a lyric line, or a silence marker
+/// representing a long instrumental gap between two lines. The silence marker
+/// renders as three dots that progressively light up as the gap elapses
+/// (Apple Music–style).
+private enum LyricRenderItem: Identifiable, Hashable {
+    case lyric(LyricLine)
+    case silence(start: TimeInterval, end: TimeInterval)
+
+    var id: String {
+        switch self {
+        case .lyric(let l): return "lyric-\(l.id)"
+        case .silence(let s, let e): return "silence-\(s)-\(e)"
+        }
+    }
+
+    var start: TimeInterval {
+        switch self {
+        case .lyric(let l): return l.start
+        case .silence(let s, _): return s
+        }
+    }
+}
+
 private struct LyricsFocusScrollView: View {
     let lines: [LyricLine]
     @ObservedObject var player: PlaybackEngine
     let primaryColor: Color
     let secondaryColor: Color
 
-    private var currentTime: TimeInterval { player.currentTime }
+    /// Index into `displayItems` of the currently active row. Mirrored as
+    /// `@State` (vs. computed) so SwiftUI consistently re-renders styling and
+    /// fires `.onChange(of: activeIndex)` for scroll, driven by an `onReceive`
+    /// subscription on `player.$currentTime` — more reliable than relying on a
+    /// computed property buried inside a `ScrollViewReader` body.
+    @State private var activeIndex: Int = 0
 
-    private var activeIndex: Int {
-        guard !lines.isEmpty else { return 0 }
-        let t = currentTime + 0.08
-        var lo = 0, hi = lines.count - 1
+    /// Mirrored playback time so the active silence's dot progress redraws
+    /// smoothly between `activeIndex` transitions.
+    @State private var displayTime: TimeInterval = 0
+
+    /// `lines` interleaved with silence markers for instrumental gaps.
+    /// Recomputed only when the underlying `lines` change.
+    @State private var displayItems: [LyricRenderItem] = []
+
+    /// True when the source has no per-line timestamps (every `start` is 0).
+    /// Jellyfin returns plain-text lyrics this way; render the lines but skip
+    /// sync, silence dots, and tap-to-seek so the view doesn't pin the
+    /// highlight to a bogus row.
+    private var isUnsynced: Bool {
+        guard let last = lines.last else { return true }
+        return last.start == 0
+    }
+
+    /// Threshold (seconds) for inserting a silence marker between two lines.
+    /// Apple Music shows dots for instrumental gaps roughly this long.
+    private static let silenceThreshold: TimeInterval = 5
+    /// Heuristic for how long a typical lyric line is sung; we only count gap
+    /// time *after* this offset as silence, so a normal vocal pause doesn't
+    /// sprout dots.
+    private static let typicalLineDuration: TimeInterval = 3
+
+    private static func buildDisplayItems(from lines: [LyricLine]) -> [LyricRenderItem] {
+        guard !lines.isEmpty else { return [] }
+        var items: [LyricRenderItem] = []
+
+        // Intro silence: only when the first lyric is well past t=0 (don't
+        // dot-spam the first second of every track).
+        if let first = lines.first, first.start >= silenceThreshold {
+            items.append(.silence(start: 0, end: first.start))
+        }
+
+        for i in 0..<lines.count {
+            items.append(.lyric(lines[i]))
+            guard i + 1 < lines.count else { continue }
+            let silenceStart = lines[i].start + typicalLineDuration
+            let silenceEnd = lines[i + 1].start
+            if silenceEnd - silenceStart >= silenceThreshold {
+                items.append(.silence(start: silenceStart, end: silenceEnd))
+            }
+        }
+        return items
+    }
+
+    private static func computeActiveIndex(at time: TimeInterval, in items: [LyricRenderItem]) -> Int {
+        guard !items.isEmpty else { return 0 }
+        let t = time + 0.08
+        var lo = 0, hi = items.count - 1
         while lo < hi {
             let mid = (lo + hi + 1) / 2
-            if lines[mid].start <= t { lo = mid } else { hi = mid - 1 }
+            if items[mid].start <= t { lo = mid } else { hi = mid - 1 }
         }
-        return lines[lo].start <= t ? lo : 0
+        return items[lo].start <= t ? lo : 0
     }
 
     private var scrollAnchor: UnitPoint { UnitPoint(x: 0.5, y: 0.38) }
@@ -1732,6 +1807,30 @@ private struct LyricsFocusScrollView: View {
             } else {
                 lyricsScroll
             }
+        }
+        .onAppear {
+            displayItems = Self.buildDisplayItems(from: lines)
+            syncActiveIndex(to: player.currentTime)
+            displayTime = player.currentTime
+        }
+        .onChange(of: lines.map(\.id)) { _, _ in
+            displayItems = Self.buildDisplayItems(from: lines)
+            syncActiveIndex(to: player.currentTime)
+        }
+        .onReceive(player.$currentTime) { newTime in
+            displayTime = newTime
+            syncActiveIndex(to: newTime)
+        }
+    }
+
+    private func syncActiveIndex(to time: TimeInterval) {
+        guard !isUnsynced else {
+            if activeIndex != 0 { activeIndex = 0 }
+            return
+        }
+        let newIndex = Self.computeActiveIndex(at: time, in: displayItems)
+        if newIndex != activeIndex {
+            activeIndex = newIndex
         }
     }
 
@@ -1752,10 +1851,10 @@ private struct LyricsFocusScrollView: View {
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(lines.enumerated()), id: \.element.id) { index, line in
-                        lyricLineView(line, index: index)
-                            .id(line.id)
-                            .padding(.bottom, spacingAfterLine(at: index))
+                    ForEach(Array(displayItems.enumerated()), id: \.element.id) { index, item in
+                        renderItemView(item, index: index)
+                            .id(item.id)
+                            .padding(.bottom, spacingAfterItem(at: index))
                     }
                 }
                 .padding(.horizontal, 28)
@@ -1763,20 +1862,21 @@ private struct LyricsFocusScrollView: View {
                 .padding(.bottom, 48)
             }
             .onAppear {
-                scrollToActiveLine(proxy: proxy, animated: false)
+                scrollToActiveItem(proxy: proxy, animated: false)
             }
             .onChange(of: activeIndex) { _, _ in
-                scrollToActiveLine(proxy: proxy, animated: true)
+                guard !isUnsynced else { return }
+                scrollToActiveItem(proxy: proxy, animated: true)
             }
-            .onChange(of: lines.map(\.id)) { _, _ in
-                scrollToActiveLine(proxy: proxy, animated: false)
+            .onChange(of: displayItems.map(\.id)) { _, _ in
+                scrollToActiveItem(proxy: proxy, animated: false)
             }
         }
     }
 
-    private func scrollToActiveLine(proxy: ScrollViewProxy, animated: Bool) {
-        guard lines.indices.contains(activeIndex) else { return }
-        let id = lines[activeIndex].id
+    private func scrollToActiveItem(proxy: ScrollViewProxy, animated: Bool) {
+        guard displayItems.indices.contains(activeIndex) else { return }
+        let id = displayItems[activeIndex].id
         if animated {
             withAnimation(.easeInOut(duration: 0.38)) {
                 proxy.scrollTo(id, anchor: scrollAnchor)
@@ -1787,25 +1887,99 @@ private struct LyricsFocusScrollView: View {
     }
 
     @ViewBuilder
+    private func renderItemView(_ item: LyricRenderItem, index: Int) -> some View {
+        switch item {
+        case .lyric(let line):
+            lyricLineView(line, index: index)
+        case .silence(let start, let end):
+            silenceMarkerView(start: start, end: end, index: index)
+        }
+    }
+
+    @ViewBuilder
     private func lyricLineView(_ line: LyricLine, index: Int) -> some View {
-        let distance = index - activeIndex
+        let distance = isUnsynced ? Int.max : index - activeIndex
 
         Text(line.text)
-            .font(font(for: distance))
-            .foregroundStyle(distance == 0 ? primaryColor : secondaryColor)
-            .opacity(opacity(for: distance))
-            .blur(radius: blur(for: distance))
+            .font(isUnsynced ? .title3.weight(.semibold) : font(for: distance))
+            .foregroundStyle(isUnsynced ? primaryColor : (distance == 0 ? primaryColor : secondaryColor))
+            .opacity(isUnsynced ? 0.85 : opacity(for: distance))
+            .blur(radius: isUnsynced ? 0 : blur(for: distance))
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
             .contentShape(Rectangle())
             .onTapGesture {
+                guard !isUnsynced else { return }
                 player.seek(toSeconds: line.start)
             }
             .animation(.easeInOut(duration: 0.28), value: activeIndex)
     }
 
-    private func spacingAfterLine(at index: Int) -> CGFloat {
+    @ViewBuilder
+    private func silenceMarkerView(start: TimeInterval, end: TimeInterval, index: Int) -> some View {
+        let distance = index - activeIndex
+        let isActive = distance == 0
+        // Progress 0…1 through this silence gap. Only meaningful while active;
+        // for past/future silence rows we just render three uniform dim dots.
+        let progress: Double = {
+            guard isActive, end > start else { return 0 }
+            return min(max((displayTime - start) / (end - start), 0), 1)
+        }()
+
+        HStack(spacing: 12) {
+            ForEach(0..<3, id: \.self) { i in
+                Circle()
+                    .fill(primaryColor)
+                    .frame(width: 12, height: 12)
+                    .opacity(dotOpacity(forDot: i, progress: progress, isActive: isActive, distance: distance))
+                    .scaleEffect(dotScale(forDot: i, progress: progress, isActive: isActive))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .blur(radius: isActive ? 0 : silenceBlur(for: distance))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            player.seek(toSeconds: start)
+        }
+        .animation(.easeInOut(duration: 0.28), value: activeIndex)
+        .animation(.easeInOut(duration: 0.45), value: progress)
+    }
+
+    /// Light each dot up in sequence (≈⅓, ⅔, 1.0 of the silence elapsed).
+    /// Inactive silences keep all three dots at a faint, uniform opacity.
+    private func dotOpacity(forDot i: Int, progress: Double, isActive: Bool, distance: Int) -> Double {
+        guard isActive else {
+            switch distance {
+            case ..<0: return 0.18
+            case 1: return 0.6
+            case 2: return 0.4
+            case 3: return 0.28
+            default: return 0.18
+            }
+        }
+        let threshold = Double(i + 1) / 3.0
+        return progress >= threshold ? 1.0 : 0.3
+    }
+
+    private func dotScale(forDot i: Int, progress: Double, isActive: Bool) -> CGFloat {
+        guard isActive else { return 1 }
+        let threshold = Double(i + 1) / 3.0
+        return progress >= threshold ? 1.15 : 1.0
+    }
+
+    private func silenceBlur(for distance: Int) -> CGFloat {
+        switch distance {
+        case ..<0: return 1.5
+        case 1: return 0.4
+        case 2: return 1.4
+        case 3: return 2.4
+        default: return 3.4
+        }
+    }
+
+    private func spacingAfterItem(at index: Int) -> CGFloat {
+        guard !isUnsynced else { return 14 }
         let distance = index - activeIndex
         if distance == 0 { return 30 }
         if distance == 1 { return 24 }
