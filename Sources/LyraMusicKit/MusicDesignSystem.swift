@@ -306,7 +306,6 @@ struct AlbumArtworkView: View {
                             .resizable()
                             .scaledToFill()
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .transaction { $0.animation = nil }
                     } else if loadFailed {
                         placeholder
                     } else {
@@ -329,21 +328,32 @@ struct AlbumArtworkView: View {
         if loadedArtworkID == id, decoded != nil {
             return
         }
+        // Suppress animation only for image-load state changes — the previous
+        // `.transaction { $0.animation = nil }` on the Image itself also blocked
+        // the Image from participating in the parent's frame morph, which made
+        // resizes look like the container was cropping a fixed-size image
+        // instead of scaling the image itself.
         if let cached = DecodedArtworkCache.image(for: url, maxPixelSize: maxDecodePixels) {
-            decoded = cached
-            loadFailed = false
-            loadedArtworkID = id
+            withTransaction(Transaction(animation: nil)) {
+                decoded = cached
+                loadFailed = false
+                loadedArtworkID = id
+            }
             return
         }
-        loadFailed = false
-        if loadedArtworkID != id {
-            decoded = nil
+        withTransaction(Transaction(animation: nil)) {
+            loadFailed = false
+            if loadedArtworkID != id {
+                decoded = nil
+            }
         }
         let cg = await RemoteArtworkLoad.cgImage(from: url, maxPixelSize: maxDecodePixels)
         await MainActor.run {
-            decoded = cg
-            loadFailed = cg == nil
-            loadedArtworkID = id
+            withTransaction(Transaction(animation: nil)) {
+                decoded = cg
+                loadFailed = cg == nil
+                loadedArtworkID = id
+            }
         }
     }
 

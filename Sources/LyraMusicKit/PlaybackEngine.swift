@@ -61,6 +61,11 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private var player: AVPlayer?
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
+    /// KVO on `AVPlayer.timeControlStatus` — the system-set property reflecting
+    /// what playback is actually doing. Catches every external pause cause
+    /// (headphone unplug, Control Center, network stall, audio session steal)
+    /// in one place so ``isPlaying`` never goes stale.
+    private var timeControlStatusObservation: NSKeyValueObservation?
     /// Bumped whenever a new load/play cycle begins so in-flight `startCurrentItem` work
     /// from an earlier tap cannot attach or start another `AVPlayer`.
     private var playbackEpoch: UInt = 0
@@ -176,9 +181,12 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     private func handleAudioSessionRouteChange(_ notification: Notification) {
-        guard isPlaying, player?.rate ?? 0 < 0.01 else { return }
-        activateAudioSession()
-        player?.play()
+        // Don't auto-resume — when the user unplugs headphones the system
+        // pauses us on purpose (HIG: respect that intent), and the
+        // `timeControlStatus` KVO will sync ``isPlaying`` to match. Any other
+        // route change (new device available, override, etc.) likewise
+        // shouldn't force playback to keep going if the system paused us.
+        _ = notification
     }
     #endif
 
@@ -758,6 +766,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
         timeObserver = nil
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         endObserver = nil
+        timeControlStatusObservation?.invalidate()
+        timeControlStatusObservation = nil
         stopPlayer(player)
         player = nil
     }
@@ -987,6 +997,26 @@ final class PlaybackEngine: NSObject, ObservableObject {
             duration = fromItem
         } else {
             duration = track.duration > 0 ? track.duration : 0
+        }
+
+        // Authoritative state observer — `timeControlStatus` flips to `.paused`
+        // for any external pause (route change, Control Center, audio session
+        // steal, end of item), so this keeps ``isPlaying`` in sync without
+        // having to enumerate every cause individually.
+        timeControlStatusObservation = p.observe(\.timeControlStatus, options: [.new, .initial]) { [weak self] player, _ in
+            Task { @MainActor in
+                guard let self else { return }
+                let status = player.timeControlStatus
+                if status == .paused, self.isPlaying {
+                    self.isPlaying = false
+                    self.refreshNowPlaying()
+                } else if status == .playing, !self.isPlaying {
+                    self.isPlaying = true
+                    self.refreshNowPlaying()
+                }
+                // `.waitingToPlayAtSpecifiedRate` = buffering — leave the
+                // current flag alone, the user still intends to play.
+            }
         }
 
         let interval = CMTime(seconds: 0.35, preferredTimescale: 600)
