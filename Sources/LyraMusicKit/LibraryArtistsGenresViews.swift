@@ -253,7 +253,7 @@ struct LibraryArtistAlbumsView: View {
             track: track,
             itemSize: app.songListItemSize,
             isFavorite: app.favoriteTrackIds.contains(track.id),
-            isNowPlaying: app.player.activeTrack?.id == track.id,
+            isNowPlaying: app.nowPlayingTrackId == track.id,
             offlineDownload: offline.activeDownloads[track.id],
             isOfflineCached: app.offline.downloadedTrackIds.contains(track.id),
             onPlay: { Task { await play(track: track) } },
@@ -367,7 +367,7 @@ struct LibraryGenresView: View {
                     systemImage: "paintbrush.pointed",
                     description: Text(
                         app.backendKind == .navidrome
-                            ? "Try refreshing after tagging albums, or confirm your server supports getGenres."
+                            ? "Add GENRE tags to your audio files (or tag albums in Navidrome), run a full library scan, then pull to refresh here."
                             : "Jellyfin didn’t return genre items or album genre tags for the sampled library."
                     )
                 )
