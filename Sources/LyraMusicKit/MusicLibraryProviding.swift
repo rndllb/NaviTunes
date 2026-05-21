@@ -273,6 +273,29 @@ struct Track: Identifiable, Hashable, Codable {
 
     var isInternetRadioStream: Bool { streamOverrideURL != nil }
 
+    func withArtworkURL(_ newArtworkURL: URL?) -> Track {
+        Track(
+            id: id,
+            title: title,
+            albumId: albumId,
+            albumTitle: albumTitle,
+            artist: artist,
+            duration: duration,
+            discNumber: discNumber,
+            indexNumber: indexNumber,
+            artworkURL: newArtworkURL,
+            libraryAddedDate: libraryAddedDate,
+            genres: genres,
+            releaseYear: releaseYear,
+            sampleRateHz: sampleRateHz,
+            audioChannels: audioChannels,
+            audioCodec: audioCodec,
+            audioBitDepth: audioBitDepth,
+            audioBitRateKbps: audioBitRateKbps,
+            streamOverrideURL: streamOverrideURL,
+        )
+    }
+
     func withDuration(_ newDuration: TimeInterval) -> Track {
         Track(
             id: id,
