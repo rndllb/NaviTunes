@@ -72,9 +72,7 @@ struct MusicNewTabView: View {
                     await app.refreshNewTabBrowse()
                 }
                 guard app.isSignedIn else { return }
-                if app.libraryTrackTitleIndex.isEmpty, !app.libraryAlbums.isEmpty {
-                    await app.refreshLibraryTrackMatchIndex()
-                }
+                app.scheduleDiscoveryTrackIndexRefreshIfNeeded()
             }
             .refreshable {
                 await app.refreshLibraryAlbums()

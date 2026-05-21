@@ -369,9 +369,7 @@ struct DiscoverySearchView: View {
         .animation(.easeInOut(duration: 0.2), value: toast)
         .task(id: scope) {
             guard scope == .discover, app.isSignedIn else { return }
-            if app.libraryTrackTitleIndex.isEmpty, !app.libraryAlbums.isEmpty {
-                await app.refreshLibraryTrackMatchIndex()
-            }
+            app.scheduleDiscoveryTrackIndexRefreshIfNeeded()
         }
         .task(id: genreLoadTaskKey) {
             await loadServerGenresIfNeeded()

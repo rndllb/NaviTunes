@@ -117,13 +117,8 @@ final class NavidromeClient: MusicLibraryProviding {
             return nil
         }
         let artist = dict["artist"] as? String ?? ""
-        let cover = dict["coverArt"] as? String
-        let art: URL?
-        if let cover {
-            art = streamURLForCover(coverArt: cover)
-        } else {
-            art = nil
-        }
+        let cover = navidromeCoerceString(dict["coverArt"]) ?? id
+        let art = streamURLForCover(coverArt: cover)
         let songCount = navidromeInt(dict["songCount"]) ?? navidromeInt(dict["trackCount"])
         let added = navidromeCreatedDate(dict["created"])
         let genres: [String] = {
@@ -505,6 +500,9 @@ final class NavidromeClient: MusicLibraryProviding {
     }
 
     func lyrics(for track: Track) async throws -> [LyricLine] {
+        if let structured = try? await fetchStructuredLyrics(trackId: track.id), !structured.isEmpty {
+            return structured
+        }
         let items = try await subsonicRequest(path: "getLyrics", query: [
             "artist": track.artist,
             "title": track.title,
@@ -515,6 +513,40 @@ final class NavidromeClient: MusicLibraryProviding {
             return []
         }
         return NavidromeLyricsParser.parse(plain: text)
+    }
+
+    /// OpenSubsonic ``getLyricsBySongId`` — synced lines carry millisecond ``start`` values.
+    private func fetchStructuredLyrics(trackId: String) async throws -> [LyricLine] {
+        let sub = try await subsonicRequest(path: "getLyricsBySongId", query: ["id": trackId])
+        guard let lyricsList = sub["lyricsList"] as? [String: Any] else { return [] }
+        let blocks = Self.dictArray(lyricsList["structuredLyrics"])
+        return Self.parseStructuredLyricsBlocks(blocks)
+    }
+
+    private static func parseStructuredLyricsBlocks(_ blocks: [[String: Any]]) -> [LyricLine] {
+        guard !blocks.isEmpty else { return [] }
+        let preferred = blocks.first { ($0["synced"] as? Bool) == true }
+            ?? blocks.first { ($0["kind"] as? String) == "main" }
+            ?? blocks[0]
+        let offsetMs = (preferred["offset"] as? NSNumber)?.doubleValue ?? 0
+        let offsetSec = offsetMs / 1000.0
+        let rows = dictArray(preferred["line"])
+        let lines: [LyricLine] = rows.compactMap { row in
+            guard let text = row["value"] as? String else { return nil }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            if let startMs = (row["start"] as? NSNumber)?.doubleValue {
+                return LyricLine(start: offsetSec + startMs / 1000.0, text: trimmed)
+            }
+            return LyricLine(start: offsetSec, text: trimmed)
+        }
+        return lines.sorted { $0.start < $1.start }
+    }
+
+    private static func dictArray(_ value: Any?) -> [[String: Any]] {
+        if let arr = value as? [[String: Any]] { return arr }
+        if let one = value as? [String: Any] { return [one] }
+        return []
     }
 
     // MARK: - Starred favorites (Subsonic `star` / `getStarred2`, synced via Navidrome)
@@ -704,7 +736,8 @@ final class NavidromeClient: MusicLibraryProviding {
         let coverId =
             navidromeCoerceString(dict["coverArt"])
             ?? albumCoverArtId.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
-        let art = coverId.flatMap { streamURLForCover(coverArt: $0) }
+            ?? albumIdFinal
+        let art = streamURLForCover(coverArt: coverId)
         let added = navidromeCreatedDate(dict["created"])
 
         let songGenre = navidromeCoerceString(dict["genre"])
@@ -766,7 +799,7 @@ final class NavidromeClient: MusicLibraryProviding {
     func coverArtURL(forId coverArtId: String, size: Int? = 400) -> URL? {
         var query = ["id": coverArtId]
         if let size, size > 0 { query["size"] = "\(size)" }
-        return try? buildURL(path: "getCoverArt", query: query)
+        return try? buildMediaURL(path: "getCoverArt", query: query)
     }
 
     // MARK: - Native (non-Subsonic) API
@@ -1360,28 +1393,99 @@ final class NavidromeClient: MusicLibraryProviding {
 }
 
 enum NavidromeLyricsParser {
+    struct ParseResult {
+        let lines: [LyricLine]
+        let syncedLineCount: Int
+    }
+
     static func parse(plain: String) -> [LyricLine] {
-        var lines: [LyricLine] = []
-        let pattern = #"\[(\d+):(\d+)\.(\d+)\](.*)"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            return lines
-        }
+        parseDetailed(plain: plain).lines
+    }
+
+    static func parseDetailed(plain: String) -> ParseResult {
+        var synced: [LyricLine] = []
+        var unsynced: [String] = []
+
         for row in plain.split(separator: "\n", omittingEmptySubsequences: false) {
-            let s = String(row)
-            let range = NSRange(s.startIndex..., in: s)
-            guard let m = regex.firstMatch(in: s, range: range), m.numberOfRanges >= 5 else {
-                if !s.trimmingCharacters(in: .whitespaces).isEmpty {
-                    lines.append(LyricLine(start: lines.last.map { $0.start + 5 } ?? 0, text: s))
-                }
-                continue
+            let s = String(row).trimmingCharacters(in: .whitespacesAndNewlines)
+            if s.isEmpty { continue }
+            if isMetadataOnlyLine(s) { continue }
+
+            if let (start, text) = parseSyncedLine(s), !text.isEmpty {
+                synced.append(LyricLine(start: start, text: text))
+            } else if !s.hasPrefix("[") {
+                unsynced.append(s)
             }
-            let min = Int((s as NSString).substring(with: m.range(at: 1))) ?? 0
-            let sec = Int((s as NSString).substring(with: m.range(at: 2))) ?? 0
-            let cs = Int((s as NSString).substring(with: m.range(at: 3))) ?? 0
-            let text = (s as NSString).substring(with: m.range(at: 4)).trimmingCharacters(in: .whitespaces)
-            let start = TimeInterval(min * 60 + sec) + TimeInterval(cs) / 100.0
-            lines.append(LyricLine(start: start, text: text))
         }
-        return lines.sorted { $0.start < $1.start }
+
+        if !synced.isEmpty {
+            return ParseResult(lines: synced.sorted { $0.start < $1.start }, syncedLineCount: synced.count)
+        }
+
+        // Plain unsynced lyrics — do not invent 5s timestamps (that desyncs from playback).
+        let lines = unsynced.map { LyricLine(start: 0, text: $0) }
+        return ParseResult(lines: lines, syncedLineCount: 0)
+    }
+
+    /// `[ti:Title]`, `[ar:Artist]`, `[offset:500]`, etc.
+    private static func isMetadataOnlyLine(_ line: String) -> Bool {
+        guard line.hasPrefix("["), let end = line.firstIndex(of: "]") else { return false }
+        let tag = line[line.index(after: line.startIndex)..<end]
+        guard let colon = tag.firstIndex(of: ":") else { return false }
+        let key = tag[..<colon]
+        guard !key.isEmpty, key.allSatisfy(\.isLetter) else { return false }
+        return parseTimeTag(String(tag)) == nil
+    }
+
+    /// Supports `[mm:ss]`, `[mm:ss.xx]`, `[mm:ss.xxx]`, `[h:mm:ss(.xx)]`, and repeated leading tags.
+    private static func parseSyncedLine(_ line: String) -> (TimeInterval, String)? {
+        var work = line
+        var start: TimeInterval?
+        while work.hasPrefix("[") {
+            guard let end = work.firstIndex(of: "]") else { break }
+            let tag = String(work[work.index(after: work.startIndex)..<end])
+            work = String(work[work.index(after: end)...]).trimmingCharacters(in: .whitespaces)
+            if let t = parseTimeTag(tag) {
+                start = t
+            }
+        }
+        guard let start, !work.isEmpty else { return nil }
+        return (start, work)
+    }
+
+    private static func parseTimeTag(_ tag: String) -> TimeInterval? {
+        let parts = tag.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2 || parts.count == 3 else { return nil }
+
+        func secondsComponent(_ raw: Substring) -> TimeInterval? {
+            let pieces = raw.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
+            guard let whole = Int(pieces[0]) else { return nil }
+            var fraction: TimeInterval = 0
+            if pieces.count == 2 {
+                let frac = String(pieces[1])
+                guard !frac.isEmpty, frac.allSatisfy(\.isNumber) else { return nil }
+                let denom: TimeInterval
+                switch frac.count {
+                case 1: denom = 10
+                case 2: denom = 100
+                case 3: denom = 1_000
+                default: return nil
+                }
+                guard let value = Int(frac) else { return nil }
+                fraction = TimeInterval(value) / denom
+            }
+            return TimeInterval(whole) + fraction
+        }
+
+        if parts.count == 2 {
+            guard parts[0].allSatisfy(\.isNumber), let min = Int(parts[0]),
+                  let sec = secondsComponent(parts[1]) else { return nil }
+            return TimeInterval(min * 60) + sec
+        }
+
+        guard parts[0].allSatisfy(\.isNumber), parts[1].allSatisfy(\.isNumber),
+              let hours = Int(parts[0]), let min = Int(parts[1]),
+              let sec = secondsComponent(parts[2]) else { return nil }
+        return TimeInterval(hours * 3600 + min * 60) + sec
     }
 }
