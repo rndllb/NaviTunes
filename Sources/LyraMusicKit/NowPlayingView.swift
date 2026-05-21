@@ -51,9 +51,9 @@ struct NowPlayingView: View {
 
     /// Paused — baseline artwork size. Tuned so paused is visibly smaller than
     /// playing (~80%) without the dramatic shrink the older 256pt value caused.
-    private let albumArtPausedSide: CGFloat = 310
+    private let albumArtPausedSide: CGFloat = 280
     /// Playing — base artwork size before play-state overscale.
-    private let albumArtPlayingSide: CGFloat = 340
+    private let albumArtPlayingSide: CGFloat = 315
     /// Scales past ``albumArtPlayingSide`` when playback resumes (Apple Music–style pulse).
     private let albumArtPlayOverscale: CGFloat = 1.14
 
@@ -1710,11 +1710,9 @@ private struct LyricsFocusScrollView: View {
     let primaryColor: Color
     let secondaryColor: Color
 
-    private var currentTime: TimeInterval { player.currentTime }
-
     private var activeIndex: Int {
         guard !lines.isEmpty else { return 0 }
-        let t = currentTime + 0.08
+        let t = player.livePlaybackTime + 0.08
         var lo = 0, hi = lines.count - 1
         while lo < hi {
             let mid = (lo + hi + 1) / 2
