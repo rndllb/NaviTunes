@@ -8,19 +8,26 @@ import UIKit
 import AppKit
 #endif
 
-/// Artwork-derived backdrop palette (flat hero tint + adaptive chrome). Gradients are not used in the album UI.
+/// Artwork-derived backdrop palette + adaptive chrome for hero / Now Playing surfaces.
 enum ArtworkDynamicGradient {
+    /// How the flat backdrop tint is sampled from cover art.
+    enum BackdropAnalysisStyle: Sendable {
+        /// Album / playlist detail — literal most frequent sRGB on the cover.
+        case detail
+        /// Now Playing — atmospheric hue wash (legacy).
+        case nowPlaying
+    }
     private static let fallbackHeroSolid = Color(red: 54 / 255, green: 48 / 255, blue: 62 / 255)
 
-    /// Neutral fallback for APIs that still ask for gradient stops (two flat anchors only).
+    /// Neutral fallback for APIs that still ask for gradient stops (single flat color).
     static let fallbackStops: [Gradient.Stop] = [
         Gradient.Stop(color: fallbackHeroSolid, location: 0),
-        Gradient.Stop(color: MusicDesign.background, location: 1),
+        Gradient.Stop(color: fallbackHeroSolid, location: 1),
     ]
 
     /// Result of **color extraction** + **contrast / luminance handoff** for album hero chrome (Liquid Glass–style stacks consume this).
     struct BackdropPalette: Sendable {
-        /// Legacy two-stop ramp (solid hero → black); prefer ``heroSolidBackdropColor`` + flat fills in UI.
+        /// Legacy two-stop ramp (same color twice); prefer ``heroSolidBackdropColor`` + flat fills in UI.
         let gradientStops: [Gradient.Stop]
         /// Flat full-screen album backdrop tint — sampled from artwork (**no** gradient).
         let heroSolidBackdropColor: Color
@@ -44,7 +51,10 @@ enum ArtworkDynamicGradient {
     }
 
     /// Decode artwork → flat backdrop tint + WCAG luminance for adaptive hero chrome.
-    static func analyzeBackdrop(from artworkURL: URL?) async -> BackdropPalette {
+    static func analyzeBackdrop(
+        from artworkURL: URL?,
+        style: BackdropAnalysisStyle = .detail,
+    ) async -> BackdropPalette {
         guard let url = artworkURL else { return .fallback }
         let data: Data?
         if url.isFileURL {
@@ -56,7 +66,12 @@ enum ArtworkDynamicGradient {
         }
         guard let data, !data.isEmpty, let cgImage = cgImage(fromImageData: data) else { return .fallback }
         return await Task.detached(priority: .utility) {
-            makeBackdropPalette(from: cgImage)
+            switch style {
+            case .detail:
+                makeDetailBackdropPalette(from: cgImage)
+            case .nowPlaying:
+                makeNowPlayingBackdropPalette(from: cgImage)
+            }
         }.value
     }
 
@@ -110,7 +125,82 @@ enum ArtworkDynamicGradient {
 #endif
     }
 
-    /// Vibrant flat surface: dominant hue + lifted saturation/brightness, lightly anchored to frame-average RGB.
+    // MARK: - Detail (dominant cover color)
+
+    private static func makeDetailBackdropPalette(from cgImage: CGImage) -> BackdropPalette {
+        guard let sample = downsampleArtworkPixels(from: cgImage) else { return .fallback }
+        let (pixels, tw, th) = sample
+        let bytesPerPixel = 4
+
+        // Most apparent color = most frequent quantized sRGB bucket (literal average RGB in that bucket).
+        let quantLevels = 10
+        let bucketCount = quantLevels * quantLevels * quantLevels
+        var bucketPixels = [Int](repeating: 0, count: bucketCount)
+        var bucketSumR = [Double](repeating: 0, count: bucketCount)
+        var bucketSumG = [Double](repeating: 0, count: bucketCount)
+        var bucketSumB = [Double](repeating: 0, count: bucketCount)
+        var frameSumR = 0.0, frameSumG = 0.0, frameSumB = 0.0
+        var framePixelCount = 0
+
+        for i in 0 ..< tw * th {
+            let o = i * bytesPerPixel
+            let pa = Double(pixels[o + 3]) / 255.0
+            guard pa > 0.1 else { continue }
+            let r = min(1, Double(pixels[o]) / 255.0 / pa)
+            let g = min(1, Double(pixels[o + 1]) / 255.0 / pa)
+            let b = min(1, Double(pixels[o + 2]) / 255.0 / pa)
+
+            frameSumR += r
+            frameSumG += g
+            frameSumB += b
+            framePixelCount += 1
+
+            let qr = min(quantLevels - 1, Int(r * Double(quantLevels)))
+            let qg = min(quantLevels - 1, Int(g * Double(quantLevels)))
+            let qb = min(quantLevels - 1, Int(b * Double(quantLevels)))
+            let bucket = qr * quantLevels * quantLevels + qg * quantLevels + qb
+
+            bucketPixels[bucket] += 1
+            bucketSumR[bucket] += r
+            bucketSumG[bucket] += g
+            bucketSumB[bucket] += b
+        }
+
+        func finalizeSolid(_ solid: Color) -> BackdropPalette {
+            let stops: [Gradient.Stop] = [
+                Gradient.Stop(color: solid, location: 0),
+                Gradient.Stop(color: solid, location: 1),
+            ]
+            let backdropLum = relativeLuminance(of: solid)
+            let prefersDarkChrome = backdropLum >= BackdropPalette.backdropLuminanceDarkChromeThreshold
+            return BackdropPalette(
+                gradientStops: stops,
+                heroSolidBackdropColor: solid,
+                backdropRelativeLuminance: backdropLum,
+                prefersDarkHeroChrome: prefersDarkChrome,
+            )
+        }
+
+        guard framePixelCount > 0 else { return .fallback }
+
+        guard let (winIdx, winPx) = bucketPixels.enumerated().max(by: { $0.element < $1.element }),
+              winPx > 0
+        else {
+            let n = Double(framePixelCount)
+            return finalizeSolid(Color(red: frameSumR / n, green: frameSumG / n, blue: frameSumB / n))
+        }
+
+        let n = Double(winPx)
+        let solid = Color(
+            red: bucketSumR[winIdx] / n,
+            green: bucketSumG[winIdx] / n,
+            blue: bucketSumB[winIdx] / n,
+        )
+        return finalizeSolid(solid)
+    }
+
+    // MARK: - Now Playing (atmospheric hue wash)
+
     private static func solidHeroBackdropColor(
         hue: Double,
         washSat: Double,
@@ -126,7 +216,6 @@ enum ArtworkDynamicGradient {
         return blendSRGB(hueTint, avgTint, amount: 0.12)
     }
 
-    /// Nearly-black albums (OLED-style UI): backdrop stays **almost black** with a whisper of average tint.
     private static func nearBlackHeroBackdropColor(avgR: Double, avgG: Double, avgB: Double) -> Color {
         let mix = 0.10
         let floor = 0.022
@@ -137,7 +226,6 @@ enum ArtworkDynamicGradient {
         )
     }
 
-    /// True when artwork is overwhelmingly dark — avoid hue-bucket “mud” on mostly-black covers.
     private static func shouldUseNearBlackBackdrop(
         avgLum: Double,
         avgR: Double,
@@ -153,37 +241,12 @@ enum ArtworkDynamicGradient {
         return false
     }
 
-    private static func makeBackdropPalette(from cgImage: CGImage) -> BackdropPalette {
-        let maxDim: CGFloat = 120
-        let srcW = CGFloat(cgImage.width)
-        let srcH = CGFloat(cgImage.height)
-        guard srcW > 1, srcH > 1 else { return .fallback }
-
-        let scale = min(maxDim / srcW, maxDim / srcH, 1)
-        let tw = max(8, Int(srcW * scale))
-        let th = max(8, Int(srcH * scale))
-
+    private static func makeNowPlayingBackdropPalette(from cgImage: CGImage) -> BackdropPalette {
+        guard let sample = downsampleArtworkPixels(from: cgImage) else { return .fallback }
+        let (pixels, tw, th) = sample
         let bytesPerPixel = 4
-        let bytesPerRow = bytesPerPixel * tw
-        var pixels = [UInt8](repeating: 0, count: tw * th * bytesPerPixel)
 
-        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-              let ctx = CGContext(
-                  data: &pixels,
-                  width: tw,
-                  height: th,
-                  bitsPerComponent: 8,
-                  bytesPerRow: bytesPerRow,
-                  space: colorSpace,
-                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-              )
-        else { return .fallback }
-
-        ctx.interpolationQuality = .low
-        ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: tw, height: th))
-
-        // --- Dominant hue: find the most FREQUENT hue, not the most vivid ---
-        let bucketCount = 72          // 5° per bucket for finer hue precision
+        let bucketCount = 72
         let bucketCountD = Double(bucketCount)
         var bucketPixels = [Double](repeating: 0, count: bucketCount)
         var bucketHueSum = [Double](repeating: 0, count: bucketCount)
@@ -191,7 +254,6 @@ enum ArtworkDynamicGradient {
         var bucketBriSum = [Double](repeating: 0, count: bucketCount)
         var totalLum: Double = 0
         var pixelCount: Double = 0
-        /// Whole-frame average sRGB — anchors a **muted slate** wash (Apple Music rarely shows neon saturation).
         var sumR = 0.0, sumG = 0.0, sumB = 0.0
         var darkCount = 0.0
 
@@ -279,7 +341,6 @@ enum ArtworkDynamicGradient {
             return finalizeSolid(nearBlackHeroBackdropColor(avgR: avgR, avgG: avgG, avgB: avgB))
         }
 
-        // Atmospheric tint — don’t force dark covers toward mid-gray (older `max(0.36, …)` read as brown mud).
         let washSat = min(0.28, max(0.07, effectiveSat * 0.34 + 0.055))
         let airyTopB = max(0.22, min(0.58, avgLum * 0.55 + dominantBri * 0.24 + 0.12))
 
@@ -292,6 +353,39 @@ enum ArtworkDynamicGradient {
             avgB: avgB,
         )
         return finalizeSolid(solid)
+    }
+
+    // MARK: - Shared sampling
+
+    private static func downsampleArtworkPixels(from cgImage: CGImage) -> (pixels: [UInt8], tw: Int, th: Int)? {
+        let maxDim: CGFloat = 120
+        let srcW = CGFloat(cgImage.width)
+        let srcH = CGFloat(cgImage.height)
+        guard srcW > 1, srcH > 1 else { return nil }
+
+        let scale = min(maxDim / srcW, maxDim / srcH, 1)
+        let tw = max(8, Int(srcW * scale))
+        let th = max(8, Int(srcH * scale))
+
+        let bytesPerPixel = 4
+        let bytesPerRow = bytesPerPixel * tw
+        var pixels = [UInt8](repeating: 0, count: tw * th * bytesPerPixel)
+
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+              let ctx = CGContext(
+                  data: &pixels,
+                  width: tw,
+                  height: th,
+                  bitsPerComponent: 8,
+                  bytesPerRow: bytesPerRow,
+                  space: colorSpace,
+                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              )
+        else { return nil }
+
+        ctx.interpolationQuality = .low
+        ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: tw, height: th))
+        return (pixels, tw, th)
     }
 
     private struct RGB {

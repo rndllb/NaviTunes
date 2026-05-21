@@ -1,7 +1,21 @@
+import PhotosUI
 import SwiftUI
 #if os(iOS)
 import UIKit
 #endif
+
+// MARK: - Playlist visibility (Jellyfin + Navidrome)
+
+private struct PlaylistVisibilityFields: View {
+    @Binding var isPublic: Bool
+
+    var body: some View {
+        Toggle("Visible to all", isOn: $isPublic)
+        Text("When off, only you can see this playlist. When on, other users on the server can see it.")
+            .font(.caption)
+            .foregroundStyle(MusicDesign.secondaryLabel)
+    }
+}
 
 // MARK: - Add to playlist (global sheet)
 
@@ -12,7 +26,7 @@ struct AddToPlaylistSheet: View {
     let tracks: [Track]
 
     @State private var newPlaylistName = ""
-    @State private var jellyfinVisibleToAll = false
+    @State private var isPublic = false
     @State private var isWorking = false
 
     var body: some View {
@@ -21,12 +35,7 @@ struct AddToPlaylistSheet: View {
                 Section("New playlist") {
                     TextField("Playlist name", text: $newPlaylistName)
                         .musicTextInputAutocapitalization(.words)
-                    if app.backendKind == .jellyfin {
-                        Toggle("Visible to all", isOn: $jellyfinVisibleToAll)
-                        Text("Other Jellyfin users on this server can see public playlists.")
-                            .font(.caption)
-                            .foregroundStyle(MusicDesign.secondaryLabel)
-                    }
+                    PlaylistVisibilityFields(isPublic: $isPublic)
                     Button {
                         Task { await createNewAndAdd() }
                     } label: {
@@ -82,7 +91,7 @@ struct AddToPlaylistSheet: View {
             try await app.createPlaylist(
                 name: name,
                 initialTracks: tracks,
-                jellyfinVisibleToAll: app.backendKind == .jellyfin && jellyfinVisibleToAll
+                isPublic: isPublic,
             )
             app.dismissPlaylistPicker()
             dismiss()
@@ -107,61 +116,8 @@ struct AddToPlaylistSheet: View {
 // MARK: - Create empty playlist
 
 struct NewPlaylistNameSheet: View {
-    @EnvironmentObject private var app: AppModel
-    @Environment(\.dismiss) private var dismiss
-
-    @State private var name = ""
-    @State private var jellyfinVisibleToAll = false
-    @State private var isWorking = false
-
     var body: some View {
-        NavigationStack {
-            Form {
-                TextField("Playlist name", text: $name)
-#if os(iOS)
-                    .musicTextInputAutocapitalization(.words)
-#endif
-                if app.backendKind == .jellyfin {
-                    Toggle("Visible to all", isOn: $jellyfinVisibleToAll)
-                    Text("Other Jellyfin users on this server can see public playlists.")
-                        .font(.caption)
-                        .foregroundStyle(MusicDesign.secondaryLabel)
-                }
-            }
-            .scrollContentBackground(.hidden)
-            .background(MusicDesign.background)
-            .navigationTitle("New playlist")
-            .musicNavigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Create") {
-                        Task { await create() }
-                    }
-                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isWorking)
-                }
-            }
-            .musicNavigationChrome()
-        }
-    }
-
-    private func create() async {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        isWorking = true
-        defer { isWorking = false }
-        do {
-            try await app.createPlaylist(
-                name: trimmed,
-                initialTracks: [],
-                jellyfinVisibleToAll: app.backendKind == .jellyfin && jellyfinVisibleToAll
-            )
-            dismiss()
-        } catch {
-            app.errorMessage = error.localizedDescription
-        }
+        PlaylistEditSheet(mode: .create)
     }
 }
 
@@ -172,6 +128,7 @@ struct NewFolderNameSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var name = ""
+    @State private var isPublic = false
     @State private var isWorking = false
 
     var body: some View {
@@ -181,6 +138,7 @@ struct NewFolderNameSheet: View {
                 #if os(iOS)
                     .musicTextInputAutocapitalization(.words)
                 #endif
+                PlaylistVisibilityFields(isPublic: $isPublic)
                 Text("A folder groups playlists together. It will appear in your library once created.")
                     .font(.caption)
                     .foregroundStyle(MusicDesign.secondaryLabel)
@@ -210,7 +168,7 @@ struct NewFolderNameSheet: View {
         isWorking = true
         defer { isWorking = false }
         do {
-            try await app.createPlaylist(name: trimmed, initialTracks: [])
+            try await app.createPlaylist(name: trimmed, initialTracks: [], isPublic: isPublic)
             dismiss()
         } catch {
             app.errorMessage = error.localizedDescription
@@ -809,11 +767,14 @@ struct ServerPlaylistDetailView: View {
             Button {
                 Task { await playAll() }
             } label: {
-                Label("Play", systemImage: "play.fill")
-                    .font(.headline.weight(.bold))
-                    .foregroundStyle(heroPlayCapsuleForeground)
-                    .frame(width: MusicDesign.albumHeroPrimaryCapsuleWidth, height: 54)
-                    .background(Capsule().fill(heroPlayCapsuleBackground))
+                HStack(spacing: 5) {
+                    Image(systemName: "play.fill")
+                    Text("Play")
+                }
+                .font(.headline.weight(.bold))
+                .foregroundStyle(heroPlayCapsuleForeground)
+                .frame(width: MusicDesign.albumHeroPrimaryCapsuleWidth, height: 54)
+                .background(Capsule().fill(heroPlayCapsuleBackground))
             }
             .buttonStyle(.plain)
             .disabled(filtered.isEmpty)
@@ -1335,9 +1296,12 @@ private struct DetailNavigationChrome: ViewModifier {
 }
 
 private struct PlaylistEditSheet: View {
-    let playlist: PlaylistSummary
-    let rows: [PlaylistRowItem]
-    let onSaved: (String?) -> Void
+    enum Mode {
+        case create
+        case edit(playlist: PlaylistSummary, rows: [PlaylistRowItem], onSaved: (String?) -> Void)
+    }
+
+    let mode: Mode
 
     @EnvironmentObject private var app: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -1348,14 +1312,50 @@ private struct PlaylistEditSheet: View {
     @State private var selectedRowIds: Set<String> = []
     @State private var isSaving = false
     @State private var showAddTracks = false
+    @State private var artworkURL: URL?
+    @State private var coverPickerItem: PhotosPickerItem?
+    @State private var isUploadingCover = false
+    @State private var pendingCoverData: Data?
+    private let draftArtworkSeed: String
+
+    private var isCreate: Bool {
+        if case .create = mode { return true }
+        return false
+    }
+
+    private var playlist: PlaylistSummary? {
+        if case .edit(let playlist, _, _) = mode { return playlist }
+        return nil
+    }
+
+    private var onSaved: ((String?) -> Void)? {
+        if case .edit(_, _, let onSaved) = mode { return onSaved }
+        return nil
+    }
+
+    private var meshArtworkSeed: String {
+        playlist?.id ?? draftArtworkSeed
+    }
+
+    init(mode: Mode) {
+        self.mode = mode
+        draftArtworkSeed = UUID().uuidString
+        switch mode {
+        case .create:
+            _title = State(initialValue: "")
+            _visibleToAll = State(initialValue: false)
+            _editableRows = State(initialValue: [])
+            _artworkURL = State(initialValue: nil)
+        case .edit(let playlist, let rows, _):
+            _title = State(initialValue: playlist.name)
+            _visibleToAll = State(initialValue: playlist.isPublic ?? false)
+            _editableRows = State(initialValue: rows)
+            _artworkURL = State(initialValue: playlist.artworkURL)
+        }
+    }
 
     init(playlist: PlaylistSummary, rows: [PlaylistRowItem], onSaved: @escaping (String?) -> Void) {
-        self.playlist = playlist
-        self.rows = rows
-        self.onSaved = onSaved
-        _title = State(initialValue: playlist.name)
-        _visibleToAll = State(initialValue: playlist.isPublic ?? false)
-        _editableRows = State(initialValue: rows)
+        self.init(mode: .edit(playlist: playlist, rows: rows, onSaved: onSaved))
     }
 
     private var trimmedTitle: String {
@@ -1372,23 +1372,18 @@ private struct PlaylistEditSheet: View {
 
     var body: some View {
         NavigationStack {
-            ZStack(alignment: .bottom) {
-                ScrollView {
-                    VStack(spacing: 18) {
-                        artworkCarousel
-                            .padding(.top, 18)
+            ScrollView {
+                VStack(spacing: 18) {
+                    artworkEditor
+                        .padding(.top, 18)
 
-                        metadataFields
+                    metadataFields
 
-                        trackList
-                            .padding(.top, 4)
-                    }
-                    .padding(.bottom, 92)
+                    trackList
+                        .padding(.top, 4)
                 }
-                .background(MusicDesign.background)
-
-                bottomBar
             }
+            .background(MusicDesign.background)
             .navigationTitle("")
             .musicNavigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1399,7 +1394,7 @@ private struct PlaylistEditSheet: View {
                         Image(systemName: "xmark")
                             .font(.headline.weight(.semibold))
                     }
-                    .buttonStyle(PlaylistEditCircleButtonStyle())
+                    .buttonStyle(.plain)
                     .accessibilityLabel("Cancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
@@ -1408,24 +1403,50 @@ private struct PlaylistEditSheet: View {
                     } label: {
                         if isSaving {
                             ProgressView()
-                                .tint(.white)
                         } else {
                             Image(systemName: "checkmark")
-                                .font(.headline.weight(.bold))
+                                .font(.headline.weight(.semibold))
                         }
                     }
-                    .buttonStyle(PlaylistEditCircleButtonStyle(fill: MusicDesign.accent, foreground: .white))
+                    .buttonStyle(.plain)
                     .disabled(!canSave)
                     .accessibilityLabel("Done")
+                }
+                ToolbarItem(placement: .bottomBar) {
+                    Button {
+                        Task { await removeSelectedRows() }
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.headline.weight(.semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(selectedRowIds.isEmpty || isSaving)
+                    .accessibilityLabel("Remove selected songs")
+                }
+                ToolbarItem(placement: .bottomBar) {
+                    Spacer()
+                }
+                ToolbarItem(placement: .bottomBar) {
+                    Button {
+                        showAddTracks = true
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.headline.weight(.semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isSaving)
+                    .accessibilityLabel("Add songs")
                 }
             }
             .sheet(isPresented: $showAddTracks) {
                 PlaylistTrackAddSheet(
-                    playlistId: playlist.id,
+                    playlistId: playlist?.id,
                     existingTrackIds: Set(editableRows.map(\.track.id)),
                     onAdded: { added in
                         appendAddedTracks(added)
-                        onSaved(nil)
+                        if !isCreate {
+                            onSaved?(nil)
+                        }
                     }
                 )
                 .environmentObject(app)
@@ -1433,62 +1454,84 @@ private struct PlaylistEditSheet: View {
         }
     }
 
-    private var artworkCarousel: some View {
-        VStack(spacing: 12) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 16) {
-                    Spacer(minLength: 112)
-                    artworkOption(url: playlist.artworkURL, isPrimary: true)
-                    artworkOption(url: nil, isPrimary: false)
-                    artworkOption(url: nil, isPrimary: false, tint: .pink)
-                    Spacer(minLength: 112)
+    private var artworkEditor: some View {
+        VStack(spacing: 10) {
+            ZStack(alignment: .bottomTrailing) {
+                Group {
+                    if let pendingCoverData, let coverImage = playlistCoverPreviewImage(data: pendingCoverData) {
+                        coverImage
+                            .resizable()
+                            .scaledToFill()
+                    } else if let artworkURL {
+                        AlbumArtworkView(url: artworkURL, cornerRadius: 8)
+                    } else {
+                        RadioStationMeshArtworkView(
+                            seedKey: RadioStationMeshArtwork.seedKey(stationId: meshArtworkSeed),
+                            cornerRadius: 8,
+                        )
+                    }
                 }
-                .scrollTargetLayout()
-            }
-            .scrollTargetBehavior(.viewAligned)
+                .frame(width: 184, height: 184)
+                .opacity(isUploadingCover ? 0.45 : 1)
 
-            HStack(spacing: 10) {
-                Image(systemName: "camera.fill")
-                    .font(.caption2)
-                    .foregroundStyle(MusicDesign.secondaryLabel)
-                ForEach(0..<8, id: \.self) { idx in
+                PhotosPicker(selection: $coverPickerItem, matching: .images, photoLibrary: .shared()) {
                     Circle()
-                        .fill(idx == 0 ? Color.primary.opacity(0.78) : MusicDesign.secondaryLabel.opacity(0.35))
-                        .frame(width: 7, height: 7)
+                        .fill(MusicDesign.accent)
+                        .frame(width: 52, height: 52)
+                        .overlay {
+                            if isUploadingCover {
+                                ProgressView().tint(.white)
+                            } else {
+                                Image(systemName: "photo")
+                                    .font(.title3.weight(.semibold))
+                                    .foregroundStyle(.white)
+                            }
+                        }
                 }
+                .buttonStyle(.plain)
+                .disabled(isUploadingCover || isSaving)
+                .offset(x: -8, y: -8)
             }
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            Text(isCreate
+                ? "Tap to choose a cover — it uploads when you save the playlist."
+                : "Tap to change playlist cover — saved to your server.")
+                .font(.caption)
+                .foregroundStyle(MusicDesign.secondaryLabel)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+        }
+        .onChange(of: coverPickerItem) { _, newItem in
+            guard let newItem else { return }
+            Task { await handleCoverPickerSelection(newItem) }
         }
     }
 
-    private func artworkOption(url: URL?, isPrimary: Bool, tint: Color = MusicDesign.accent) -> some View {
-        ZStack {
-            if let url {
-                AlbumArtworkView(url: url, cornerRadius: 8)
-            } else {
-                LinearGradient(
-                    colors: [tint.opacity(0.95), .green.opacity(0.55), .orange.opacity(0.65)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .overlay(alignment: .topLeading) {
-                    Text(trimmedTitle.isEmpty ? playlist.name : trimmedTitle)
-                        .font(.headline.weight(.bold))
-                        .foregroundStyle(.white)
-                        .lineLimit(2)
-                        .padding(14)
-                }
-            }
-            Circle()
-                .fill(MusicDesign.accent)
-                .frame(width: 58, height: 58)
-                .overlay {
-                    Image(systemName: isPrimary ? "photo" : "textformat")
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(.white)
-                }
+    private func handleCoverPickerSelection(_ item: PhotosPickerItem) async {
+        isUploadingCover = true
+        defer {
+            isUploadingCover = false
+            coverPickerItem = nil
         }
-        .frame(width: 184, height: 184)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        guard let data = try? await item.loadTransferable(type: Data.self), !data.isEmpty else {
+            app.errorMessage = "Could not read the selected image."
+            return
+        }
+        if isCreate {
+            pendingCoverData = data
+            artworkURL = nil
+            return
+        }
+        guard let playlist else { return }
+        do {
+            let refreshed = try await app.updatePlaylistCoverImage(playlistId: playlist.id, imageData: data)
+            artworkURL = refreshed
+            pendingCoverData = nil
+            onSaved?(nil)
+        } catch {
+            app.errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
     }
 
     private var metadataFields: some View {
@@ -1508,12 +1551,10 @@ private struct PlaylistEditSheet: View {
                 .lineLimit(1...4)
                 .padding(.vertical, 12)
 
-            if app.backendKind == .jellyfin {
-                Divider().background(MusicDesign.separator)
-                Toggle("Show on My Profile and in Search", isOn: $visibleToAll)
-                    .font(.body)
-                    .padding(.vertical, 12)
-            }
+            Divider().background(MusicDesign.separator)
+
+            PlaylistVisibilityFields(isPublic: $visibleToAll)
+                .padding(.vertical, 12)
         }
         .padding(.horizontal, 16)
     }
@@ -1533,38 +1574,6 @@ private struct PlaylistEditSheet: View {
         }
     }
 
-    private var bottomBar: some View {
-        HStack {
-            Button {
-                Task { await removeSelectedRows() }
-            } label: {
-                Image(systemName: "trash")
-                    .font(.title3.weight(.semibold))
-                    .frame(width: 54, height: 54)
-            }
-            .buttonStyle(PlaylistEditCircleButtonStyle())
-            .disabled(selectedRowIds.isEmpty || isSaving)
-            .accessibilityLabel("Remove selected songs")
-
-            Spacer()
-
-            Button {
-                showAddTracks = true
-            } label: {
-                Image(systemName: "plus")
-                    .font(.title3.weight(.semibold))
-                    .frame(width: 54, height: 54)
-            }
-            .buttonStyle(PlaylistEditCircleButtonStyle())
-            .disabled(isSaving)
-            .accessibilityLabel("Add songs")
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, 12)
-        .padding(.bottom, 18)
-        .background(.ultraThinMaterial)
-    }
-
     private func toggle(_ row: PlaylistRowItem) {
         if selectedRowIds.contains(row.rowId) {
             selectedRowIds.remove(row.rowId)
@@ -1575,21 +1584,28 @@ private struct PlaylistEditSheet: View {
 
     private func appendAddedTracks(_ tracks: [Track]) {
         let start = editableRows.count
+        let prefix = playlist?.id ?? draftArtworkSeed
         let newRows = tracks.enumerated().map { offset, track in
-            PlaylistRowItem(rowId: "\(playlist.id)-added-\(start + offset)-\(track.id)", track: track)
+            PlaylistRowItem(rowId: "\(prefix)-added-\(start + offset)-\(track.id)", track: track)
         }
         editableRows.append(contentsOf: newRows)
     }
 
     private func removeSelectedRows() async {
         guard !selectedRows.isEmpty else { return }
+        if isCreate {
+            editableRows.removeAll { selectedRowIds.contains($0.rowId) }
+            selectedRowIds.removeAll()
+            return
+        }
+        guard let playlist else { return }
         isSaving = true
         defer { isSaving = false }
         do {
             try await app.removePlaylistRows(playlistId: playlist.id, rows: selectedRows)
             editableRows.removeAll { selectedRowIds.contains($0.rowId) }
             selectedRowIds.removeAll()
-            onSaved(nil)
+            onSaved?(nil)
         } catch {
             app.errorMessage = error.localizedDescription
         }
@@ -1600,18 +1616,39 @@ private struct PlaylistEditSheet: View {
         isSaving = true
         defer { isSaving = false }
         do {
-            try await app.renamePlaylist(
-                playlistId: playlist.id,
-                name: trimmedTitle,
-                jellyfinVisibleToAll: app.backendKind == .jellyfin ? visibleToAll : nil
-            )
-            onSaved(trimmedTitle)
-            dismiss()
+            if isCreate {
+                let created = try await app.createPlaylist(
+                    name: trimmedTitle,
+                    initialTracks: editableRows.map(\.track),
+                    isPublic: visibleToAll,
+                )
+                if let pendingCoverData {
+                    _ = try? await app.updatePlaylistCoverImage(playlistId: created.id, imageData: pendingCoverData)
+                }
+                dismiss()
+            } else if let playlist {
+                try await app.renamePlaylist(
+                    playlistId: playlist.id,
+                    name: trimmedTitle,
+                    isPublic: visibleToAll,
+                )
+                onSaved?(trimmedTitle)
+                dismiss()
+            }
         } catch {
             app.errorMessage = error.localizedDescription
         }
     }
 }
+
+#if canImport(UIKit)
+private func playlistCoverPreviewImage(data: Data) -> Image? {
+    guard let uiImage = UIImage(data: data) else { return nil }
+    return Image(uiImage: uiImage)
+}
+#else
+private func playlistCoverPreviewImage(data: Data) -> Image? { nil }
+#endif
 
 private struct PlaylistEditableTrackRow: View {
     let row: PlaylistRowItem
@@ -1656,7 +1693,7 @@ private struct PlaylistEditableTrackRow: View {
 }
 
 private struct PlaylistTrackAddSheet: View {
-    let playlistId: String
+    let playlistId: String?
     let existingTrackIds: Set<String>
     let onAdded: ([Track]) -> Void
 
@@ -1770,27 +1807,20 @@ private struct PlaylistTrackAddSheet: View {
     private func addSelected() async {
         let selected = selectedTracks
         guard !selected.isEmpty else { return }
-        isSaving = true
-        defer { isSaving = false }
-        do {
-            try await app.addTracksToPlaylist(playlistId: playlistId, tracks: selected)
+        if let playlistId {
+            isSaving = true
+            defer { isSaving = false }
+            do {
+                try await app.addTracksToPlaylist(playlistId: playlistId, tracks: selected)
+                onAdded(selected)
+                dismiss()
+            } catch {
+                app.errorMessage = error.localizedDescription
+            }
+        } else {
             onAdded(selected)
             dismiss()
-        } catch {
-            app.errorMessage = error.localizedDescription
         }
-    }
-}
-
-private struct PlaylistEditCircleButtonStyle: ButtonStyle {
-    var fill: Color = MusicDesign.chromeCapsuleFill
-    var foreground: Color = .primary
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(foreground)
-            .background(Circle().fill(fill.opacity(configuration.isPressed ? 0.72 : 1)))
-            .opacity(configuration.isPressed ? 0.82 : 1)
     }
 }
 

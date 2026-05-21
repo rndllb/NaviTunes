@@ -359,12 +359,15 @@ struct BrowseAlbumDetailView: View {
 
                 if isLibraryPlayback {
                     Button { Task { await play(startingAt: libraryTracks.first) } } label: {
-                        Label("Play", systemImage: "play.fill")
-                            .font(.headline.weight(.bold))
-                            .foregroundStyle(backdropPalette.heroPlayCapsuleForeground)
-                            .padding(.vertical, 14)
-                            .frame(width: MusicDesign.albumHeroPrimaryCapsuleWidth)
-                            .background(Capsule().fill(backdropPalette.heroPlayCapsuleBackground))
+                        HStack(spacing: 5) {
+                            Image(systemName: "play.fill")
+                            Text("Play")
+                        }
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(backdropPalette.heroPlayCapsuleForeground)
+                        .padding(.vertical, 14)
+                        .frame(width: MusicDesign.albumHeroPrimaryCapsuleWidth)
+                        .background(Capsule().fill(backdropPalette.heroPlayCapsuleBackground))
                     }
                     .buttonStyle(.plain)
                     .disabled(libraryTracks.isEmpty)

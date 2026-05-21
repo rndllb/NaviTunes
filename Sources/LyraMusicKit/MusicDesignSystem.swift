@@ -253,7 +253,7 @@ enum MusicDesign {
     static let heroCorner: CGFloat = 12
     static let miniArtwork: CGFloat = 44
     /// Mini player row: smaller than grid mini so controls don’t clip in the glass capsule.
-    static let miniPlayerArtwork: CGFloat = 30
+    static let miniPlayerArtwork: CGFloat = 26
     static let gridMinCell: CGFloat = 158
     static let shelfCardWidth: CGFloat = 168
     static let shelfCardHeight: CGFloat = 168
@@ -283,6 +283,8 @@ enum MusicDesign {
 
 struct AlbumArtworkView: View {
     let url: URL?
+    /// When ``url`` is nil (e.g. Navidrome internet radio), show a deterministic mesh gradient for this seed.
+    var meshArtworkSeed: String? = nil
     var cornerRadius: CGFloat = MusicDesign.albumCorner
     var maxDecodePixels: CGFloat = 768
 
@@ -315,6 +317,9 @@ struct AlbumArtworkView: View {
                 .task(id: artworkID) {
                     await load(url: url)
                 }
+            } else if let meshArtworkSeed {
+                RadioStationMeshArtworkView(seedKey: meshArtworkSeed, cornerRadius: cornerRadius)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 placeholder
             }

@@ -36,10 +36,8 @@ struct ArtistNowPlayingMenuButton: UIViewRepresentable {
         let isDarkSystem = context.environment.colorScheme == .dark
         var cfg = UIButton.Configuration.plain()
         cfg.title = artist
-        if let palette = heroBackdropPalette {
-            cfg.baseForegroundColor = palette.prefersDarkHeroChrome
-                ? UIColor.black.withAlphaComponent(0.58)
-                : UIColor.white.withAlphaComponent(0.55)
+        if heroBackdropPalette != nil {
+            cfg.baseForegroundColor = UIColor.white.withAlphaComponent(0.55)
         } else {
             cfg.baseForegroundColor = isDarkSystem ? UIColor.white.withAlphaComponent(0.55) : UIColor.secondaryLabel
         }
@@ -53,8 +51,8 @@ struct ArtistNowPlayingMenuButton: UIViewRepresentable {
         cfg.contentInsets = .zero
         cfg.titlePadding = 0
         button.configuration = cfg
-        if let palette = heroBackdropPalette {
-            button.tintColor = palette.prefersDarkHeroChrome ? .black : .white
+        if heroBackdropPalette != nil {
+            button.tintColor = .white
         } else {
             button.tintColor = isDarkSystem ? .white : .label
         }
