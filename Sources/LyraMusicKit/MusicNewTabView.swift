@@ -54,15 +54,11 @@ struct MusicNewTabView: View {
                 slack: newTabFloatingHeaderCollapseSlack,
                 showFloatingHeader: $newTabShowFloatingHeader
             ))
-            .safeAreaInset(edge: .top, spacing: 0) {
-                if newTabShowFloatingHeader {
-                    MusicTabTitleHeaderBar(title: "New") {
-                        MusicToolbarSettingsAvatarLink(diameter: 45)
-                    }
-                    .transition(.opacity)
+            .musicTabFloatingHeaderInset(isVisible: newTabShowFloatingHeader) {
+                MusicTabTitleHeaderBar(title: "New") {
+                    MusicToolbarSettingsAvatarLink(diameter: 45)
                 }
             }
-            .animation(.easeInOut(duration: 0.22), value: newTabShowFloatingHeader)
             .background(MusicDesign.background)
             .musicNewTabNavigationChrome()
             .musicNewTabRootHidesNavigationBar()

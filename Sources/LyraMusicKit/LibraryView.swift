@@ -198,12 +198,9 @@ struct LibraryView: View {
                 slack: 72,
                 showFloatingHeader: $showFloatingHeader
             ))
-            .safeAreaInset(edge: .top, spacing: 0) {
-                if showFloatingHeader {
-                    libraryHeaderBar
-                }
+            .musicTabFloatingHeaderInset(isVisible: showFloatingHeader) {
+                libraryHeaderBar
             }
-            .animation(.easeInOut(duration: 0.22), value: showFloatingHeader)
             .background(MusicDesign.background)
             .musicNewTabNavigationChrome()
             .musicNewTabRootHidesNavigationBar()
