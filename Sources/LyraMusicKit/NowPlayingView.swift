@@ -20,6 +20,7 @@ private enum NowPlayingLibraryRoute: Hashable {
 /// Apple Music–style Now Playing: artwork-derived backdrop + luminance handoff (same as album detail).
 struct NowPlayingView: View {
     @EnvironmentObject private var app: AppModel
+    @ObservedObject var player: PlaybackEngine
     @Binding var isPresented: Bool
     @State private var showLyrics = false
     @State private var showQueue = false
@@ -32,7 +33,12 @@ struct NowPlayingView: View {
     @State private var lastQueueHapticAnchor: QueueScrollAnchor? = .nowPlayingHeader
     @Namespace private var artworkNamespace
 
-    init(isPresented: Binding<Bool>, onLibraryNavigationDepthChanged: @escaping (Int) -> Void = { _ in }) {
+    init(
+        player playbackEngine: PlaybackEngine,
+        isPresented: Binding<Bool>,
+        onLibraryNavigationDepthChanged: @escaping (Int) -> Void = { _ in }
+    ) {
+        self._player = ObservedObject(wrappedValue: playbackEngine)
         self._isPresented = isPresented
         self.onLibraryNavigationDepthChanged = onLibraryNavigationDepthChanged
     }
@@ -58,6 +64,14 @@ struct NowPlayingView: View {
     private func artworkURL(for track: Track?) -> URL? {
         guard let track else { return nil }
         return app.resolvedArtworkURL(for: track)
+    }
+
+    private func artworkView(for track: Track, cornerRadius: CGFloat) -> some View {
+        AlbumArtworkView(
+            url: artworkURL(for: track),
+            meshArtworkSeed: RadioStationMeshArtwork.seedKey(for: track),
+            cornerRadius: cornerRadius,
+        )
     }
 
     // MARK: - System fallback chrome (no active track)
@@ -97,49 +111,49 @@ struct NowPlayingView: View {
     // MARK: - Luminance handoff (album-detail parity) vs system appearance
 
     private var fgPrimary: Color {
-        app.player.activeTrack != nil ? backdropPalette.heroChromePrimary : npPrimarySystem
+        player.activeTrack != nil ? backdropPalette.heroChromePrimary : npPrimarySystem
     }
 
     private var fgSecondary: Color {
-        app.player.activeTrack != nil ? backdropPalette.heroChromeSecondary : npSecondarySystem
+        player.activeTrack != nil ? backdropPalette.heroChromeSecondary : npSecondarySystem
     }
 
     private var fgSecondaryStrong: Color {
-        app.player.activeTrack != nil ? backdropPalette.heroChromeSecondary : npSecondaryStrongSystem
+        player.activeTrack != nil ? backdropPalette.heroChromeSecondary : npSecondaryStrongSystem
     }
 
     private var fgMuted: Color {
-        app.player.activeTrack != nil ? backdropPalette.nowPlayingBottomChromeMuted : npMutedSystem
+        player.activeTrack != nil ? backdropPalette.nowPlayingBottomChromeMuted : npMutedSystem
     }
 
     private var fgSubtle: Color {
-        app.player.activeTrack != nil ? backdropPalette.nowPlayingQueueHint : npSubtleSystem
+        player.activeTrack != nil ? backdropPalette.nowPlayingQueueHint : npSubtleSystem
     }
 
     private var fgCapsule: Color {
-        app.player.activeTrack != nil ? backdropPalette.heroGlassCircleFill : npCapsuleSystem
+        player.activeTrack != nil ? backdropPalette.heroGlassCircleFill : npCapsuleSystem
     }
 
     private var fgCapsuleStrong: Color {
-        app.player.activeTrack != nil ? backdropPalette.nowPlayingToggleCapsuleActive : npCapsuleStrongSystem
+        player.activeTrack != nil ? backdropPalette.nowPlayingToggleCapsuleActive : npCapsuleStrongSystem
     }
 
     private var fgDivider: Color {
-        app.player.activeTrack != nil ? backdropPalette.heroTracklistSeparator : npDividerSystem
+        player.activeTrack != nil ? backdropPalette.heroTracklistSeparator : npDividerSystem
     }
 
     private var fgDragHandle: Color {
-        app.player.activeTrack != nil ? backdropPalette.nowPlayingDragHandle : npDragHandleSystem
+        player.activeTrack != nil ? backdropPalette.nowPlayingDragHandle : npDragHandleSystem
     }
 
     private var fgBottomGlow: Color {
-        app.player.activeTrack != nil ? backdropPalette.heroGlassCircleFill : npBottomGlowSystem
+        player.activeTrack != nil ? backdropPalette.heroGlassCircleFill : npBottomGlowSystem
     }
 
     #if os(iOS)
     /// Scroll bar on the queue list — white on dark Now Playing chrome, black on light hero backdrops.
     private var queueScrollIndicatorStyle: UIScrollView.IndicatorStyle {
-        guard app.player.activeTrack != nil else {
+        guard player.activeTrack != nil else {
             return colorScheme == .dark ? .white : .black
         }
         return backdropPalette.prefersDarkHeroChrome ? .black : .white
@@ -236,17 +250,17 @@ struct NowPlayingView: View {
                     }
                 }
             }
-            .task(id: artworkURL(for: app.player.activeTrack)?.absoluteString ?? "") {
-                guard let url = artworkURL(for: app.player.activeTrack) else {
+            .task(id: artworkURL(for: player.activeTrack)?.absoluteString ?? "") {
+                guard let url = artworkURL(for: player.activeTrack) else {
                     await MainActor.run { backdropPalette = .fallback }
                     return
                 }
-                let p = await ArtworkDynamicGradient.analyzeBackdrop(from: url)
+                let p = await ArtworkDynamicGradient.analyzeBackdrop(from: url, style: .nowPlaying)
                 await MainActor.run { backdropPalette = p }
             }
         }
         .onAppear {
-            app.player.reconcilePlaybackSessionAfterUIMilestone()
+            player.reconcilePlaybackSessionAfterUIMilestone()
             onLibraryNavigationDepthChanged(libraryPath.count)
         }
         .onChange(of: libraryPath.count) { _, count in
@@ -256,9 +270,9 @@ struct NowPlayingView: View {
 
     private var chromeBackground: some View {
         Group {
-            if app.player.activeTrack != nil {
+            if player.activeTrack != nil {
                 AlbumHeroBackdropView(
-                    artworkURL: artworkURL(for: app.player.activeTrack),
+                    artworkURL: artworkURL(for: player.activeTrack),
                     palette: backdropPalette
                 )
             } else if colorScheme == .dark {
@@ -327,7 +341,7 @@ struct NowPlayingView: View {
     /// songs without listening doesn't pollute the list, and the history survives
     /// queue resets — switching from an album to a single keeps the prior history.
     private func queueScrollContent(track: Track) -> some View {
-        let upNext = Array(app.player.queue.dropFirst(app.player.currentIndex + 1))
+        let upNext = Array(player.queue.dropFirst(player.currentIndex + 1))
         // Don't duplicate the currently-playing track in the history list.
         // Storage is newest-first; the queue view reads oldest-at-top so the most
         // recently played track sits right above the Now Playing line.
@@ -363,8 +377,8 @@ struct NowPlayingView: View {
     /// Clear button) and "Continue Playing — From [source]" (the rest of the source).
     /// Both sections have 3-line drag handles (system-drawn via active edit mode).
     private func nowPlayingPage(track: Track, upNext: [Track]) -> some View {
-        let userQueueTracks = upNext.filter { app.player.userQueuedTrackIds.contains($0.id) }
-        let continuePlayingTracks = upNext.filter { !app.player.userQueuedTrackIds.contains($0.id) }
+        let userQueueTracks = upNext.filter { player.userQueuedTrackIds.contains($0.id) }
+        let continuePlayingTracks = upNext.filter { !player.userQueuedTrackIds.contains($0.id) }
 
         return VStack(spacing: 0) {
             shuffleRepeatRow
@@ -394,8 +408,8 @@ struct NowPlayingView: View {
     }
 
     private var continuePlayingSourceLabel: String? {
-        if case .playlist(let p) = app.player.playbackSource { return p.name }
-        let title = app.player.activeTrack?.albumTitle.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if case .playlist(let p) = player.playbackSource { return p.name }
+        let title = player.activeTrack?.albumTitle.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return title.isEmpty ? nil : title
     }
 
@@ -418,7 +432,7 @@ struct NowPlayingView: View {
                             .textCase(nil)
                         Spacer()
                         Button {
-                            app.player.clearUserQueue()
+                            player.clearUserQueue()
                         } label: {
                             Text("Clear")
                                 .font(.subheadline.weight(.semibold))
@@ -476,8 +490,8 @@ struct NowPlayingView: View {
 
     private func queueListRow(track t: Track) -> some View {
         Button {
-            if let idx = app.player.queue.firstIndex(where: { $0.id == t.id }) {
-                app.player.jumpToQueueItem(at: idx)
+            if let idx = player.queue.firstIndex(where: { $0.id == t.id }) {
+                player.jumpToQueueItem(at: idx)
             }
         } label: {
             queueRow(track: t)
@@ -489,7 +503,7 @@ struct NowPlayingView: View {
         .listRowSeparator(.hidden)
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             Button(role: .destructive) {
-                app.player.removeTracksFromQueue(trackIds: [t.id])
+                player.removeTracksFromQueue(trackIds: [t.id])
             } label: {
                 Label("Remove", systemImage: "trash")
             }
@@ -499,7 +513,7 @@ struct NowPlayingView: View {
     /// Translates an `onMove` IndexSet+destination from a section's local coordinates into
     /// the full `Up Next` index space, then forwards to `PlaybackEngine.moveUpNextItem`.
     private func moveWithinSection(tracks: [Track], source: IndexSet, destination: Int) {
-        let upNext = Array(app.player.queue.dropFirst(app.player.currentIndex + 1))
+        let upNext = Array(player.queue.dropFirst(player.currentIndex + 1))
         let upNextIndexById = Dictionary(uniqueKeysWithValues: upNext.enumerated().map { ($1.id, $0) })
         let mappedSource = source.compactMap { upNextIndexById[tracks[$0].id] }
         let mappedDestination: Int = {
@@ -508,7 +522,7 @@ struct NowPlayingView: View {
             if let last = tracks.last, let lastIdx = upNextIndexById[last.id] { return lastIdx + 1 }
             return upNext.count
         }()
-        app.player.moveUpNextItem(from: IndexSet(mappedSource), to: mappedDestination)
+        player.moveUpNextItem(from: IndexSet(mappedSource), to: mappedDestination)
     }
 
     @ViewBuilder
@@ -570,23 +584,23 @@ struct NowPlayingView: View {
                 }
                 .defaultScrollAnchor(.bottom)
                 .overlay(alignment: .top) {
-                    let bgColor = app.player.activeTrack != nil
+                    let bgColor = player.activeTrack != nil
                         ? backdropPalette.heroSolidBackdropColor
                         : (colorScheme == .dark ? Color(red: 0.11, green: 0.11, blue: 0.12) : MusicDesign.background)
-                    return LinearGradient(gradient: Gradient(stops: [
+                    LinearGradient(gradient: Gradient(stops: [
                         .init(color: bgColor, location: 0),
-                        .init(color: bgColor.opacity(0), location: 1)
+                        .init(color: bgColor.opacity(0), location: 1),
                     ]), startPoint: .top, endPoint: .bottom)
                     .frame(height: 20)
                     .allowsHitTesting(false)
                 }
                 .overlay(alignment: .bottom) {
-                    let bgColor = app.player.activeTrack != nil
+                    let bgColor = player.activeTrack != nil
                         ? backdropPalette.heroSolidBackdropColor
                         : (colorScheme == .dark ? Color(red: 0.11, green: 0.11, blue: 0.12) : MusicDesign.background)
-                    return LinearGradient(gradient: Gradient(stops: [
+                    LinearGradient(gradient: Gradient(stops: [
                         .init(color: bgColor.opacity(0), location: 0),
-                        .init(color: bgColor, location: 1)
+                        .init(color: bgColor, location: 1),
                     ]), startPoint: .top, endPoint: .bottom)
                     .frame(height: 20)
                     .allowsHitTesting(false)
@@ -606,7 +620,7 @@ struct NowPlayingView: View {
             return "Unknown Album"
         }()
         return HStack(spacing: 12) {
-            AlbumArtworkView(url: artworkURL(for: track), cornerRadius: 6)
+            artworkView(for: track, cornerRadius: 6)
                 .frame(width: 56, height: 56)
                 .matchedGeometryEffect(id: "nowPlayingArtwork", in: artworkNamespace)
             VStack(alignment: .leading, spacing: 2) {
@@ -625,7 +639,7 @@ struct NowPlayingView: View {
                         albumSubtitle: albumSubtitle,
                         libraryAlbum: libraryAlbum,
                         sourcePlaylist: {
-                            if case .playlist(let p) = app.player.playbackSource { return p }
+                            if case .playlist(let p) = player.playbackSource { return p }
                             return nil
                         }(),
                         compact: true,
@@ -663,12 +677,12 @@ struct NowPlayingView: View {
     /// current queue we jump to it (preserving Up Next); otherwise we start a fresh
     /// queue containing just that track.
     private func playHistoryTrack(_ track: Track) async {
-        if let idx = app.player.queue.firstIndex(where: { $0.id == track.id }) {
-            app.player.jumpToQueueItem(at: idx)
+        if let idx = player.queue.firstIndex(where: { $0.id == track.id }) {
+            player.jumpToQueueItem(at: idx)
             return
         }
         do {
-            try await app.player.playAlbum(library: app.activeLibrary, tracks: [track], startIndex: 0)
+            try await player.playAlbum(library: app.activeLibrary, tracks: [track], startIndex: 0)
         } catch {
             app.errorMessage = error.localizedDescription
         }
@@ -701,7 +715,7 @@ struct NowPlayingView: View {
 
     private func lyricsCompactHeader(track: Track) -> some View {
         HStack(alignment: .center, spacing: 12) {
-            AlbumArtworkView(url: artworkURL(for: track), cornerRadius: 6)
+            artworkView(for: track, cornerRadius: 6)
                 .frame(width: 56, height: 56)
                 .matchedGeometryEffect(id: "nowPlayingArtwork", in: artworkNamespace)
 
@@ -730,7 +744,7 @@ struct NowPlayingView: View {
                 }
                 .buttonStyle(.plain)
 
-                if let activeTrack = app.player.activeTrack {
+                if let activeTrack = player.activeTrack {
                     Menu {
                         ShareLink(item: "\(activeTrack.title) — \(activeTrack.artist)")
                     } label: {
@@ -847,11 +861,11 @@ struct NowPlayingView: View {
 
         return HStack {
             Spacer(minLength: 0)
-            AlbumArtworkView(url: artworkURL(for: track), cornerRadius: 12)
+            artworkView(for: track, cornerRadius: 12)
                 .frame(width: base, height: base)
                 .matchedGeometryEffect(id: "nowPlayingArtwork", in: artworkNamespace)
-                .scaleEffect(app.player.isPlaying ? playingScale : pausedScale, anchor: .center)
-                .animation(.smooth(duration: 0.5), value: app.player.isPlaying)
+                .scaleEffect(player.isPlaying ? playingScale : pausedScale, anchor: .center)
+                .animation(.smooth(duration: 0.5), value: player.isPlaying)
                 .frame(width: maxSide, height: maxSide)
                 .shadow(color: .black.opacity(backdropPalette.prefersDarkHeroChrome ? 0.22 : 0.45), radius: 20, y: 12)
             Spacer(minLength: 0)
@@ -986,7 +1000,7 @@ struct NowPlayingView: View {
                         libraryAlbum: libraryAlbum,
                         heroBackdropPalette: backdropPalette,
                         sourcePlaylist: {
-                            if case .playlist(let p) = app.player.playbackSource { return p }
+                            if case .playlist(let p) = player.playbackSource { return p }
                             return nil
                         }(),
                         goToAlbumDisabled: libraryAlbum == nil && catalogAlbumFallback(from: track) == nil,
@@ -1022,7 +1036,7 @@ struct NowPlayingView: View {
                 }
                 .buttonStyle(.plain)
 
-                if let activeTrack = app.player.activeTrack {
+                if let activeTrack = player.activeTrack {
                     Menu {
                         ShareLink(item: "\(activeTrack.title) — \(activeTrack.artist)")
                     } label: {
@@ -1052,7 +1066,7 @@ struct NowPlayingView: View {
     }
 
     private func dismissAndNavigate(to route: NowPlayingLibraryRoute) {
-        let activeTrackId = app.player.activeTrack?.id
+        let activeTrackId = player.activeTrack?.id
         let nav: NowPlayingDeepLink?
         switch route {
         case .album(let album):
@@ -1066,7 +1080,7 @@ struct NowPlayingView: View {
         case .artist(let name):
             nav = .artist(name)
         case .playlist:
-            if case .playlist(let p) = app.player.playbackSource {
+            if case .playlist(let p) = player.playbackSource {
                 let playlist = playlistForNavigation(id: p.id) ?? p
                 nav = .playlist(playlist, scrollToTrackId: activeTrackId)
                 if let activeTrackId {
@@ -1095,14 +1109,14 @@ struct NowPlayingView: View {
         if let playlist = app.libraryPlaylists.first(where: { $0.id == id }) {
             return playlist
         }
-        if case .playlist(let playlist) = app.player.playbackSource, playlist.id == id {
+        if case .playlist(let playlist) = player.playbackSource, playlist.id == id {
             return playlist
         }
         return nil
     }
 
     private func progressBlock(track: Track) -> some View {
-        ScrubberBlock(track: track, player: app.player, backdropPalette: backdropPalette)
+        ScrubberBlock(track: track, player: player, backdropPalette: backdropPalette)
     }
 
     /// Transport SF Symbols (contrast follows Light / Dark Now Playing chrome).
@@ -1111,7 +1125,7 @@ struct NowPlayingView: View {
             Spacer(minLength: 0)
             HStack(spacing: 30) {
                 Button {
-                    app.player.skipPrevious()
+                    player.skipPrevious()
                 } label: {
                     Image(systemName: "backward.fill")
                         .font(.system(size: 27, weight: .semibold))
@@ -1122,9 +1136,9 @@ struct NowPlayingView: View {
                 .buttonStyle(.plain)
 
                 Button {
-                    app.player.togglePlayPause()
+                    player.togglePlayPause()
                 } label: {
-                    Image(systemName: app.player.isPlaying ? "pause.fill" : "play.fill")
+                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                         .font(.system(size: 37, weight: .semibold))
                         .foregroundStyle(fgPrimary)
                         .frame(width: 64, height: 56)
@@ -1133,7 +1147,7 @@ struct NowPlayingView: View {
                 .buttonStyle(.plain)
 
                 Button {
-                    app.player.skipNext()
+                    player.skipNext()
                 } label: {
                     Image(systemName: "forward.fill")
                         .font(.system(size: 27, weight: .semibold))
@@ -1152,18 +1166,18 @@ struct NowPlayingView: View {
         HStack(spacing: 10) {
             queueModeToggle(
                 systemName: "shuffle",
-                isActive: app.player.isQueueOutOfNaturalOrder,
-                action: { app.player.toggleShuffle() },
+                isActive: player.isQueueOutOfNaturalOrder,
+                action: { player.toggleShuffle() },
             )
             queueModeToggle(
-                systemName: app.player.repeatMode == .one ? "repeat.1" : "repeat",
-                isActive: app.player.repeatMode != .off,
-                action: { app.player.cycleRepeat() },
+                systemName: player.repeatMode == .one ? "repeat.1" : "repeat",
+                isActive: player.repeatMode != .off,
+                action: { player.cycleRepeat() },
             )
         }
         .padding(.horizontal, 24)
-        .animation(.easeInOut(duration: 0.2), value: app.player.shuffleMode)
-        .animation(.easeInOut(duration: 0.2), value: app.player.repeatMode)
+        .animation(.easeInOut(duration: 0.2), value: player.shuffleMode)
+        .animation(.easeInOut(duration: 0.2), value: player.repeatMode)
     }
 
     private func queueModeToggle(
@@ -1186,7 +1200,7 @@ struct NowPlayingView: View {
 
     /// High-contrast on/off for queue shuffle & repeat (active reads clearly vs muted off state).
     private func queueModeToggleChrome(isActive: Bool) -> (foreground: Color, background: Color) {
-        if app.player.activeTrack != nil {
+        if player.activeTrack != nil {
             if backdropPalette.prefersDarkHeroChrome {
                 if isActive {
                     return (Color.white, Color.black.opacity(0.88))
@@ -1270,7 +1284,7 @@ struct NowPlayingView: View {
 
     private func queueRow(track: Track) -> some View {
         HStack(spacing: 12) {
-            AlbumArtworkView(url: artworkURL(for: track), cornerRadius: 4)
+            artworkView(for: track, cornerRadius: 4)
                 .frame(width: 44, height: 44)
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.title)

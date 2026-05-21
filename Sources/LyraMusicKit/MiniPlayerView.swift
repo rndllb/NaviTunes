@@ -85,8 +85,13 @@ struct MiniPlayerView: View {
                 showNowPlaying = true
             } label: {
                 HStack(alignment: .center, spacing: 8) {
-                    AlbumArtworkView(url: artURL, cornerRadius: 6)
+                    AlbumArtworkView(
+                        url: artURL,
+                        meshArtworkSeed: RadioStationMeshArtwork.seedKey(for: track),
+                        cornerRadius: 6,
+                    )
                         .frame(width: MusicDesign.miniPlayerArtwork, height: MusicDesign.miniPlayerArtwork)
+                        .padding(.leading, 2)
                         .id("mini-art-\(track.id)-\(artURL?.absoluteString ?? "")")
 
                     VStack(alignment: .leading, spacing: 1) {
@@ -115,9 +120,12 @@ struct MiniPlayerView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .padding(.leading, 2)
+
+            Spacer(minLength: 6)
         }
         .padding(.leading, 10)
-        .padding(.trailing, 6)
+        .padding(.trailing, 10)
         .padding(.vertical, 2)
     }
 
@@ -134,8 +142,13 @@ struct MiniPlayerView: View {
                 showNowPlaying = true
             } label: {
                 HStack(alignment: .center, spacing: spacing) {
-                    AlbumArtworkView(url: artURL, cornerRadius: isTabAccessory ? 6 : 6)
+                    AlbumArtworkView(
+                        url: artURL,
+                        meshArtworkSeed: RadioStationMeshArtwork.seedKey(for: track),
+                        cornerRadius: isTabAccessory ? 6 : 6,
+                    )
                         .frame(width: artSize, height: artSize)
+                        .padding(.leading, 2)
                         .id("mini-art-\(track.id)-\(artURL?.absoluteString ?? "")")
 
                     VStack(alignment: .leading, spacing: 1) {
@@ -154,32 +167,37 @@ struct MiniPlayerView: View {
             }
             .buttonStyle(.plain)
 
-            Button {
-                player.togglePlayPause()
-            } label: {
-                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: isTabAccessory ? 14 : 17, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .frame(width: isTabAccessory ? 28 : 32, height: isTabAccessory ? 28 : 32)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if showsSkip {
+            HStack(spacing: 0) {
                 Button {
-                    player.skipNext()
+                    player.togglePlayPause()
                 } label: {
-                    Image(systemName: "forward.fill")
+                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                         .font(.system(size: isTabAccessory ? 14 : 17, weight: .semibold))
                         .foregroundStyle(.primary)
                         .frame(width: isTabAccessory ? 28 : 32, height: isTabAccessory ? 28 : 32)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+
+                if showsSkip {
+                    Button {
+                        player.skipNext()
+                    } label: {
+                        Image(systemName: "forward.fill")
+                            .font(.system(size: isTabAccessory ? 14 : 17, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .frame(width: isTabAccessory ? 28 : 32, height: isTabAccessory ? 28 : 32)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
             }
+            .padding(.leading, 2)
+
+            Spacer(minLength: isTabAccessory ? 8 : 6)
         }
         .padding(.leading, isTabAccessory ? 10 : 12)
-        .padding(.trailing, isTabAccessory ? 6 : 12)
+        .padding(.trailing, isTabAccessory ? 8 : 10)
         .padding(.vertical, isTabAccessory ? 2 : 5)
         .modifier(MiniPlayerChromeModifier(applyCapsule: layout == .standalone))
     }

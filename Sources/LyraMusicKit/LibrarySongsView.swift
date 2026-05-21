@@ -325,7 +325,7 @@ struct LibrarySongsView: View {
             artworkURL: app.resolvedArtworkURL(for: track),
             itemSize: app.songListItemSize,
             isFavorite: app.favoriteTrackIds.contains(track.id),
-            isNowPlaying: app.player.activeTrack?.id == track.id,
+            isNowPlaying: app.nowPlayingTrackId == track.id,
             offlineDownload: offline.activeDownloads[track.id],
             isOfflineCached: app.offline.downloadedTrackIds.contains(track.id),
             onPlay: { Task { await play(track: track) } },
@@ -346,7 +346,7 @@ struct LibrarySongsView: View {
                     await MainActor.run { app.showTransientToast("Added to Queue") }
                 }
             },
-            hasActiveQueue: !app.player.queue.isEmpty,
+            hasActiveQueue: app.hasActivePlaybackQueue,
             onGoToAlbum: { navigateAlbum = albumSummary(for: track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
             onRemoveFromLibrary: app.isSongInLibrary(track.id)
@@ -488,6 +488,7 @@ struct LibrarySongsView: View {
 }
 
 struct LibrarySongRow: View, Equatable {
+    @EnvironmentObject private var app: AppModel
     let track: Track
     var artworkURL: URL? = nil
     var itemSize: SongListItemSize = .medium
@@ -706,7 +707,7 @@ struct LibrarySongRow: View, Equatable {
                                 ZStack {
                                     Color.black.opacity(0.45)
                                         .clipShape(RoundedRectangle(cornerRadius: 6))
-                                    NowPlayingBarsIndicator(color: .white)
+                                    NowPlayingBarsIndicator(player: app.player, color: .white)
                                 }
                             }
                         }
@@ -872,6 +873,42 @@ struct LibrarySongRowDivider: View {
         }
         .padding(.trailing, trailingInset)
         .frame(height: hairlineHeight)
+    }
+}
+
+/// Compact tracklist placeholder — sits directly under hero / divider (fixed height, no List stretch).
+struct AlbumTracklistLoadingRow: View {
+    var palette: ArtworkDynamicGradient.BackdropPalette?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .scaleEffect(0.9)
+                .tint(palette?.heroAccent ?? MusicDesign.accent)
+            Text("Loading tracks…")
+                .font(.subheadline)
+                .foregroundStyle(palette?.heroChromeSecondary ?? MusicDesign.secondaryLabel)
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+struct AlbumTracklistLoadingRowChrome: ViewModifier {
+    let isAlbum: Bool
+    let palette: ArtworkDynamicGradient.BackdropPalette
+
+    func body(content: Content) -> some View {
+        if isAlbum {
+            content.albumTrackListRowStyle()
+        } else {
+            content
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+        }
     }
 }
 
