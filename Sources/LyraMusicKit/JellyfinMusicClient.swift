@@ -1556,6 +1556,10 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         )
     }
 
+    func albumPrimaryImageURL(albumId: String) -> URL? {
+        mediaURLWithQueryAuth(apiURL("Items", albumId, "Images", "Primary"), extraQuery: [])
+    }
+
     private func artworkURLForTrackOrAlbum(dict: [String: Any], trackId: String, albumId: String) -> URL? {
         if let tag = dict["ImageTags"] as? [String: Any],
            let primary = tag["Primary"] as? String,
