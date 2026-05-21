@@ -39,6 +39,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
     @Published private(set) var userQueuedTrackIds: Set<String> = []
     @Published private(set) var isPlaying: Bool = false
     @Published private(set) var currentTime: TimeInterval = 0
+    /// Live playhead updated every periodic observer tick. Prefer over ``currentTime`` for synced lyrics — ``currentTime`` is UI-throttled.
+    var livePlaybackTime: TimeInterval { playbackHead }
     @Published private(set) var duration: TimeInterval = 0
     @Published private(set) var lyrics: [LyricLine] = []
     @Published var shuffleMode: ShuffleMode = .off
@@ -63,6 +65,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private var seekGeneration = 0
     /// Probed length of the current local file — avoids bad `AVPlayerItem.duration` flicker on downloads.
     private var localFileDuration: TimeInterval = 0
+    private var probingLocalFileURL: URL?
+    /// Coalesces overlapping skip/end/advance requests so only one load cycle runs at a time.
+    private var advanceWork: Task<Void, Never>?
 
     private var player: AVPlayer?
     private var timeObserver: Any?
@@ -81,6 +86,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private var library: MusicLibraryProviding?
     private weak var offline: OfflineDownloadManager?
     private var scrobbledForCurrentTrack = false
+    private var resolveArtwork: ((Track) -> URL?)?
 
     /// Fires once per track when scrobble threshold is reached (~50% / 30s). `AppModel`
     /// uses this to stamp the played playlist (or album, for ad-hoc queues) into the
@@ -107,8 +113,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private var wasPlayingBeforeInterruption = false
     #endif
 
-    func bind(offline: OfflineDownloadManager? = nil) {
+    func bind(offline: OfflineDownloadManager? = nil, resolveArtwork: ((Track) -> URL?)? = nil) {
         self.offline = offline
+        self.resolveArtwork = resolveArtwork
         #if os(iOS)
         installAudioSessionObserversIfNeeded()
         #endif
@@ -344,15 +351,16 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
     func playAlbum(library: MusicLibraryProviding?, tracks: [Track], startIndex: Int = 0, source: PlaybackSource? = nil) async throws {
         if let library { self.library = library }
+        let normalized = tracksWithResolvedArtwork(tracks)
         let epoch = beginPlaybackSession()
         teardownPlayer()
-        queue = tracks
-        currentIndex = min(max(0, startIndex), max(tracks.count - 1, 0))
+        queue = normalized
+        currentIndex = min(max(0, startIndex), max(normalized.count - 1, 0))
         playbackSource = source
         // Fresh source = no user-queued items yet.
         userQueuedTrackIds.removeAll()
         unshuffledQueue = nil
-        sourceQueueOrder = tracks
+        sourceQueueOrder = normalized
         // Caller may flip this back to `.on` (e.g. ``playAlbumShuffled``) after the queue lands.
         shuffleMode = .off
         lastEmittedUIProgress = -10_000
@@ -372,14 +380,15 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
     func playNext(library: MusicLibraryProviding?, track: Track) async throws {
         if let library { self.library = library }
+        let normalized = tracksWithResolvedArtwork([track])[0]
         if queue.isEmpty {
-            try await playAlbum(library: library, tracks: [track], startIndex: 0)
+            try await playAlbum(library: library, tracks: [normalized], startIndex: 0)
             return
         }
-        removeUpcomingOccurrences(of: [track.id])
+        removeUpcomingOccurrences(of: [normalized.id])
         let insertAt = min(currentIndex + 1, queue.count)
-        queue.insert(track, at: insertAt)
-        userQueuedTrackIds.insert(track.id)
+        queue.insert(normalized, at: insertAt)
+        userQueuedTrackIds.insert(normalized.id)
     }
 
     func playTracksNext(library: MusicLibraryProviding?, tracks: [Track]) async throws {
@@ -389,9 +398,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
             try await playAlbum(library: library, tracks: tracks, startIndex: 0)
             return
         }
-        removeUpcomingOccurrences(of: Set(tracks.map(\.id)))
+        let normalized = tracksWithResolvedArtwork(tracks)
+        removeUpcomingOccurrences(of: Set(normalized.map(\.id)))
         let insertAt = min(currentIndex + 1, queue.count)
-        for (i, t) in tracks.enumerated() {
+        for (i, t) in normalized.enumerated() {
             queue.insert(t, at: insertAt + i)
             userQueuedTrackIds.insert(t.id)
         }
@@ -408,9 +418,17 @@ final class PlaybackEngine: NSObject, ObservableObject {
             try await playAlbum(library: library, tracks: tracks, startIndex: 0)
             return
         }
-        removeUpcomingOccurrences(of: Set(tracks.map(\.id)))
-        queue.append(contentsOf: tracks)
-        for t in tracks { userQueuedTrackIds.insert(t.id) }
+        let normalized = tracksWithResolvedArtwork(tracks)
+        removeUpcomingOccurrences(of: Set(normalized.map(\.id)))
+        queue.append(contentsOf: normalized)
+        for t in normalized { userQueuedTrackIds.insert(t.id) }
+    }
+
+    private func tracksWithResolvedArtwork(_ tracks: [Track]) -> [Track] {
+        tracks.map { track in
+            guard let url = resolveArtwork?(track) ?? track.artworkURL else { return track }
+            return track.withArtworkURL(url)
+        }
     }
 
     /// Strips later occurrences of `ids` from the up-next portion of `queue` so a
@@ -446,7 +464,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             return
         }
         currentIndex = min(currentIndex, queue.count - 1)
-        Task { try? await advance() }
+        scheduleAdvance()
     }
 
     func togglePlayPause() {
@@ -635,7 +653,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         // Shuffle is a queue-reordering action — advance sequentially regardless of mode.
         guard currentIndex + 1 < queue.count else { return }
         currentIndex += 1
-        Task { try? await advance() }
+        scheduleAdvance()
     }
 
     func skipPrevious() {
@@ -648,7 +666,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             return
         }
         currentIndex -= 1
-        Task { try? await advance() }
+        scheduleAdvance()
     }
 
     /// True when the "continue playing" section is out of the natural source order, but shuffle
@@ -714,7 +732,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
     func jumpToQueueItem(at index: Int) {
         guard queue.indices.contains(index) else { return }
         currentIndex = index
-        Task { try? await advance() }
+        scheduleAdvance()
     }
 
     func moveUpNextItem(from source: IndexSet, to destination: Int) {
@@ -723,6 +741,14 @@ final class PlaybackEngine: NSObject, ObservableObject {
         var upNext = Array(queue[offset...])
         upNext.move(fromOffsets: source, toOffset: destination)
         queue.replaceSubrange(offset..., with: upNext)
+    }
+
+    private func scheduleAdvance() {
+        advanceWork?.cancel()
+        advanceWork = Task { [weak self] in
+            guard let self else { return }
+            try? await self.advance()
+        }
     }
 
     private func advance() async throws {
@@ -783,10 +809,13 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     private func teardownPlayer() {
+        advanceWork?.cancel()
+        advanceWork = nil
         seekGeneration += 1
         seekSettleDeadline = nil
         isSeeking = false
         localFileDuration = 0
+        probingLocalFileURL = nil
         detachPlayerKeepingQueueState()
         playbackHead = 0
         lastEmittedUIProgress = -10_000
@@ -1031,57 +1060,14 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
         let interval = CMTime(seconds: 0.35, preferredTimescale: 600)
         timeObserver = p.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
-            Task { @MainActor in
-                guard let self else { return }
-                let elapsed = time.seconds
-                self.playbackHead = elapsed
-
-                let newDuration = item.duration.seconds.isFinite ? item.duration.seconds : 0
-                if self.localFileDuration > 0 {
-                    // Keep probed file length; AVPlayerItem.duration can be wrong briefly on local files.
-                } else if newDuration > 0, newDuration != self.duration {
-                    self.duration = newDuration
-                    self.persistOfflineDurationIfNeeded(newDuration)
-                    self.patchActiveQueueTrackDuration(newDuration)
-                } else if self.duration <= 0, item.asset is AVURLAsset,
-                          let urlAsset = item.asset as? AVURLAsset, urlAsset.url.isFileURL {
-                    Task {
-                        let probed = await LocalMediaDuration.seconds(at: urlAsset.url)
-                        guard probed > 0 else { return }
-                        self.duration = probed
-                        if urlAsset.url.isFileURL {
-                            self.localFileDuration = probed
-                        }
-                        self.persistOfflineDurationIfNeeded(probed)
-                        self.patchActiveQueueTrackDuration(probed)
-                    }
-                }
-
-                let playing = p.rate > 0.01
-                let playStateChanged = playing != self.isPlaying
-                if playStateChanged { self.isPlaying = playing }
-
-                self.maybeScrobble(track: track, position: elapsed)
-                if playStateChanged
-                    || elapsed - self.lastNowPlayingInfoRefresh >= 0.55
-                    || abs(elapsed - self.lastNowPlayingInfoRefresh) > 1.25
-                {
-                    self.lastNowPlayingInfoRefresh = elapsed
-                    self.refreshNowPlaying()
-                }
-
-                guard !self.isSeeking else { return }
-                if let deadline = self.seekSettleDeadline, ContinuousClock.now < deadline {
-                    return
-                }
-                self.seekSettleDeadline = nil
-                // Drop stale samples that arrive right after a seek (often ~0s before the player catches up).
-                if elapsed + 1.5 < self.currentTime { return }
-                if self.currentTime > 3, elapsed < 1 { return }
-                if elapsed - self.lastEmittedUIProgress >= 0.55 || abs(elapsed - self.currentTime) > 1.25 {
-                    self.lastEmittedUIProgress = elapsed
-                    self.currentTime = elapsed
-                }
+            guard let self else { return }
+            MainActor.assumeIsolated {
+                self.periodicTimeObserverTick(
+                    elapsed: time.seconds,
+                    item: item,
+                    track: track,
+                    player: p,
+                )
             }
         }
 
@@ -1090,10 +1076,70 @@ final class PlaybackEngine: NSObject, ObservableObject {
             object: item,
             queue: .main,
         ) { [weak self] _ in
-            Task { @MainActor in self?.handleEnded() }
+            guard let self else { return }
+            MainActor.assumeIsolated {
+                self.handleEnded()
+            }
         }
 
         refreshNowPlaying()
+    }
+
+    private func periodicTimeObserverTick(
+        elapsed: TimeInterval,
+        item: AVPlayerItem,
+        track: Track,
+        player p: AVPlayer,
+    ) {
+        playbackHead = elapsed
+
+        let newDuration = item.duration.seconds.isFinite ? item.duration.seconds : 0
+        if localFileDuration > 0 {
+            // Keep probed file length; AVPlayerItem.duration can be wrong briefly on local files.
+        } else if newDuration > 0, newDuration != duration {
+            duration = newDuration
+            persistOfflineDurationIfNeeded(newDuration)
+            patchActiveQueueTrackDuration(newDuration)
+        } else if duration <= 0, item.asset is AVURLAsset,
+                  let urlAsset = item.asset as? AVURLAsset, urlAsset.url.isFileURL,
+                  probingLocalFileURL != urlAsset.url {
+            probingLocalFileURL = urlAsset.url
+            let fileURL = urlAsset.url
+            Task {
+                let probed = await LocalMediaDuration.seconds(at: fileURL)
+                guard probed > 0 else { return }
+                duration = probed
+                localFileDuration = probed
+                persistOfflineDurationIfNeeded(probed)
+                patchActiveQueueTrackDuration(probed)
+            }
+        }
+
+        let playing = p.rate > 0.01
+        let playStateChanged = playing != isPlaying
+        if playStateChanged { isPlaying = playing }
+
+        maybeScrobble(track: track, position: elapsed)
+        if playStateChanged
+            || elapsed - lastNowPlayingInfoRefresh >= 0.55
+            || abs(elapsed - lastNowPlayingInfoRefresh) > 1.25
+        {
+            lastNowPlayingInfoRefresh = elapsed
+            refreshNowPlaying()
+        }
+
+        guard !isSeeking else { return }
+        if let deadline = seekSettleDeadline, ContinuousClock.now < deadline {
+            return
+        }
+        seekSettleDeadline = nil
+        // Drop stale samples that arrive right after a seek (often ~0s before the player catches up).
+        if elapsed + 1.5 < currentTime { return }
+        if currentTime > 3, elapsed < 1 { return }
+        if elapsed - lastEmittedUIProgress >= 0.55 || abs(elapsed - currentTime) > 1.25 {
+            lastEmittedUIProgress = elapsed
+            currentTime = elapsed
+        }
     }
 
     private func handleEnded() {
@@ -1101,14 +1147,14 @@ final class PlaybackEngine: NSObject, ObservableObject {
         // advance through the queue sequentially, otherwise every track end would re-randomize.
         switch repeatMode {
         case .one:
-            Task { try? await advance() }
+            scheduleAdvance()
         case .all:
             currentIndex = (currentIndex + 1) % max(queue.count, 1)
-            Task { try? await advance() }
+            scheduleAdvance()
         case .off:
             if currentIndex + 1 < queue.count {
                 currentIndex += 1
-                Task { try? await advance() }
+                scheduleAdvance()
             } else {
                 isPlaying = false
             }
@@ -1129,7 +1175,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     private func resolvedArtworkURL(for track: Track) -> URL? {
-        offline?.localArtworkURL(forTrackId: track.id) ?? track.artworkURL
+        if let local = offline?.localArtworkURL(forTrackId: track.id) { return local }
+        return resolveArtwork?(track) ?? track.artworkURL
     }
 
     private func refreshNowPlaying() {

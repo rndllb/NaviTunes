@@ -371,7 +371,9 @@ public final class AppModel: ObservableObject {
     }
 
     public init() {
-        player.bind(offline: offline)
+        player.bind(offline: offline, resolveArtwork: { [weak self] track in
+            self?.resolvedArtworkURL(for: track)
+        })
         // Mini-player chrome is the only playback signal most tabs need from AppModel.
         player.$showsMiniPlayerChrome
             .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
@@ -617,9 +619,26 @@ public final class AppModel: ObservableObject {
         serverConnectionHealth = .unknown
     }
 
-    /// Prefer on-disk artwork for downloaded content, then server URL.
+    /// Prefer on-disk artwork, then per-track URL, then cached album art, then server cover lookup.
     func resolvedArtworkURL(for track: Track) -> URL? {
-        offline.localArtworkURL(forTrackId: track.id) ?? track.artworkURL
+        if let local = offline.localArtworkURL(forTrackId: track.id) { return local }
+        if let trackArt = track.artworkURL { return trackArt }
+        if let album = libraryAlbumsById[track.albumId] {
+            if let localAlbum = offline.localArtworkURL(forAlbumId: album.id) { return localAlbum }
+            if let albumArt = album.artworkURL { return albumArt }
+        }
+        switch backendKind {
+        case .navidrome:
+            return navidrome?.coverArtURL(forId: track.albumId, size: 400)
+        case .jellyfin:
+            return jellyfin?.albumPrimaryImageURL(albumId: track.albumId)
+        }
+    }
+
+    func trackWithResolvedArtwork(_ track: Track) -> Track {
+        let art = resolvedArtworkURL(for: track)
+        guard art != track.artworkURL else { return track }
+        return track.withArtworkURL(art)
     }
 
     func resolvedArtworkURL(for album: AlbumSummary) -> URL? {
@@ -1618,8 +1637,15 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    /// Schedules a deduped discovery track index build when albums are loaded but the title index is still empty.
+    public func scheduleDiscoveryTrackIndexRefreshIfNeeded() {
+        guard isSignedIn, libraryTrackTitleIndex.isEmpty, !libraryAlbums.isEmpty else { return }
+        scheduleLibraryTrackMatchIndexRefresh()
+    }
+
     /// Loads up to `limit` audio tracks from the server and rebuilds `libraryTrackTitleIndex` for discovery matching.
     public func refreshLibraryTrackMatchIndex(limit: Int = 50_000) async {
+        if isIndexingLibraryTracks { return }
         guard let lib = activeLibrary else {
             libraryTrackIndexLoadError = nil
             if discoveryLibraryTracks.isEmpty {
@@ -1635,7 +1661,7 @@ public final class AppModel: ObservableObject {
         defer { isIndexingLibraryTracks = false }
         do {
             let tracks = try await lib.allTracks(limit: limit)
-            discoveryLibraryTracks = tracks
+            discoveryLibraryTracks = tracks.map { trackWithResolvedArtwork($0) }
             offline.backfillRecordsIfMissing(knownTracks: tracks)
             mergeOfflineCatalog()
             persistLibrarySnapshot()
@@ -2095,7 +2121,6 @@ public final class AppModel: ObservableObject {
         await refreshLibraryPlaylists()
         await refreshLibraryMembership()
         await refreshHome()
-        scheduleLibraryTrackMatchIndexRefresh()
         await refreshLibraryStatistics()
         recordSuccessfulLibrarySync()
     }
