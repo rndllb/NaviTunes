@@ -123,12 +123,19 @@ struct AccountProfileAvatarView: View {
             }
         }
         .frame(width: diameter, height: diameter)
+        .onAppear {
+            hydrateAvatarFromCacheIfNeeded()
+            app.prefetchAccountAvatar()
+        }
         .task(id: reloadToken) {
             await refreshAvatarImage()
         }
-        .onAppear {
-            app.prefetchAccountAvatar()
-        }
+    }
+
+    /// Synchronous cache hit so scroll-to-top header reveal does not flash the placeholder.
+    private func hydrateAvatarFromCacheIfNeeded() {
+        guard avatarCG == nil, let identity = app.accountAvatarIdentity else { return }
+        avatarCG = AccountAvatarCache.cachedDecodedImage(identity: identity, maxPixelSize: decodePixelSize)
     }
 
     private func refreshAvatarImage() async {
@@ -137,24 +144,14 @@ struct AccountProfileAvatarView: View {
             return
         }
 
-        if let data = AccountAvatarCache.loadData(identity: identity) {
-            let cached = await Task.detached(priority: .userInitiated) {
-                ArtworkImageDecoder.cgImage(from: data, maxPixelSize: decodePixelSize)
-            }.value
-            if let cached {
-                avatarCG = cached
-            }
+        if let cached = AccountAvatarCache.cachedDecodedImage(identity: identity, maxPixelSize: decodePixelSize) {
+            await MainActor.run { avatarCG = cached }
         }
 
         guard let url = app.accountAvatarURL else { return }
         await AccountAvatarCache.prefetch(url: url, identity: identity)
-        if let data = AccountAvatarCache.loadData(identity: identity) {
-            let refreshed = await Task.detached(priority: .userInitiated) {
-                ArtworkImageDecoder.cgImage(from: data, maxPixelSize: decodePixelSize)
-            }.value
-            if let refreshed {
-                avatarCG = refreshed
-            }
+        if let refreshed = AccountAvatarCache.cachedDecodedImage(identity: identity, maxPixelSize: decodePixelSize) {
+            await MainActor.run { avatarCG = refreshed }
         }
     }
 
@@ -379,6 +376,7 @@ struct MusicToolbarSettingsAvatarLink: View {
             SettingsView()
         } label: {
             AccountProfileAvatarView(diameter: diameter)
+                .id("lyra-account-profile-avatar")
                 .frame(minWidth: max(44, diameter), minHeight: max(44, diameter))
         }
         .buttonStyle(.plain)
@@ -588,8 +586,10 @@ struct MusicTabFloatingHeaderScrollModifier: ViewModifier {
     var slack: CGFloat
     @Binding var showFloatingHeader: Bool
     @State private var anchorContentOffsetY: CGFloat?
-    /// Hysteresis avoids toggling header visibility every frame when offset hovers near the threshold.
-    private let hysteresis: CGFloat = 12
+    /// Scroll down past ``slack`` + this before hiding (avoids flicker near the threshold).
+    private let hideHysteresis: CGFloat = 20
+    /// Scroll up to ``slack`` − this before showing again (wider dead band than hide).
+    private let showHysteresis: CGFloat = 28
 
     func body(content: Content) -> some View {
         content.onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y }) { _, y in
@@ -597,11 +597,44 @@ struct MusicTabFloatingHeaderScrollModifier: ViewModifier {
                 anchorContentOffsetY = y
             }
             let anchor = anchorContentOffsetY ?? y
-            let delta = y - anchor
-            let threshold = showFloatingHeader ? slack + hysteresis : slack - hysteresis
-            let nearTop = delta < threshold
-            guard showFloatingHeader != nearTop else { return }
-            showFloatingHeader = nearTop
+            // Rubber-band overscroll reports y < anchor; clamp so the header stays stable at the top.
+            let delta = max(0, y - anchor)
+            let expandThreshold = max(0, slack - showHysteresis)
+            let collapseThreshold = slack + hideHysteresis
+
+            if delta < expandThreshold {
+                guard !showFloatingHeader else { return }
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    showFloatingHeader = true
+                }
+            } else if delta > collapseThreshold {
+                guard showFloatingHeader else { return }
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showFloatingHeader = false
+                }
+            }
+        }
+    }
+}
+
+extension View {
+    /// Top inset for Home / New / Radio / Library large titles. Avoid animating the ``ScrollView`` itself —
+    /// that fights `safeAreaInset` layout and causes jitter when rubber-banding at the top.
+    func musicTabFloatingHeaderInset<Header: View>(
+        isVisible: Bool,
+        @ViewBuilder header: () -> Header,
+    ) -> some View {
+        safeAreaInset(edge: .top, spacing: 0) {
+            // Keep the header (and profile avatar) mounted — conditional removal was
+            // re-running AccountProfileAvatarView's load task on every scroll-to-top.
+            header()
+                .opacity(isVisible ? 1 : 0)
+                .frame(maxHeight: isVisible ? nil : 0, alignment: .top)
+                .clipped()
+                .allowsHitTesting(isVisible)
+                .accessibilityHidden(!isVisible)
         }
     }
 }
