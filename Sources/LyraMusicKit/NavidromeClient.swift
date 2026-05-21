@@ -126,12 +126,7 @@ final class NavidromeClient: MusicLibraryProviding {
         }
         let songCount = navidromeInt(dict["songCount"]) ?? navidromeInt(dict["trackCount"])
         let added = navidromeCreatedDate(dict["created"])
-        let genres: [String] = {
-            guard let genreStr = navidromeCoerceString(dict["genre"]), !genreStr.isEmpty else { return [] }
-            return genreStr.split(separator: ",")
-                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-        }()
+        let genres = navidromeGenreNames(from: dict)
         let releaseYear = navidromeInt(dict["year"]) ?? navidromeInt(dict["originalYear"])
         let releaseDate = navidromeAlbumReleaseDate(dict)
         return AlbumSummary(
@@ -225,7 +220,7 @@ final class NavidromeClient: MusicLibraryProviding {
         let albumCoverId = album["coverArt"] as? String
         let albumTitle = album["name"] as? String ?? ""
         let albumArtist = navidromeCoerceString(album["artist"])
-        let albumGenreStr = navidromeCoerceString(album["genre"])
+        let albumGenreFallback = navidromeGenreNames(from: album).joined(separator: ", ")
         let albumYear = navidromeInt(album["year"]) ?? navidromeInt(album["originalYear"])
         return songs.compactMap { dict in
             parseSongFromChildDict(
@@ -234,7 +229,7 @@ final class NavidromeClient: MusicLibraryProviding {
                 albumTitleFallback: albumTitle.isEmpty ? nil : albumTitle,
                 albumCoverArtId: albumCoverId.flatMap { $0.isEmpty ? nil : $0 },
                 fallbackAlbumArtist: albumArtist,
-                albumGenreFallback: albumGenreStr,
+                albumGenreFallback: albumGenreFallback.isEmpty ? nil : albumGenreFallback,
                 albumYearFallback: albumYear,
             )
         }
@@ -382,40 +377,177 @@ final class NavidromeClient: MusicLibraryProviding {
     }
 
     func libraryGenres(limit: Int) async throws -> [LibraryGenreSummary] {
+        let cap = max(1, min(limit, 5000))
         let items = try await subsonicRequest(path: "getGenres", query: [:])
-        let rows: [[String: Any]]
+        let mapped = parseGenresFromSubsonicResponse(items)
+        if !mapped.isEmpty {
+            return Array(mapped.prefix(cap))
+        }
+        var derived = try await libraryGenresDerivedFromAlbumTags(limit: cap)
+        if derived.isEmpty {
+            derived = try await libraryGenresDerivedFromSongs(limit: cap)
+        }
+        return derived
+    }
 
-        if let genresRoot = items["genres"] as? [String: Any] {
-            let raw = genresRoot["genre"]
-            if let a = raw as? [[String: Any]] {
-                rows = a
-            } else if let o = raw as? [String: Any] {
-                rows = [o]
-            } else {
-                rows = []
-            }
-        } else if let arr = items["genres"] as? [[String: Any]] {
-            rows = arr
-        } else if let arr = items["genre"] as? [[String: Any]] {
-            rows = arr
-        } else if let o = items["genre"] as? [String: Any] {
-            rows = [o]
+    private func parseGenresFromSubsonicResponse(_ items: [String: Any]) -> [LibraryGenreSummary] {
+        let rows: [[String: Any]]
+        if let genresRoot = navidromeDict(items["genres"]) {
+            rows = childDictArray(from: genresRoot, key: "genre")
         } else {
-            rows = []
+            rows = childDictArray(from: items, key: "genre")
         }
 
-        let cap = max(1, min(limit, 5000))
-        let mapped: [LibraryGenreSummary] = rows.compactMap { dict in
+        return rows.compactMap { dict in
             let name =
-                (dict["value"] as? String)
-                    ?? (dict["name"] as? String)
-                    ?? (dict["genre"] as? String)
+                navidromeCoerceString(dict["value"])
+                    ?? navidromeCoerceString(dict["name"])
+                    ?? navidromeCoerceString(dict["genre"])
             guard let name, !name.isEmpty else { return nil }
             let albumCount = navidromeInt(dict["albumCount"])
             return LibraryGenreSummary(id: name, name: name, albumCount: albumCount)
         }
         .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        return Array(mapped.prefix(cap))
+    }
+
+    /// When ``getGenres`` returns no rows, derive browse categories from album genre tags.
+    private func libraryGenresDerivedFromAlbumTags(limit: Int) async throws -> [LibraryGenreSummary] {
+        let cap = max(1, min(limit, 5000))
+        let sample = max(200, min(cap * 40, 2_000))
+        let items = try await subsonicRequest(path: "getAlbumList2", query: [
+            "type": "alphabeticalByName",
+            "size": "\(sample)",
+        ])
+        guard let albumList = navidromeDict(items["albumList2"]) else { return [] }
+        let albums = childDictArray(from: albumList, key: "album")
+        var counts: [String: Int] = [:]
+        for dict in albums {
+            let names = navidromeBrowseTagNames(from: dict)
+            guard !names.isEmpty else { continue }
+            for name in names {
+                counts[name, default: 0] += 1
+            }
+        }
+        return genreSummaries(from: counts, limit: cap)
+    }
+
+    /// Sample songs via ``search3`` when album list payloads omit genre fields.
+    private func libraryGenresDerivedFromSongs(limit: Int) async throws -> [LibraryGenreSummary] {
+        let cap = max(1, min(limit, 5000))
+        var counts: [String: Int] = [:]
+        for query in ["*", "a"] {
+            let items = try await subsonicRequest(path: "search3", query: [
+                "query": query,
+                "songCount": "500",
+                "albumCount": "0",
+                "artistCount": "0",
+            ])
+            guard let result = navidromeDict(items["searchResult3"]) else { continue }
+            let songs = childDictArray(from: result, key: "song")
+            for dict in songs {
+                let names = navidromeBrowseTagNames(from: dict)
+                guard !names.isEmpty else { continue }
+                for name in names {
+                    counts[name, default: 0] += 1
+                }
+            }
+            if !counts.isEmpty { break }
+        }
+        return genreSummaries(from: counts, limit: cap)
+    }
+
+    private func genreSummaries(from counts: [String: Int], limit: Int) -> [LibraryGenreSummary] {
+        let cap = max(1, min(limit, 5000))
+        return counts
+            .map { LibraryGenreSummary(id: $0.key, name: $0.key, albumCount: $0.value) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .prefix(cap)
+            .map { $0 }
+    }
+
+    /// Genre + mood + grouping tags for browse-category derivation.
+    private func navidromeBrowseTagNames(from dict: [String: Any]) -> [String] {
+        navidromeGenreNames(from: dict) + navidromeOpenSubsonicListTags(from: dict, keys: ["moods", "groupings"])
+    }
+
+    private func navidromeOpenSubsonicListTags(from dict: [String: Any], keys: [String]) -> [String] {
+        var names: [String] = []
+        for key in keys {
+            guard let raw = dict[key] else { continue }
+            if let rows = raw as? [Any] {
+                for el in rows {
+                    if let s = navidromeCoerceString(el) {
+                        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !trimmed.isEmpty else { continue }
+                        names.append(trimmed)
+                    }
+                }
+            } else if let rows = raw as? [[String: Any]] {
+                for row in rows {
+                    if let s = navidromeCoerceString(row["name"]) ?? navidromeCoerceString(row["value"]) {
+                        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !trimmed.isEmpty else { continue }
+                        names.append(trimmed)
+                    }
+                }
+            }
+        }
+        return names
+    }
+
+    /// Subsonic ``genre`` string plus OpenSubsonic ``genres`` array on album/song payloads.
+    private func navidromeGenreNames(from dict: [String: Any]) -> [String] {
+        var names: [String] = []
+        func appendName(_ raw: String) {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, Self.isPlausibleBrowseTag(trimmed) else { return }
+            names.append(trimmed)
+        }
+        func appendFromGenreRow(_ row: [String: Any]) {
+            if let n = navidromeCoerceString(row["name"])
+                ?? navidromeCoerceString(row["value"])
+                ?? navidromeCoerceString(row["title"])
+            {
+                appendName(n)
+            }
+        }
+        func appendFromRaw(_ raw: Any?) {
+            guard let raw else { return }
+            if let genreStr = navidromeCoerceString(raw) {
+                for part in genreStr.split(separator: ",") { appendName(String(part)) }
+            } else if let rows = raw as? [[String: Any]] {
+                for row in rows { appendFromGenreRow(row) }
+            } else if let items = raw as? [Any] {
+                for el in items {
+                    if let row = navidromeDict(el) {
+                        appendFromGenreRow(row)
+                    } else if let s = navidromeCoerceString(el) {
+                        appendName(s)
+                    }
+                }
+            } else if let root = navidromeDict(raw) {
+                let nested = childDictArray(from: root, key: "genre")
+                if !nested.isEmpty {
+                    for row in nested { appendFromGenreRow(row) }
+                } else {
+                    appendFromGenreRow(root)
+                }
+            }
+        }
+        appendFromRaw(dict["genre"])
+        appendFromRaw(dict["genres"])
+        for key in ["musicGenre", "musicGenres", "itemGenres"] {
+            appendFromRaw(dict[key])
+        }
+        return names
+    }
+
+    private static func isPlausibleBrowseTag(_ trimmed: String) -> Bool {
+        guard !trimmed.isEmpty else { return false }
+        if trimmed.unicodeScalars.allSatisfy({ CharacterSet.decimalDigits.contains($0) }) {
+            return false
+        }
+        return true
     }
 
     func albums(forLibraryArtistId artistId: String, limit: Int) async throws -> [AlbumSummary] {
@@ -707,10 +839,14 @@ final class NavidromeClient: MusicLibraryProviding {
         let art = coverId.flatMap { streamURLForCover(coverArt: $0) }
         let added = navidromeCreatedDate(dict["created"])
 
-        let songGenre = navidromeCoerceString(dict["genre"])
         let genres: [String] = {
-            if let songGenre, !songGenre.isEmpty { return [songGenre] }
-            if let albumGenreFallback, !albumGenreFallback.isEmpty { return [albumGenreFallback] }
+            let fromSong = navidromeGenreNames(from: dict)
+            if !fromSong.isEmpty { return fromSong }
+            if let albumGenreFallback, !albumGenreFallback.isEmpty {
+                return albumGenreFallback.split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            }
             return []
         }()
         let releaseYear = intFromNavidrome(dict["year"]) ?? albumYearFallback
@@ -917,18 +1053,20 @@ final class NavidromeClient: MusicLibraryProviding {
         return out
     }
 
-    func createPlaylist(name: String, trackIds: [String]) async throws -> PlaylistSummary {
+    func createPlaylist(name: String, trackIds: [String], isPublic: Bool = false) async throws -> PlaylistSummary {
         let repeated = trackIds.map { ("songId", $0) }
         let items = try await subsonicRequest(path: "createPlaylist", query: ["name": name], repeatedQuery: repeated)
+        let summary: PlaylistSummary
         if let pl = navidromeDict(items["playlist"]),
-           let summary = parsePlaylistDictSummary(pl) {
-            return summary
+           let parsed = parsePlaylistDictSummary(pl) {
+            summary = parsed
+        } else if let match = try await fetchPlaylistSummaries(limit: 500).first(where: { $0.name == name }) {
+            summary = match
+        } else {
+            throw URLError(.cannotParseResponse)
         }
-        let all = try await fetchPlaylistSummaries(limit: 500)
-        if let match = all.first(where: { $0.name == name }) {
-            return match
-        }
-        throw URLError(.cannotParseResponse)
+        try await setPlaylistPublic(playlistId: summary.id, isPublic: isPublic)
+        return playlistSummary(summary, isPublic: isPublic)
     }
 
     func addTracksToPlaylist(playlistId: String, trackIds: [String]) async throws {
@@ -947,11 +1085,15 @@ final class NavidromeClient: MusicLibraryProviding {
         }
     }
 
-    func renamePlaylist(playlistId: String, name: String) async throws {
-        _ = try await subsonicRequest(path: "updatePlaylist", query: [
+    func renamePlaylist(playlistId: String, name: String, isPublic: Bool? = nil) async throws {
+        var query: [String: String] = [
             "playlistId": playlistId,
             "name": name,
-        ])
+        ]
+        if let isPublic {
+            query["public"] = isPublic ? "true" : "false"
+        }
+        _ = try await subsonicRequest(path: "updatePlaylist", query: query)
     }
 
     func deletePlaylist(playlistId: String) async throws {
@@ -1136,7 +1278,26 @@ final class NavidromeClient: MusicLibraryProviding {
         let coverId = navidromeCoerceString(dict["coverArt"])
         let art = coverId.flatMap { streamURLForCover(coverArt: $0) }
         let created = navidromeCreatedDate(dict["created"])
-        return PlaylistSummary(id: id, name: name, songCount: count, artworkURL: art, libraryAddedDate: created)
+        let isPublic = navidromeCoerceBool(dict["public"])
+        return PlaylistSummary(
+            id: id,
+            name: name,
+            songCount: count,
+            artworkURL: art,
+            isPublic: isPublic,
+            libraryAddedDate: created,
+        )
+    }
+
+    private func playlistSummary(_ summary: PlaylistSummary, isPublic: Bool) -> PlaylistSummary {
+        PlaylistSummary(
+            id: summary.id,
+            name: summary.name,
+            songCount: summary.songCount,
+            artworkURL: summary.artworkURL,
+            isPublic: isPublic,
+            libraryAddedDate: summary.libraryAddedDate,
+        )
     }
 
     /// Subsonic ``getAvatar`` for the signed-in user (toolbar profile image).
