@@ -1015,6 +1015,37 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         }
     }
 
+    /// Uploads a new Primary image for a playlist (`POST /Items/{id}/Images/Primary`).
+    func uploadPlaylistImage(playlistId: String, imageData: Data, contentType: String) async throws {
+        try requireSignedInUser()
+        guard !imageData.isEmpty else {
+            throw NSError(
+                domain: "LyraMusic",
+                code: 0,
+                userInfo: [NSLocalizedDescriptionKey: "Image data is empty."],
+            )
+        }
+        let url = apiURL("Items", playlistId, "Images", "Primary")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        applyAuth(&req)
+        req.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        req.httpBody = imageData
+        let (data, res) = try await URLSession.shared.data(for: req)
+        guard let http = res as? HTTPURLResponse, (200...299).contains(http.statusCode) || http.statusCode == 204 else {
+            let snippet = Self.humanReadableError(from: data) ?? ""
+            throw JellyfinClientError.badResponse(
+                status: (res as? HTTPURLResponse)?.statusCode ?? -1,
+                message: snippet.isEmpty ? "Could not upload playlist cover." : snippet,
+            )
+        }
+    }
+
+    func fetchPlaylistSummary(playlistId: String) async throws -> PlaylistSummary? {
+        let dict = try await fetchPlaylistMetadata(playlistId: playlistId)
+        return parsePlaylistSummary(dict)
+    }
+
     func deleteTrackFromLibrary(trackId: String) async throws {
         try requireSignedInUser()
         let trimmed = trackId.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -29,17 +29,6 @@ struct RadioTabView: View {
         !featuredStations.isEmpty || liveRadioGroups.contains { !$0.stations.isEmpty }
     }
 
-    private static let tileGradients: [[Color]] = [
-        [.red, .black],
-        [Color(red: 0.2, green: 0.35, blue: 0.95), .black],
-        [.yellow.opacity(0.9), .brown],
-        [.cyan.opacity(0.5), .purple.opacity(0.6)],
-        [.orange, .red.opacity(0.8)],
-        [.indigo, .black],
-        [.mint, .teal],
-        [.pink, .purple],
-    ]
-
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -102,9 +91,7 @@ struct RadioTabView: View {
             LazyVGrid(columns: featuredColumns, spacing: 12) {
                 ForEach(featuredStations) { station in
                     stationTile(
-                        title: station.name,
-                        subtitle: "Live stream",
-                        colors: gradient(for: station.name),
+                        station: station,
                         isStarting: startingStationID == "live-\(station.id)",
                     ) {
                         Task { await playLive(station) }
@@ -127,9 +114,7 @@ struct RadioTabView: View {
                 LazyVGrid(columns: browseColumns, spacing: 12) {
                     ForEach(group.stations) { station in
                         stationTile(
-                            title: station.name,
-                            subtitle: "Live stream",
-                            colors: gradient(for: station.name),
+                            station: station,
                             isStarting: startingStationID == "live-\(station.id)",
                         ) {
                             Task { await playLive(station) }
@@ -163,33 +148,36 @@ struct RadioTabView: View {
         .padding(.top, 40)
     }
 
-    private func gradient(for key: String) -> [Color] {
-        let hash = abs(key.hashValue)
-        return Self.tileGradients[hash % Self.tileGradients.count]
-    }
-
     private func stationTile(
-        title: String,
-        subtitle: String,
-        colors: [Color],
+        station: InternetRadioStation,
         isStarting: Bool,
         action: @escaping () -> Void,
     ) -> some View {
         Button(action: action) {
             ZStack(alignment: .bottomLeading) {
-                LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+                RadioStationMeshArtworkView(
+                    seedKey: RadioStationMeshArtwork.seedKey(for: station),
+                    cornerRadius: 14,
+                )
+                .aspectRatio(1, contentMode: .fill)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                LinearGradient(
+                    colors: [.clear, .black.opacity(0.55)],
+                    startPoint: .center,
+                    endPoint: .bottom,
+                )
                 if isStarting {
                     ProgressView()
                         .tint(.white)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(title)
+                    Text(station.name)
                         .font(.headline.weight(.bold))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(.white)
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
-                    Text(subtitle)
+                    Text("Live stream")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.white.opacity(0.85))
                         .lineLimit(1)

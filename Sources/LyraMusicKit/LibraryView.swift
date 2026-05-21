@@ -215,6 +215,9 @@ struct LibraryView: View {
             .sheet(isPresented: $showNewPlaylistSheet) {
                 NewPlaylistNameSheet()
                     .environmentObject(app)
+#if os(iOS)
+                    .presentationDetents([.large])
+#endif
             }
             .sheet(isPresented: $showEditSections) {
                 EditLibrarySectionsSheet(configRaw: $sectionConfigRaw)
@@ -697,7 +700,11 @@ struct LibraryPlaylistsView: View {
             }
         }
         .sheet(isPresented: $showNewPlaylistSheet) {
-            NewPlaylistNameSheet().environmentObject(app)
+            NewPlaylistNameSheet()
+                .environmentObject(app)
+#if os(iOS)
+                .presentationDetents([.large])
+#endif
         }
         .task { await app.refreshLibraryPlaylists() }
         .refreshable { await app.refreshLibraryPlaylists() }
@@ -899,7 +906,7 @@ struct FavoritePlaylistView: View {
             track: track,
             itemSize: app.songListItemSize,
             isFavorite: app.favoriteTrackIds.contains(track.id),
-            isNowPlaying: app.player.activeTrack?.id == track.id,
+            isNowPlaying: app.nowPlayingTrackId == track.id,
             offlineDownload: offline.activeDownloads[track.id],
             isOfflineCached: app.offline.downloadedTrackIds.contains(track.id),
             onPlay: { Task { await play(track: track) } },
@@ -1052,6 +1059,7 @@ struct LibraryDownloadedView: View {
     @State private var navigateAlbum: AlbumSummary?
     @State private var navigateAlbumScrollToTrackId: String?
     @State private var trackPendingDownloadedDelete: Track?
+    @State private var backfillDebounceTask: Task<Void, Never>?
 
     private let albumColumns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
 
@@ -1170,13 +1178,22 @@ struct LibraryDownloadedView: View {
             app.offline.reloadDownloadedTrackIdsFromManifest()
         }
         .onChange(of: offline.downloadedTrackIds) { _, _ in
-            app.offline.backfillRecordsIfMissing(knownTracks: app.discoveryLibraryTracks)
+            scheduleDownloadedBackfill()
         }
         .downloadedTrackDeleteSheet(
             track: $trackPendingDownloadedDelete,
             app: app,
             offline: offline
         )
+    }
+
+    private func scheduleDownloadedBackfill() {
+        backfillDebounceTask?.cancel()
+        backfillDebounceTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            app.offline.backfillRecordsIfMissing(knownTracks: app.discoveryLibraryTracks)
+        }
     }
 
     private func sectionLabel(_ title: String) -> some View {
@@ -1229,7 +1246,7 @@ struct LibraryDownloadedView: View {
             artworkURL: app.resolvedArtworkURL(for: track),
             itemSize: app.songListItemSize,
             isFavorite: app.favoriteTrackIds.contains(track.id),
-            isNowPlaying: app.player.activeTrack?.id == track.id,
+            isNowPlaying: app.nowPlayingTrackId == track.id,
             offlineDownload: offline.activeDownloads[track.id],
             isOfflineCached: isTrackOfflineOnDevice(track),
             onPlay: { Task { await play(track: track) } },

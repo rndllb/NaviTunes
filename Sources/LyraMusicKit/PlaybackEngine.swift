@@ -1,6 +1,12 @@
 import AVFoundation
+import CoreGraphics
 import MediaPlayer
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 private enum PlaybackEngineError: LocalizedError {
     case missingLibrary
@@ -87,6 +93,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
     var onTrackStarted: ((Track) -> Void)?
 
     private var didConfigureRemoteCommands = false
+    private var nowPlayingArtworkTask: Task<Void, Never>?
+    private var nowPlayingArtworkTrackId: String?
+    private var nowPlayingArtwork: MPMediaItemArtwork?
 
     #if os(iOS)
     private var audioSessionInterruptionObserver: NSObjectProtocol?
@@ -215,6 +224,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         showsMiniPlayerChrome = false
         userQueuedTrackIds.removeAll()
         unshuffledQueue = nil
+        cancelNowPlayingArtworkLoad()
         updateNowPlaying(nil)
     }
 
@@ -1082,6 +1092,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in self?.handleEnded() }
         }
+
+        refreshNowPlaying()
     }
 
     private func handleEnded() {
@@ -1116,24 +1128,145 @@ final class PlaybackEngine: NSObject, ObservableObject {
         lyrics = (try? await library.lyrics(for: track)) ?? []
     }
 
+    private func resolvedArtworkURL(for track: Track) -> URL? {
+        offline?.localArtworkURL(forTrackId: track.id) ?? track.artworkURL
+    }
+
     private func refreshNowPlaying() {
         guard let track = currentTrack else {
+            cancelNowPlayingArtworkLoad()
             updateNowPlaying(nil)
             return
         }
-        updateNowPlaying(
-            (title: track.title, artist: track.artist, duration: duration > 0 ? duration : track.duration),
+        let metadata = nowPlayingMetadata(for: track)
+        if nowPlayingArtworkTrackId == track.id {
+            updateNowPlaying(metadata, artwork: nowPlayingArtwork)
+        } else {
+            nowPlayingArtworkTrackId = track.id
+            nowPlayingArtwork = nil
+            updateNowPlaying(metadata, artwork: nil)
+            scheduleNowPlayingArtworkLoad(for: track)
+        }
+    }
+
+    private func nowPlayingMetadata(for track: Track) -> (title: String, artist: String, albumTitle: String?, duration: TimeInterval) {
+        (
+            title: track.title,
+            artist: track.artist,
+            albumTitle: track.albumTitle.isEmpty ? nil : track.albumTitle,
+            duration: duration > 0 ? duration : track.duration,
         )
     }
 
-    private func updateNowPlaying(_ info: (title: String, artist: String, duration: TimeInterval)?) {
+    private func cancelNowPlayingArtworkLoad() {
+        nowPlayingArtworkTask?.cancel()
+        nowPlayingArtworkTask = nil
+        nowPlayingArtworkTrackId = nil
+        nowPlayingArtwork = nil
+    }
+
+    private func scheduleNowPlayingArtworkLoad(for track: Track) {
+        nowPlayingArtworkTask?.cancel()
+        let trackId = track.id
+        nowPlayingArtworkTask = Task { [weak self] in
+            guard let self else { return }
+            let cgImage = await self.loadNowPlayingArtworkCGImage(for: track)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard self.currentTrack?.id == trackId else { return }
+                if let cgImage {
+                    self.nowPlayingArtworkTrackId = trackId
+                    self.nowPlayingArtwork = Self.makeNowPlayingArtwork(cgImage: cgImage)
+                } else {
+                    self.nowPlayingArtwork = nil
+                }
+                self.updateNowPlaying(self.nowPlayingMetadata(for: track), artwork: self.nowPlayingArtwork)
+            }
+        }
+    }
+
+    private func loadNowPlayingArtworkCGImage(for track: Track) async -> CGImage? {
+        let pixelSize: CGFloat = 600
+        if let url = resolvedArtworkURL(for: track) {
+            return await RemoteArtworkLoad.cgImage(from: url, maxPixelSize: pixelSize)
+        }
+        if track.isInternetRadioStream, let seedKey = RadioStationMeshArtwork.seedKey(for: track) {
+            return await renderMeshNowPlayingArtwork(seedKey: seedKey, side: pixelSize)
+        }
+        return nil
+    }
+
+    @MainActor
+    private func renderMeshNowPlayingArtwork(seedKey: String, side: CGFloat) -> CGImage? {
+        #if os(iOS)
+        let content = RadioStationMeshArtworkView(seedKey: seedKey, cornerRadius: 0)
+            .frame(width: side, height: side)
+        let renderer = ImageRenderer(content: content)
+        renderer.scale = UIScreen.main.scale
+        return renderer.cgImage
+        #else
+        return nil
+        #endif
+    }
+
+    private static func makeNowPlayingArtwork(cgImage: CGImage) -> MPMediaItemArtwork {
+        let bounds = CGSize(width: cgImage.width, height: cgImage.height)
+        #if canImport(UIKit)
+        return MPMediaItemArtwork(boundsSize: bounds) { requestedSize in
+            let image = UIImage(cgImage: cgImage)
+            guard requestedSize.width > 0, requestedSize.height > 0 else { return image }
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = 1
+            let renderer = UIGraphicsImageRenderer(size: requestedSize, format: format)
+            return renderer.image { _ in
+                image.draw(in: CGRect(origin: .zero, size: requestedSize))
+            }
+        }
+        #elseif canImport(AppKit)
+        return MPMediaItemArtwork(boundsSize: bounds) { requestedSize in
+            let image = NSImage(
+                cgImage: cgImage,
+                size: NSSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height)),
+            )
+            guard requestedSize.width > 0, requestedSize.height > 0 else { return image }
+            let scaled = NSImage(size: requestedSize)
+            scaled.lockFocus()
+            image.draw(
+                in: NSRect(origin: .zero, size: requestedSize),
+                from: NSRect(origin: .zero, size: image.size),
+                operation: .copy,
+                fraction: 1,
+            )
+            scaled.unlockFocus()
+            return scaled
+        }
+        #else
+        return MPMediaItemArtwork(boundsSize: bounds) { _ in UIImage() }
+        #endif
+    }
+
+    private func updateNowPlaying(
+        _ info: (title: String, artist: String, albumTitle: String?, duration: TimeInterval)?,
+        artwork: MPMediaItemArtwork? = nil,
+    ) {
         var now = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
         if let info {
             now[MPMediaItemPropertyTitle] = info.title
             now[MPMediaItemPropertyArtist] = info.artist
+            if let albumTitle = info.albumTitle {
+                now[MPMediaItemPropertyAlbumTitle] = albumTitle
+            } else {
+                now.removeValue(forKey: MPMediaItemPropertyAlbumTitle)
+            }
             now[MPMediaItemPropertyPlaybackDuration] = info.duration
             now[MPNowPlayingInfoPropertyElapsedPlaybackTime] = playbackHead
             now[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
+            now[MPNowPlayingInfoPropertyMediaType] = MPNowPlayingInfoMediaType.audio.rawValue
+            if let artwork {
+                now[MPMediaItemPropertyArtwork] = artwork
+            } else {
+                now.removeValue(forKey: MPMediaItemPropertyArtwork)
+            }
         } else {
             now.removeAll()
         }

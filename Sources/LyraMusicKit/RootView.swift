@@ -123,7 +123,12 @@ private struct MainShellView: View {
                     .transition(.move(edge: .bottom))
             }
         }
-        .animation(.spring(response: 0.45, dampingFraction: 0.85), value: showNowPlaying)
+        .animation(
+            showNowPlaying
+                ? .spring(response: 0.45, dampingFraction: 0.85)
+                : nil,
+            value: showNowPlaying
+        )
         .musicTransientToastChrome()
     }
 }
@@ -224,11 +229,11 @@ private struct LibraryTrackDeletionChrome: ViewModifier {
 private struct NowPlayingGestureHost: View {
     @Binding var isPresented: Bool
     @EnvironmentObject private var app: AppModel
-    /// `@GestureState` so the live offset auto-resets to 0 on any interrupt — prevents
-    /// the sheet from sticking at a half-open position when the gesture is cancelled
-    /// mid-drag (e.g. a tap landing during the present animation).
-    @GestureState private var dragOffset: CGFloat = 0
+    /// Persisted drag offset — unlike `@GestureState`, survives through dismiss animation.
+    @State private var dragOffset: CGFloat = 0
+    @State private var isDismissAnimating = false
     @State private var libraryNavigationDepth = 0
+    @State private var hostHeight: CGFloat = 0
     /// Guards the drag-to-dismiss gesture until the present animation has settled,
     /// so incidental touches during the slide-up can't park the sheet at half height.
     @State private var fullyPresented = false
@@ -240,7 +245,7 @@ private struct NowPlayingGestureHost: View {
     }
 
     var body: some View {
-        NowPlayingView(isPresented: $isPresented) { depth in
+        NowPlayingView(player: app.player, isPresented: $isPresented) { depth in
             libraryNavigationDepth = depth
         }
             .environmentObject(app)
@@ -248,29 +253,62 @@ private struct NowPlayingGestureHost: View {
             .scaleEffect(1 - dragProgress * 0.06, anchor: .center)
             .clipShape(RoundedRectangle(cornerRadius: dragProgress * 28, style: .continuous))
             .offset(y: max(0, dragOffset))
-            .gesture(
-                DragGesture(minimumDistance: 18)
-                    .updating($dragOffset) { value, state, _ in
-                        guard fullyPresented, libraryNavigationDepth == 0 else { return }
-                        let dy = value.translation.height
-                        let dx = value.translation.width
-                        guard dy > 0, abs(dy) > abs(dx) else { return }
-                        state = dy
-                    }
-                    .onEnded { value in
-                        guard fullyPresented else { return }
-                        let dy = value.translation.height
-                        let predictedDy = value.predictedEndTranslation.height
-                        let shouldDismiss = libraryNavigationDepth == 0
-                            && (dy > 140 || predictedDy > 280)
-                        if shouldDismiss {
-                            isPresented = false
-                        }
-                    }
-            )
+            .background {
+                GeometryReader { geo in
+                    Color.clear
+                        .onAppear { hostHeight = geo.size.height }
+                        .onChange(of: geo.size.height) { _, h in hostHeight = h }
+                }
+            }
+            .gesture(dismissDragGesture)
+            .onChange(of: isPresented) { _, presented in
+                if presented {
+                    dragOffset = 0
+                    isDismissAnimating = false
+                }
+            }
             .task {
                 try? await Task.sleep(for: .milliseconds(500))
                 fullyPresented = true
+            }
+    }
+
+    private var dismissDragGesture: some Gesture {
+        DragGesture(minimumDistance: 18)
+            .onChanged { value in
+                guard fullyPresented, libraryNavigationDepth == 0, !isDismissAnimating else { return }
+                let dy = value.translation.height
+                let dx = value.translation.width
+                guard dy > 0, abs(dy) > abs(dx) else { return }
+                dragOffset = dy
+            }
+            .onEnded { value in
+                guard fullyPresented, !isDismissAnimating else { return }
+                let dy = value.translation.height
+                let predictedDy = value.predictedEndTranslation.height
+                let shouldDismiss = libraryNavigationDepth == 0
+                    && (dy > 140 || predictedDy > 280)
+                guard shouldDismiss else {
+                    withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
+                        dragOffset = 0
+                    }
+                    return
+                }
+                isDismissAnimating = true
+                let dismissTarget = max(hostHeight, predictedDy, dy) + 40
+                withAnimation(.easeOut(duration: 0.28)) {
+                    dragOffset = dismissTarget
+                }
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(280))
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        isPresented = false
+                        dragOffset = 0
+                        isDismissAnimating = false
+                    }
+                }
             }
     }
 }

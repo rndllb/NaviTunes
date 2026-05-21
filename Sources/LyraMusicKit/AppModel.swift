@@ -87,11 +87,16 @@ public final class AppModel: ObservableObject {
     @Published private(set) var hasInternetPath: Bool = true
     @Published private(set) var serverConnectionHealth: ServerConnectionHealth = .unknown
 
+    /// True when the playback engine has at least one queued item (empty ↔ non-empty only).
+    /// Used for swipe actions so Home/Library rows don't observe `player.queue` directly.
+    @Published private(set) var hasActivePlaybackQueue = false
+    /// Active queue item id; updates on track changes only (not every queue edit).
+    @Published private(set) var nowPlayingTrackId: String?
+
     /// Shared catalog for Listen / Library / Search tabs.
     @Published private(set) var libraryAlbums: [AlbumSummary] = [] {
         didSet {
             rebuildLibraryAlbumIndex()
-            rebuildHomeRecentlyPlayed()
         }
     }
     @Published private(set) var recentlyAddedAlbums: [AlbumSummary] = []
@@ -367,19 +372,22 @@ public final class AppModel: ObservableObject {
 
     public init() {
         player.bind(offline: offline)
-        // Only mini-player chrome affects most tabs; avoid rebinding Home/Library on every queue tick.
+        // Mini-player chrome is the only playback signal most tabs need from AppModel.
         player.$showsMiniPlayerChrome
             .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
-        // User-action driven state — re-emit so NowPlayingView's shuffle/repeat row + up-next
-        // list react to taps. Low frequency, so no scroll-jank cost.
-        player.$shuffleMode
-            .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
-        player.$repeatMode
-            .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         player.$queue
-            .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
-        player.$currentIndex
-            .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
+            .map { !$0.isEmpty }
+            .removeDuplicates()
+            .sink { [weak self] active in self?.hasActivePlaybackQueue = active }
+            .store(in: &cancellables)
+        Publishers.CombineLatest(player.$queue, player.$currentIndex)
+            .map { queue, index -> String? in
+                guard queue.indices.contains(index) else { return nil }
+                return queue[index].id
+            }
+            .removeDuplicates()
+            .sink { [weak self] trackId in self?.nowPlayingTrackId = trackId }
+            .store(in: &cancellables)
         offline.$downloadedTrackIds
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
@@ -1184,10 +1192,11 @@ public final class AppModel: ObservableObject {
             librarySongIds = snapshotSongs
             return
         }
-        // If the user has no remaining songs from this album, drop the album entry
-        // too so the album disappears from "My Library" instead of lingering as a
-        // stub that re-opens the full album view.
+        // Drop the album entry only when the title index is settled and no library
+        // songs remain for this album — avoids removing the entry while indexing is
+        // incomplete (discoveryLibraryTracks can be a partial snapshot mid-sync).
         if !track.albumId.isEmpty,
+           !isIndexingLibraryTracks,
            libraryAlbumEntries.contains(where: { $0.id == track.albumId }) {
             let albumStillHasSongs = discoveryLibraryTracks.contains { other in
                 other.albumId == track.albumId && librarySongIds.contains(other.id)
@@ -1381,25 +1390,28 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    func createPlaylist(name: String, initialTracks: [Track] = [], jellyfinVisibleToAll: Bool = false) async throws {
+    @discardableResult
+    func createPlaylist(name: String, initialTracks: [Track] = [], isPublic: Bool = false) async throws -> PlaylistSummary {
         let ids = initialTracks.map(\.id)
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw NSError(domain: "LyraMusic", code: 0, userInfo: [NSLocalizedDescriptionKey: "Playlist name cannot be empty."])
         }
+        let summary: PlaylistSummary
         switch backendKind {
         case .jellyfin:
             guard let client = jellyfin else {
                 throw URLError(.userAuthenticationRequired)
             }
-            _ = try await client.createPlaylist(name: trimmed, trackIds: ids, isPublic: jellyfinVisibleToAll)
+            summary = try await client.createPlaylist(name: trimmed, trackIds: ids, isPublic: isPublic)
         case .navidrome:
             guard let client = navidrome else {
                 throw URLError(.userAuthenticationRequired)
             }
-            _ = try await client.createPlaylist(name: trimmed, trackIds: ids)
+            summary = try await client.createPlaylist(name: trimmed, trackIds: ids, isPublic: isPublic)
         }
         await refreshLibraryPlaylists()
+        return summary
     }
 
     func addTracksToPlaylist(playlistId: String, tracks: [Track]) async throws {
@@ -1449,7 +1461,86 @@ public final class AppModel: ObservableObject {
         await refreshLibraryPlaylists()
     }
 
-    func renamePlaylist(playlistId: String, name: String, jellyfinVisibleToAll: Bool? = nil) async throws {
+    /// Uploads cover art for a library playlist and refreshes playlist metadata. Returns a cache-busted artwork URL for immediate UI refresh.
+    @discardableResult
+    func updatePlaylistCoverImage(playlistId: String, imageData: Data) async throws -> URL? {
+        guard isSignedIn else {
+            throw NSError(
+                domain: "LyraMusic",
+                code: 0,
+                userInfo: [NSLocalizedDescriptionKey: "Sign in to change playlist artwork."],
+            )
+        }
+        guard !imageData.isEmpty else {
+            throw NSError(
+                domain: "LyraMusic",
+                code: 0,
+                userInfo: [NSLocalizedDescriptionKey: "Could not read the selected image."],
+            )
+        }
+        let upload = Self.inferredPlaylistCoverUpload(imageData)
+        switch backendKind {
+        case .jellyfin:
+            guard let client = jellyfin else {
+                throw URLError(.userAuthenticationRequired)
+            }
+            try await client.uploadPlaylistImage(
+                playlistId: playlistId,
+                imageData: imageData,
+                contentType: upload.contentType,
+            )
+        case .navidrome:
+            guard let client = navidrome else {
+                throw URLError(.userAuthenticationRequired)
+            }
+            try await client.uploadPlaylistImage(
+                playlistId: playlistId,
+                imageData: imageData,
+                filename: upload.filename,
+            )
+        }
+        await refreshLibraryPlaylists()
+        if backendKind == .navidrome, playlistId == libraryMagicPlaylistId {
+            if let identity = accountAvatarIdentity {
+                AccountAvatarCache.remove(identity: identity)
+            }
+            let busted = navidrome?.coverArtURL(forId: playlistId, size: 256).map { appendCacheBust(to: $0) }
+            navidromeMagicPlaylistAvatarURL = busted
+            accountAvatarRevision &+= 1
+            prefetchAccountAvatar()
+        }
+        return playlistArtworkURL(for: playlistId, cacheBust: true)
+    }
+
+    private func playlistArtworkURL(for playlistId: String, cacheBust: Bool) -> URL? {
+        var url = libraryPlaylists.first(where: { $0.id == playlistId })?.artworkURL
+        if url == nil, backendKind == .navidrome {
+            url = navidrome?.coverArtURL(forId: playlistId, size: 400)
+        }
+        guard let url else { return nil }
+        return cacheBust ? appendCacheBust(to: url) : url
+    }
+
+    private static func inferredPlaylistCoverUpload(_ data: Data) -> (filename: String, contentType: String) {
+        if data.count >= 8, data.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
+            return ("cover.png", "image/png")
+        }
+        if data.count >= 3, data.starts(with: [0xFF, 0xD8, 0xFF]) {
+            return ("cover.jpg", "image/jpeg")
+        }
+        if data.count >= 6, data.starts(with: [0x47, 0x49, 0x46, 0x38]) {
+            return ("cover.gif", "image/gif")
+        }
+        if data.count >= 12,
+           data.starts(with: [0x52, 0x49, 0x46, 0x46]),
+           data[8] == 0x57, data[9] == 0x45, data[10] == 0x42, data[11] == 0x50
+        {
+            return ("cover.webp", "image/webp")
+        }
+        return ("cover.jpg", "image/jpeg")
+    }
+
+    func renamePlaylist(playlistId: String, name: String, isPublic: Bool? = nil) async throws {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw NSError(domain: "LyraMusic", code: 0, userInfo: [NSLocalizedDescriptionKey: "Playlist name cannot be empty."])
@@ -1459,12 +1550,12 @@ public final class AppModel: ObservableObject {
             guard let client = jellyfin else {
                 throw URLError(.userAuthenticationRequired)
             }
-            try await client.renamePlaylist(playlistId: playlistId, name: trimmed, isPublic: jellyfinVisibleToAll)
+            try await client.renamePlaylist(playlistId: playlistId, name: trimmed, isPublic: isPublic)
         case .navidrome:
             guard let client = navidrome else {
                 throw URLError(.userAuthenticationRequired)
             }
-            try await client.renamePlaylist(playlistId: playlistId, name: trimmed)
+            try await client.renamePlaylist(playlistId: playlistId, name: trimmed, isPublic: isPublic)
         }
         await refreshLibraryPlaylists()
     }

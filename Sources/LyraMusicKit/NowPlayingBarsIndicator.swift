@@ -4,7 +4,7 @@ import SwiftUI
 /// to indicate the currently playing song. Bars animate while playback is active and
 /// freeze at resting heights when paused.
 struct NowPlayingBarsIndicator: View {
-    @EnvironmentObject private var app: AppModel
+    @ObservedObject var player: PlaybackEngine
     var color: Color = Color.accentColor
 
     @State private var h1: CGFloat = 4
@@ -18,7 +18,7 @@ struct NowPlayingBarsIndicator: View {
             bar(height: h3)
         }
         .frame(width: 10, height: 11)
-        .onChange(of: app.player.isPlaying, initial: true) { _, playing in
+        .onChange(of: player.isPlaying, initial: true) { _, playing in
             if playing {
                 withAnimation(.easeInOut(duration: 0.50).repeatForever(autoreverses: true)) { h1 = 11 }
                 withAnimation(.easeInOut(duration: 0.35).repeatForever(autoreverses: true)) { h2 = 5 }

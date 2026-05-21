@@ -337,6 +337,7 @@ enum AlbumTrackRowLayout {
 
 /// Leading ★ slot and optional track # — shared by album track rows and ``LibrarySongRow``.
 struct SongRowLeadingIndicators: View {
+    @EnvironmentObject private var app: AppModel
     var trackIndex: Int? = nil
     let isFavorite: Bool
     var showsStarSlot: Bool = true
@@ -378,7 +379,7 @@ struct SongRowLeadingIndicators: View {
             }
             if let trackIndex {
                 if isNowPlaying {
-                    NowPlayingBarsIndicator(color: barsColor)
+                    NowPlayingBarsIndicator(player: app.player, color: barsColor)
                         .frame(width: AlbumTrackIndexColumn.numberWidth, alignment: .leading)
                 } else {
                     Text("\(trackIndex)")
