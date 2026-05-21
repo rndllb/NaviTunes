@@ -51,9 +51,9 @@ struct NowPlayingView: View {
 
     /// Paused — baseline artwork size. Tuned so paused is visibly smaller than
     /// playing (~80%) without the dramatic shrink the older 256pt value caused.
-    private let albumArtPausedSide: CGFloat = 310
+    private let albumArtPausedSide: CGFloat = 280
     /// Playing — base artwork size before play-state overscale.
-    private let albumArtPlayingSide: CGFloat = 340
+    private let albumArtPlayingSide: CGFloat = 315
     /// Scales past ``albumArtPlayingSide`` when playback resumes (Apple Music–style pulse).
     private let albumArtPlayOverscale: CGFloat = 1.14
 
@@ -1810,16 +1810,19 @@ private struct LyricsFocusScrollView: View {
         }
         .onAppear {
             displayItems = Self.buildDisplayItems(from: lines)
-            syncActiveIndex(to: player.currentTime)
-            displayTime = player.currentTime
+            syncActiveIndex(to: player.livePlaybackTime)
+            displayTime = player.livePlaybackTime
         }
         .onChange(of: lines.map(\.id)) { _, _ in
             displayItems = Self.buildDisplayItems(from: lines)
-            syncActiveIndex(to: player.currentTime)
+            syncActiveIndex(to: player.livePlaybackTime)
         }
-        .onReceive(player.$currentTime) { newTime in
-            displayTime = newTime
-            syncActiveIndex(to: newTime)
+        .onReceive(player.$currentTime) { _ in
+            // `currentTime` is UI-throttled; use it only as a publisher tick
+            // and sample the fresher `livePlaybackTime` for sync accuracy.
+            let t = player.livePlaybackTime
+            displayTime = t
+            syncActiveIndex(to: t)
         }
     }
 
