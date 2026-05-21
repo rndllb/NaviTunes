@@ -154,16 +154,53 @@ struct NowPlayingView: View {
                 dragIndicator
 
                 if let track = app.player.activeTrack {
-                    Group {
-                        if showLyrics {
-                            lyricsScrollContent(track: track)
-                        } else if showQueue {
-                            queueScrollContent(track: track)
-                        } else {
-                            standardPlayerContent(track: track)
+                    // Shared artwork (+ inline title/artist in compact mode) lives
+                    // here so it's a sibling of the conditional body region —
+                    // matched-geometry bridges between two parallel branches at
+                    // the same depth, not between branches buried inside per-mode
+                    // subtrees.
+                    sharedHeader(track: track)
+
+                    // Each mode lives inside a `Group` that's permanently in the
+                    // ZStack — only the inner conditional changes. That keeps
+                    // `.allowsHitTesting(...)` on a non-transitioning view, so
+                    // its argument is re-evaluated against the current state
+                    // even while the inner content is animating out. Without
+                    // this wrapper, the hit-test modifier sits inside the
+                    // disappearing subtree and SwiftUI uses its last-captured
+                    // value (the now-stale `true`) during the exit transition,
+                    // letting queue rows accept taps on the way down.
+                    ZStack {
+                        Group {
+                            if !showLyrics && !showQueue {
+                                standardPlayerContent(track: track)
+                                    .transition(
+                                        AnyTransition.move(edge: .top)
+                                            .combined(with: .opacity)
+                                            .animation(.spring(response: 0.25, dampingFraction: 0.9))
+                                    )
+                            }
                         }
+                        .allowsHitTesting(!showLyrics && !showQueue)
+
+                        Group {
+                            if showLyrics {
+                                lyricsScrollContent(track: track)
+                                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                            }
+                        }
+                        .allowsHitTesting(showLyrics)
+
+                        Group {
+                            if showQueue {
+                                queueScrollContent(track: track)
+                                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                            }
+                        }
+                        .allowsHitTesting(showQueue)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
 
                     pinnedBottomChrome(track: track)
                 } else {
@@ -249,11 +286,12 @@ struct NowPlayingView: View {
 
     // MARK: - Standard player content (default mode)
 
-    /// Default mode — large artwork + metadata, no internal scroll.
+    /// Default mode — metadata + spacer below the shared artwork header. The
+    /// artwork itself is rendered by ``sharedHeader``; this subtree's exit
+    /// transition slides the metadata up and fades it out without disturbing
+    /// the artwork's matched-geometry move.
     private func standardPlayerContent(track: Track) -> some View {
         VStack(spacing: 0) {
-            albumBlock(track: track)
-
             metadataRow(track: track)
                 .padding(.horizontal, 24)
                 .padding(.top, 20)
@@ -264,22 +302,16 @@ struct NowPlayingView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    /// Lyrics + lyric scroll area, sized to fill the space above the pinned chrome.
+    /// Lyrics scroll area only — artwork + compact title/artist live in
+    /// ``sharedHeader`` above the conditional body region.
     private func lyricsScrollContent(track: Track) -> some View {
-        VStack(spacing: 0) {
-            lyricsCompactHeader(track: track)
-                .padding(.horizontal, 20)
-                .padding(.top, 6)
-                .padding(.bottom, 12)
-
-            LyricsFocusScrollView(
-                lines: app.player.lyrics,
-                player: app.player,
-                primaryColor: fgPrimary,
-                secondaryColor: fgSecondary,
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
+        LyricsFocusScrollView(
+            lines: app.player.lyrics,
+            player: app.player,
+            primaryColor: fgPrimary,
+            secondaryColor: fgSecondary,
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Queue scroll content (triggered by the queue button)
@@ -335,8 +367,6 @@ struct NowPlayingView: View {
         let continuePlayingTracks = upNext.filter { !app.player.userQueuedTrackIds.contains($0.id) }
 
         return VStack(spacing: 0) {
-            nowPlayingHeader(track: track)
-
             shuffleRepeatRow
                 .padding(.top, 10)
                 .padding(.bottom, 6)
@@ -672,7 +702,8 @@ struct NowPlayingView: View {
     private func lyricsCompactHeader(track: Track) -> some View {
         HStack(alignment: .center, spacing: 12) {
             AlbumArtworkView(url: artworkURL(for: track), cornerRadius: 6)
-                .frame(width: 44, height: 44)
+                .frame(width: 56, height: 56)
+                .matchedGeometryEffect(id: "nowPlayingArtwork", in: artworkNamespace)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(track.title)
@@ -714,6 +745,100 @@ struct NowPlayingView: View {
         }
     }
 
+    /// Artist row in the compact shared header — uses the same tappable
+    /// ``ArtistNowPlayingMenuButton`` (Go to Artist / Album / Playlist) as
+    /// the standard-mode metadata row, so the menu is available in lyrics
+    /// and queue modes too. Falls back to plain text when the artist field
+    /// is empty (button has nothing to anchor).
+    @ViewBuilder
+    private func compactArtistMenu(track: Track) -> some View {
+        let artistKey = track.artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        let libraryAlbum = app.libraryAlbums.first { $0.id == track.albumId }
+        let albumSubtitle: String = {
+            let t = track.albumTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty { return t }
+            if let title = libraryAlbum?.title, !title.isEmpty { return title }
+            return "Unknown Album"
+        }()
+        if artistKey.isEmpty {
+            Text(track.artist)
+                .font(.subheadline)
+                .foregroundStyle(fgSecondaryStrong)
+                .lineLimit(1)
+        } else {
+            ArtistNowPlayingMenuButton(
+                artist: track.artist,
+                albumSubtitle: albumSubtitle,
+                libraryAlbum: libraryAlbum,
+                sourcePlaylist: {
+                    if case .playlist(let p) = app.player.playbackSource { return p }
+                    return nil
+                }(),
+                compact: true,
+                goToAlbumDisabled: libraryAlbum == nil && catalogAlbumFallback(from: track) == nil,
+                onGoToAlbum: {
+                    if let album = libraryAlbum {
+                        dismissAndNavigate(to: .album(album))
+                    } else if let album = catalogAlbumFallback(from: track) {
+                        dismissAndNavigate(to: .album(album))
+                    }
+                },
+                onGoToArtist: {
+                    dismissAndNavigate(to: .artist(track.artist))
+                },
+                onGoToPlaylist: {
+                    dismissAndNavigate(to: .playlist)
+                },
+            )
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Star + ellipsis action buttons shown trailing the inline title/artist
+    /// in the compact (lyrics / queue) shared header — restores the action
+    /// affordances that lived in the old per-mode headers before the artwork
+    /// was hoisted.
+    @ViewBuilder
+    private func compactHeaderActionButtons(track: Track) -> some View {
+        HStack(spacing: 10) {
+            Button {
+                app.toggleFavoriteTrack(id: track.id)
+            } label: {
+                Image(systemName: app.favoriteTrackIds.contains(track.id) ? "star.fill" : "star")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(fgPrimary)
+                    .frame(width: 30, height: 30)
+                    .background(Circle().fill(fgCapsule))
+            }
+            .buttonStyle(.plain)
+
+            Menu {
+                ShareLink(item: "\(track.title) — \(track.artist)")
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(fgPrimary)
+                    .frame(width: 30, height: 30)
+                    .background(Circle().fill(fgCapsule))
+            }
+        }
+    }
+
+    /// Isolated scale wrapper for the play/pause pulse. Keeping the
+    /// `.animation(value: isPlaying)` inside its own modifier scope means it
+    /// doesn't leak into the artwork's frame/position morph when ``compact``
+    /// toggles.
+    private struct PlayPulseScale: ViewModifier {
+        let scale: CGFloat
+        let isPlaying: Bool
+
+        func body(content: Content) -> some View {
+            content
+                .scaleEffect(scale, anchor: .center)
+                .animation(.smooth(duration: 0.5), value: isPlaying)
+        }
+    }
+
     private func albumBlock(track: Track) -> some View {
         let base = albumArtPlayingSide
         let maxSide = base * albumArtPlayOverscale
@@ -732,7 +857,103 @@ struct NowPlayingView: View {
             Spacer(minLength: 0)
         }
         .padding(.top, 14)
-        .padding(.bottom, 38)
+        .padding(.bottom, 24)
+    }
+
+    // MARK: - Shared header
+
+    /// One artwork view that's always present, animating size + position as
+    /// ``showLyrics`` / ``showQueue`` toggle. Using a single instance (not two
+    /// conditional branches bridged by matchedGeometryEffect) means SwiftUI
+    /// just interpolates `.frame`, `.position`, and the corner/shadow values
+    /// directly — the artwork visibly shrinks and slides toward the top-left
+    /// in one continuous motion. The inline title/artist appears as an overlay
+    /// in compact mode with its own opacity transition.
+    ///
+    /// The whole header is wrapped in an explicit `.animation(value: compact)`
+    /// modifier so every property the morph touches — frame, position, corner
+    /// radius, shadow, container height — is bound to the same spring timeline
+    /// and finishes together. The play-pulse `.scaleEffect` is hoisted onto a
+    /// separate wrapper so its play/pause `.animation` context can't bleed into
+    /// the compact morph and desync the artwork.
+    private func sharedHeader(track: Track) -> some View {
+        let compact = showLyrics || showQueue
+        let bigSize = albumArtPlayingSide
+        let smallSize: CGFloat = 56
+        let artworkSize: CGFloat = compact ? smallSize : bigSize
+        let cornerRadius: CGFloat = compact ? 6 : 12
+        let playPulseScale: CGFloat = {
+            if compact { return 1 }
+            return app.player.isPlaying ? albumArtPlayOverscale : (albumArtPausedSide / bigSize)
+        }()
+        // Same vertical padding above the artwork in both modes — eliminates
+        // the 1–2pt y discontinuity at toggle and keeps the morph perfectly
+        // continuous.
+        let topPad: CGFloat = 14
+        let bottomPad: CGFloat = compact ? 12 : 24
+        let standardOverscaleHeight = bigSize * albumArtPlayOverscale
+        let containerHeight: CGFloat = compact
+            ? (smallSize + topPad + bottomPad)
+            : (standardOverscaleHeight + topPad + bottomPad)
+
+        return GeometryReader { geo in
+            let centerX = geo.size.width / 2
+            let leadingX = 20 + smallSize / 2
+            let xCenter = compact ? leadingX : centerX
+            let yCenter = topPad + artworkSize / 2
+
+            ZStack(alignment: .topLeading) {
+                // Play-pulse scale lives in a separate wrapper so its
+                // .animation(value: isPlaying) context only sees the scale,
+                // not the morph's frame/position/shadow changes.
+                AlbumArtworkView(url: artworkURL(for: track), cornerRadius: cornerRadius)
+                    .frame(width: artworkSize, height: artworkSize)
+                    .modifier(PlayPulseScale(scale: playPulseScale, isPlaying: app.player.isPlaying))
+                    .shadow(
+                        color: .black.opacity(backdropPalette.prefersDarkHeroChrome ? 0.22 : 0.45),
+                        radius: compact ? 6 : 20,
+                        y: compact ? 4 : 12,
+                    )
+                    .position(x: xCenter, y: yCenter)
+
+                if compact {
+                    HStack(alignment: .center, spacing: 12) {
+                        Color.clear.frame(width: smallSize, height: smallSize)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(track.title)
+                                .font(.headline.weight(.bold))
+                                .foregroundStyle(fgPrimary)
+                                .lineLimit(1)
+                            compactArtistMenu(track: track)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        compactHeaderActionButtons(track: track)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 12)
+                    // Slide up from below + fade in on the same snappy curve as
+                    // the standard title's exit, so visually it reads as "the
+                    // title moved up into the compact header" rather than two
+                    // independent fades.
+                    .transition(
+                        AnyTransition.move(edge: .bottom)
+                            .combined(with: .opacity)
+                            .animation(.spring(response: 0.25, dampingFraction: 0.9))
+                    )
+                }
+            }
+        }
+        .frame(height: containerHeight)
+        .overlay(alignment: .bottom) {
+            if compact {
+                Rectangle().fill(fgDivider).frame(height: 0.5)
+            }
+        }
+        // Explicit binding so every property the morph touches — frame,
+        // position, corner radius, shadow, container height — animates on
+        // exactly the same spring as the toggle's withAnimation context.
+        .animation(.spring(duration: 0.46, bounce: 0.16), value: compact)
     }
 
     private func metadataRow(track: Track) -> some View {
@@ -993,7 +1214,7 @@ struct NowPlayingView: View {
                 isActive: showLyrics,
                 iconFont: .system(size: 20, weight: .semibold),
             ) {
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                withAnimation(.spring(duration: 0.46, bounce: 0.16)) {
                     showLyrics.toggle()
                     if showLyrics { showQueue = false }
                 }
@@ -1003,7 +1224,7 @@ struct NowPlayingView: View {
                 .frame(width: 40, height: 40)
             #endif
             bottomChromeIconButton("list.bullet", isActive: showQueue) {
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                withAnimation(.spring(duration: 0.46, bounce: 0.16)) {
                     showQueue.toggle()
                     if showQueue { showLyrics = false }
                 }
