@@ -1039,7 +1039,7 @@ extension View {
         listRowBackground(
             ZStack {
                 Color.clear
-                Color.white.opacity(highlightOpacity)
+                Color.accentColor.opacity(highlightOpacity)
             }
         )
         .listRowInsets(EdgeInsets())

@@ -77,6 +77,7 @@ struct RadioTabView: View {
             .musicNavigationBarTitleDisplayMode(.inline)
             .task(id: radioLoadKey) { await load() }
             .refreshable { await load() }
+            .deepLinkPush(tab: .radio)
         }
         .tint(MusicDesign.accent)
     }

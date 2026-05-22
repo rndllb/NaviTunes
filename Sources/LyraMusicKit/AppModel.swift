@@ -69,7 +69,11 @@ public final class AppModel: ObservableObject {
     /// True while ``signIn()`` is in flight (manual or keychain restore).
     @Published var isAuthenticating: Bool = false
     @Published var selectedTab: AppTab = .home
-    @Published var pendingNavigation: NowPlayingDeepLink? = nil
+    /// "Go to Album / Playlist / Artist" deep link pushed onto the user's current tab after the
+    /// Now Playing player dismisses. Set together with ``deepLinkTab`` so only the tab that was
+    /// active at trigger time consumes the push (tab bar stays visible during the destination).
+    @Published var presentedDeepLink: NowPlayingDeepLink? = nil
+    @Published var deepLinkTab: AppTab? = nil
 
     /// Scroll signal consumed by an already-visible ``ServerPlaylistDetailView`` so "Go to Playlist"
     /// scrolls to the now-playing track even when the user is already on that playlist.
@@ -78,13 +82,11 @@ public final class AppModel: ObservableObject {
     /// Same as ``pendingPlaylistScroll`` but for album-mode detail views.
     @Published var pendingAlbumScroll: PendingAlbumScroll? = nil
 
-    /// Most recently mounted playlist detail id (ref-counted). Used by Go to Playlist to
-    /// scroll in place instead of pushing a duplicate detail view.
-    @Published private(set) var visiblePlaylistDetailId: String? = nil
-    private var mountedPlaylistDetailCounts: [String: Int] = [:]
-
-    private var playlistFocusCompletedIds: Set<String> = []
-    private var playlistFocusWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+    /// Set by ``ServerPlaylistDetailView`` while it's mounted so Now Playing → Go to Playlist
+    /// can detect "destination already visible behind player" and skip a redundant push.
+    @Published var currentlyVisiblePlaylistId: String? = nil
+    /// Album equivalent of ``currentlyVisiblePlaylistId``.
+    @Published var currentlyVisibleAlbumId: String? = nil
 
     /// Brief bottom toast (e.g. "Added to Queue"). Auto-clears after ``showTransientToast``
     /// is called; the ``MusicTransientToastChrome`` view modifier renders it.
@@ -225,6 +227,9 @@ public final class AppModel: ObservableObject {
     private static let eqMasterEnabledKey = "lyraEQMasterEnabled"
     private static let eqBandGainsKey = "lyraEQBandGainsDb"
     private static let eqPresetsKey = "lyraEQPresets"
+    private static let albumBackdropEnabledKey = "lyraAlbumBackdropEnabled"
+    private static let playlistBackdropEnabledKey = "lyraPlaylistBackdropEnabled"
+    private static let playerBackdropEnabledKey = "lyraPlayerBackdropEnabled"
 
     @Published var themePreference: AppThemePreference = .system {
         didSet {
@@ -294,6 +299,18 @@ public final class AppModel: ObservableObject {
         didSet {
             Self.persistEQPresets(eqPresets)
         }
+    }
+
+    @Published var albumBackdropEnabled: Bool = true {
+        didSet { UserDefaults.standard.set(albumBackdropEnabled, forKey: Self.albumBackdropEnabledKey) }
+    }
+
+    @Published var playlistBackdropEnabled: Bool = true {
+        didSet { UserDefaults.standard.set(playlistBackdropEnabled, forKey: Self.playlistBackdropEnabledKey) }
+    }
+
+    @Published var playerBackdropEnabled: Bool = true {
+        didSet { UserDefaults.standard.set(playerBackdropEnabled, forKey: Self.playerBackdropEnabledKey) }
     }
 
     private var jellyfin: JellyfinMusicClient?
@@ -1540,60 +1557,6 @@ public final class AppModel: ObservableObject {
         playlistRowsCache[playlistId]
     }
 
-    func registerMountedPlaylistDetail(id: String) {
-        mountedPlaylistDetailCounts[id, default: 0] += 1
-        visiblePlaylistDetailId = id
-    }
-
-    func unregisterMountedPlaylistDetail(id: String) {
-        let remaining = (mountedPlaylistDetailCounts[id] ?? 1) - 1
-        if remaining <= 0 {
-            mountedPlaylistDetailCounts.removeValue(forKey: id)
-        } else {
-            mountedPlaylistDetailCounts[id] = remaining
-        }
-        visiblePlaylistDetailId = mountedPlaylistDetailCounts.keys.first
-    }
-
-    func isPlaylistDetailMounted(id: String) -> Bool {
-        (mountedPlaylistDetailCounts[id] ?? 0) > 0
-    }
-
-    func beginPlaylistFocusSession(playlistId: String) {
-        playlistFocusCompletedIds.remove(playlistId)
-        playlistFocusWaiters.removeValue(forKey: playlistId)
-    }
-
-    func markPlaylistFocusComplete(playlistId: String) {
-        if var waiters = playlistFocusWaiters.removeValue(forKey: playlistId), !waiters.isEmpty {
-            waiters.forEach { $0.resume() }
-        } else {
-            playlistFocusCompletedIds.insert(playlistId)
-        }
-    }
-
-    func waitForPlaylistFocus(playlistId: String, timeoutSeconds: Double = 2.0) async {
-        if playlistFocusCompletedIds.remove(playlistId) != nil {
-            return
-        }
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { @MainActor in
-                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                    self.playlistFocusWaiters[playlistId, default: []].append(continuation)
-                }
-            }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(timeoutSeconds))
-            }
-            await group.next()
-            group.cancelAll()
-        }
-        if var waiters = playlistFocusWaiters.removeValue(forKey: playlistId) {
-            waiters.forEach { $0.resume() }
-            playlistFocusWaiters.removeValue(forKey: playlistId)
-        }
-    }
-
     func prefetchPlaylistRows(playlistId: String) async {
         guard playlistRowsCache[playlistId] == nil else { return }
         _ = try? await fetchPlaylistRows(playlistId: playlistId)
@@ -2258,6 +2221,15 @@ public final class AppModel: ObservableObject {
             eqBandGainsDb = arr.map { Float($0) }
         }
         eqPresets = Self.loadEQPresetsFromDefaults()
+        if UserDefaults.standard.object(forKey: Self.albumBackdropEnabledKey) != nil {
+            albumBackdropEnabled = UserDefaults.standard.bool(forKey: Self.albumBackdropEnabledKey)
+        }
+        if UserDefaults.standard.object(forKey: Self.playlistBackdropEnabledKey) != nil {
+            playlistBackdropEnabled = UserDefaults.standard.bool(forKey: Self.playlistBackdropEnabledKey)
+        }
+        if UserDefaults.standard.object(forKey: Self.playerBackdropEnabledKey) != nil {
+            playerBackdropEnabled = UserDefaults.standard.bool(forKey: Self.playerBackdropEnabledKey)
+        }
     }
 
     private static func loadEQPresetsFromDefaults() -> [EQPreset] {

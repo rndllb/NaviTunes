@@ -76,7 +76,7 @@ struct SettingsView: View {
         if app.isSignedIn, app.backendKind == .navidrome {
             PhotosPicker(selection: $profilePickerItem, matching: .images, photoLibrary: .shared()) {
                 ZStack(alignment: .bottomTrailing) {
-                    AccountProfileAvatarView(diameter: 88)
+                    AccountProfileAvatarView(diameter: 110)
                         .opacity(app.isUpdatingProfilePicture ? 0.5 : 1)
                     if app.isUpdatingProfilePicture {
                         ProgressView()
@@ -103,7 +103,7 @@ struct SettingsView: View {
                 }
             }
         } else {
-            AccountProfileAvatarView(diameter: 88)
+            AccountProfileAvatarView(diameter: 110)
         }
     }
 
@@ -353,6 +353,13 @@ struct SettingsView: View {
                 }
             }
             .tint(MusicDesign.accent)
+
+            Toggle("Album color backdrop", isOn: $app.albumBackdropEnabled)
+                .tint(MusicDesign.accent)
+            Toggle("Playlist color backdrop", isOn: $app.playlistBackdropEnabled)
+                .tint(MusicDesign.accent)
+            Toggle("Player color backdrop", isOn: $app.playerBackdropEnabled)
+                .tint(MusicDesign.accent)
 
             VStack(alignment: .leading, spacing: 16) {
                 Text("Accent Color")

@@ -92,6 +92,7 @@ struct MusicNewTabView: View {
                     kind: tr.browseKind
                 ))
             }
+            .deepLinkPush(tab: .new)
         }
         .overlay(alignment: .bottom) {
             if let downtifyToast {
