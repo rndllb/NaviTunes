@@ -48,6 +48,7 @@ enum ArtworkDynamicGradient {
                 prefersDarkHeroChrome: lum >= backdropLuminanceDarkChromeThreshold,
             )
         }()
+
     }
 
     /// Decode artwork → flat backdrop tint + WCAG luminance for adaptive hero chrome.

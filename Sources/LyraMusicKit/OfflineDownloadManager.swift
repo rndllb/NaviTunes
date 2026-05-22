@@ -43,6 +43,11 @@ final class OfflineDownloadManager: ObservableObject {
 
     private static let manifestFilename = "offline-manifest.json"
 
+    /// In-memory manifest; invalidated whenever the on-disk manifest changes.
+    private static var manifestCache: OfflineManifestPayload?
+    /// One-time index of legacy `{trackId}__*` files at the downloads root.
+    private static var legacyFlatFileByTrackId: [String: URL]?
+
     /// Old flat filenames used `{trackId}__…`; kept only for migrating stray files into the manifest.
     private static let legacyFlatIdSeparator = "__"
 
@@ -85,13 +90,16 @@ final class OfflineDownloadManager: ObservableObject {
     }
 
     private static func loadManifest() throws -> OfflineManifestPayload {
+        if let manifestCache { return manifestCache }
         let url = try manifestURL()
         guard FileManager.default.fileExists(atPath: url.path),
               let data = try? Data(contentsOf: url),
               let m = try? JSONDecoder().decode(OfflineManifestPayload.self, from: data)
         else {
-            return OfflineManifestPayload()
+            manifestCache = OfflineManifestPayload()
+            return manifestCache!
         }
+        manifestCache = m
         return m
     }
 
@@ -106,6 +114,13 @@ final class OfflineDownloadManager: ObservableObject {
             try FileManager.default.removeItem(at: url)
         }
         try FileManager.default.moveItem(at: tmp, to: url)
+        manifestCache = payload
+        legacyFlatFileByTrackId = nil
+    }
+
+    private static func invalidateManifestCache() {
+        manifestCache = nil
+        legacyFlatFileByTrackId = nil
     }
 
     private static func manifestTrackIds() throws -> Set<String> {
@@ -540,6 +555,31 @@ final class OfflineDownloadManager: ObservableObject {
         return payload.records[id]?.track
     }
 
+    /// Resolves downloaded tracks when manifest records are incomplete, without scanning the full library catalog.
+    func tracksMatchingDownloadedIds(catalogById: [String: Track]) -> [Track] {
+        let ids = downloadedTrackIds
+        guard !ids.isEmpty, let root = try? Self.downloadsFolder() else { return [] }
+        let payload = (try? Self.loadManifest()) ?? OfflineManifestPayload()
+        var seen = Set<String>()
+        var out: [Track] = []
+        out.reserveCapacity(ids.count)
+        for id in ids {
+            guard seen.insert(id).inserted else { continue }
+            guard Self.localFileURL(trackId: id, payload: payload, root: root) != nil else { continue }
+            if let track = payload.records[id]?.track {
+                out.append(track)
+            } else if let track = catalogById[id] {
+                out.append(track)
+            }
+        }
+        return out.sorted {
+            let ac = $0.albumTitle.localizedCaseInsensitiveCompare($1.albumTitle)
+            if ac != .orderedSame { return ac == .orderedAscending }
+            if $0.discNumber != $1.discNumber { return $0.discNumber < $1.discNumber }
+            return $0.indexNumber < $1.indexNumber
+        }
+    }
+
     func updateCachedTrackDuration(trackId: String, duration: TimeInterval) throws {
         guard duration > 0 else { return }
         var payload = try Self.loadManifest()
@@ -572,10 +612,13 @@ final class OfflineDownloadManager: ObservableObject {
     }
 
     func cachedTracks() -> [Track] {
+        guard let root = try? Self.downloadsFolder() else { return [] }
         let payload = (try? Self.loadManifest()) ?? OfflineManifestPayload()
-        return payload.records.values.compactMap { record -> Track? in
-            localFile(for: record.track.id) != nil ? record.track : nil
-        }.sorted {
+        let tracks = payload.records.values.compactMap { record -> Track? in
+            guard Self.localFileURL(trackId: record.track.id, payload: payload, root: root) != nil else { return nil }
+            return record.track
+        }
+        return tracks.sorted {
             if $0.albumTitle != $1.albumTitle {
                 return $0.albumTitle.localizedCaseInsensitiveCompare($1.albumTitle) == .orderedAscending
             }
@@ -611,6 +654,48 @@ final class OfflineDownloadManager: ObservableObject {
         return byId.values.sorted {
             $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
         }
+    }
+
+    /// Albums with offline audio, newest file modification first (for Library → Downloaded recents).
+    func recentlyDownloadedAlbums(limit: Int = 60) -> [AlbumSummary] {
+        guard limit > 0, let root = try? Self.downloadsFolder() else { return [] }
+        let payload = (try? Self.loadManifest()) ?? OfflineManifestPayload()
+        var latestByAlbum: [String: Date] = [:]
+        var albumById: [String: AlbumSummary] = [:]
+
+        for trackId in payload.tracks.keys {
+            guard let fileURL = Self.localFileURL(trackId: trackId, payload: payload, root: root) else { continue }
+            let mtime = (try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate ?? .distantPast
+            let record = payload.records[trackId]
+            let track = record?.track
+            let albumId = track?.albumId ?? ""
+            guard !albumId.isEmpty else { continue }
+            if mtime > (latestByAlbum[albumId] ?? .distantPast) {
+                latestByAlbum[albumId] = mtime
+            }
+            if albumById[albumId] == nil {
+                if let album = record?.album {
+                    albumById[albumId] = album
+                } else if let track {
+                    albumById[albumId] = AlbumSummary(
+                        id: albumId,
+                        title: track.albumTitle.isEmpty ? "Album" : track.albumTitle,
+                        artist: track.artist,
+                        artworkURL: track.artworkURL,
+                        trackCount: nil,
+                        libraryAddedDate: track.libraryAddedDate,
+                        genres: track.genres,
+                        releaseYear: track.releaseYear,
+                    )
+                }
+            }
+        }
+
+        return latestByAlbum
+            .sorted { $0.value > $1.value }
+            .prefix(limit)
+            .compactMap { albumById[$0.key] }
     }
 
     func localArtworkURL(forTrackId trackId: String) -> URL? {
@@ -686,7 +771,13 @@ final class OfflineDownloadManager: ObservableObject {
         var payload = try loadManifest()
         guard !payload.tracks.isEmpty else { return }
 
-        let catalogById = Dictionary(uniqueKeysWithValues: knownTracks.map { ($0.id, $0) })
+        let missingIds = Set(payload.tracks.keys.filter { payload.records[$0] == nil })
+        guard !missingIds.isEmpty else { return }
+
+        let catalogById = Dictionary(
+            knownTracks.filter { missingIds.contains($0.id) }.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first },
+        )
         let root = try downloadsFolder()
         var dirty = false
 
@@ -801,25 +892,39 @@ final class OfflineDownloadManager: ObservableObject {
 
     func localFile(for forId: String) -> URL? {
         guard let root = try? Self.downloadsFolder() else { return nil }
-
         let payload = (try? Self.loadManifest()) ?? OfflineManifestPayload()
-        if let rel = payload.tracks[forId] {
+        return Self.localFileURL(trackId: forId, payload: payload, root: root)
+    }
+
+    private static func localFileURL(trackId: String, payload: OfflineManifestPayload, root: URL) -> URL? {
+        if let rel = payload.tracks[trackId] {
             let u = root.appendingPathComponent(rel)
             if FileManager.default.fileExists(atPath: u.path) { return u }
         }
+        return legacyFlatFile(trackId: trackId, root: root)
+    }
 
-        // Legacy flat `{id}__*` at downloads root
-        let prefix = "\(forId)\(Self.legacyFlatIdSeparator)"
-        guard let urls = try? FileManager.default.contentsOfDirectory(
-            at: root,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles],
-        ) else { return nil }
-        let match = urls.first { url in
-            !url.hasDirectoryPath && url.lastPathComponent.hasPrefix(prefix)
+    private static func legacyFlatFile(trackId: String, root: URL) -> URL? {
+        if legacyFlatFileByTrackId == nil {
+            var map: [String: URL] = [:]
+            if let urls = try? FileManager.default.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles],
+            ) {
+                for url in urls where !url.hasDirectoryPath {
+                    let name = url.lastPathComponent
+                    guard let sep = name.range(of: legacyFlatIdSeparator) else { continue }
+                    let id = String(name[..<sep.lowerBound])
+                    map[id] = url
+                }
+            }
+            legacyFlatFileByTrackId = map
         }
-        guard let match, FileManager.default.fileExists(atPath: match.path) else { return nil }
-        return match
+        guard let url = legacyFlatFileByTrackId?[trackId],
+              FileManager.default.fileExists(atPath: url.path)
+        else { return nil }
+        return url
     }
 
     func remove(trackId: String) throws {

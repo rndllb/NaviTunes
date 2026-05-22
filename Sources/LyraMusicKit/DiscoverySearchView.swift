@@ -253,6 +253,10 @@ struct DiscoverySearchView: View {
     /// Library search rows keep a subtle card tint for separation.
     private var libraryRowBackground: Color { MusicDesign.tertiarySurfaceFill.opacity(0.55) }
 
+    private var searchArtworkDividerKind: MusicChevronRowDivider.Kind {
+        .custom(leading: MusicChevronRowMetrics.artworkDividerLeading(side: rowArtworkSide, spacing: 12))
+    }
+
     private var personalResults: PersonalLibrarySearchResults {
         app.searchPersonalLibrary(query: trimmedQuery)
     }
@@ -537,7 +541,7 @@ struct DiscoverySearchView: View {
                         .foregroundStyle(MusicDesign.secondaryLabel)
                         .listRowBackground(Color.clear)
                 } else {
-                    ForEach(recent) { item in
+                    ForEach(Array(recent.enumerated()), id: \.element.id) { index, item in
                         Button {
                             tapRecent(item)
                         } label: {
@@ -545,6 +549,7 @@ struct DiscoverySearchView: View {
                         }
                         .buttonStyle(.plain)
                         .listRowBackground(discoverRowBackground)
+                        .musicChevronRowDivider(searchArtworkDividerKind, shows: index < recent.count - 1)
                     }
                 }
             }
@@ -590,8 +595,9 @@ struct DiscoverySearchView: View {
                 }
             } else {
                 Section("Top Results") {
-                    ForEach(rows) { row in
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                         hybridRowView(row)
+                            .musicChevronRowDivider(searchArtworkDividerKind, shows: index < rows.count - 1)
                     }
                 }
             }
@@ -963,7 +969,7 @@ struct DiscoverySearchView: View {
                         .foregroundStyle(MusicDesign.secondaryLabel)
                         .listRowBackground(Color.clear)
                 } else {
-                    ForEach(recent) { item in
+                    ForEach(Array(recent.enumerated()), id: \.element.id) { index, item in
                         Button {
                             tapRecent(item)
                         } label: {
@@ -971,6 +977,7 @@ struct DiscoverySearchView: View {
                         }
                         .buttonStyle(.plain)
                         .listRowBackground(libraryRowBackground)
+                        .musicChevronRowDivider(searchArtworkDividerKind, shows: index < recent.count - 1)
                     }
                 }
             }
@@ -991,7 +998,7 @@ struct DiscoverySearchView: View {
             } else {
                 if !results.songs.isEmpty {
                     Section("Songs") {
-                        ForEach(results.songs) { track in
+                        ForEach(Array(results.songs.enumerated()), id: \.element.id) { index, track in
                             Button {
                                 recordRecent(.init(
                                     kind: .song,
@@ -1013,12 +1020,13 @@ struct DiscoverySearchView: View {
                             .buttonStyle(.plain)
                             .listRowBackground(libraryRowBackground)
                             .contextMenu { serverSongContextMenu(track) }
+                            .musicChevronRowDivider(searchArtworkDividerKind, shows: index < results.songs.count - 1)
                         }
                     }
                 }
                 if !results.albums.isEmpty {
                     Section("Albums") {
-                        ForEach(results.albums) { album in
+                        ForEach(Array(results.albums.enumerated()), id: \.element.id) { index, album in
                             Button {
                                 recordRecent(.init(
                                     kind: .album,
@@ -1039,12 +1047,13 @@ struct DiscoverySearchView: View {
                             .buttonStyle(.plain)
                             .listRowBackground(libraryRowBackground)
                             .libraryAlbumContextMenu(album)
+                            .musicChevronRowDivider(searchArtworkDividerKind, shows: index < results.albums.count - 1)
                         }
                     }
                 }
                 if !results.playlists.isEmpty {
                     Section("Playlists") {
-                        ForEach(results.playlists) { playlist in
+                        ForEach(Array(results.playlists.enumerated()), id: \.element.id) { index, playlist in
                             Button {
                                 recordRecent(.init(
                                     kind: .playlist,
@@ -1065,12 +1074,13 @@ struct DiscoverySearchView: View {
                             .buttonStyle(.plain)
                             .listRowBackground(libraryRowBackground)
                             .libraryPlaylistContextMenu(playlist)
+                            .musicChevronRowDivider(searchArtworkDividerKind, shows: index < results.playlists.count - 1)
                         }
                     }
                 }
                 if !results.artists.isEmpty {
                     Section("Artists") {
-                        ForEach(results.artists) { artist in
+                        ForEach(Array(results.artists.enumerated()), id: \.element.id) { index, artist in
                             Button {
                                 recordRecent(.init(
                                     kind: .artist,
@@ -1094,6 +1104,7 @@ struct DiscoverySearchView: View {
                             }
                             .buttonStyle(.plain)
                             .listRowBackground(libraryRowBackground)
+                            .musicChevronRowDivider(searchArtworkDividerKind, shows: index < results.artists.count - 1)
                         }
                     }
                 }

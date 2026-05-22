@@ -862,7 +862,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
             URLQueryItem(name: "SortBy", value: "SortName"),
             URLQueryItem(name: "SortOrder", value: "Ascending"),
             URLQueryItem(name: "Limit", value: "\(cap)"),
-            URLQueryItem(name: "Fields", value: "ChildCount,IsPublic,DateCreated"),
+            URLQueryItem(name: "Fields", value: "ChildCount,IsPublic,DateCreated,DateModified"),
         ]
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
@@ -1195,7 +1195,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
             URLQueryItem(name: "Recursive", value: "true"),
             URLQueryItem(name: "SearchTerm", value: name),
             URLQueryItem(name: "Limit", value: "50"),
-            URLQueryItem(name: "Fields", value: "ChildCount,IsPublic,DateCreated"),
+            URLQueryItem(name: "Fields", value: "ChildCount,IsPublic,DateCreated,DateModified"),
         ]
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
@@ -1276,6 +1276,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         let childCount = (dict["ChildCount"] as? NSNumber)?.intValue ?? dict["ChildCount"] as? Int
         let isPublic = Self.parseOptionalBool(dict["IsPublic"])
         let added = jellyfinDate(dict["DateCreated"])
+        let updated = jellyfinDate(dict["DateModified"])
         var art: URL?
         if let tag = dict["ImageTags"] as? [String: Any],
            let primary = tag["Primary"] as? String,
@@ -1286,7 +1287,15 @@ final class JellyfinMusicClient: MusicLibraryProviding {
             comps.queryItems = [URLQueryItem(name: "tag", value: primary)]
             art = mediaURLWithQueryAuth(comps.url!, extraQuery: [])
         }
-        return PlaylistSummary(id: id, name: name, songCount: childCount, artworkURL: art, isPublic: isPublic, libraryAddedDate: added)
+        return PlaylistSummary(
+            id: id,
+            name: name,
+            songCount: childCount,
+            artworkURL: art,
+            isPublic: isPublic,
+            libraryAddedDate: added,
+            serverUpdatedDate: updated
+        )
     }
 
     private static func parseOptionalBool(_ value: Any?) -> Bool? {

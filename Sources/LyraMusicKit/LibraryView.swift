@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 // MARK: - Recent item
 
@@ -115,7 +118,7 @@ private enum LibraryRow: String, CaseIterable, Identifiable {
 struct LibraryView: View {
     @EnvironmentObject private var app: AppModel
     @AppStorage("library_section_config") private var sectionConfigRaw: String = ""
-    @AppStorage("favoritedPlaylistIds") private var favoritedRaw: String = ""
+    @AppStorage(LibraryPinStore.storageKey) private var pinnedStorage: String = "[]"
     @State private var showNewPlaylistSheet = false
     @State private var showEditSections = false
     @State private var showFloatingHeader = true
@@ -127,23 +130,11 @@ struct LibraryView: View {
     @State private var deepLinkPlaylist: PlaylistSummary? = nil
     @State private var pendingScrollToTrackId: String? = nil
 
-    private let pinnedColumns = [
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12),
-    ]
+    private let pinnedColumns = MusicDesign.libraryHubGridColumns(count: 3)
+    private let recentColumns = MusicDesign.libraryHubGridColumns(count: 2)
 
-    private let recentColumns = [
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12),
-    ]
-
-    private var pinnedPlaylistIds: Set<String> {
-        Set(favoritedRaw.split(separator: ",").map(String.init).filter { !$0.isEmpty })
-    }
-
-    private var pinnedPlaylists: [PlaylistSummary] {
-        app.libraryPlaylists.filter { pinnedPlaylistIds.contains($0.id) }
+    private var pinnedItems: [LibraryPinnedItem] {
+        LibraryPinStore.resolvedItems(raw: pinnedStorage, app: app)
     }
 
     private var recentItems: [RecentLibraryItem] {
@@ -230,6 +221,9 @@ struct LibraryView: View {
             }
         }
         .tint(MusicDesign.accent)
+        .onAppear {
+            LibraryPinStore.migrateLegacyPlaylistPinsIfNeeded(storage: &pinnedStorage)
+        }
         .onChange(of: app.pendingNavigation) { _, nav in
             guard let nav else { return }
             app.pendingNavigation = nil
@@ -290,24 +284,25 @@ struct LibraryView: View {
 
     private var libraryScrollMainContent: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if !pinnedPlaylists.isEmpty {
+            if !pinnedItems.isEmpty {
                 LazyVGrid(columns: pinnedColumns, spacing: 20) {
-                    ForEach(pinnedPlaylists) { playlist in
+                    ForEach(pinnedItems) { item in
                         NavigationLink {
-                            ServerPlaylistDetailView(playlist: playlist)
+                            pinnedItemDestination(item)
                         } label: {
-                            pinnedPlaylistCell(playlist)
+                            pinnedItemCell(item)
                         }
                         .buttonStyle(.plain)
-                        .libraryPlaylistContextMenu(playlist)
+                        .libraryPinnedItemContextMenu(item, pinnedStorage: $pinnedStorage)
                     }
                 }
                 .padding(.horizontal, 20)
+                .padding(.top, 4)
                 .padding(.bottom, 28)
             }
 
-            ForEach(orderedVisibleRows) { row in
-                libraryRowLink(row)
+            ForEach(Array(orderedVisibleRows.enumerated()), id: \.element.id) { index, row in
+                libraryRowLink(row, showsDivider: showsLibraryHubRowDivider(at: index, row: row))
             }
 
             Text("Recently Added")
@@ -322,9 +317,16 @@ struct LibraryView: View {
         .padding(.bottom, 24)
     }
 
+    /// Inset divider after each hub row; **Downloaded** always gets one before Recently Added.
+    private func showsLibraryHubRowDivider(at index: Int, row: LibraryRow) -> Bool {
+        if row == .downloaded { return true }
+        return index < orderedVisibleRows.count - 1
+    }
+
     @ViewBuilder
-    private func libraryRowLink(_ row: LibraryRow) -> some View {
+    private func libraryRowLink(_ row: LibraryRow, showsDivider: Bool) -> some View {
         VStack(spacing: 0) {
+            Group {
             switch row {
             case .albums:
                 NavigationLink {
@@ -369,9 +371,8 @@ struct LibraryView: View {
                 }
                 .buttonStyle(.plain)
             }
-            Divider()
-                .background(MusicDesign.separator)
-                .padding(.leading, 56)
+            }
+            .musicChevronRowDivider(.symbolIcon, shows: showsDivider)
         }
     }
 
@@ -451,40 +452,63 @@ struct LibraryView: View {
     }
 
     private func recentCell(_ item: RecentLibraryItem) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        LibraryHubGridCell(title: item.title, subtitle: item.subtitle) {
             AlbumArtworkView(url: item.artworkURL, cornerRadius: MusicDesign.gridAlbumCorner)
-            Text(item.title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(2)
-            Text(item.subtitle)
-                .font(.caption)
-                .foregroundStyle(MusicDesign.secondaryLabel)
-                .lineLimit(1)
         }
     }
 
-    private func pinnedPlaylistCell(_ playlist: PlaylistSummary) -> some View {
-        VStack(spacing: 8) {
-            AlbumArtworkView(url: playlist.artworkURL, cornerRadius: MusicDesign.gridAlbumCorner)
-                .aspectRatio(1, contentMode: .fit)
-            Text(playlist.name)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .multilineTextAlignment(.center)
+    @ViewBuilder
+    private func pinnedItemDestination(_ item: LibraryPinnedItem) -> some View {
+        switch item {
+        case .album(let album):
+            ServerPlaylistDetailView(album: album, librarySource: true)
+        case .playlist(let playlist):
+            if playlist.id == "__favorite_songs__" {
+                FavoritePlaylistView()
+            } else {
+                ServerPlaylistDetailView(playlist: playlist)
+            }
+        case .track(let track):
+            ServerPlaylistDetailView(
+                album: app.albumSummary(for: track),
+                librarySource: app.isAlbumInLibrary(track.albumId),
+                scrollToTrackId: track.id
+            )
+        }
+    }
+
+    private func pinnedItemCell(_ item: LibraryPinnedItem) -> some View {
+        LibraryHubGridCell(title: item.title, style: .pinned) {
+            pinnedItemArtwork(item)
+        }
+    }
+
+    @ViewBuilder
+    private func pinnedItemArtwork(_ item: LibraryPinnedItem) -> some View {
+        switch item {
+        case .playlist(let playlist) where playlist.id == "__favorite_songs__":
+            ZStack {
+                RoundedRectangle(cornerRadius: MusicDesign.gridAlbumCorner, style: .continuous)
+                    .fill(MusicDesign.accent.opacity(0.18))
+                Image(systemName: "star.fill")
+                    .font(.system(size: 32, weight: .semibold))
+                    .foregroundStyle(MusicDesign.accent)
+            }
+            .aspectRatio(1, contentMode: .fit)
+        default:
+            AlbumArtworkView(url: item.artworkURL, cornerRadius: MusicDesign.gridAlbumCorner)
         }
     }
 }
 
 /// Library → **Playlists** (favorite songs as a playlist; Jellyfin favorites sync with the server).
-private enum PlaylistFilter: String, CaseIterable {
+private enum PlaylistFilter: String, CaseIterable, Hashable {
     case all = "All Playlists"
     case favorites = "Favorites"
     case downloads = "Downloads"
 }
 
-private enum PlaylistSort: String, CaseIterable {
+private enum PlaylistSort: String, CaseIterable, Hashable {
     case title = "Title"
     case dateAdded = "Date Added"
     case lastPlayed = "Last Played"
@@ -492,18 +516,83 @@ private enum PlaylistSort: String, CaseIterable {
     case playlistType = "Playlist Type"
 }
 
-private enum PlaylistViewStyle { case list, grid }
+private enum PlaylistViewStyle: String {
+    case list
+    case grid
+}
+
+@MainActor
+private enum LibraryPlaylistDownloadIndexCache {
+    private static var cachedDownloadIds: Set<String> = []
+    private static var cachedPlaylistIds: Set<String> = []
+    private static var cachedMatchingPlaylistIds: Set<String> = []
+
+    static func invalidate() {
+        cachedDownloadIds = []
+        cachedPlaylistIds = []
+        cachedMatchingPlaylistIds = []
+    }
+
+    static func matchingPlaylistIds(
+        downloadedTrackIds: Set<String>,
+        playlists: [PlaylistSummary],
+        fetchRows: @escaping @Sendable (String) async throws -> [PlaylistRowItem]
+    ) async -> Set<String> {
+        let playlistIds = Set(playlists.map(\.id))
+        guard !downloadedTrackIds.isEmpty else {
+            invalidate()
+            return []
+        }
+        if downloadedTrackIds == cachedDownloadIds,
+           playlistIds == cachedPlaylistIds {
+            return cachedMatchingPlaylistIds
+        }
+
+        var matching = Set<String>()
+        await withTaskGroup(of: String?.self) { group in
+            for playlist in playlists {
+                let playlistId = playlist.id
+                group.addTask {
+                    guard let rows = try? await fetchRows(playlistId) else { return nil }
+                    return rows.contains(where: { downloadedTrackIds.contains($0.track.id) }) ? playlistId : nil
+                }
+            }
+            for await playlistId in group {
+                if let playlistId { matching.insert(playlistId) }
+            }
+        }
+        cachedDownloadIds = downloadedTrackIds
+        cachedPlaylistIds = playlistIds
+        cachedMatchingPlaylistIds = matching
+        return matching
+    }
+}
 
 struct LibraryPlaylistsView: View {
     @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var offline: OfflineDownloadManager
+
+    init(downloadsOnly: Bool = false) {
+        _filter = State(initialValue: downloadsOnly ? .downloads : .all)
+    }
 
     @State private var showNewPlaylistSheet = false
-    @State private var filter: PlaylistFilter = .all
-    @State private var sort: PlaylistSort = .title
-    @State private var viewStyle: PlaylistViewStyle = .list
+    @State private var filter: PlaylistFilter
+    @AppStorage("libraryPlaylistsSort") private var sortRaw: String = PlaylistSort.title.rawValue
+    @AppStorage("libraryPlaylistsViewStyle") private var viewStyleRaw: String = PlaylistViewStyle.list.rawValue
+    @State private var query = ""
     @AppStorage("favoritedPlaylistIds") private var favoritedRaw: String = ""
+    @State private var playlistIdsWithDownloads: Set<String> = []
 
-    private let gridColumns = [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)]
+    private var viewStyle: PlaylistViewStyle {
+        PlaylistViewStyle(rawValue: viewStyleRaw) ?? .list
+    }
+
+    private var sort: PlaylistSort {
+        PlaylistSort(rawValue: sortRaw) ?? .title
+    }
+
+    private let gridColumns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
     private let favoriteSongsId = "__favorite_songs__"
 
     private var favoritedIds: Set<String> {
@@ -516,12 +605,22 @@ struct LibraryPlaylistsView: View {
         favoritedRaw = ids.joined(separator: ",")
     }
 
-    private var favoriteSongsEntry: PlaylistSummary {
-        let count = app.favoriteTrackIds.count
+    private var favoriteSongCount: Int {
+        switch filter {
+        case .downloads:
+            return app.favoriteTrackIds.filter { app.offline.downloadedTrackIds.contains($0) }.count
+        case .all, .favorites:
+            return app.favoriteTrackIds.count
+        }
+    }
+
+    private var favoriteSongsEntry: PlaylistSummary? {
+        let count = favoriteSongCount
+        guard count > 0 else { return nil }
         return PlaylistSummary(
             id: favoriteSongsId,
             name: "Favorite Songs",
-            songCount: count > 0 ? count : nil,
+            songCount: count,
             artworkURL: nil
         )
     }
@@ -534,34 +633,66 @@ struct LibraryPlaylistsView: View {
         case .favorites:
             server = app.libraryPlaylists.filter { favoritedIds.contains($0.id) }
         case .downloads:
-            let cached = app.offline.downloadedTrackIds
-            server = app.libraryPlaylists.filter { playlist in
-                app.discoveryLibraryTracks.contains { cached.contains($0.id) && $0.albumId == playlist.id }
-            }
+            server = app.libraryPlaylists.filter { playlistIdsWithDownloads.contains($0.id) }
         }
-        let sorted: [PlaylistSummary]
+        let sorted = sortPlaylists(server)
+        if let favoriteSongsEntry {
+            return [favoriteSongsEntry] + sorted
+        }
+        return sorted
+    }
+
+    private var searchFilteredPlaylists: [PlaylistSummary] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return displayedPlaylists }
+        return displayedPlaylists.filter { $0.name.lowercased().contains(q) }
+    }
+
+    private func sortPlaylists(_ playlists: [PlaylistSummary]) -> [PlaylistSummary] {
         switch sort {
         case .title:
-            sorted = server.sorted(by: pinnedFirstThenTitle)
+            return playlists.sorted(by: pinnedFirstThenTitle)
+        case .dateAdded:
+            return playlists.sorted { lhs, rhs in
+                let ld = playlistDateAdded(lhs)
+                let rd = playlistDateAdded(rhs)
+                if ld != rd { return ld > rd }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+        case .updatedDate:
+            return playlists.sorted { lhs, rhs in
+                let ld = playlistUpdatedDate(lhs)
+                let rd = playlistUpdatedDate(rhs)
+                if ld != rd { return ld > rd }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+        case .lastPlayed:
+            return playlists.sorted { lhs, rhs in
+                let ld = app.playlistLastPlayedDate(forPlaylistId: lhs.id) ?? .distantPast
+                let rd = app.playlistLastPlayedDate(forPlaylistId: rhs.id) ?? .distantPast
+                if ld != rd { return ld > rd }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
         case .playlistType:
-            sorted = server.sorted { lhs, rhs in
-                let lhsPinned = favoritedIds.contains(lhs.id)
-                let rhsPinned = favoritedIds.contains(rhs.id)
-                if lhsPinned != rhsPinned { return lhsPinned && !rhsPinned }
+            return playlists.sorted { lhs, rhs in
                 let lp = lhs.isPublic ?? false
                 let rp = rhs.isPublic ?? false
                 if lp != rp { return lp && !rp }
                 return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
             }
-        default:
-            sorted = server.enumerated().sorted { lhs, rhs in
-                let lhsPinned = favoritedIds.contains(lhs.element.id)
-                let rhsPinned = favoritedIds.contains(rhs.element.id)
-                if lhsPinned != rhsPinned { return lhsPinned && !rhsPinned }
-                return lhs.offset < rhs.offset
-            }.map(\.element)
         }
-        return [favoriteSongsEntry] + sorted
+    }
+
+    /// Lyra library add date when known; otherwise server created.
+    private func playlistDateAdded(_ playlist: PlaylistSummary) -> Date {
+        if let entry = app.libraryPlaylistEntries.first(where: { $0.id == playlist.id }) {
+            return entry.added
+        }
+        return playlist.libraryAddedDate ?? .distantPast
+    }
+
+    private func playlistUpdatedDate(_ playlist: PlaylistSummary) -> Date {
+        playlist.serverUpdatedDate ?? playlist.libraryAddedDate ?? .distantPast
     }
 
     private func pinnedFirstThenTitle(_ lhs: PlaylistSummary, _ rhs: PlaylistSummary) -> Bool {
@@ -574,7 +705,7 @@ struct LibraryPlaylistsView: View {
     @ViewBuilder
     private func destination(for playlist: PlaylistSummary) -> some View {
         if playlist.id == favoriteSongsId {
-            FavoritePlaylistView()
+            FavoritePlaylistView(downloadsOnly: filter == .downloads)
         } else {
             ServerPlaylistDetailView(playlist: playlist)
         }
@@ -592,9 +723,12 @@ struct LibraryPlaylistsView: View {
                             : "Download songs from a playlist to see it here.")
                     )
                     .padding(.top, 40)
+                } else if searchFilteredPlaylists.isEmpty {
+                    ContentUnavailableView.search(text: query)
+                        .padding(.top, 40)
                 } else if viewStyle == .grid {
-                    LazyVGrid(columns: gridColumns, spacing: 20) {
-                        ForEach(displayedPlaylists) { playlist in
+                    LazyVGrid(columns: gridColumns, spacing: 16) {
+                        ForEach(searchFilteredPlaylists) { playlist in
                             NavigationLink { destination(for: playlist) } label: {
                                 gridCell(playlist)
                             }
@@ -603,99 +737,69 @@ struct LibraryPlaylistsView: View {
                         }
                     }
                     .padding(.horizontal, 20)
-                    .padding(.top, 16)
-                    .padding(.bottom, 24)
+                    .padding(.top, 8)
+                    .padding(.bottom, 16)
                 } else {
-                    ForEach(displayedPlaylists) { playlist in
-                        VStack(spacing: 0) {
-                            NavigationLink { destination(for: playlist) } label: {
-                                listRow(playlist)
-                            }
-                            .buttonStyle(.plain)
-                            .libraryPlaylistContextMenu(playlist)
-
-                            Divider()
-                                .background(MusicDesign.separator)
-                                .padding(.leading, 88)
+                    ForEach(Array(searchFilteredPlaylists.enumerated()), id: \.element.id) { index, playlist in
+                        NavigationLink { destination(for: playlist) } label: {
+                            listRow(playlist)
                         }
+                        .buttonStyle(.plain)
+                        .libraryPlaylistContextMenu(playlist)
+                        .musicChevronRowDivider(.playlistArtwork, shows: index < searchFilteredPlaylists.count - 1)
                     }
                 }
             }
         }
+        .scrollIndicators(.hidden)
         .background(MusicDesign.background)
-        .navigationTitle("Playlists")
-        .musicNavigationBarTitleDisplayMode(.inline)
-        .musicNavigationChrome()
-        .musicNavigationBarVisibleWhenPushed()
+        .musicLibrarySectionScreen(title: "Playlists")
         .toolbar {
             ToolbarItemGroup(placement: MusicToolbar.trailingItemPlacement) {
                 Button {
                     showNewPlaylistSheet = true
                 } label: {
-                    Image(systemName: "text.badge.plus")
-                        .foregroundStyle(.primary)
+                    MusicLibraryToolbarIcon(systemName: "text.badge.plus")
                 }
                 .accessibilityLabel("New playlist")
 
                 Menu {
-                    ForEach(PlaylistFilter.allCases, id: \.self) { f in
-                        Button {
-                            filter = f
-                        } label: {
-                            HStack {
-                                Text(f.rawValue)
-                                Spacer(minLength: 16)
-                                if filter == f { Image(systemName: "checkmark") }
-                            }
+                    Picker("Filter", selection: $filter) {
+                        ForEach(PlaylistFilter.allCases, id: \.self) { option in
+                            Text(option.rawValue).tag(option)
                         }
                     }
+                    .labelsHidden()
                 } label: {
-                    Image(systemName: "line.3.horizontal")
-                        .foregroundStyle(.primary)
+                    MusicLibraryToolbarIcon(systemName: "line.3.horizontal")
                 }
                 .menuOrder(.fixed)
 
                 Menu {
                     Section("View") {
-                        Button {
-                            viewStyle = .list
-                        } label: {
-                            HStack {
-                                Label("List", systemImage: "list.bullet")
-                                Spacer(minLength: 16)
-                                if viewStyle == .list { Image(systemName: "checkmark") }
-                            }
+                        Picker("View", selection: $viewStyleRaw) {
+                            Label("List", systemImage: "list.bullet")
+                                .tag(PlaylistViewStyle.list.rawValue)
+                            Label("Grid", systemImage: "square.grid.2x2")
+                                .tag(PlaylistViewStyle.grid.rawValue)
                         }
-                        Button {
-                            viewStyle = .grid
-                        } label: {
-                            HStack {
-                                Label("Grid", systemImage: "square.grid.2x2")
-                                Spacer(minLength: 16)
-                                if viewStyle == .grid { Image(systemName: "checkmark") }
-                            }
-                        }
+                        .labelsHidden()
                     }
                     Section("Sort By") {
-                        ForEach(PlaylistSort.allCases, id: \.self) { s in
-                            Button {
-                                sort = s
-                            } label: {
-                                HStack {
-                                    Text(s.rawValue)
-                                    Spacer(minLength: 16)
-                                    if sort == s { Image(systemName: "checkmark") }
-                                }
+                        Picker("Sort By", selection: $sortRaw) {
+                            ForEach(PlaylistSort.allCases, id: \.self) { option in
+                                Text(option.rawValue).tag(option.rawValue)
                             }
                         }
+                        .labelsHidden()
                     }
                 } label: {
-                    Image(systemName: "ellipsis")
-                        .foregroundStyle(.primary)
+                    MusicLibraryToolbarIcon(systemName: "ellipsis")
                 }
                 .menuOrder(.fixed)
             }
         }
+        .musicLibraryToolbarMonochromeControls()
         .sheet(isPresented: $showNewPlaylistSheet) {
             NewPlaylistNameSheet()
                 .environmentObject(app)
@@ -703,14 +807,43 @@ struct LibraryPlaylistsView: View {
                 .presentationDetents([.large])
 #endif
         }
+        .searchable(text: $query, placement: .automatic, prompt: Text("Playlists"))
+        .task(id: filter) {
+            await refreshPlaylistDownloadIndexIfNeeded()
+        }
+        .onChange(of: offline.downloadedTrackIds) { _, _ in
+            Task { await refreshPlaylistDownloadIndexIfNeeded() }
+        }
+        .onChange(of: app.libraryPlaylists.map(\.id)) { _, _ in
+            Task { await refreshPlaylistDownloadIndexIfNeeded() }
+        }
+        .onChange(of: app.libraryCatalogEpoch) { _, _ in
+            if filter == .downloads {
+                LibraryPlaylistDownloadIndexCache.invalidate()
+                Task { await refreshPlaylistDownloadIndexIfNeeded() }
+            }
+        }
         .task { await app.refreshLibraryPlaylists() }
         .refreshable { await app.refreshLibraryPlaylists() }
     }
 
+    private func refreshPlaylistDownloadIndexIfNeeded() async {
+        guard filter == .downloads else {
+            await MainActor.run { playlistIdsWithDownloads = [] }
+            return
+        }
+        let matching = await LibraryPlaylistDownloadIndexCache.matchingPlaylistIds(
+            downloadedTrackIds: offline.downloadedTrackIds,
+            playlists: app.libraryPlaylists,
+            fetchRows: { try await app.fetchPlaylistRows(playlistId: $0) }
+        )
+        await MainActor.run { playlistIdsWithDownloads = matching }
+    }
+
     private func listRow(_ playlist: PlaylistSummary) -> some View {
-        HStack(spacing: 16) {
+        HStack(spacing: 14) {
             playlistArtworkFixed(playlist, size: 52, cornerRadius: 8)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text(playlist.name)
                     .font(.body)
                     .foregroundStyle(.primary)
@@ -725,12 +858,10 @@ struct LibraryPlaylistsView: View {
                     .font(.caption)
                     .foregroundStyle(MusicDesign.accent)
             }
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(Color(white: 0.35))
+            MusicNavigationChevron()
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
+        .musicChevronRowPadding()
+        .padding(.vertical, 8)
         .contentShape(Rectangle())
     }
 
@@ -768,7 +899,7 @@ struct LibraryPlaylistsView: View {
     }
 
     private func gridCell(_ playlist: PlaylistSummary) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             playlistArtworkFill(playlist, cornerRadius: MusicDesign.gridAlbumCorner)
             Text(playlist.name)
                 .font(.subheadline.weight(.semibold))
@@ -787,16 +918,50 @@ struct LibraryPlaylistsView: View {
     }
 }
 
+/// White tile with a large accent ``star.fill`` for ``FavoritePlaylistView`` hero artwork.
+private struct FavoriteSongsHeroArtwork: View {
+    let side: CGFloat
+    let cornerRadius: CGFloat
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(Color.white)
+            .overlay {
+                Image(systemName: "star.fill")
+                    .font(.system(size: side * 0.42))
+                    .foregroundStyle(MusicDesign.accent)
+            }
+            .frame(width: side, height: side)
+    }
+}
+
 /// Tracks starred as favorites (``LibraryPlaylistsView`` → Favorite Songs).
 struct FavoritePlaylistView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var offline: OfflineDownloadManager
+    private let downloadsOnly: Bool
+
+    init(downloadsOnly: Bool = false) {
+        self.downloadsOnly = downloadsOnly
+    }
+
     @State private var tracks: [Track] = []
     @State private var isLoading = true
     @State private var loadError: String?
     @State private var searchText = ""
+    @State private var isDownloadingAll = false
+    private let backdropPalette: ArtworkDynamicGradient.BackdropPalette = .favoriteSongsHero
+    @State private var showDownloadedFavoritesActions = false
     @State private var navigateAlbum: AlbumSummary?
     @State private var trackPendingDownloadedDelete: Track?
+
+    private var displayTitle: String {
+        downloadsOnly ? "Downloaded Favorites" : "Favorite Songs"
+    }
+
+    private var isSearching: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     private var filtered: [Track] {
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -808,60 +973,69 @@ struct FavoritePlaylistView: View {
         }
     }
 
+    private var heroSubtitle: String? {
+        let count = tracks.count
+        guard count > 0 else { return nil }
+        var parts = ["\(count) song\(count == 1 ? "" : "s")"]
+        if !downloadsOnly {
+            parts.append("Synced with \(app.backendKind.title)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var heroArtSide: CGFloat {
+        let w: CGFloat = {
+#if os(iOS)
+            UIScreen.main.bounds.width
+#else
+            800
+#endif
+        }()
+        return min(max(w - 52, 260), 320)
+    }
+
+    private var allTracksCached: Bool {
+        !tracks.isEmpty && tracks.allSatisfy { app.offline.downloadedTrackIds.contains($0.id) }
+    }
+
     var body: some View {
-        List {
-            Section {
-                searchSection
+        ZStack(alignment: .top) {
+            AlbumHeroBackdropView(artworkURL: nil, palette: backdropPalette)
+
+            List {
+                Section {
+                    PlaylistHeroOrPillsHeader(
+                        hero: { heroBlock.padding(.top, 8).padding(.bottom, 22) },
+                        pills: {
+                            AlbumHeroPlayShuffleCluster(
+                                palette: backdropPalette,
+                                isDisabled: filtered.isEmpty,
+                                onPlay: { Task { await playAll() } },
+                                onShuffle: { Task { await shuffleAll() } }
+                            )
+                        }
+                    )
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 14, trailing: 20))
-
-                playShuffleRow
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 16, trailing: 20))
-            }
-
-            if isLoading, tracks.isEmpty {
-                ProgressView()
-                    .tint(MusicDesign.accent)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 40)
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-            } else if let loadError, tracks.isEmpty {
-                Text(loadError)
-                    .font(.subheadline)
-                    .foregroundStyle(MusicDesign.secondaryLabel)
-                    .padding(.horizontal, 20)
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-            } else if filtered.isEmpty {
-                ContentUnavailableView(
-                    "No favorite songs",
-                    systemImage: "star",
-                    description: Text(
-                        searchText.isEmpty
-                            ? "For Navidrome this matches Favourites (starred songs and albums). Jellyfin uses audio favorites."
-                            : "Nothing matches your search."
-                    )
-                )
-                .padding(.top, 32)
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
-            } else {
-                ForEach(Array(filtered.enumerated()), id: \.element.id) { index, track in
-                    songRow(track, showsBottomDivider: index < filtered.count - 1)
                 }
+
+                trackListRows
             }
+            .listStyle(.plain)
+            .listSectionSpacing(0)
+            .listRowSpacing(5)
+            .modifier(AlbumDetailListContentMargins(isAlbum: true))
+            .scrollContentBackground(.hidden)
+            .background(Color.clear)
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .background(MusicDesign.background)
-        .navigationTitle("Favorite Songs")
-        .musicNavigationBarTitleDisplayMode(.large)
-        .musicNavigationChrome()
+        .navigationTitle("")
+        .musicNavigationBarTitleDisplayMode(.inline)
+        .musicFavoriteSongsNavigationChrome()
         .musicNavigationBarVisibleWhenPushed()
+        .musicLibraryToolbarMonochromeControls()
+        .searchable(text: $searchText, placement: .automatic, prompt: Text("Songs"))
+        .toolbar { favoriteDetailToolbar }
         .navigationDestination(item: $navigateAlbum) { album in
             ServerPlaylistDetailView(album: album, librarySource: true)
         }
@@ -877,30 +1051,203 @@ struct FavoritePlaylistView: View {
                 Task { await load() }
                 return
             }
-            tracks = tracks.filter { newIds.contains($0.id) }
+            tracks = scopedTracks(tracks.filter { newIds.contains($0.id) })
         }
+        .onChange(of: app.offline.downloadedTrackIds) { _, _ in
+            guard downloadsOnly, !tracks.isEmpty else { return }
+            tracks = scopedTracks(tracks)
+        }
+        .modifier(DownloadedAlbumActionPresentation(
+            isPresented: $showDownloadedFavoritesActions,
+            onRemoveDownload: { removeAllFavoritesOfflineDownloads() },
+            onDeleteFromLibrary: { Task { await removeAllFavoritesFromLibraryAndOffline() } },
+        ))
         .downloadedTrackDeleteSheet(
             track: $trackPendingDownloadedDelete,
             app: app,
             offline: offline
         )
+        .preferredColorScheme(.light)
     }
 
-    private var searchSection: some View {
-        LibrarySearchPill(prompt: "Search", text: $searchText)
+    @ToolbarContentBuilder
+    private var favoriteDetailToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: MusicToolbar.trailingItemPlacement) {
+            Menu {
+                if !allTracksCached {
+                    ControlGroup {
+                        Button {
+                            Task { await downloadAllTracks() }
+                        } label: {
+                            Label("Download All", systemImage: "arrow.down.circle")
+                        }
+                        .disabled(filtered.isEmpty || isDownloadingAll)
+                    }
+                    .tint(Color.primary)
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .foregroundStyle(.primary)
+            }
+            .menuOrder(.fixed)
+        }
     }
 
-    private var playShuffleRow: some View {
-        LibraryPlayShuffleRow(
-            isDisabled: filtered.isEmpty,
-            onPlay: { Task { await playAll() } },
-            onShuffle: { Task { await shuffleAll() } },
-        )
+    private var heroBlock: some View {
+        VStack(spacing: 18) {
+            FavoriteSongsHeroArtwork(side: heroArtSide, cornerRadius: 14)
+                .shadow(color: .black.opacity(0.45), radius: 24, y: 14)
+
+            VStack(spacing: 6) {
+                Text(displayTitle)
+                    .font(.system(size: 26, weight: .bold))
+                    .foregroundStyle(backdropPalette.heroChromePrimary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 16)
+
+                if let heroSubtitle {
+                    Text(heroSubtitle)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(backdropPalette.heroChromeSecondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 20)
+                }
+            }
+
+            actionButtonTriplet
+                .padding(.top, 6)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var actionButtonTriplet: some View {
+        HStack(spacing: 12) {
+            Spacer(minLength: 0)
+
+            Button {
+                Task { await shuffleAll() }
+            } label: {
+                Image(systemName: "shuffle")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(backdropPalette.heroGlassIcon)
+                    .frame(width: 54, height: 54)
+                    .background(Circle().fill(backdropPalette.heroGlassCircleFill))
+            }
+            .buttonStyle(.plain)
+            .disabled(filtered.isEmpty)
+
+            Button {
+                Task { await playAll() }
+            } label: {
+                HStack(spacing: MusicDesign.albumHeroPlayLabelSpacing) {
+                    Image(systemName: "play.fill")
+                    Text("Play")
+                }
+                .font(.headline.weight(.bold))
+                .foregroundStyle(backdropPalette.heroPlayCapsuleForeground)
+                .frame(width: MusicDesign.albumHeroPrimaryCapsuleWidth, height: 54)
+                .background(Capsule().fill(backdropPalette.heroPlayCapsuleBackground))
+            }
+            .buttonStyle(.plain)
+            .disabled(filtered.isEmpty)
+
+            primaryActionButton
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 22)
+    }
+
+    @ViewBuilder
+    private var primaryActionButton: some View {
+        if allTracksCached {
+            Button {
+                showDownloadedFavoritesActions = true
+            } label: {
+                Image(systemName: "checkmark")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(backdropPalette.heroGlassIcon)
+                    .frame(width: 54, height: 54)
+                    .background(Circle().fill(backdropPalette.heroGlassCircleFill))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Manage downloads")
+        } else {
+            Button {
+                Task { await downloadAllTracks() }
+            } label: {
+                Group {
+                    if isDownloadingAll {
+                        ProgressView()
+                            .tint(backdropPalette.heroGlassIcon)
+                            .scaleEffect(0.85)
+                    } else {
+                        Image(systemName: "arrow.down")
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(
+                                tracks.isEmpty ? backdropPalette.heroGlassIcon.opacity(0.35) : backdropPalette.heroGlassIcon
+                            )
+                    }
+                }
+                .frame(width: 54, height: 54)
+                .background(Circle().fill(backdropPalette.heroGlassCircleFill))
+            }
+            .buttonStyle(.plain)
+            .disabled(filtered.isEmpty || isDownloadingAll)
+            .accessibilityLabel("Download")
+        }
+    }
+
+    @ViewBuilder
+    private var trackListRows: some View {
+        if isLoading, tracks.isEmpty {
+            ProgressView()
+                .tint(backdropPalette.heroAccent)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 40)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+        } else if let loadError, tracks.isEmpty {
+            Text(loadError)
+                .font(.subheadline)
+                .foregroundStyle(backdropPalette.heroChromeSecondary)
+                .padding(.horizontal, 22)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+        } else if filtered.isEmpty {
+            if isSearching, !tracks.isEmpty {
+                ContentUnavailableView.search(text: searchText)
+                    .padding(.top, 32)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            } else {
+                Text(emptyStateMessage)
+                    .font(.subheadline)
+                    .foregroundStyle(backdropPalette.heroChromeSecondary.opacity(0.9))
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 20)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            }
+        } else {
+            ForEach(Array(filtered.enumerated()), id: \.element.id) { index, track in
+                songRow(track, showsBottomDivider: index < filtered.count - 1)
+                    .favoriteSongsListRowStyle()
+            }
+        }
+    }
+
+    private var emptyStateMessage: String {
+        if downloadsOnly {
+            return "Favorite songs you have saved for offline playback will appear here."
+        }
+        return "Star songs from the ··· menu or Now Playing. Favorites sync with \(app.backendKind.title)."
     }
 
     private func songRow(_ track: Track, showsBottomDivider: Bool) -> some View {
         LibrarySongRow(
             track: track,
+            artworkURL: app.resolvedArtworkURL(for: track),
             itemSize: app.songListItemSize,
             isFavorite: app.favoriteTrackIds.contains(track.id),
             isNowPlaying: app.nowPlayingTrackId == track.id,
@@ -914,8 +1261,17 @@ struct FavoritePlaylistView: View {
                 Task {
                     guard let lib = app.activeLibrary else { return }
                     try? await app.player.playNext(library: lib, track: track)
+                    await MainActor.run { app.showTransientToast("Playing Next") }
                 }
             },
+            onAddToQueue: {
+                Task {
+                    guard let lib = app.activeLibrary else { return }
+                    try? await app.player.addToQueue(library: lib, track: track)
+                    await MainActor.run { app.showTransientToast("Added to Queue") }
+                }
+            },
+            hasActiveQueue: app.hasActivePlaybackQueue,
             onGoToAlbum: { navigateAlbum = app.albumSummary(for: track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
             onRemoveFromLibrary: app.isSongInLibrary(track.id)
@@ -924,13 +1280,14 @@ struct FavoritePlaylistView: View {
             canDeleteFromLibrary: app.canDeleteFromLibrary,
             onRemoveDownload: app.offline.downloadedTrackIds.contains(track.id)
                 ? { try? app.offline.remove(trackId: track.id) } : nil,
+            rowBackgroundFill: .white,
             showsBottomDivider: showsBottomDivider,
+            rowLabelPalette: backdropPalette,
             onPresentDownloadedDeleteSheet: {
                 trackPendingDownloadedDelete = track
             }
         )
         .equatable()
-        .librarySongListRowStyle()
     }
 
     private func cacheOffline(track: Track) async {
@@ -945,6 +1302,11 @@ struct FavoritePlaylistView: View {
         }
     }
 
+    private func scopedTracks(_ loaded: [Track]) -> [Track] {
+        guard downloadsOnly else { return loaded }
+        return loaded.filter { app.offline.downloadedTrackIds.contains($0.id) }
+    }
+
     private func load() async {
         guard app.isSignedIn else {
             loadError = "Sign in to see favorites."
@@ -955,10 +1317,34 @@ struct FavoritePlaylistView: View {
         loadError = nil
         defer { isLoading = false }
         do {
-            tracks = try await app.favoritePlaylistTracks()
+            let loaded = try await app.favoritePlaylistTracks()
+            tracks = scopedTracks(loaded)
         } catch {
             loadError = error.localizedDescription
             tracks = []
+        }
+    }
+
+    private func removeAllFavoritesOfflineDownloads() {
+        app.removeOfflineDownloads(trackIds: tracks.map(\.id))
+    }
+
+    private func removeAllFavoritesFromLibraryAndOffline() async {
+        app.removeOfflineDownloads(trackIds: tracks.map(\.id))
+        for track in tracks where app.isSongInLibrary(track.id) {
+            await app.removeSongFromLibrary(track)
+        }
+    }
+
+    private func downloadAllTracks() async {
+        guard let lib = app.activeLibrary, !filtered.isEmpty else { return }
+        isDownloadingAll = true
+        defer { isDownloadingAll = false }
+        for track in filtered where !app.offline.downloadedTrackIds.contains(track.id) {
+            do {
+                let url = try lib.offlineDownloadURL(for: track)
+                try await app.offline.cache(track: track, remote: url, headers: lib.httpHeadersForMediaRequests())
+            } catch {}
         }
     }
 
@@ -969,8 +1355,7 @@ struct FavoritePlaylistView: View {
 
     private func shuffleAll() async {
         guard let lib = app.activeLibrary, !filtered.isEmpty else { return }
-        let shuffled = filtered.shuffled()
-        try? await app.player.playAlbum(library: lib, tracks: shuffled, startIndex: 0)
+        try? await app.player.playAlbumShuffled(library: lib, tracks: filtered)
     }
 
     private func play(track: Track) async {
@@ -1049,139 +1434,199 @@ private struct EditLibrarySectionsSheet: View {
 
 // MARK: - Downloaded
 
+private enum DownloadedLibrarySection: String, CaseIterable, Identifiable {
+    case playlists
+    case artists
+    case albums
+    case songs
+    case genres
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .playlists: return "Playlists"
+        case .artists: return "Artists"
+        case .albums: return "Albums"
+        case .songs: return "Songs"
+        case .genres: return "Genres"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .playlists: return "music.note.list"
+        case .artists: return "mic"
+        case .albums: return "square.stack.fill"
+        case .songs: return "music.note"
+        case .genres: return "paintbrush.pointed.fill"
+        }
+    }
+}
+
+/// Library → **Downloaded** hub: category rows + Recently Downloaded grid.
 struct LibraryDownloadedView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var offline: OfflineDownloadManager
-    @State private var searchText = ""
-    @State private var navigateAlbum: AlbumSummary?
-    @State private var navigateAlbumScrollToTrackId: String?
-    @State private var trackPendingDownloadedDelete: Track?
     @State private var backfillDebounceTask: Task<Void, Never>?
+    @State private var recentlyDownloadedAlbums: [AlbumSummary] = []
+    @State private var isRefreshingRecents = false
 
-    private let albumColumns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
-
-    private var downloadedTracks: [Track] {
-        app.tracksForDownloadedLibrary()
-    }
-
-    private var filtered: [Track] {
-        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !q.isEmpty else { return downloadedTracks }
-        return downloadedTracks.filter {
-            $0.title.lowercased().contains(q)
-                || $0.artist.lowercased().contains(q)
-                || $0.albumTitle.lowercased().contains(q)
-        }
-    }
-
-    private var downloadedAlbums: [AlbumSummary] {
-        var seen = Set<String>()
-        var albums: [AlbumSummary] = []
-        for track in filtered {
-            if !seen.contains(track.albumId) {
-                seen.insert(track.albumId)
-                albums.append(resolvedAlbumSummary(for: track))
-            }
-        }
-        return albums.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-    }
+    private let recentColumns = MusicDesign.libraryHubGridColumns(count: 2)
 
     var body: some View {
-        List {
-            if downloadedTracks.isEmpty {
-                ContentUnavailableView(
-                    app.offline.downloadedTrackIds.isEmpty ? "No Downloads" : "Loading Downloads",
-                    systemImage: "arrow.down.circle",
-                    description: Text(
-                        app.offline.downloadedTrackIds.isEmpty
-                            ? "Swipe a library song right-to-left and tap Download to save it for offline playback."
-                            : "Open the app once while online to refresh download metadata, or sync your library."
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(DownloadedLibrarySection.allCases.enumerated()), id: \.element.id) { index, section in
+                    downloadedSectionLink(
+                        section,
+                        showsDivider: showsDownloadedHubRowDivider(at: index, section: section)
                     )
-                )
-                .padding(.top, 48)
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
-            } else {
-                Section {
-                    searchBar
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
-                        .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 14, trailing: 20))
-
-                    playShuffleRow
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
-                        .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 20, trailing: 20))
                 }
 
-                if !downloadedAlbums.isEmpty {
-                    Section {
-                        LazyVGrid(columns: albumColumns, spacing: 16) {
-                            ForEach(downloadedAlbums) { album in
-                                Button {
-                                    openDownloadedAlbum(album)
-                                } label: {
-                                    albumCell(album)
-                                }
-                                .buttonStyle(.plain)
-                                .libraryAlbumContextMenu(album)
-                            }
-                        }
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
-                        .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 24, trailing: 20))
-                    } header: {
-                        sectionLabel("Albums")
-                    }
-                }
+                Text("Recently Downloaded")
+                    .font(.title2.bold())
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 28)
+                    .padding(.bottom, 14)
 
-                if filtered.isEmpty {
-                    ContentUnavailableView("No Results", systemImage: "magnifyingglass")
-                        .padding(.top, 32)
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
-                } else {
-                    Section {
-                        ForEach(Array(filtered.enumerated()), id: \.element.id) { index, track in
-                            songRow(track, showsBottomDivider: index < filtered.count - 1)
-                        }
-                    } header: {
-                        sectionLabel("Songs")
-                    }
-                }
+                recentlyDownloadedBody
             }
+            .padding(.bottom, 24)
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
+        .scrollIndicators(.hidden)
         .background(MusicDesign.background)
-        .navigationTitle("Downloaded")
-        .musicNavigationBarTitleDisplayMode(.large)
-        .musicNavigationChrome()
-        .musicNavigationBarVisibleWhenPushed()
-        .navigationDestination(item: $navigateAlbum) { album in
-            ServerPlaylistDetailView(
-                album: album,
-                librarySource: true,
-                scrollToTrackId: navigateAlbumScrollToTrackId
-            )
-        }
-        .onChange(of: navigateAlbum?.id) { _, albumId in
-            if albumId == nil {
-                navigateAlbumScrollToTrackId = nil
-            }
-        }
-        .onAppear {
-            app.offline.backfillRecordsIfMissing(knownTracks: app.discoveryLibraryTracks)
-            app.offline.reloadDownloadedTrackIdsFromManifest()
+        .musicLibrarySectionScreen(title: "Downloaded")
+        .task {
+            await refreshDownloadedContent()
         }
         .onChange(of: offline.downloadedTrackIds) { _, _ in
             scheduleDownloadedBackfill()
         }
-        .downloadedTrackDeleteSheet(
-            track: $trackPendingDownloadedDelete,
-            app: app,
-            offline: offline
-        )
+    }
+
+    /// Inset divider between category rows; **Genres** always gets one before Recently Downloaded.
+    private func showsDownloadedHubRowDivider(at index: Int, section: DownloadedLibrarySection) -> Bool {
+        if section == .genres { return true }
+        return index < DownloadedLibrarySection.allCases.count - 1
+    }
+
+    @ViewBuilder
+    private func downloadedSectionLink(_ section: DownloadedLibrarySection, showsDivider: Bool) -> some View {
+        VStack(spacing: 0) {
+            Group {
+            switch section {
+            case .playlists:
+                NavigationLink {
+                    LibraryPlaylistsView(downloadsOnly: true)
+                } label: {
+                    downloadedSectionLabel(section)
+                }
+                .buttonStyle(.plain)
+            case .artists:
+                NavigationLink {
+                    LibraryArtistsView(downloadsOnly: true)
+                } label: {
+                    downloadedSectionLabel(section)
+                }
+                .buttonStyle(.plain)
+            case .albums:
+                NavigationLink {
+                    AlbumsGridView(scope: .downloads)
+                } label: {
+                    downloadedSectionLabel(section)
+                }
+                .buttonStyle(.plain)
+            case .songs:
+                NavigationLink {
+                    LibrarySongsView(downloadsOnly: true)
+                } label: {
+                    downloadedSectionLabel(section)
+                }
+                .buttonStyle(.plain)
+            case .genres:
+                NavigationLink {
+                    LibraryGenresView(downloadsOnly: true)
+                } label: {
+                    downloadedSectionLabel(section)
+                }
+                .buttonStyle(.plain)
+            }
+            }
+            .musicChevronRowDivider(.symbolIcon, shows: showsDivider)
+        }
+    }
+
+    private func downloadedSectionLabel(_ section: DownloadedLibrarySection) -> some View {
+        HStack(spacing: 16) {
+            Image(systemName: section.symbol)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(MusicDesign.accent)
+                .frame(width: 28, alignment: .center)
+            Text(section.title)
+                .font(.body)
+                .foregroundStyle(.primary)
+            Spacer()
+            MusicNavigationChevron()
+        }
+        .musicChevronRowPadding()
+        .padding(.vertical, 14)
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private var recentlyDownloadedBody: some View {
+        if isRefreshingRecents, recentlyDownloadedAlbums.isEmpty, !offline.downloadedTrackIds.isEmpty {
+            ProgressView()
+                .tint(MusicDesign.accent)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 24)
+        } else if recentlyDownloadedAlbums.isEmpty {
+            recentlyDownloadedEmptyState
+        } else {
+            LazyVGrid(columns: recentColumns, spacing: 20) {
+                ForEach(recentlyDownloadedAlbums) { album in
+                    NavigationLink {
+                        ServerPlaylistDetailView(album: album, librarySource: true)
+                    } label: {
+                        recentlyDownloadedCell(album)
+                    }
+                    .buttonStyle(.plain)
+                    .libraryAlbumContextMenu(album)
+                }
+            }
+            .padding(.horizontal, 20)
+        }
+    }
+
+    private var recentlyDownloadedEmptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "arrow.down.circle")
+                .font(.system(size: 36, weight: .light))
+                .foregroundStyle(MusicDesign.secondaryLabel)
+                .padding(.bottom, 4)
+            Text(offline.downloadedTrackIds.isEmpty ? "No Downloads Yet" : "Nothing to Show")
+                .font(.headline)
+                .foregroundStyle(.primary)
+            Text(
+                offline.downloadedTrackIds.isEmpty
+                    ? "Swipe a library song right-to-left and tap Download to save it for offline playback."
+                    : "Open the app once while online to refresh download metadata."
+            )
+            .font(.subheadline)
+            .foregroundStyle(MusicDesign.secondaryLabel)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 32)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 28)
+    }
+
+    private func recentlyDownloadedCell(_ album: AlbumSummary) -> some View {
+        LibraryHubGridCell(title: album.title, subtitle: album.artist) {
+            AlbumArtworkView(url: app.resolvedArtworkURL(for: album), cornerRadius: MusicDesign.gridAlbumCorner)
+        }
     }
 
     private func scheduleDownloadedBackfill() {
@@ -1189,133 +1634,21 @@ struct LibraryDownloadedView: View {
         backfillDebounceTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
-            app.offline.backfillRecordsIfMissing(knownTracks: app.discoveryLibraryTracks)
+            await refreshDownloadedContent()
         }
     }
 
-    private func sectionLabel(_ title: String) -> some View {
-        Text(title)
-            .font(.title2.bold())
-            .foregroundStyle(.primary)
-            .textCase(nil)
-            .padding(.bottom, 4)
-    }
-
-    private var searchBar: some View {
-        LibrarySearchPill(prompt: "Search downloads", text: $searchText, showsMic: false)
-    }
-
-    private var playShuffleRow: some View {
-        LibraryPlayShuffleRow(
-            isDisabled: filtered.isEmpty,
-            onPlay: { Task { await playAll() } },
-            onShuffle: { Task { await shuffleAll() } },
-        )
-    }
-
-    private func openDownloadedAlbum(_ album: AlbumSummary, scrollToTrackId: String? = nil) {
-        navigateAlbumScrollToTrackId = scrollToTrackId
-        navigateAlbum = album
-    }
-
-    private func isTrackOfflineOnDevice(_ track: Track) -> Bool {
-        app.offline.downloadedTrackIds.contains(track.id)
-            && app.offline.localFile(for: track.id) != nil
-    }
-
-    private func albumCell(_ album: AlbumSummary) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            AlbumArtworkView(url: app.resolvedArtworkURL(for: album), cornerRadius: MusicDesign.gridAlbumCorner)
-            Text(album.title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(2)
-            Text(album.artist)
-                .font(.caption)
-                .foregroundStyle(MusicDesign.secondaryLabel)
-                .lineLimit(1)
+    @MainActor
+    private func refreshDownloadedContent() async {
+        isRefreshingRecents = true
+        defer { isRefreshingRecents = false }
+        let ids = app.offline.downloadedTrackIds
+        if !ids.isEmpty {
+            let known = ids.compactMap { app.discoveryTrackById[$0] }
+            app.offline.backfillRecordsIfMissing(knownTracks: known)
+            app.offline.reloadDownloadedTrackIdsFromManifest()
         }
-    }
-
-    private func songRow(_ track: Track, showsBottomDivider: Bool) -> some View {
-        LibrarySongRow(
-            track: track,
-            artworkURL: app.resolvedArtworkURL(for: track),
-            itemSize: app.songListItemSize,
-            isFavorite: app.favoriteTrackIds.contains(track.id),
-            isNowPlaying: app.nowPlayingTrackId == track.id,
-            offlineDownload: offline.activeDownloads[track.id],
-            isOfflineCached: isTrackOfflineOnDevice(track),
-            onPlay: { Task { await play(track: track) } },
-            onDownload: {},
-            onCancelOfflineDownload: {},
-            onFavorite: { app.toggleFavoriteTrack(id: track.id) },
-            onPlayNext: {
-                Task {
-                    try? await app.player.playNext(library: app.activeLibrary, track: track)
-                }
-            },
-            onGoToAlbum: {
-                openDownloadedAlbum(resolvedAlbumSummary(for: track), scrollToTrackId: track.id)
-            },
-            onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
-            onRemoveFromLibrary: app.isSongInLibrary(track.id)
-                ? { Task { await app.removeSongFromLibrary(track) } } : nil,
-            onDeleteFromLibrary: { app.beginLibraryTrackDeletion(track) },
-            canDeleteFromLibrary: app.canDeleteFromLibrary,
-            onRemoveDownload: { try? app.offline.remove(trackId: track.id) },
-            isInLibrary: app.isSongInLibrary(track.id),
-            showsBottomDivider: showsBottomDivider,
-            onPresentDownloadedDeleteSheet: {
-                trackPendingDownloadedDelete = track
-            }
-        )
-        .equatable()
-        .librarySongListRowStyle()
-    }
-
-    private func resolvedAlbumSummary(for track: Track) -> AlbumSummary {
-        if let cached = app.libraryAlbums.first(where: { $0.id == track.albumId }) {
-            var album = cached
-            if let art = app.resolvedArtworkURL(for: cached) {
-                album = AlbumSummary(
-                    id: album.id,
-                    title: album.title,
-                    artist: album.artist,
-                    artworkURL: art,
-                    trackCount: album.trackCount,
-                    libraryAddedDate: album.libraryAddedDate,
-                    genres: album.genres,
-                    releaseYear: album.releaseYear,
-                )
-            }
-            return album
-        }
-        return AlbumSummary(
-            id: track.albumId,
-            title: track.albumTitle.isEmpty ? "Album" : track.albumTitle,
-            artist: track.artist,
-            artworkURL: app.resolvedArtworkURL(for: track),
-            trackCount: nil,
-            libraryAddedDate: nil,
-            genres: track.genres,
-            releaseYear: track.releaseYear
-        )
-    }
-
-    private func play(track: Track) async {
-        guard let idx = filtered.firstIndex(where: { $0.id == track.id }) else { return }
-        try? await app.player.playAlbum(library: app.activeLibrary, tracks: filtered, startIndex: idx)
-    }
-
-    private func playAll() async {
-        guard !filtered.isEmpty else { return }
-        try? await app.player.playAlbum(library: app.activeLibrary, tracks: filtered, startIndex: 0)
-    }
-
-    private func shuffleAll() async {
-        guard !filtered.isEmpty else { return }
-        try? await app.player.playAlbum(library: app.activeLibrary, tracks: filtered.shuffled(), startIndex: 0)
+        recentlyDownloadedAlbums = offline.recentlyDownloadedAlbums(limit: 60)
     }
 }
 
@@ -1342,10 +1675,43 @@ struct LibraryPlaceholderView: View {
     }
 }
 
+enum AlbumsGridScope {
+    case library
+    case downloads
+}
+
+private enum LibraryAlbumLibraryFilter: String, CaseIterable {
+    case allAlbums
+    case downloads
+}
+
+private enum LibraryAlbumSort: String {
+    case title
+    case dateAdded
+    case artist
+}
+
 /// Full album grid (Music-style square art + two-line captions).
 struct AlbumsGridView: View {
     @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var offline: OfflineDownloadManager
+    private let scope: AlbumsGridScope
     @State private var showLoadError = false
+    @State private var query = ""
+    @State private var scrubberSelectedLetter: String?
+    @State private var lastScrubbedLetter: String?
+    @State private var libraryFilter: LibraryAlbumLibraryFilter
+    @State private var sort = LibraryAlbumSort.title
+    @State private var displayedSearchAlbums: [AlbumSummary] = []
+    @State private var displayedAlbumSections: [LibraryAlbumGridSection] = []
+    @State private var displayedScrubberLetters: [String] = []
+    @State private var displayedBaseAlbumCount = 0
+    @State private var showsDisplayedAlbumSections = true
+
+    init(scope: AlbumsGridScope = .library) {
+        self.scope = scope
+        _libraryFilter = State(initialValue: scope == .downloads ? .downloads : .allAlbums)
+    }
 
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: MusicDesign.gridMinCell), spacing: 16, alignment: .top)]
@@ -1363,62 +1729,416 @@ struct AlbumsGridView: View {
             }
     }
 
-    var body: some View {
-        ScrollView {
-            if libraryAlbums.isEmpty, app.libraryAlbumsLoadError == nil, !app.libraryAlbumEntries.isEmpty {
-                // Catalog hasn't caught up to membership yet — wait for the bootstrap merge.
-                ProgressView()
-                    .tint(MusicDesign.accent)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 80)
-            } else if libraryAlbums.isEmpty {
-                ContentUnavailableView(
-                    "No Albums in Library",
-                    systemImage: "square.stack",
-                    description: Text("Long-press an album and tap Add to Library to start your collection.")
-                )
-                .padding(.top, 60)
+    private var downloadedAlbums: [AlbumSummary] {
+        offline.cachedAlbums()
+    }
+
+    private var baseAlbums: [AlbumSummary] {
+        switch scope {
+        case .downloads:
+            return downloadedAlbums
+        case .library:
+            switch libraryFilter {
+            case .allAlbums:
+                return libraryAlbums
+            case .downloads:
+                let downloadedIds = Set(downloadedAlbums.map(\.id))
+                return libraryAlbums.filter { downloadedIds.contains($0.id) }
+            }
+        }
+    }
+
+    private var isSearching: Bool {
+        !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func recomputeAlbumDisplay() {
+        let base = baseAlbums
+        displayedBaseAlbumCount = base.count
+
+        let sorted: [AlbumSummary]
+        switch sort {
+        case .title:
+            sorted = base.sorted {
+                $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+            }
+        case .dateAdded:
+            let entriesById = Dictionary(uniqueKeysWithValues: app.libraryAlbumEntries.map { ($0.id, $0.added) })
+            sorted = base.sorted { lhs, rhs in
+                (entriesById[lhs.id] ?? .distantPast) > (entriesById[rhs.id] ?? .distantPast)
+            }
+        case .artist:
+            sorted = base.sorted { lhs, rhs in
+                let cmpArtist = lhs.artist.localizedCaseInsensitiveCompare(rhs.artist)
+                if cmpArtist != .orderedSame { return cmpArtist == .orderedAscending }
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+        }
+
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if q.isEmpty {
+            displayedSearchAlbums = sorted
+        } else {
+            displayedSearchAlbums = sorted.filter {
+                $0.title.lowercased().contains(q) || $0.artist.lowercased().contains(q)
+            }
+        }
+
+        let sectioned = !isSearching && (sort == .title || sort == .artist)
+        showsDisplayedAlbumSections = sectioned
+        guard sectioned else {
+            displayedAlbumSections = []
+            displayedScrubberLetters = []
+            return
+        }
+
+        let sectionLetter: (AlbumSummary) -> String = { album in
+            switch sort {
+            case .title:
+                return LibraryAlphabetIndex.sectionLetter(for: album.title)
+            case .artist:
+                return LibraryAlphabetIndex.sectionLetter(for: album.artist)
+            case .dateAdded:
+                return LibraryAlphabetIndex.sectionLetter(for: album.title)
+            }
+        }
+        displayedAlbumSections = LibraryAlphabetIndex.groupedSections(sorted, letter: sectionLetter)
+            .map { LibraryAlbumGridSection(id: $0.id, albums: $0.items) }
+        displayedScrubberLetters = displayedAlbumSections.map(\.id)
+    }
+
+    private var emptyTitle: String {
+        if scope == .downloads || libraryFilter == .downloads {
+            return "No Downloaded Albums"
+        }
+        return "No Albums in Library"
+    }
+
+    private var emptyDescription: String {
+        if scope == .downloads || libraryFilter == .downloads {
+            return "Albums with offline downloads will appear here."
+        }
+        return "Long-press an album and tap Add to Library to start your collection."
+    }
+
+    private func scrollToSection(_ letter: String, proxy: ScrollViewProxy) {
+        guard displayedScrubberLetters.contains(letter) else { return }
+        guard letter != lastScrubbedLetter else { return }
+        lastScrubbedLetter = letter
+        var highlight = Transaction()
+        highlight.disablesAnimations = true
+        withTransaction(highlight) {
+            scrubberSelectedLetter = letter
+        }
+        #if canImport(UIKit)
+        UISelectionFeedbackGenerator().selectionChanged()
+        #endif
+        var scroll = Transaction()
+        scroll.disablesAnimations = true
+        withTransaction(scroll) {
+            proxy.scrollTo(LibraryAlphabetIndex.albumScrollSectionID(letter), anchor: .top)
+        }
+    }
+
+    private func endScrubbing() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            lastScrubbedLetter = nil
+            scrubberSelectedLetter = nil
+        }
+    }
+
+    private var playShuffleRow: some View {
+        LibraryPlayShuffleRow(
+            isDisabled: displayedSearchAlbums.isEmpty,
+            onPlay: { Task { await playAll() } },
+            onShuffle: { Task { await shuffleAll() } }
+        )
+    }
+
+    private func tracksForPlayback(from albums: [AlbumSummary]) -> [Track] {
+        guard !albums.isEmpty else { return [] }
+
+        if scope == .downloads || libraryFilter == .downloads {
+            let albumIds = Set(albums.map(\.id))
+            let tracks = app.tracksForDownloadedLibrary().filter { albumIds.contains($0.albumId) }
+            return tracksGroupedByAlbumOrder(albums: albums, tracks: tracks)
+        }
+
+        let albumIds = Set(albums.map(\.id))
+        var tracks = app.discoveryLibraryTracks.filter {
+            albumIds.contains($0.albumId) && app.librarySongIds.contains($0.id)
+        }
+        var seen = Set(tracks.map(\.id))
+        for track in app.offline.cachedTracks() where albumIds.contains(track.albumId)
+            && app.librarySongIds.contains(track.id)
+            && seen.insert(track.id).inserted {
+            tracks.append(track)
+        }
+        return tracksGroupedByAlbumOrder(albums: albums, tracks: tracks)
+    }
+
+    private func tracksGroupedByAlbumOrder(albums: [AlbumSummary], tracks: [Track]) -> [Track] {
+        let byAlbum = Dictionary(grouping: tracks, by: \.albumId)
+        var result: [Track] = []
+        result.reserveCapacity(tracks.count)
+        for album in albums {
+            let albumTracks = (byAlbum[album.id] ?? []).sorted {
+                if $0.discNumber != $1.discNumber { return $0.discNumber < $1.discNumber }
+                return $0.indexNumber < $1.indexNumber
+            }
+            result.append(contentsOf: albumTracks)
+        }
+        return result
+    }
+
+    private func resolveTracksForPlayback() async -> [Track] {
+        let albums = displayedSearchAlbums
+        let cached = tracksForPlayback(from: albums)
+        if !cached.isEmpty { return cached }
+        guard let lib = app.activeLibrary else { return [] }
+
+        var result: [Track] = []
+        for album in albums {
+            guard let fetched = try? await lib.tracks(forAlbumId: album.id) else { continue }
+            let candidates: [Track]
+            if scope == .downloads || libraryFilter == .downloads {
+                candidates = fetched.filter { app.offline.downloadedTrackIds.contains($0.id) }
             } else {
-                LazyVGrid(columns: columns, spacing: 20) {
-                    ForEach(libraryAlbums) { album in
-                        NavigationLink {
-                            ServerPlaylistDetailView(album: album, librarySource: true)
-                        } label: {
-                            AlbumGridCell(album: album)
-                        }
-                        .buttonStyle(.plain)
-                        .libraryAlbumContextMenu(album)
+                candidates = fetched.filter { app.librarySongIds.contains($0.id) }
+            }
+            result.append(contentsOf: candidates.sorted {
+                if $0.discNumber != $1.discNumber { return $0.discNumber < $1.discNumber }
+                return $0.indexNumber < $1.indexNumber
+            })
+        }
+        return result
+    }
+
+    private func playAll() async {
+        let tracks = await resolveTracksForPlayback()
+        guard let lib = app.activeLibrary, !tracks.isEmpty else { return }
+        try? await app.player.playAlbum(library: lib, tracks: tracks, startIndex: 0)
+    }
+
+    private func shuffleAll() async {
+        let tracks = await resolveTracksForPlayback()
+        guard let lib = app.activeLibrary, !tracks.isEmpty else { return }
+        try? await app.player.playAlbum(library: lib, tracks: tracks.shuffled(), startIndex: 0)
+    }
+
+    @ViewBuilder
+    private var albumsScrollContent: some View {
+        if scope == .library,
+           displayedBaseAlbumCount == 0,
+           app.libraryAlbumsLoadError == nil,
+           !app.libraryAlbumEntries.isEmpty {
+            ProgressView()
+                .tint(MusicDesign.accent)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 80)
+        } else if displayedBaseAlbumCount == 0 {
+            ContentUnavailableView(
+                emptyTitle,
+                systemImage: "square.stack",
+                description: Text(emptyDescription)
+            )
+            .padding(.top, 60)
+        } else if displayedSearchAlbums.isEmpty {
+            ContentUnavailableView.search(text: query)
+                .padding(.top, 60)
+        } else if isSearching || !showsDisplayedAlbumSections {
+            albumsFlatGrid(displayedSearchAlbums)
+                .padding(.vertical, 12)
+        } else {
+            albumsSectionedGrid
+        }
+    }
+
+    private var albumsSectionedGrid: some View {
+        LazyVStack(alignment: .leading, spacing: 0, pinnedViews: []) {
+            ForEach(displayedAlbumSections) { section in
+                Text(section.id)
+                    .font(.title2.bold())
+                    .foregroundStyle(.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 16)
+                    .padding(.bottom, 4)
+                    .id(LibraryAlphabetIndex.albumScrollSectionID(section.id))
+
+                albumsFlatGrid(section.albums)
+            }
+        }
+        .padding(.vertical, 12)
+    }
+
+    private func albumsFlatGrid(_ albums: [AlbumSummary]) -> some View {
+        LazyVGrid(columns: columns, spacing: 20) {
+            ForEach(albums) { album in
+                NavigationLink {
+                    ServerPlaylistDetailView(album: album, librarySource: true)
+                } label: {
+                    AlbumGridCell(album: album)
+                }
+                .buttonStyle(.plain)
+                .libraryAlbumContextMenu(album)
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    var body: some View {
+        ScrollViewReader { scrollProxy in
+            ZStack(alignment: .trailing) {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        playShuffleRow
+                            .padding(.top, 8)
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 14)
+
+                        albumsScrollContent
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .scrollIndicators(.hidden)
+
+                if showsDisplayedAlbumSections, !displayedAlbumSections.isEmpty, !displayedScrubberLetters.isEmpty {
+                    LibraryAlphabetScrubberHost(
+                        letters: displayedScrubberLetters,
+                        selectedLetter: scrubberSelectedLetter,
+                        onSelect: { letter in
+                            scrollToSection(letter, proxy: scrollProxy)
+                        },
+                        onScrubEnd: endScrubbing
+                    )
+                }
             }
         }
         .background(MusicDesign.background)
-        .navigationTitle("Albums")
-        .musicNavigationBarTitleDisplayMode(.inline)
-        .musicNavigationChrome()
-        .musicNavigationBarVisibleWhenPushed()
+        .musicLibrarySectionScreen(title: "Albums")
+        .searchable(text: $query, placement: .automatic, prompt: Text("Albums"))
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    Task { await app.refreshLibraryAlbums() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .foregroundStyle(.primary)
+            ToolbarItemGroup(placement: MusicToolbar.trailingItemPlacement) {
+                if scope == .library {
+                    Menu {
+                        filterMenuContent
+                    } label: {
+                        MusicLibraryToolbarIcon(systemName: "line.3.horizontal")
+                    }
+                    .menuOrder(.fixed)
                 }
+
+                Menu {
+                    sortMenuContent
+                } label: {
+                    MusicLibraryToolbarIcon(systemName: "ellipsis")
+                }
+                .menuOrder(.fixed)
             }
         }
+        .musicLibraryToolbarMonochromeControls()
         .alert("Could not load", isPresented: $showLoadError) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(app.libraryAlbumsLoadError ?? "")
         }
         .onChange(of: app.libraryAlbumsLoadError) { _, new in
-            showLoadError = new != nil && app.libraryAlbums.isEmpty
+            if scope == .library {
+                showLoadError = new != nil && app.libraryAlbums.isEmpty
+            }
         }
+        .onChange(of: query) { _, _ in
+            recomputeAlbumDisplay()
+            if isSearching {
+                endScrubbing()
+            }
+        }
+        .onChange(of: sort) { _, _ in
+            recomputeAlbumDisplay()
+            endScrubbing()
+        }
+        .onChange(of: libraryFilter) { _, _ in
+            recomputeAlbumDisplay()
+            endScrubbing()
+        }
+        .onChange(of: app.libraryAlbumEntries) { _, _ in recomputeAlbumDisplay() }
+        .onChange(of: app.libraryAlbums.count) { _, _ in recomputeAlbumDisplay() }
+        .onChange(of: offline.downloadedTrackIds) { _, _ in recomputeAlbumDisplay() }
+        .onAppear { recomputeAlbumDisplay() }
         .refreshable {
-            await app.refreshLibraryAlbums()
+            if scope == .library {
+                await app.refreshLibraryAlbums()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var filterMenuContent: some View {
+        Button {
+            libraryFilter = .allAlbums
+        } label: {
+            HStack {
+                Label("All Albums", systemImage: "square.stack")
+                Spacer(minLength: 16)
+                if libraryFilter == .allAlbums {
+                    Image(systemName: "checkmark")
+                }
+            }
+        }
+        Button {
+            libraryFilter = .downloads
+        } label: {
+            HStack {
+                Label("Downloads", systemImage: "arrow.down.circle")
+                Spacer(minLength: 16)
+                if libraryFilter == .downloads {
+                    Image(systemName: "checkmark")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var sortMenuContent: some View {
+        Button {
+            sort = .title
+        } label: {
+            HStack {
+                Text("Title")
+                Spacer(minLength: 16)
+                if sort == .title {
+                    Image(systemName: "checkmark")
+                }
+            }
+        }
+        Button {
+            sort = .dateAdded
+        } label: {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Date Added")
+                    Text("Newest First")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 12)
+                if sort == .dateAdded {
+                    Image(systemName: "checkmark")
+                }
+            }
+        }
+        Button {
+            sort = .artist
+        } label: {
+            HStack {
+                Text("Artist")
+                Spacer(minLength: 16)
+                if sort == .artist {
+                    Image(systemName: "checkmark")
+                }
+            }
         }
     }
 }
@@ -1490,6 +2210,7 @@ struct ArtistAlbumsView: View {
         .navigationTitle(artistName)
         .musicNavigationBarTitleDisplayMode(.inline)
         .musicNavigationChrome()
+        .musicInlineNavigationTitleScreen()
         .musicNavigationBarVisibleWhenPushed()
     }
 }
