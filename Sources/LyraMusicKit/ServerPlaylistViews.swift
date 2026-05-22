@@ -627,6 +627,68 @@ struct ServerPlaylistDetailView: View {
         }
     }
 
+    /// Album-only artist + detail split so the hero can render the artist name as a
+    /// tappable link (push to ``ArtistPageView``) while keeping the rest of the
+    /// metadata line as static text. `nil` artist means non-album source or unknown.
+    private var heroAlbumArtistSplit: (artist: String, detail: String?)? {
+        guard case .album(let album, _) = source else { return nil }
+        let trimmed = album.artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let tracks = rows.map(\.track)
+        let detail = AlbumHeroMetadataLine.compose(album: album, tracks: tracks)
+        return (trimmed, detail.isEmpty ? nil : detail)
+    }
+
+    /// Apple Music–style: tapping the literal "Various Artists" string on an album
+    /// page would surface a useless artist page (every collaboration on the server).
+    /// Match Apple's behavior by treating it as non-tappable.
+    private static func isTappableArtist(_ name: String) -> Bool {
+        name.lowercased() != "various artists"
+    }
+
+    /// Album hero subtitle line — artist name is a NavigationLink to ``ArtistPageView``
+    /// for album sources; playlists keep the existing static Text path.
+    ///
+    /// Suppresses the system's auto-disclosure chevron with
+    /// ``navigationLinkIndicatorVisibility(.hidden)`` — otherwise an extra `>`
+    /// glyph slots in between the artist name and the detail text and the link
+    /// claims a wider hit area than its label, pushing the metadata to the right.
+    @ViewBuilder
+    private var heroSubtitleLine: some View {
+        if let split = heroAlbumArtistSplit {
+            HStack(spacing: 6) {
+                if Self.isTappableArtist(split.artist) {
+                    NavigationLink {
+                        ArtistPageView(input: .named(split.artist))
+                    } label: {
+                        Text(split.artist)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(MusicDesign.accent)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                    .buttonStyle(.plain)
+                    .navigationLinkIndicatorVisibility(.hidden)
+                } else {
+                    Text(split.artist)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(backdropPalette.heroChromeSecondary)
+                }
+                if let detail = split.detail {
+                    Text("· \(detail)")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(backdropPalette.heroChromeSecondary)
+                }
+            }
+            .lineLimit(2)
+            .multilineTextAlignment(.center)
+        } else if let subtitle = heroSubtitle {
+            Text(subtitle)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(backdropPalette.heroChromeSecondary)
+                .multilineTextAlignment(.center)
+        }
+    }
+
     /// Full album tracklist (not the library-filtered subset).
     private var allOrderedTracks: [Track] {
         rows.map(\.track).sorted {
@@ -771,12 +833,7 @@ struct ServerPlaylistDetailView: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 16)
 
-                if let subtitle = heroSubtitle {
-                    Text(subtitle)
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(backdropPalette.heroChromeSecondary)
-                        .multilineTextAlignment(.center)
-                }
+                heroSubtitleLine
             }
 
             actionButtonTriplet
