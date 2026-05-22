@@ -68,6 +68,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private var probingLocalFileURL: URL?
     /// Coalesces overlapping skip/end/advance requests so only one load cycle runs at a time.
     private var advanceWork: Task<Void, Never>?
+    /// Captured at skip/jump/end before the async ``advance()`` task runs — avoids losing play intent.
+    private var shouldAutoPlayAfterAdvance = false
+    /// True while ``advance()`` is loading the next item — ignores stale `.paused` KVO during handoff.
+    private var isAdvancingToNextItem = false
 
     private var player: AVPlayer?
     private var timeObserver: Any?
@@ -150,8 +154,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
         guard let player else { return }
         player.isMuted = false
         if player.volume < 0.001 { player.volume = 1.0 }
-        if isPlaying, player.rate < 0.01 { player.play() }
-        refreshNowPlaying()
+        if isPlaying, player.rate < 0.01 { beginPlayback(on: player) }
+        else { refreshNowPlaying() }
     }
 
     private func activateAudioSession() {
@@ -188,9 +192,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
             wasPlayingBeforeInterruption = false
             guard shouldResume else { return }
             activateAudioSession()
-            player?.play()
+            if let player { beginPlayback(on: player) }
             isPlaying = true
-            refreshNowPlaying()
         @unknown default:
             break
         }
@@ -217,6 +220,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     func reset() {
+        cancelPendingAdvanceWork()
         teardownPlayer()
         queue = []
         currentIndex = 0
@@ -267,6 +271,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// The first play tap (mini player / lock screen) resumes from `pendingRestoreSeconds`.
     func restore(library: MusicLibraryProviding?, snapshot: PlaybackQueueSnapshot) {
         guard !snapshot.queue.isEmpty else { return }
+        cancelPendingAdvanceWork()
         teardownPlayer()
         if let library { self.library = library }
         queue = snapshot.queue
@@ -322,12 +327,12 @@ final class PlaybackEngine: NSObject, ObservableObject {
         pendingRestoreSeconds = 0
         activateAudioSession()
         do {
-            try await startCurrentItem(epoch: epoch, startSeconds: startAt)
+            try await startCurrentItem(epoch: epoch, startSeconds: startAt, autoPlay: true)
             guard isPlaybackEpochCurrent(epoch), let player else {
                 isPlaying = false
                 return
             }
-            player.play()
+            if player.rate < 0.01 { beginPlayback(on: player) }
             isPlaying = true
         } catch {
             // If the restored stream can't be reached (offline, server moved), leave the queue
@@ -353,6 +358,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         if let library { self.library = library }
         let normalized = tracksWithResolvedArtwork(tracks)
         let epoch = beginPlaybackSession()
+        cancelPendingAdvanceWork()
         teardownPlayer()
         queue = normalized
         currentIndex = min(max(0, startIndex), max(normalized.count - 1, 0))
@@ -368,9 +374,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
         try await loadLyrics()
         guard isPlaybackEpochCurrent(epoch) else { return }
         activateAudioSession()
-        try await startCurrentItem(epoch: epoch)
+        try await startCurrentItem(epoch: epoch, autoPlay: true)
         guard isPlaybackEpochCurrent(epoch), let player else { return }
-        player.play()
+        beginPlayback(on: player)
         isPlaying = true
         scrobbledForCurrentTrack = false
         configureRemoteCommands()
@@ -464,6 +470,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
             return
         }
         currentIndex = min(currentIndex, queue.count - 1)
+        captureAutoPlayIntentForAdvance()
+        resetUIProgressForTrackHandoff()
         scheduleAdvance()
     }
 
@@ -477,7 +485,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             player.pause()
             isPlaying = false
         } else {
-            player.play()
+            beginPlayback(on: player)
             isPlaying = true
         }
         playbackHead = player.currentTime().seconds
@@ -494,11 +502,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
         }
         activateAudioSession()
         guard player != nil else { return }
-        if player?.rate ?? 0 < 0.01 {
-            player?.play()
+        if player?.rate ?? 0 < 0.01, let player {
+            beginPlayback(on: player)
             isPlaying = true
-            playbackHead = player?.currentTime().seconds ?? playbackHead
-            refreshNowPlaying()
+            playbackHead = player.currentTime().seconds
         }
     }
 
@@ -560,7 +567,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         }
 
         if wasPlaying {
-            player.play()
+            beginPlayback(on: player)
             isPlaying = true
         }
 
@@ -652,7 +659,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
     func skipNext() {
         // Shuffle is a queue-reordering action — advance sequentially regardless of mode.
         guard currentIndex + 1 < queue.count else { return }
+        captureAutoPlayIntentForAdvance()
         currentIndex += 1
+        resetUIProgressForTrackHandoff()
         scheduleAdvance()
     }
 
@@ -665,7 +674,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
             seek(to: 0)
             return
         }
+        captureAutoPlayIntentForAdvance()
         currentIndex -= 1
+        resetUIProgressForTrackHandoff()
         scheduleAdvance()
     }
 
@@ -730,8 +741,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     func jumpToQueueItem(at index: Int) {
-        guard queue.indices.contains(index) else { return }
+        guard queue.indices.contains(index), index != currentIndex else { return }
+        captureAutoPlayIntentForAdvance()
         currentIndex = index
+        resetUIProgressForTrackHandoff()
         scheduleAdvance()
     }
 
@@ -741,6 +754,24 @@ final class PlaybackEngine: NSObject, ObservableObject {
         var upNext = Array(queue[offset...])
         upNext.move(fromOffsets: source, toOffset: destination)
         queue.replaceSubrange(offset..., with: upNext)
+    }
+
+    private func captureAutoPlayIntentForAdvance() {
+        if isPlaying || (player?.rate ?? 0) > 0.01 {
+            shouldAutoPlayAfterAdvance = true
+        }
+    }
+
+    private func resetUIProgressForTrackHandoff() {
+        currentTime = 0
+        playbackHead = 0
+        lastEmittedUIProgress = -10_000
+        lastNowPlayingInfoRefresh = -10_000
+    }
+
+    private func cancelPendingAdvanceWork() {
+        advanceWork?.cancel()
+        advanceWork = nil
     }
 
     private func scheduleAdvance() {
@@ -754,23 +785,42 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private func advance() async throws {
         // A skip/jump abandons the saved playhead for the previously-active track.
         pendingRestoreSeconds = 0
+        // Capture before teardown — new AVPlayer starts `.paused` and KVO must not clear intent.
+        let shouldAutoPlay = shouldAutoPlayAfterAdvance || isPlaying || (player?.rate ?? 0) > 0.01
+        shouldAutoPlayAfterAdvance = false
         let epoch = beginPlaybackSession()
+        isAdvancingToNextItem = true
+        defer { isAdvancingToNextItem = false }
         teardownPlayer()
         try await loadLyrics()
         guard isPlaybackEpochCurrent(epoch) else { return }
         activateAudioSession()
-        try await startCurrentItem(epoch: epoch)
-        guard isPlaybackEpochCurrent(epoch), let player else { return }
-        player.play()
-        isPlaying = true
+        try await startCurrentItem(epoch: epoch, autoPlay: shouldAutoPlay)
+        guard isPlaybackEpochCurrent(epoch), let player else {
+            isPlaying = false
+            refreshNowPlaying()
+            return
+        }
+        if shouldAutoPlay {
+            beginPlayback(on: player)
+            isPlaying = true
+        } else {
+            isPlaying = false
+            refreshNowPlaying()
+        }
         scrobbledForCurrentTrack = false
         revealMiniPlayerChrome()
         if let started = activeTrack {
-            // Consumed from the user queue (if it was there) — it's now the active
-            // track, no longer "queued".
             userQueuedTrackIds.remove(started.id)
             onTrackStarted?(started)
         }
+    }
+
+    /// Starts AVPlayer and updates lock screen / Dynamic Island playback rate.
+    private func beginPlayback(on player: AVPlayer) {
+        activateAudioSession()
+        player.playImmediately(atRate: 1.0)
+        refreshNowPlaying()
     }
 
     private func beginPlaybackSession() -> UInt {
@@ -809,16 +859,16 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     private func teardownPlayer() {
-        advanceWork?.cancel()
-        advanceWork = nil
         seekGeneration += 1
         seekSettleDeadline = nil
         isSeeking = false
         localFileDuration = 0
         probingLocalFileURL = nil
         detachPlayerKeepingQueueState()
+        currentTime = 0
         playbackHead = 0
         lastEmittedUIProgress = -10_000
+        lastNowPlayingInfoRefresh = -10_000
     }
 
     private func makePlaybackAsset(url: URL, headers: [String: String]) -> AVURLAsset {
@@ -882,7 +932,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         return true
     }
 
-    private func startCurrentItem(epoch: UInt, startSeconds: TimeInterval = 0) async throws {
+    private func startCurrentItem(epoch: UInt, startSeconds: TimeInterval = 0, autoPlay: Bool = false) async throws {
         guard isPlaybackEpochCurrent(epoch) else { return }
         guard let track = currentTrack else { throw PlaybackEngineError.missingTrack }
 
@@ -927,6 +977,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
                     candidate: candidate,
                     track: track,
                     startSeconds: startSeconds,
+                    autoPlay: autoPlay,
                 ) {
                     return
                 }
@@ -946,6 +997,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         candidate: (url: URL, headers: [String: String]),
         track: Track,
         startSeconds: TimeInterval,
+        autoPlay: Bool,
     ) async throws -> Bool {
         guard isPlaybackEpochCurrent(epoch) else { return false }
         let asset = makePlaybackAsset(url: candidate.url, headers: candidate.headers)
@@ -981,6 +1033,11 @@ final class PlaybackEngine: NSObject, ObservableObject {
             currentTime = startSeconds
             playbackHead = startSeconds
             lastEmittedUIProgress = startSeconds
+        }
+
+        if autoPlay {
+            beginPlayback(on: p)
+            isPlaying = true
         }
 
         let readyBudget: Duration = candidate.url.isFileURL
@@ -1046,7 +1103,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 let status = player.timeControlStatus
-                if status == .paused, self.isPlaying {
+                if status == .paused, self.isPlaying, !self.isAdvancingToNextItem {
                     self.isPlaying = false
                     self.refreshNowPlaying()
                 } else if status == .playing, !self.isPlaying {
@@ -1147,13 +1204,19 @@ final class PlaybackEngine: NSObject, ObservableObject {
         // advance through the queue sequentially, otherwise every track end would re-randomize.
         switch repeatMode {
         case .one:
+            captureAutoPlayIntentForAdvance()
+            resetUIProgressForTrackHandoff()
             scheduleAdvance()
         case .all:
+            captureAutoPlayIntentForAdvance()
             currentIndex = (currentIndex + 1) % max(queue.count, 1)
+            resetUIProgressForTrackHandoff()
             scheduleAdvance()
         case .off:
             if currentIndex + 1 < queue.count {
+                captureAutoPlayIntentForAdvance()
                 currentIndex += 1
+                resetUIProgressForTrackHandoff()
                 scheduleAdvance()
             } else {
                 isPlaying = false
