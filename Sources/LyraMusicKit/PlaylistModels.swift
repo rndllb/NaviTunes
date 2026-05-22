@@ -6,6 +6,8 @@ struct PlaylistSummary: Identifiable, Hashable, Codable {
     let name: String
     let songCount: Int?
     let artworkURL: URL?
+    /// Navidrome Subsonic `coverArt` id when the playlist has custom/mosaic art.
+    let coverArtId: String?
     /// Jellyfin only: `IsPublic` — visible to all users on the server (`nil` if unknown / Navidrome).
     let isPublic: Bool?
     /// Server `created` (Navidrome) / `DateCreated` (Jellyfin).
@@ -18,6 +20,7 @@ struct PlaylistSummary: Identifiable, Hashable, Codable {
         name: String,
         songCount: Int? = nil,
         artworkURL: URL? = nil,
+        coverArtId: String? = nil,
         isPublic: Bool? = nil,
         libraryAddedDate: Date? = nil,
         serverUpdatedDate: Date? = nil
@@ -26,6 +29,7 @@ struct PlaylistSummary: Identifiable, Hashable, Codable {
         self.name = name
         self.songCount = songCount
         self.artworkURL = artworkURL
+        self.coverArtId = coverArtId
         self.isPublic = isPublic
         self.libraryAddedDate = libraryAddedDate
         self.serverUpdatedDate = serverUpdatedDate

@@ -42,6 +42,10 @@ private final class CachedArtworkImage: NSObject {
 enum DecodedArtworkCache {
     private static let memory = NSCache<NSString, CachedArtworkImage>()
 
+    static func clearAll() {
+        memory.removeAllObjects()
+    }
+
     static func image(for url: URL, maxPixelSize: CGFloat) -> CGImage? {
         memory.object(forKey: cacheKey(for: url, maxPixelSize: maxPixelSize) as NSString)?.cgImage
     }

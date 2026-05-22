@@ -269,7 +269,7 @@ struct LibraryPlaylistContextMenuContent: View {
         do {
             let tracks = try await loadTracks()
             guard !tracks.isEmpty else { return }
-            try await app.player.playTracksNext(library: lib, tracks: tracks)
+            try await app.player.playTracksNext(library: lib, tracks: tracks, sourcePlaylistId: playlist.id)
         } catch {
             app.errorMessage = error.localizedDescription
         }
