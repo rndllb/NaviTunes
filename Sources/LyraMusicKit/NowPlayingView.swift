@@ -71,6 +71,7 @@ struct NowPlayingView: View {
             url: artworkURL(for: track),
             meshArtworkSeed: RadioStationMeshArtwork.seedKey(for: track),
             cornerRadius: cornerRadius,
+            showsSubtleBorder: false,
         )
     }
 
@@ -920,7 +921,7 @@ struct NowPlayingView: View {
                 // Play-pulse scale lives in a separate wrapper so its
                 // .animation(value: isPlaying) context only sees the scale,
                 // not the morph's frame/position/shadow changes.
-                AlbumArtworkView(url: artworkURL(for: track), cornerRadius: cornerRadius)
+                AlbumArtworkView(url: artworkURL(for: track), cornerRadius: cornerRadius, showsSubtleBorder: false)
                     .frame(width: artworkSize, height: artworkSize)
                     .modifier(PlayPulseScale(scale: playPulseScale, isPlaying: app.player.isPlaying))
                     .shadow(
@@ -1235,7 +1236,7 @@ struct NowPlayingView: View {
             }
             #if os(iOS)
             AirPlayRoutePickerView(tint: fgPrimary, activeTint: fgPrimary)
-                .frame(width: 40, height: 40)
+                .frame(width: 46, height: 46)
             #endif
             bottomChromeIconButton("list.bullet", isActive: showQueue) {
                 withAnimation(.spring(duration: 0.46, bounce: 0.16)) {
@@ -1520,6 +1521,8 @@ private struct AirPlayRoutePickerView: UIViewRepresentable {
         let picker = AVRoutePickerView()
         picker.prioritizesVideoDevices = false
         picker.backgroundColor = .clear
+        // Slightly larger glyph to match adjacent bottom-chrome controls (lyrics / queue).
+        picker.transform = CGAffineTransform(scaleX: 1.14, y: 1.14)
         applyColors(to: picker)
         return picker
     }

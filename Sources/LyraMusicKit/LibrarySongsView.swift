@@ -17,35 +17,21 @@ struct LibrarySongsView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var offline: OfflineDownloadManager
 
+    init(downloadsOnly: Bool = false) {
+        _libraryFilter = State(initialValue: downloadsOnly ? .downloads : .allSongs)
+    }
+
     @State private var tracks: [Track] = []
     @State private var isLoading = false
-    @State private var isLoadingMore = false
-    @State private var reachedEnd = false
     @State private var loadError: String?
     @State private var searchText = ""
-    @State private var libraryFilter = LibrarySongLibraryFilter.allSongs
+    @State private var libraryFilter: LibrarySongLibraryFilter
     @State private var sort = LibrarySongSort.dateAdded
     @State private var navigateAlbum: AlbumSummary?
     @State private var trackPendingDownloadedDelete: Track?
-    @State private var lastPaginationOffset: Int?
     /// Cached projection of `tracks` → filter → search → sort. Recomputed only when an input
     /// changes, so scroll redraws don't re-sort 10k+ items on every body call.
     @State private var displayed: [Track] = []
-
-    private static let initialPageLimit = 300
-    private static let jellyfinNextPageLimit = 500
-    private static let navidromeNextPageLimit = 180
-    private static let paginationPrefetchDistance = 40
-
-    private var nextPageLimit: Int {
-        app.backendKind == .navidrome ? Self.navidromeNextPageLimit : Self.jellyfinNextPageLimit
-    }
-
-    private var paginationTriggerTrackId: String? {
-        guard !displayed.isEmpty, !reachedEnd, !isLoading, !isLoadingMore else { return nil }
-        let triggerIndex = max(0, displayed.count - Self.paginationPrefetchDistance)
-        return displayed[triggerIndex].id
-    }
 
     private func recomputeDisplayed() {
         let byLibrary: [Track]
@@ -90,22 +76,8 @@ struct LibrarySongsView: View {
 
     @ViewBuilder
     private var trackListRows: some View {
-        let triggerTrackId = paginationTriggerTrackId
         ForEach(Array(displayed.enumerated()), id: \.element.id) { index, track in
             songRow(track, showsBottomDivider: index < displayed.count - 1)
-                .onAppear {
-                    if track.id == triggerTrackId {
-                        Task { await loadMoreIfNeeded(triggeredBy: track.id) }
-                    }
-                }
-        }
-        if isLoadingMore, !reachedEnd {
-            ProgressView()
-                .tint(MusicDesign.accent)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 16)
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
         }
     }
 
@@ -117,88 +89,57 @@ struct LibrarySongsView: View {
         }
     }
 
+    private var isSearching: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private var emptyDescription: Text {
         switch libraryFilter {
         case .allSongs:
-            return Text(searchText.isEmpty ? "Your library has no songs yet." : "Nothing matches your search.")
+            return Text("Your library has no songs yet.")
         case .favorites:
             return Text(
-                searchText.isEmpty
-                    ? "Use Favorite in the ··· menu or on Now Playing. Stars sync with \(app.backendKind.title)."
-                    : "Nothing matches your search."
+                "Use Favorite in the ··· menu or on Now Playing. Stars sync with \(app.backendKind.title)."
             )
         case .downloads:
-            return Text(searchText.isEmpty ? "Save tracks offline from an album page." : "Nothing matches your search.")
+            return Text("Save tracks offline from an album page.")
         }
     }
 
     var body: some View {
         List {
             Section {
-                searchSection
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 14, trailing: 20))
-
                 playShuffleRow
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 16, trailing: 20))
+                    .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 16, trailing: 20))
             }
 
-            if isLoading, tracks.isEmpty {
-                ProgressView()
-                    .tint(MusicDesign.accent)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 40)
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-            } else if let loadError, tracks.isEmpty {
-                Text(loadError)
-                    .font(.subheadline)
-                    .foregroundStyle(MusicDesign.secondaryLabel)
-                    .padding(.horizontal, 20)
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-            } else if displayed.isEmpty {
-                ContentUnavailableView(
-                    emptyTitle,
-                    systemImage: "music.note",
-                    description: emptyDescription
-                )
-                .padding(.top, 32)
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
-            } else {
-                trackListRows
-            }
+            songsListBody
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(MusicDesign.background)
-        .navigationTitle("Songs")
-        .musicNavigationBarTitleDisplayMode(.large)
-        .musicNavigationChrome()
-        .musicNavigationBarVisibleWhenPushed()
+        .musicLibrarySectionScreen(title: "Songs")
         .toolbar {
             ToolbarItemGroup(placement: MusicToolbar.trailingItemPlacement) {
                 Menu {
                     filterMenuContent
                 } label: {
-                    Image(systemName: "line.3.horizontal")
-                        .foregroundStyle(.primary)
+                    MusicLibraryToolbarIcon(systemName: "line.3.horizontal")
                 }
                 .menuOrder(.fixed)
 
                 Menu {
                     sortMenuContent
                 } label: {
-                    Image(systemName: "ellipsis")
-                        .foregroundStyle(.primary)
+                    MusicLibraryToolbarIcon(systemName: "ellipsis")
                 }
                 .menuOrder(.fixed)
             }
         }
+        .musicLibraryToolbarMonochromeControls()
+        .searchable(text: $searchText, placement: .automatic, prompt: Text("Songs"))
         .navigationDestination(item: $navigateAlbum) { album in
             ServerPlaylistDetailView(album: album, librarySource: true)
         }
@@ -210,13 +151,17 @@ struct LibrarySongsView: View {
         }
         .onChange(of: tracks) { _, _ in recomputeDisplayed() }
         .onChange(of: searchText) { _, _ in recomputeDisplayed() }
-        .onChange(of: libraryFilter) { _, _ in recomputeDisplayed() }
+        .onChange(of: libraryFilter) { _, _ in
+            Task { await load() }
+        }
         .onChange(of: sort) { _, _ in recomputeDisplayed() }
         .onChange(of: app.favoriteTrackIds) { _, _ in
             if libraryFilter == .favorites { recomputeDisplayed() }
         }
         .onChange(of: app.offline.downloadedTrackIds) { _, _ in
-            if libraryFilter == .downloads { recomputeDisplayed() }
+            if libraryFilter == .downloads {
+                Task { await load() }
+            }
         }
         .onChange(of: app.librarySongIds) { _, _ in
             tracks = libraryTracksFromCatalog()
@@ -307,16 +252,42 @@ struct LibrarySongsView: View {
         }
     }
 
-    private var searchSection: some View {
-        LibrarySearchPill(prompt: "Search", text: $searchText)
-    }
-
     private var playShuffleRow: some View {
         LibraryPlayShuffleRow(
             isDisabled: displayed.isEmpty,
             onPlay: { Task { await playAll() } },
             onShuffle: { Task { await shuffleAll() } },
         )
+    }
+
+    @ViewBuilder
+    private var songsListBody: some View {
+        if isLoading, tracks.isEmpty {
+            ProgressView()
+                .tint(MusicDesign.accent)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 40)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+        } else if let loadError, tracks.isEmpty {
+            Text(loadError)
+                .font(.subheadline)
+                .foregroundStyle(MusicDesign.secondaryLabel)
+                .padding(.horizontal, 20)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+        } else if displayed.isEmpty {
+            ContentUnavailableView(
+                emptyTitle,
+                systemImage: "music.note",
+                description: emptyDescription
+            )
+            .padding(.top, 32)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        } else {
+            trackListRows
+        }
     }
 
     private func songRow(_ track: Track, showsBottomDivider: Bool) -> some View {
@@ -395,8 +366,6 @@ struct LibrarySongsView: View {
     private func load() async {
         isLoading = true
         loadError = nil
-        reachedEnd = true   // Library is a fixed user-curated set; never paginates from the server.
-        lastPaginationOffset = nil
         defer { isLoading = false }
 
         if libraryFilter == .downloads {
@@ -438,38 +407,6 @@ struct LibrarySongsView: View {
         return out
     }
 
-    private func loadMoreIfNeeded(triggeredBy triggerTrackId: String?) async {
-        guard !reachedEnd, !isLoadingMore, !isLoading else { return }
-        guard libraryFilter != .downloads else { return }
-        guard let lib = app.activeLibrary else { return }
-        guard triggerTrackId == paginationTriggerTrackId else { return }
-        let offset = tracks.count
-        guard lastPaginationOffset != offset else { return }
-        let pageLimit = nextPageLimit
-        lastPaginationOffset = offset
-        isLoadingMore = true
-        defer { isLoadingMore = false }
-        do {
-            let page = try await lib.tracksPage(offset: offset, limit: pageLimit)
-            if page.isEmpty {
-                reachedEnd = true
-                return
-            }
-            // Dedupe in case the backend's pagination overlaps (Subsonic search3 has no stable order guarantee).
-            let existing = Set(tracks.map(\.id))
-            let fresh = page.filter { !existing.contains($0.id) }
-            if fresh.isEmpty {
-                reachedEnd = true
-                return
-            }
-            tracks.append(contentsOf: fresh)
-            if page.count < pageLimit { reachedEnd = true }
-        } catch {
-            // Stop trying to paginate on error so we don't hammer a failing endpoint.
-            reachedEnd = true
-        }
-    }
-
     private func playAll() async {
         guard !displayed.isEmpty else { return }
         try? await app.player.playAlbum(library: app.activeLibrary, tracks: displayed, startIndex: 0)
@@ -489,6 +426,7 @@ struct LibrarySongsView: View {
 
 struct LibrarySongRow: View, Equatable {
     @EnvironmentObject private var app: AppModel
+    @AppStorage(LibraryPinStore.storageKey) private var pinnedStorage: String = "[]"
     let track: Track
     var artworkURL: URL? = nil
     var itemSize: SongListItemSize = .medium
@@ -540,6 +478,8 @@ struct LibrarySongRow: View, Equatable {
     var showsBottomDivider: Bool = false
     /// Album-detail divider tint; ignored unless ``usesAlbumSwipeChrome``.
     var dividerPalette: ArtworkDynamicGradient.BackdropPalette? = nil
+    /// Fixed light-surface label colors (e.g. ``FavoritePlaylistView``) — not accent-tinted.
+    var rowLabelPalette: ArtworkDynamicGradient.BackdropPalette? = nil
     /// 1-based track # on album detail rows.
     var trackDisplayIndex: Int? = nil
     /// Reserved ★ slot on library song lists (star shown when favorited).
@@ -568,6 +508,16 @@ struct LibrarySongRow: View, Equatable {
             && (lhs.onRemoveFromLibrary != nil) == (rhs.onRemoveFromLibrary != nil)
             && lhs.isNowPlaying == rhs.isNowPlaying
             && lhs.hasActiveQueue == rhs.hasActiveQueue
+            && lhs.showsBottomDivider == rhs.showsBottomDivider
+            && lhs.dividerPalette?.prefersDarkHeroChrome == rhs.dividerPalette?.prefersDarkHeroChrome
+            && lhs.rowLabelPalette?.prefersDarkHeroChrome == rhs.rowLabelPalette?.prefersDarkHeroChrome
+            && LibraryPinStore.contains(
+                LibraryPinnedRef(kind: .track, itemId: lhs.track.id),
+                in: lhs.pinnedStorage
+            ) == LibraryPinStore.contains(
+                LibraryPinnedRef(kind: .track, itemId: rhs.track.id),
+                in: rhs.pinnedStorage
+            )
     }
 
     private var offlinePhase: TrackOfflineIndicatorPhase {
@@ -604,8 +554,9 @@ struct LibrarySongRow: View, Equatable {
         showsArtist && !track.artist.isEmpty
     }
 
-    private var rowVerticalAlignment: VerticalAlignment {
-        hasArtistSubtitle ? .top : .center
+    /// ★ before artwork on library lists when the track is favorited (Apple Music).
+    private var showsLibraryFavoriteStar: Bool {
+        !usesAlbumSwipeChrome && showsArtwork && showsLeadingFavoriteStar && isFavorite
     }
 
     private var showsLeadingIndicators: Bool {
@@ -614,9 +565,20 @@ struct LibrarySongRow: View, Equatable {
         return showsLeadingFavoriteStar
     }
 
+    private var trackPinRef: LibraryPinnedRef {
+        LibraryPinnedRef(kind: .track, itemId: track.id)
+    }
+
+    private var isPinnedToLibrary: Bool {
+        LibraryPinStore.contains(trackPinRef, in: pinnedStorage)
+    }
+
     private var titleForeground: Color {
         if usesAlbumSwipeChrome, let dividerPalette {
             return dividerPalette.heroChromePrimary
+        }
+        if let rowLabelPalette {
+            return rowLabelPalette.heroChromePrimary
         }
         if isNowPlaying && !showsArtwork {
             return .accentColor
@@ -628,24 +590,63 @@ struct LibrarySongRow: View, Equatable {
         if usesAlbumSwipeChrome, let dividerPalette {
             return dividerPalette.heroChromeSecondary
         }
+        if let rowLabelPalette {
+            return rowLabelPalette.heroChromeSecondary
+        }
         return MusicDesign.secondaryLabel
     }
 
-    private var libraryDividerLeadingInset: CGFloat {
-        let horizontalPadding: CGFloat = usesAlbumSwipeChrome
-            ? AlbumTrackRowLayout.horizontalPadding
-            : 20
+    private var rowMenuGlyphColor: Color {
+        if usesAlbumSwipeChrome, let dividerPalette {
+            return dividerPalette.heroChromeSecondary
+        }
+        if let rowLabelPalette {
+            return rowLabelPalette.heroChromeSecondary
+        }
+        return MusicDesign.secondaryLabel
+    }
+
+    private var rowDividerColor: Color {
+        if usesAlbumSwipeChrome, let dividerPalette {
+            return dividerPalette.heroTracklistSeparator
+        }
+        if let rowLabelPalette {
+            return rowLabelPalette.heroTracklistSeparator
+        }
+        return MusicDesign.separator
+    }
+
+    /// Leading edge of the title/subtitle column (divider aligns with text, not artwork).
+    private var libraryTitleLeadingInset: CGFloat {
         if usesAlbumSwipeChrome {
             return AlbumTrackRowLayout.librarySongTitleLeadingFromScreenEdge
         }
-        var inset = horizontalPadding
-        if showsLeadingFavoriteStar {
-            inset += AlbumTrackIndexColumn.starSlotWidth + 8
-        }
+        let horizontalPadding: CGFloat = 20
+        let titleGapAfterArtwork: CGFloat = 14
         if showsArtwork {
-            inset += itemSize.artworkSide + 14
+            return horizontalPadding + itemSize.artworkSide + titleGapAfterArtwork
         }
-        return inset
+        if showsLeadingFavoriteStar {
+            return horizontalPadding + AlbumTrackIndexColumn.starSlotWidth + 8
+        }
+        return horizontalPadding
+    }
+
+    private var libraryDividerLeadingInset: CGFloat {
+        libraryTitleLeadingInset
+    }
+
+    /// Sits in the leading margin (left of artwork) without shifting row layout.
+    @ViewBuilder
+    private var libraryFavoriteStarInGutter: some View {
+        if showsLibraryFavoriteStar {
+            Image(systemName: "star.fill")
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundStyle(rowLabelPalette?.heroChromePrimary ?? MusicDesign.accent)
+                .offset(x: -(MusicChevronRowMetrics.leadingPadding - 5))
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
     }
 
     var body: some View {
@@ -666,7 +667,7 @@ struct LibrarySongRow: View, Equatable {
     fileprivate var rowContent: some View {
         rowBody
             .frame(minHeight: usesAlbumSwipeChrome ? AlbumTrackRowLayout.rowMinHeight : nil)
-            .background(alignment: .bottom) {
+            .overlay(alignment: .bottom) {
                 if showsBottomDivider {
                     if usesAlbumSwipeChrome, let dividerPalette {
                         AppleMusicAlbumTrackDivider(
@@ -675,23 +676,25 @@ struct LibrarySongRow: View, Equatable {
                         )
                         .allowsHitTesting(false)
                     } else {
-                        LibrarySongRowDivider(leadingInset: libraryDividerLeadingInset)
-                            .allowsHitTesting(false)
+                        LibrarySongRowDivider(
+                            leadingInset: libraryDividerLeadingInset,
+                            color: rowDividerColor
+                        )
+                        .allowsHitTesting(false)
                     }
                 }
             }
     }
 
     private var rowBody: some View {
-        HStack(alignment: rowVerticalAlignment, spacing: 10) {
+        HStack(alignment: .center, spacing: 10) {
             Button(action: onPlay) {
-                HStack(alignment: rowVerticalAlignment, spacing: usesAlbumSwipeChrome ? AlbumTrackRowLayout.indexToTitleSpacing : 14) {
+                HStack(alignment: .center, spacing: usesAlbumSwipeChrome ? AlbumTrackRowLayout.indexToTitleSpacing : 14) {
                     if showsLeadingIndicators {
                         SongRowLeadingIndicators(
                             trackIndex: usesAlbumSwipeChrome ? trackDisplayIndex : nil,
                             isFavorite: isFavorite,
                             backdropPalette: usesAlbumSwipeChrome ? dividerPalette : nil,
-                            hasSubtitle: hasArtistSubtitle,
                             isNowPlaying: isNowPlaying
                         )
                     }
@@ -702,6 +705,9 @@ struct LibrarySongRow: View, Equatable {
                             maxDecodePixels: Self.rowArtworkDecodePixels,
                         )
                         .frame(width: itemSize.artworkSide, height: itemSize.artworkSide)
+                        .overlay(alignment: .leading) {
+                            libraryFavoriteStarInGutter
+                        }
                         .overlay(alignment: .center) {
                             if isNowPlaying {
                                 ZStack {
@@ -730,6 +736,7 @@ struct LibrarySongRow: View, Equatable {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .tint(rowLabelPalette?.heroChromePrimary)
 
             if showsTrailingOfflineGlyph, !(hidesAddToLibraryChip && offlinePhase == .addToLibrary) {
                 TrackOfflineDownloadIndicator(
@@ -737,7 +744,7 @@ struct LibrarySongRow: View, Equatable {
                     onCancelDownload: offlinePhase.isDownloading ? { onCancelOfflineDownload() } : nil,
                     onTapStartDownload: usesAlbumSwipeChrome ? nil : (offlinePhase == .notCached ? { onDownload() } : nil),
                     onAddToLibrary: offlinePhase == .addToLibrary ? onAddToLibrary : nil,
-                    backdropPalette: usesAlbumSwipeChrome ? dividerPalette : nil
+                    backdropPalette: usesAlbumSwipeChrome ? dividerPalette : rowLabelPalette
                 )
             }
 
@@ -765,7 +772,17 @@ struct LibrarySongRow: View, Equatable {
                     .tint(Color.primary)
 
                     Section {
-                        Button {} label: { Label("Pin Song", systemImage: "pin") }
+                        Button {
+                            if !isPinnedToLibrary {
+                                app.retainTrackForLibraryPin(track)
+                            }
+                            LibraryPinStore.toggle(trackPinRef, storage: &pinnedStorage)
+                        } label: {
+                            Label(
+                                LibraryPinStore.menuLabel(kind: .track, isPinned: isPinnedToLibrary),
+                                systemImage: isPinnedToLibrary ? "pin.slash" : "pin"
+                            )
+                        }
                         if let onAddToPlaylist {
                             Button(action: onAddToPlaylist) {
                                 Label("Add to Playlist", systemImage: "rectangle.stack.badge.plus")
@@ -828,11 +845,7 @@ struct LibrarySongRow: View, Equatable {
                 } label: {
                     Image(systemName: "ellipsis")
                         .font(usesAlbumSwipeChrome ? .caption.weight(.semibold) : .body.weight(.semibold))
-                        .foregroundStyle(
-                            usesAlbumSwipeChrome
-                                ? (dividerPalette?.heroChromeSecondary ?? MusicDesign.secondaryLabel)
-                                : MusicDesign.secondaryLabel
-                        )
+                        .foregroundStyle(rowMenuGlyphColor)
                         .frame(
                             width: usesAlbumSwipeChrome ? 22 : 32,
                             height: usesAlbumSwipeChrome ? 22 : 36
@@ -853,26 +866,12 @@ struct LibrarySongRowDivider: View {
     var trailingInset: CGFloat = 20
     var color: Color = MusicDesign.separator
 
-    private var hairlineHeight: CGFloat {
-        #if os(iOS)
-        max(1.0 / UIScreen.main.scale, 1.0 / 3.0)
-        #elseif os(macOS)
-        max(1.0 / (NSScreen.main?.backingScaleFactor ?? 2), 1.0 / 3.0)
-        #else
-        1.0 / 3.0
-        #endif
-    }
-
     var body: some View {
-        HStack(spacing: 0) {
-            Color.clear.frame(width: leadingInset)
-            Rectangle()
-                .fill(color)
-                .frame(maxWidth: .infinity)
-                .frame(height: hairlineHeight)
-        }
-        .padding(.trailing, trailingInset)
-        .frame(height: hairlineHeight)
+        MusicInsetHairlineDivider(
+            leadingInset: leadingInset,
+            trailingInset: trailingInset,
+            color: color,
+        )
     }
 }
 
@@ -1035,6 +1034,18 @@ extension View {
         }
     }
 
+    /// Library-style song rows over a dynamic hero backdrop (playlists on ``AlbumHeroBackdropView``).
+    func heroBackdropSongListRowStyle(highlightOpacity: Double = 0) -> some View {
+        listRowBackground(
+            ZStack {
+                Color.clear
+                Color.accentColor.opacity(highlightOpacity)
+            }
+        )
+        .listRowInsets(EdgeInsets())
+        .listRowSeparator(.hidden)
+    }
+
     /// Plain list row chrome for ``LibrarySongRow`` (requires a parent `List` for swipe actions).
     /// `highlightOpacity` drives a brief accent flash used by deep-link scroll targets.
     func librarySongListRowStyle(highlightOpacity: Double = 0) -> some View {
@@ -1046,6 +1057,18 @@ extension View {
         )
             .listRowInsets(EdgeInsets())
             .listRowSeparator(.hidden)
+    }
+
+    /// ``FavoritePlaylistView`` — artwork rows on the fixed white hero wash (not ``MusicDesign.background``).
+    func favoriteSongsListRowStyle(highlightOpacity: Double = 0) -> some View {
+        listRowBackground(
+            ZStack {
+                Color.white
+                Color.accentColor.opacity(highlightOpacity)
+            }
+        )
+        .listRowInsets(EdgeInsets())
+        .listRowSeparator(.hidden)
     }
 
     /// Album hero track rows — clear cells over ``AlbumHeroBackdropView``, inset narrower than hero.

@@ -1175,6 +1175,7 @@ final class NavidromeClient: MusicLibraryProviding {
         let coverId = navidromeCoerceString(dict["coverArt"])
         let art = coverId.flatMap { streamURLForCover(coverArt: $0) }
         let created = navidromeCreatedDate(dict["created"])
+        let updated = navidromeCreatedDate(dict["changed"])
         let isPublic = navidromeCoerceBool(dict["public"])
         return PlaylistSummary(
             id: id,
@@ -1183,6 +1184,7 @@ final class NavidromeClient: MusicLibraryProviding {
             artworkURL: art,
             isPublic: isPublic,
             libraryAddedDate: created,
+            serverUpdatedDate: updated,
         )
     }
 
@@ -1194,6 +1196,7 @@ final class NavidromeClient: MusicLibraryProviding {
             artworkURL: summary.artworkURL,
             isPublic: isPublic,
             libraryAddedDate: summary.libraryAddedDate,
+            serverUpdatedDate: summary.serverUpdatedDate,
         )
     }
 

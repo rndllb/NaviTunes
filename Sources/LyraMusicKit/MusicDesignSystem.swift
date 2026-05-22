@@ -247,6 +247,10 @@ enum MusicDesign {
 
     static let albumCorner: CGFloat = 10
     static let gridAlbumCorner: CGFloat = 10
+    /// Library hub / Recently Added / Recently Downloaded — keeps row mates aligned when titles wrap.
+    static let libraryHubGridTitleMinHeight: CGFloat = 38
+    static let libraryHubGridSubtitleMinHeight: CGFloat = 16
+    static let libraryHubGridLabelSpacing: CGFloat = 8
     static let heroCorner: CGFloat = 12
     static let miniArtwork: CGFloat = 44
     /// Mini player row: smaller than grid mini so controls don’t clip in the glass capsule.
@@ -276,6 +280,13 @@ enum MusicDesign {
     // MARK: - Album hero detail (Play / Request capsule)
     /// Fixed capsule width — keeps Play / Pause / Request from stretching wider than Apple Music–style library rows.
     static let albumHeroPrimaryCapsuleWidth: CGFloat = 158
+    /// Icon–title gap inside the primary Play capsule (``ServerPlaylistDetailView`` hero).
+    static let albumHeroPlayLabelSpacing: CGFloat = 5
+
+    /// Hairline around song-list artwork (Apple Music–style, barely visible).
+    static func songRowArtworkBorder(for colorScheme: ColorScheme) -> Color {
+        Color.primary.opacity(colorScheme == .dark ? 0.10 : 0.07)
+    }
 }
 
 struct AlbumArtworkView: View {
@@ -284,7 +295,10 @@ struct AlbumArtworkView: View {
     var meshArtworkSeed: String? = nil
     var cornerRadius: CGFloat = MusicDesign.albumCorner
     var maxDecodePixels: CGFloat = 768
+    /// Faint outline on thumbnails; off on Now Playing hero/queue art only.
+    var showsSubtleBorder: Bool = true
 
+    @Environment(\.colorScheme) private var colorScheme
     @State private var decoded: CGImage?
     @State private var loadFailed = false
     @State private var loadedArtworkID: String?
@@ -295,34 +309,53 @@ struct AlbumArtworkView: View {
     }
 
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(MusicDesign.tertiarySurfaceFill)
-            if let url {
-                Group {
-                    if let decoded {
-                        ArtworkPlatformImage.swiftUIImage(cgImage: decoded)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else if loadFailed {
-                        placeholder
-                    } else {
-                        Color.clear
-                    }
+        // Square placeholder + overlay: keeps a 1:1 box and crops non-square art (aspect fill).
+        Color.clear
+            .aspectRatio(1, contentMode: .fit)
+            .overlay {
+                ZStack {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(MusicDesign.tertiarySurfaceFill)
+                    artworkContent
                 }
-                .task(id: artworkID) {
-                    await load(url: url)
-                }
-            } else if let meshArtworkSeed {
-                RadioStationMeshArtworkView(seedKey: meshArtworkSeed, cornerRadius: cornerRadius)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                placeholder
             }
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay {
+                if showsSubtleBorder {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(
+                            MusicDesign.songRowArtworkBorder(for: colorScheme),
+                            lineWidth: 0.5
+                        )
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var artworkContent: some View {
+        if let url {
+            Group {
+                if let decoded {
+                    ArtworkPlatformImage.swiftUIImage(cgImage: decoded)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .clipped()
+                } else if loadFailed {
+                    placeholder
+                } else {
+                    Color.clear
+                }
+            }
+            .task(id: artworkID) {
+                await load(url: url)
+            }
+        } else if let meshArtworkSeed {
+            RadioStationMeshArtworkView(seedKey: meshArtworkSeed, cornerRadius: cornerRadius)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            placeholder
         }
-        .aspectRatio(1, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 
     private func load(url: URL) async {
@@ -412,11 +445,175 @@ private struct MusicNewTabNavigationChromeModifier: ViewModifier {
     }
 }
 
+/// Library track/artist lists with a large title: keep the bar chrome transparent while scrolling
+/// so content doesn’t flash a solid black/white slab behind the collapsing title.
+private struct MusicLibraryListNavigationChromeModifier: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        content
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
+            .toolbarColorScheme(colorScheme == .dark ? .dark : .light, for: .navigationBar)
+        #else
+        content
+        #endif
+    }
+}
+
+#if os(iOS)
+private enum MusicLibraryNavigationBarAppearance {
+    static func hideCollapsedInlineTitle(on bar: UINavigationBar) {
+        let hiddenTitle: [NSAttributedString.Key: Any] = [.foregroundColor: UIColor.clear]
+
+        func applyingHiddenInlineTitle(_ appearance: UINavigationBarAppearance) -> UINavigationBarAppearance {
+            let copy = appearance.copy()
+            copy.titleTextAttributes = hiddenTitle
+            return copy
+        }
+
+        bar.standardAppearance = applyingHiddenInlineTitle(bar.standardAppearance)
+        bar.compactAppearance = applyingHiddenInlineTitle(bar.compactAppearance ?? UINavigationBarAppearance())
+    }
+
+    static func restoreDefaultInlineTitle(on bar: UINavigationBar) {
+        let attrs: [NSAttributedString.Key: Any] = [.foregroundColor: UIColor.label]
+
+        func restoringInlineTitle(_ appearance: UINavigationBarAppearance) -> UINavigationBarAppearance {
+            let copy = appearance.copy()
+            copy.titleTextAttributes = attrs
+            return copy
+        }
+
+        bar.standardAppearance = restoringInlineTitle(bar.standardAppearance)
+        bar.compactAppearance = restoringInlineTitle(bar.compactAppearance ?? UINavigationBarAppearance())
+    }
+}
+
+/// Hides the small centered nav title after the large title collapses on scroll.
+private struct MusicLibraryHideCollapsedNavTitleInstaller: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> Controller { Controller() }
+
+    func updateUIViewController(_ controller: Controller, context: Context) {}
+
+    final class Controller: UIViewController {
+        override func viewDidLoad() {
+            super.viewDidLoad()
+            view.isUserInteractionEnabled = false
+            view.backgroundColor = .clear
+        }
+
+        override func viewWillAppear(_ animated: Bool) {
+            super.viewWillAppear(animated)
+            applyHide()
+        }
+
+        private func applyHide() {
+            guard let bar = resolveNavigationBar() else { return }
+            MusicLibraryNavigationBarAppearance.hideCollapsedInlineTitle(on: bar)
+        }
+
+        private func resolveNavigationBar() -> UINavigationBar? {
+            var candidate: UIViewController? = self
+            while let current = candidate {
+                if let bar = current.navigationController?.navigationBar {
+                    return bar
+                }
+                candidate = current.parent
+            }
+            return nil
+        }
+    }
+}
+
+/// Restores visible inline nav titles on pushed detail screens (genre/album grids, etc.).
+private struct MusicLibraryRestoreInlineNavTitleInstaller: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> Controller { Controller() }
+
+    func updateUIViewController(_ controller: Controller, context: Context) {}
+
+    final class Controller: UIViewController {
+        override func viewDidLoad() {
+            super.viewDidLoad()
+            view.isUserInteractionEnabled = false
+            view.backgroundColor = .clear
+        }
+
+        override func viewWillAppear(_ animated: Bool) {
+            super.viewWillAppear(animated)
+            guard let bar = navigationController?.navigationBar else { return }
+            MusicLibraryNavigationBarAppearance.restoreDefaultInlineTitle(on: bar)
+        }
+    }
+}
+
+private struct MusicLibraryHideCollapsedNavTitleModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content.background(MusicLibraryHideCollapsedNavTitleInstaller().frame(width: 0, height: 0))
+    }
+}
+
+private struct MusicLibraryRestoreInlineNavTitleModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content.background(MusicLibraryRestoreInlineNavTitleInstaller().frame(width: 0, height: 0))
+    }
+}
+#endif
+
+/// Fixed white backdrop — never inherit app dark-mode nav fill (opaque black slab + white glyphs).
+private struct MusicFavoriteSongsNavigationChromeModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        content
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
+            .toolbarColorScheme(.light, for: .navigationBar)
+        #else
+        content
+        #endif
+    }
+}
+
 extension View {
     /// Navigation bar matches app appearance (Light / Dark / System).
     @ViewBuilder
     func musicNavigationChrome() -> some View {
         modifier(MusicNavigationChromeModifier())
+    }
+
+    /// Large-title library lists (Songs, Artists, …): transparent nav bar while scrolling.
+    @ViewBuilder
+    func musicLibraryListNavigationChrome() -> some View {
+        modifier(MusicLibraryListNavigationChromeModifier())
+    }
+
+    /// Library category screens: system large title above search; no collapsing inline nav label.
+    @ViewBuilder
+    func musicLibrarySectionScreen(title: String) -> some View {
+        navigationTitle(title)
+            .musicNavigationBarTitleDisplayMode(.large)
+            .musicLibraryListNavigationChrome()
+            .musicNavigationBarVisibleWhenPushed()
+            #if os(iOS)
+            .modifier(MusicLibraryHideCollapsedNavTitleModifier())
+            #endif
+    }
+
+    /// Pushed library detail with an inline nav title — undo large-list inline-title hiding.
+    @ViewBuilder
+    func musicInlineNavigationTitleScreen() -> some View {
+        #if os(iOS)
+        modifier(MusicLibraryRestoreInlineNavTitleModifier())
+        #else
+        self
+        #endif
+    }
+
+    /// ``FavoritePlaylistView`` — white hero wash: transparent bar (no dark slab on scroll), dark controls.
+    @ViewBuilder
+    func musicFavoriteSongsNavigationChrome() -> some View {
+        modifier(MusicFavoriteSongsNavigationChromeModifier())
     }
 
     /// Plain lists on the search tab.
@@ -431,6 +628,7 @@ extension View {
             listStyle(.plain)
                 .scrollContentBackground(.hidden)
                 .listSectionSeparator(.hidden)
+                .listRowSeparator(.hidden)
         }
     }
 }
@@ -669,7 +867,208 @@ extension MusicTabTitleHeaderBar where Trailing == EmptyView {
     }
 }
 
+// MARK: - Chevron navigation rows (Library, Genres, Playlists, Search, …)
+
+/// Shared insets for list rows with a trailing `chevron.right` (divider stops at the chevron’s right edge).
+enum MusicChevronRowMetrics {
+    static let leadingPadding: CGFloat = 20
+    static let rowTrailingPadding: CGFloat = 17
+    static let chevronTrailingPadding: CGFloat = 9
+    /// Row trailing pad + chevron’s own trailing pad (see ``LibraryArtistRowLabel``).
+    static let dividerTrailingInset: CGFloat = rowTrailingPadding + chevronTrailingPadding
+
+    static let symbolColumnWidth: CGFloat = 28
+    /// Divider starts after the leading SF Symbol column (Library hub, Genres, Downloaded hub).
+    static let symbolDividerLeading: CGFloat = leadingPadding + symbolColumnWidth + 8
+
+    static func artworkDividerLeading(side: CGFloat, spacing: CGFloat) -> CGFloat {
+        leadingPadding + side + spacing
+    }
+
+    static let playlistArtworkDividerLeading = artworkDividerLeading(side: 52, spacing: 16)
+    static let artistArtworkDividerLeading = artworkDividerLeading(side: 52, spacing: 14)
+}
+
+/// Trailing disclosure chevron for navigation rows — keep padding aligned with ``MusicChevronRowMetrics``.
+struct MusicNavigationChevron: View {
+    var body: some View {
+        Image(systemName: "chevron.right")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(Color(white: 0.35))
+            .padding(.trailing, MusicChevronRowMetrics.chevronTrailingPadding)
+    }
+}
+
+extension View {
+    /// Standard horizontal insets for rows that use ``MusicNavigationChevron``.
+    func musicChevronRowPadding() -> some View {
+        padding(.leading, MusicChevronRowMetrics.leadingPadding)
+            .padding(.trailing, MusicChevronRowMetrics.rowTrailingPadding)
+    }
+}
+
+/// Hairline under navigation rows — inset so it does not run past the chevron’s right edge.
+struct MusicChevronRowDivider: View {
+    enum Kind {
+        case symbolIcon
+        case playlistArtwork
+        case artistArtwork
+        case custom(leading: CGFloat, trailing: CGFloat = MusicChevronRowMetrics.dividerTrailingInset)
+    }
+
+    let kind: Kind
+    var color: Color = MusicDesign.separator
+
+    private var leadingInset: CGFloat {
+        switch kind {
+        case .symbolIcon: return MusicChevronRowMetrics.symbolDividerLeading
+        case .playlistArtwork: return MusicChevronRowMetrics.playlistArtworkDividerLeading
+        case .artistArtwork: return MusicChevronRowMetrics.artistArtworkDividerLeading
+        case .custom(let leading, _): return leading
+        }
+    }
+
+    private var trailingInset: CGFloat {
+        switch kind {
+        case .custom(_, let trailing): return trailing
+        default: return MusicChevronRowMetrics.dividerTrailingInset
+        }
+    }
+
+    var body: some View {
+        MusicInsetHairlineDivider(
+            leadingInset: leadingInset,
+            trailingInset: trailingInset,
+            color: color,
+        )
+    }
+}
+
+/// Inset horizontal rule (library songs, chevron rows, album tracklists).
+struct MusicInsetHairlineDivider: View {
+    var leadingInset: CGFloat
+    var trailingInset: CGFloat
+    var color: Color = MusicDesign.separator
+
+    private var hairlineHeight: CGFloat {
+        #if os(iOS)
+        max(1.0 / UIScreen.main.scale, 1.0 / 3.0)
+        #elseif os(macOS)
+        max(1.0 / (NSScreen.main?.backingScaleFactor ?? 2), 1.0 / 3.0)
+        #else
+        1.0 / 3.0
+        #endif
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Color.clear.frame(width: leadingInset)
+            Rectangle()
+                .fill(color)
+                .frame(maxWidth: .infinity)
+                .frame(height: hairlineHeight)
+        }
+        .padding(.trailing, trailingInset)
+        .frame(height: hairlineHeight)
+    }
+}
+
+extension View {
+    /// Bottom hairline for chevron navigation rows; omit on the last row in a section.
+    @ViewBuilder
+    func musicChevronRowDivider(_ kind: MusicChevronRowDivider.Kind, shows: Bool) -> some View {
+        overlay(alignment: .bottom) {
+            if shows {
+                MusicChevronRowDivider(kind: kind)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+}
+
 // MARK: - Library list chrome (Songs, playlists, favorites, downloads, artist detail)
+
+/// Filter / sort / overflow glyph in a library navigation bar — always black or white, never accent.
+struct MusicLibraryToolbarIcon: View {
+    let systemName: String
+
+    var body: some View {
+        Image(systemName: systemName)
+            .font(.body.weight(.semibold))
+            .symbolRenderingMode(.monochrome)
+            .foregroundStyle(.primary)
+    }
+}
+
+extension View {
+    /// Library list screens: toolbar buttons use primary (black/white), not ``MusicDesign/accent``.
+    @ViewBuilder
+    func musicLibraryToolbarMonochromeControls() -> some View {
+        tint(Color.primary)
+    }
+}
+
+/// Vertical A–Z index strip (Apple Music–style) for grouped library lists.
+struct MusicAlphabetIndexScrubber: View {
+    let letters: [String]
+    var selectedLetter: String?
+    /// Height of the visible track the letters are centered in (viewport minus safe area).
+    var trackHeight: CGFloat
+    var onSelect: (String) -> Void
+    var onScrubEnd: (() -> Void)?
+
+    private let rowHeight: CGFloat = 14
+
+    var body: some View {
+        GeometryReader { geo in
+            let containerHeight = geo.size.height
+
+            VStack(spacing: 1) {
+                ForEach(letters, id: \.self) { letter in
+                    Text(letter)
+                        .font(.system(size: 11, weight: selectedLetter == letter ? .bold : .semibold))
+                        .foregroundStyle(
+                            selectedLetter == letter
+                                ? MusicDesign.accent
+                                : MusicDesign.accent.opacity(0.88)
+                        )
+                        .frame(width: 18, height: rowHeight)
+                }
+            }
+            .frame(width: 18, height: trackHeight, alignment: .center)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .contentShape(Rectangle())
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                    .onChanged { value in
+                        guard let letter = letter(
+                            at: value.location.y,
+                            containerHeight: containerHeight,
+                            count: letters.count
+                        ) else {
+                            return
+                        }
+                        onSelect(letter)
+                    }
+                    .onEnded { _ in onScrubEnd?() }
+            )
+        }
+        .animation(nil, value: selectedLetter)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Alphabetical index")
+    }
+
+    private func letter(at y: CGFloat, containerHeight: CGFloat, count: Int) -> String? {
+        guard count > 0, containerHeight > 0 else { return nil }
+        let stackHeight = CGFloat(count) * rowHeight + CGFloat(max(0, count - 1))
+        let originY = (containerHeight - stackHeight) / 2
+        let relativeY = y - originY
+        guard relativeY >= 0, relativeY < stackHeight else { return nil }
+        let slot = rowHeight + 1
+        let index = min(count - 1, max(0, Int(relativeY / slot)))
+        return letters[index]
+    }
+}
 
 /// Rounded search field used on library track lists (adapts fill in light/dark).
 struct LibrarySearchPill: View {
@@ -693,6 +1092,46 @@ struct LibrarySearchPill: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
         .background(Capsule(style: .continuous).fill(MusicDesign.chromeCapsuleFill))
+    }
+}
+
+/// Play + Shuffle capsules — monochrome hero styling (``FavoritePlaylistView`` search pills).
+struct AlbumHeroPlayShuffleCluster: View {
+    let palette: ArtworkDynamicGradient.BackdropPalette
+    var isDisabled: Bool = false
+    let onPlay: () -> Void
+    let onShuffle: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            heroCapsuleButton(
+                systemImage: "shuffle",
+                title: "Shuffle",
+                action: onShuffle
+            )
+            heroCapsuleButton(
+                systemImage: "play.fill",
+                title: "Play",
+                action: onPlay
+            )
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func heroCapsuleButton(systemImage: String, title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: MusicDesign.albumHeroPlayLabelSpacing) {
+                Image(systemName: systemImage)
+                Text(title)
+            }
+            .font(.headline.weight(.bold))
+            .foregroundStyle(palette.heroPlayCapsuleForeground)
+            .frame(maxWidth: .infinity)
+            .frame(height: 54)
+            .background(Capsule().fill(palette.heroPlayCapsuleBackground))
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
     }
 }
 
@@ -726,6 +1165,82 @@ struct LibraryPlayShuffleRow: View {
             .buttonStyle(.plain)
             .disabled(isDisabled)
         }
+    }
+}
+
+// MARK: - Library hub grids (pinned, recently added, recently downloaded)
+
+enum LibraryHubGridCellStyle {
+    /// 3-up pins under **Library** — centered labels, full-width square art (original hub look).
+    case pinned
+    /// 2-up shelves — leading title + artist with fixed label blocks for row alignment.
+    case shelf
+}
+
+/// Library grid tile. ``AlbumArtworkView`` is already 1:1; do not wrap it in another aspect ratio.
+struct LibraryHubGridCell<Artwork: View>: View {
+    let title: String
+    var subtitle: String? = nil
+    var style: LibraryHubGridCellStyle = .shelf
+    @ViewBuilder var artwork: () -> Artwork
+
+    private var stackAlignment: HorizontalAlignment {
+        style == .pinned ? .center : .leading
+    }
+
+    private var textAlignment: TextAlignment {
+        style == .pinned ? .center : .leading
+    }
+
+    private var titleFrameAlignment: Alignment {
+        style == .pinned ? .top : .topLeading
+    }
+
+    var body: some View {
+        VStack(alignment: stackAlignment, spacing: MusicDesign.libraryHubGridLabelSpacing) {
+            artwork()
+                .frame(maxWidth: .infinity)
+
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+                .multilineTextAlignment(textAlignment)
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: MusicDesign.libraryHubGridTitleMinHeight,
+                    alignment: titleFrameAlignment
+                )
+
+            if style == .shelf {
+                Group {
+                    if let subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.caption)
+                            .foregroundStyle(MusicDesign.secondaryLabel)
+                            .lineLimit(1)
+                    } else {
+                        Color.clear
+                    }
+                }
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: MusicDesign.libraryHubGridSubtitleMinHeight,
+                    alignment: .topLeading
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .top)
+    }
+}
+
+extension MusicDesign {
+    /// Top-aligned flexible columns for library hub grids (2-up or 3-up).
+    static func libraryHubGridColumns(count: Int, spacing: CGFloat = 12) -> [GridItem] {
+        Array(
+            repeating: GridItem(.flexible(), spacing: spacing, alignment: .top),
+            count: count
+        )
     }
 }
 

@@ -117,6 +117,8 @@ public final class AppModel: ObservableObject {
     }
     /// O(1) "is this chart row in the user's library?" lookup. Rebuilt with ``libraryTrackTitleIndex``.
     private(set) var libraryChartTrackIndex: LibraryChartTrackIndex = .empty
+    /// O(1) track lookup for downloaded-library resolution (rebuilt with ``discoveryLibraryTracks``).
+    private(set) var discoveryTrackById: [String: Track] = [:]
     @Published private(set) var isIndexingLibraryTracks = false
     @Published private(set) var libraryTrackIndexLoadError: String?
 
@@ -158,6 +160,10 @@ public final class AppModel: ObservableObject {
     private static let recentlyPlayedTracksKey = "LyraMusic.recentlyPlayedTracks"
     private static let recentlyPlayedTracksLimit = 100
     @Published private(set) var recentlyPlayedTracks: [Track] = []
+
+    /// Playlist id → last time the user meaningfully played from that playlist (scrobble threshold).
+    private static let playlistLastPlayedDatesKey = "LyraMusic.playlistLastPlayedDates"
+    @Published private(set) var playlistLastPlayedDates: [String: Date] = [:]
 
     /// Jellyfin / Navidrome playlists (excludes in-app “Favorite Songs”).
     @Published private(set) var libraryPlaylists: [PlaylistSummary] = []
@@ -399,6 +405,7 @@ public final class AppModel: ObservableObject {
         loadFavoriteTrackIdsFromDefaults()
         loadRecentlyPlayedEntriesFromDefaults()
         loadRecentlyPlayedTracksFromDefaults()
+        loadPlaylistLastPlayedDatesFromDefaults()
         player.onTrackScrobbled = { [weak self] track, source in
             Task { @MainActor in
                 self?.recordRecentPlay(track: track, source: source)
@@ -1081,27 +1088,7 @@ public final class AppModel: ObservableObject {
     func tracksForDownloadedLibrary() -> [Track] {
         let cached = offline.cachedTracks()
         if !cached.isEmpty { return cached }
-        let ids = offline.downloadedTrackIds
-        guard !ids.isEmpty else { return [] }
-        var seen = Set<String>()
-        var out: [Track] = []
-        for track in discoveryLibraryTracks where ids.contains(track.id) {
-            guard offline.localFile(for: track.id) != nil else { continue }
-            if seen.insert(track.id).inserted { out.append(track) }
-        }
-        for id in ids where !seen.contains(id) {
-            guard offline.localFile(for: id) != nil else { continue }
-            if let track = offline.cachedTrack(id: id) {
-                out.append(track)
-                seen.insert(id)
-            }
-        }
-        return out.sorted {
-            let ac = $0.albumTitle.localizedCaseInsensitiveCompare($1.albumTitle)
-            if ac != .orderedSame { return ac == .orderedAscending }
-            if $0.discNumber != $1.discNumber { return $0.discNumber < $1.discNumber }
-            return $0.indexNumber < $1.indexNumber
-        }
+        return offline.tracksMatchingDownloadedIds(catalogById: discoveryTrackById)
     }
 
     /// `true` when the playlist is in the user's library (separate from the user's
@@ -1174,6 +1161,18 @@ public final class AppModel: ObservableObject {
     private func ensureAlbumInCatalog(_ album: AlbumSummary) {
         if libraryAlbumsById[album.id] != nil { return }
         libraryAlbums.append(album)
+    }
+
+    /// Ensures a pinned album can render in the Library hub grid before the next catalog refresh.
+    func retainAlbumForLibraryPin(_ album: AlbumSummary) {
+        ensureAlbumInCatalog(album)
+    }
+
+    /// Ensures a pinned song can render in the Library hub grid before the track index finishes loading.
+    func retainTrackForLibraryPin(_ track: Track) {
+        if discoveryTrackById[track.id] != nil { return }
+        discoveryLibraryTracks.append(trackWithResolvedArtwork(track))
+        rebuildDiscoveryTrackIndices()
     }
 
     /// Synthesizes a minimal AlbumSummary from a track and inserts it when the album
@@ -1317,6 +1316,7 @@ public final class AppModel: ObservableObject {
     /// snapshot is reassigned. Centralized so no caller can update one and forget
     /// the other.
     private func rebuildDiscoveryTrackIndices() {
+        discoveryTrackById = Dictionary(uniqueKeysWithValues: discoveryLibraryTracks.map { ($0.id, $0) })
         libraryTrackTitleIndex = LibraryTrackMatcher.titleIndex(from: discoveryLibraryTracks)
         libraryChartTrackIndex = LibraryChartTrackIndex(tracks: discoveryLibraryTracks)
     }
@@ -1885,6 +1885,22 @@ public final class AppModel: ObservableObject {
         defaults.set(data, forKey: Self.recentlyPlayedEntriesKey)
     }
 
+    func playlistLastPlayedDate(forPlaylistId id: String) -> Date? {
+        playlistLastPlayedDates[id]
+    }
+
+    private func loadPlaylistLastPlayedDatesFromDefaults() {
+        guard let data = UserDefaults.standard.data(forKey: Self.playlistLastPlayedDatesKey),
+              let decoded = try? JSONDecoder().decode([String: Date].self, from: data)
+        else { return }
+        playlistLastPlayedDates = decoded
+    }
+
+    private func savePlaylistLastPlayedDatesToDefaults() {
+        guard let data = try? JSONEncoder().encode(playlistLastPlayedDates) else { return }
+        UserDefaults.standard.set(data, forKey: Self.playlistLastPlayedDatesKey)
+    }
+
     /// Records that the user played a track. Plays sourced from a playlist record the playlist;
     /// ad-hoc/album queues fall back to the track's album. Called by `PlaybackEngine` once per
     /// track when scrobble fires (so a brief preview play doesn't pollute the shelf).
@@ -1895,6 +1911,8 @@ public final class AppModel: ObservableObject {
             let id = playlist.id.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !id.isEmpty else { return }
             entry = RecentPlayedEntry(kind: .playlist, id: id)
+            playlistLastPlayedDates[id] = Date()
+            savePlaylistLastPlayedDatesToDefaults()
         case .none:
             let id = track.albumId.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !id.isEmpty else { return }

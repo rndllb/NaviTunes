@@ -60,6 +60,20 @@ extension ArtworkDynamicGradient.BackdropPalette {
     /// Filled disk behind the cached arrow.
     var trackOfflineCachedDiskFill: Color { heroGlassCircleFill }
 
+    /// ``FavoritePlaylistView`` — static white wash + dark hero chrome.
+    static let favoriteSongsHero: Self = {
+        let backdrop = Color.white
+        return ArtworkDynamicGradient.BackdropPalette(
+            gradientStops: [
+                Gradient.Stop(color: backdrop, location: 0),
+                Gradient.Stop(color: backdrop, location: 1),
+            ],
+            heroSolidBackdropColor: backdrop,
+            backdropRelativeLuminance: 0.98,
+            prefersDarkHeroChrome: true,
+        )
+    }()
+
     /// Standard library / playlist lists (no artwork backdrop) — handoff from system color scheme.
     static func listSurface(colorScheme: ColorScheme) -> Self {
         let prefersDarkChrome = colorScheme == .light
