@@ -23,7 +23,16 @@ extension PlaylistSummary: Transferable {
 /// Apple Music–style long-press menu for album cells. Drop in via `.libraryAlbumContextMenu(album)`.
 struct LibraryAlbumContextMenuContent: View {
     @EnvironmentObject private var app: AppModel
+    @AppStorage(LibraryPinStore.storageKey) private var pinnedStorage: String = "[]"
     let album: AlbumSummary
+
+    private var pinRef: LibraryPinnedRef {
+        LibraryPinnedRef(kind: .album, itemId: album.id)
+    }
+
+    private var isPinned: Bool {
+        LibraryPinStore.contains(pinRef, in: pinnedStorage)
+    }
 
     var body: some View {
         Section {
@@ -51,6 +60,15 @@ struct LibraryAlbumContextMenuContent: View {
                 } label: {
                     Label("Add to Library", systemImage: "plus.square.on.square")
                 }
+            }
+            Button {
+                if !isPinned { app.retainAlbumForLibraryPin(album) }
+                LibraryPinStore.toggle(pinRef, storage: &pinnedStorage)
+            } label: {
+                Label(
+                    LibraryPinStore.menuLabel(kind: .album, isPinned: isPinned),
+                    systemImage: isPinned ? "pin.slash" : "pin"
+                )
             }
             Button {
                 Task { await addToPlaylist() }
@@ -138,14 +156,16 @@ struct LibraryAlbumContextMenuContent: View {
 /// Apple Music–style long-press menu for playlist cells. Drop in via `.libraryPlaylistContextMenu(playlist)`.
 struct LibraryPlaylistContextMenuContent: View {
     @EnvironmentObject private var app: AppModel
-    @AppStorage("favoritedPlaylistIds") private var favoritedRaw: String = ""
+    @AppStorage(LibraryPinStore.storageKey) private var pinnedStorage: String = "[]"
     let playlist: PlaylistSummary
 
-    private var pinnedIds: Set<String> {
-        Set(favoritedRaw.split(separator: ",").map(String.init).filter { !$0.isEmpty })
+    private var pinRef: LibraryPinnedRef {
+        LibraryPinnedRef(kind: .playlist, itemId: playlist.id)
     }
 
-    private var isPinned: Bool { pinnedIds.contains(playlist.id) }
+    private var isPinned: Bool {
+        LibraryPinStore.contains(pinRef, in: pinnedStorage)
+    }
 
     var body: some View {
         Section {
@@ -175,10 +195,10 @@ struct LibraryPlaylistContextMenuContent: View {
                 }
             }
             Button {
-                togglePinned()
+                LibraryPinStore.toggle(pinRef, storage: &pinnedStorage)
             } label: {
                 Label(
-                    isPinned ? "Unpin" : "Pin to Library",
+                    LibraryPinStore.menuLabel(kind: .playlist, isPinned: isPinned),
                     systemImage: isPinned ? "pin.slash" : "pin"
                 )
             }
@@ -205,12 +225,6 @@ struct LibraryPlaylistContextMenuContent: View {
                 Label("Share Playlist", systemImage: "square.and.arrow.up")
             }
         }
-    }
-
-    private func togglePinned() {
-        var ids = pinnedIds
-        if isPinned { ids.remove(playlist.id) } else { ids.insert(playlist.id) }
-        favoritedRaw = ids.joined(separator: ",")
     }
 
     private func loadTracks() async throws -> [Track] {
@@ -290,6 +304,20 @@ extension View {
         .draggable(album) {
             AlbumArtworkView(url: album.artworkURL, cornerRadius: 16)
                 .frame(width: libraryCellLiftSize, height: libraryCellLiftSize)
+        }
+    }
+
+    /// Long-press on a Library hub pin tile — unpin only (navigation is a tap).
+    func libraryPinnedItemContextMenu(_ item: LibraryPinnedItem, pinnedStorage: Binding<String>) -> some View {
+        contextMenu {
+            Button(role: .destructive) {
+                LibraryPinStore.remove(item.pinRef, storage: &pinnedStorage.wrappedValue)
+            } label: {
+                Label(
+                    LibraryPinStore.menuLabel(for: item, isPinned: true),
+                    systemImage: "pin.slash"
+                )
+            }
         }
     }
 

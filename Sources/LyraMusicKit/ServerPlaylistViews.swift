@@ -292,10 +292,10 @@ struct ServerPlaylistDetailView: View {
     @State private var navigationTitleText = ""
     @State private var isDownloadingAll = false
     @State private var sortOrder: PlaylistTrackSortOrder = .playlistOrder
-    @AppStorage("favoritedPlaylistIds") private var favoritedRaw: String = ""
+    @AppStorage(LibraryPinStore.storageKey) private var pinnedStorage: String = "[]"
 
-    // Album-mode-only state (kept here so the View remains a single type with the
-    // playlist case; ignored when ``source`` is a playlist).
+    // Shared hero backdrop palette (albums + regular playlists). ``FavoritePlaylistView``
+    // uses a fixed white wash and never routes through this view.
     @State private var backdropPalette: ArtworkDynamicGradient.BackdropPalette = .fallback
     @State private var showCompleteAlbum: Bool = false
     @State private var showDownloadedAlbumActions = false
@@ -305,27 +305,28 @@ struct ServerPlaylistDetailView: View {
     /// Live scroll target that can be re-driven by ``AppModel/pendingPlaylistScroll``
     /// after the initial ``scrollToTrackId`` (from the init) has been consumed.
     @State private var activeScrollTrackId: String? = nil
+    @State private var scrollHighlightTask: Task<Void, Never>?
+    /// Cached projection of `rows` → search → sort / album filter. Recomputed when inputs change.
+    @State private var displayedRows: [PlaylistRowItem] = []
 
-    private var filtered: [PlaylistRowItem] {
+    private func recomputeDisplayedRows() {
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let base: [PlaylistRowItem]
         if q.isEmpty {
             base = rows
         } else {
             base = rows.filter {
-            $0.track.title.lowercased().contains(q)
-                || $0.track.artist.lowercased().contains(q)
-                || $0.track.albumTitle.lowercased().contains(q)
+                $0.track.title.lowercased().contains(q)
+                    || $0.track.artist.lowercased().contains(q)
+                    || $0.track.albumTitle.lowercased().contains(q)
             }
         }
-        return sortedRows(base)
+        displayedRows = sortedRows(base)
     }
 
     var body: some View {
         ZStack(alignment: .top) {
-            if isAlbum {
-                AlbumHeroBackdropView(artworkURL: source.artworkURL, palette: backdropPalette)
-            }
+            AlbumHeroBackdropView(artworkURL: source.artworkURL, palette: backdropPalette)
 
             ScrollViewReader { proxy in
                 List {
@@ -334,7 +335,7 @@ struct ServerPlaylistDetailView: View {
                             hero: { heroBlock.padding(.top, 8).padding(.bottom, 22) },
                             pills: {
                                 LibraryPlayShuffleRow(
-                                    isDisabled: filtered.isEmpty,
+                                    isDisabled: displayedRows.isEmpty,
                                     onPlay: { Task { await playAll() } },
                                     onShuffle: { Task { await shuffleAll() } }
                                 )
@@ -355,7 +356,7 @@ struct ServerPlaylistDetailView: View {
                 .listRowSpacing(isAlbum ? 5 : 0)
                 .modifier(AlbumDetailListContentMargins(isAlbum: isAlbum))
                 .scrollContentBackground(.hidden)
-                .background(isAlbum ? Color.clear : MusicDesign.background)
+                .background(Color.clear)
                 .environment(\.defaultMinListRowHeight, isAlbum ? 0 : 44)
                 .onChange(of: rows.map(\.track.id)) { _, _ in
                     scrollToFocusedTrackIfNeeded(proxy: proxy)
@@ -374,7 +375,7 @@ struct ServerPlaylistDetailView: View {
         .playlistTrackSearchable(enabled: !isAlbum, text: $searchText)
         .navigationTitle("")
         .musicNavigationBarTitleDisplayMode(.inline)
-        .modifier(DetailNavigationChrome(isAlbum: isAlbum, palette: backdropPalette))
+        .modifier(DetailNavigationChrome(palette: backdropPalette))
         .musicNavigationBarVisibleWhenPushed()
         .navigationDestination(item: $navigateAlbum) { album in
             ServerPlaylistDetailView(album: album, librarySource: true)
@@ -392,9 +393,6 @@ struct ServerPlaylistDetailView: View {
         ))
         .task { await load() }
         .task(id: source.artworkURL?.absoluteString ?? "") {
-            // Album-mode dynamic backdrop palette derivation. No-op for playlists since
-            // the palette state is ignored in that branch.
-            guard isAlbum else { return }
             let p = await ArtworkDynamicGradient.analyzeBackdrop(from: source.artworkURL)
             await MainActor.run { backdropPalette = p }
         }
@@ -461,13 +459,19 @@ struct ServerPlaylistDetailView: View {
             app: app,
             offline: offline
         )
+        .onDisappear { scrollHighlightTask?.cancel() }
+        .onChange(of: rows) { _, _ in recomputeDisplayedRows() }
+        .onChange(of: searchText) { _, _ in recomputeDisplayedRows() }
+        .onChange(of: sortOrder) { _, _ in recomputeDisplayedRows() }
+        .onChange(of: showCompleteAlbum) { _, _ in recomputeDisplayedRows() }
+        .onChange(of: app.libraryCatalogEpoch) { _, _ in recomputeDisplayedRows() }
     }
 
     /// Branched rows for the List: empty / loading states + the track ForEach +
     /// (album-mode only) Show-Complete-Album toggle and metadata footer.
     @ViewBuilder
     private var trackRows: some View {
-        let visible = filtered
+        let visible = displayedRows
         if isLoading, rows.isEmpty {
             ProgressView()
                 .tint(MusicDesign.accent)
@@ -500,7 +504,7 @@ struct ServerPlaylistDetailView: View {
                         .albumTrackListRowStyle(highlightOpacity: highlightOpacity)
                 } else {
                     songRow(row, displayIndex: index + 1, showsBottomDivider: showsBottomDivider)
-                        .librarySongListRowStyle(highlightOpacity: highlightOpacity)
+                        .heroBackdropSongListRowStyle(highlightOpacity: highlightOpacity)
                 }
             }
             if isAlbum {
@@ -544,7 +548,7 @@ struct ServerPlaylistDetailView: View {
                     playlistOverflowMenuContent
                 } label: {
                     Image(systemName: "ellipsis")
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(backdropPalette.heroChromePrimary)
                 }
                 .menuOrder(.fixed)
             }
@@ -617,12 +621,17 @@ struct ServerPlaylistDetailView: View {
         !rows.isEmpty && rows.allSatisfy { app.favoriteTrackIds.contains($0.track.id) }
     }
 
-    private var favoritedPlaylistIds: Set<String> {
-        Set(favoritedRaw.split(separator: ",").map(String.init).filter { !$0.isEmpty })
+    private var playlistPinRef: LibraryPinnedRef {
+        LibraryPinnedRef(kind: .playlist, itemId: playlist.id)
     }
 
     private var isPlaylistPinned: Bool {
-        favoritedPlaylistIds.contains(playlist.id)
+        LibraryPinStore.contains(playlistPinRef, in: pinnedStorage)
+    }
+
+    private var isAlbumPinned: Bool {
+        guard let album = albumOrNil else { return false }
+        return LibraryPinStore.contains(LibraryPinnedRef(kind: .album, itemId: album.id), in: pinnedStorage)
     }
 
     @ViewBuilder
@@ -652,7 +661,7 @@ struct ServerPlaylistDetailView: View {
         Section {
             Button(action: togglePlaylistPinned) {
                 Label(
-                    isPlaylistPinned ? "Unpin Playlist" : "Pin Playlist",
+                    LibraryPinStore.menuLabel(kind: .playlist, isPinned: isPlaylistPinned),
                     systemImage: isPlaylistPinned ? "pin.slash" : "pin"
                 )
             }
@@ -702,7 +711,7 @@ struct ServerPlaylistDetailView: View {
             } label: {
                 Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
             }
-            .disabled(filtered.isEmpty)
+            .disabled(displayedRows.isEmpty)
         }
         .tint(Color.primary)
 
@@ -730,14 +739,14 @@ struct ServerPlaylistDetailView: View {
             VStack(spacing: 6) {
                 Text(navigationTitleText.isEmpty ? source.displayName : navigationTitleText)
                     .font(.system(size: 26, weight: .bold))
-                    .foregroundStyle(isAlbum ? backdropPalette.heroChromePrimary : .primary)
+                    .foregroundStyle(backdropPalette.heroChromePrimary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 16)
 
                 if let subtitle = heroSubtitle {
                     Text(subtitle)
                         .font(.subheadline.weight(.medium))
-                        .foregroundStyle(isAlbum ? backdropPalette.heroChromeSecondary : MusicDesign.secondaryLabel)
+                        .foregroundStyle(backdropPalette.heroChromeSecondary)
                         .multilineTextAlignment(.center)
                 }
             }
@@ -762,7 +771,7 @@ struct ServerPlaylistDetailView: View {
                     .background(Circle().fill(heroCircleFill))
             }
             .buttonStyle(.plain)
-            .disabled(filtered.isEmpty)
+            .disabled(displayedRows.isEmpty)
 
             Button {
                 Task { await playAll() }
@@ -777,7 +786,7 @@ struct ServerPlaylistDetailView: View {
                 .background(Capsule().fill(heroPlayCapsuleBackground))
             }
             .buttonStyle(.plain)
-            .disabled(filtered.isEmpty)
+            .disabled(displayedRows.isEmpty)
 
             primaryActionButton
 
@@ -786,21 +795,21 @@ struct ServerPlaylistDetailView: View {
         .padding(.horizontal, 22)
     }
 
-    /// Hero glyph color — backdrop-aware in album mode, accent in playlist mode.
+    /// Hero glyph color — backdrop-aware for albums and regular playlists.
     private var heroGlyphColor: Color {
-        isAlbum ? backdropPalette.heroGlassIcon : MusicDesign.accent
+        backdropPalette.heroGlassIcon
     }
 
     private var heroCircleFill: Color {
-        isAlbum ? backdropPalette.heroGlassCircleFill : MusicDesign.chromeCapsuleFill
+        backdropPalette.heroGlassCircleFill
     }
 
     private var heroPlayCapsuleForeground: Color {
-        isAlbum ? backdropPalette.heroPlayCapsuleForeground : .black
+        backdropPalette.heroPlayCapsuleForeground
     }
 
     private var heroPlayCapsuleBackground: Color {
-        isAlbum ? backdropPalette.heroPlayCapsuleBackground : .white
+        backdropPalette.heroPlayCapsuleBackground
     }
 
     /// Right-hand action in the hero triplet. Album mode: `plus` → `arrow.down` → `checkmark`
@@ -885,13 +894,15 @@ struct ServerPlaylistDetailView: View {
     }
 
     private func togglePlaylistPinned() {
-        var ids = favoritedPlaylistIds
-        if ids.contains(playlist.id) {
-            ids.remove(playlist.id)
-        } else {
-            ids.insert(playlist.id)
+        LibraryPinStore.toggle(playlistPinRef, storage: &pinnedStorage)
+    }
+
+    private func toggleAlbumPinned() {
+        guard let album = albumOrNil else { return }
+        if !isAlbumPinned {
+            app.retainAlbumForLibraryPin(album)
         }
-        favoritedRaw = ids.joined(separator: ",")
+        LibraryPinStore.toggle(LibraryPinnedRef(kind: .album, itemId: album.id), storage: &pinnedStorage)
     }
 
     private func toggleAllTrackFavorites() {
@@ -1004,10 +1015,11 @@ struct ServerPlaylistDetailView: View {
             hidesAddToLibraryChip: !isAlbum,
             showsArtwork: !isAlbum,
             showsArtist: !isAlbum,
-            rowBackgroundFill: isAlbum ? .clear : MusicDesign.background,
+            rowBackgroundFill: .clear,
             usesAlbumSwipeChrome: isAlbum,
             showsBottomDivider: showsBottomDivider,
             dividerPalette: isAlbum ? backdropPalette : nil,
+            rowLabelPalette: isAlbum ? nil : backdropPalette,
             trackDisplayIndex: isAlbum ? displayIndex : nil,
             onPresentDownloadedDeleteSheet: {
                 trackPendingDownloadedDelete = row.track
@@ -1027,12 +1039,17 @@ struct ServerPlaylistDetailView: View {
     private func load() async {
         guard app.isSignedIn else {
             loadError = "Sign in to view your library."
+            rows = []
             isLoading = false
+            recomputeDisplayedRows()
             return
         }
         isLoading = true
         loadError = nil
-        defer { isLoading = false }
+        defer {
+            isLoading = false
+            recomputeDisplayedRows()
+        }
         do {
             switch source {
             case .playlist(let p):
@@ -1041,7 +1058,10 @@ struct ServerPlaylistDetailView: View {
                 // Album mode: fetch ordered album tracks and wrap them in
                 // ``PlaylistRowItem``s so the rest of the view's reads (filtering,
                 // sorting, playback) can stay shape-uniform with playlist mode.
-                guard let lib = app.activeLibrary else { rows = []; return }
+                guard let lib = app.activeLibrary else {
+                    rows = []
+                    return
+                }
                 let tracks = try await lib.tracks(forAlbumId: album.id)
                 rows = tracks.enumerated().map { idx, track in
                     PlaylistRowItem(rowId: "album-\(album.id)-\(idx)-\(track.id)", track: track)
@@ -1072,7 +1092,7 @@ struct ServerPlaylistDetailView: View {
     }
 
     private var tracksForPlayback: [Track] {
-        filtered.map(\.track)
+        displayedRows.map(\.track)
     }
 
     private var playbackSource: PlaybackSource? {
@@ -1102,7 +1122,7 @@ struct ServerPlaylistDetailView: View {
     private func play(row: PlaylistRowItem) async {
         guard let lib = app.activeLibrary else { return }
         let playbackTracks = tracksForPlayback
-        guard let idx = filtered.firstIndex(where: { $0.rowId == row.rowId }) else { return }
+        guard let idx = displayedRows.firstIndex(where: { $0.rowId == row.rowId }) else { return }
         try? await app.player.playAlbum(library: lib, tracks: playbackTracks, startIndex: idx, source: playbackSource)
     }
 
@@ -1131,6 +1151,16 @@ struct ServerPlaylistDetailView: View {
                 }
                 .tint(Color.primary)
             }
+
+            Section {
+                Button(action: toggleAlbumPinned) {
+                    Label(
+                        LibraryPinStore.menuLabel(kind: .album, isPinned: isAlbumPinned),
+                        systemImage: isAlbumPinned ? "pin.slash" : "pin"
+                    )
+                }
+            }
+            .tint(Color.primary)
 
             // Lives outside the tinted ControlGroup so the destructive role renders red.
             if app.isAlbumInLibrary(album.id) {
@@ -1218,19 +1248,22 @@ struct ServerPlaylistDetailView: View {
         else { return }
         didScrollToFocusTrack = true
         let targetRowId = matchingRow.rowId
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+        scrollHighlightTask?.cancel()
+        scrollHighlightTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(50))
+            guard !Task.isCancelled else { return }
             withAnimation(.easeInOut(duration: 0.35)) {
                 proxy.scrollTo(targetRowId, anchor: .center)
             }
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
             withAnimation(.easeIn(duration: 0.18)) {
                 highlightedRowId = targetRowId
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
-                withAnimation(.easeOut(duration: 0.9)) {
-                    highlightedRowId = nil
-                }
+            try? await Task.sleep(for: .milliseconds(700))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.9)) {
+                highlightedRowId = nil
             }
         }
     }
@@ -1279,19 +1312,12 @@ private struct DetailScrollSignalObserver: ViewModifier {
     }
 }
 
-/// Navigation chrome modifier — uses the album-hero palette in album mode so the
-/// status bar / title overlap a tinted backdrop; falls back to the standard
-/// "new tab" chrome for playlists.
+/// Navigation chrome modifier — artwork-derived hero palette for albums and playlists.
 private struct DetailNavigationChrome: ViewModifier {
-    let isAlbum: Bool
     let palette: ArtworkDynamicGradient.BackdropPalette
 
     func body(content: Content) -> some View {
-        if isAlbum {
-            content.musicHeroAlbumNavigationChrome(palette: palette)
-        } else {
-            content.musicNewTabNavigationChrome()
-        }
+        content.musicHeroAlbumNavigationChrome(palette: palette)
     }
 }
 

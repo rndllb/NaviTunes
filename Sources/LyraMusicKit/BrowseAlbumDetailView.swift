@@ -12,6 +12,8 @@ struct BrowseAlbumDetailView: View {
 
     @State private var libraryTracks: [Track] = []
     @State private var previewTracks: [BrowseAlbumPreviewTrack] = []
+    @State private var browseQueuedRows: [BrowseQueuedRow] = []
+    @State private var missingFromBrowseCatalogCount = 0
     @State private var isLoadingTracks = false
     @State private var isLoadingPreviewTracks = false
     @State private var toast: String?
@@ -23,7 +25,7 @@ struct BrowseAlbumDetailView: View {
     @State private var trackPendingDownloadedDelete: Track?
 
     private var matchedLibraryAlbum: AlbumSummary? {
-        app.libraryAlbums.firstMatchingNewTabRelease(artist: matchArtist, albumTitle: matchAlbumTitle)
+        app.libraryAlbumReleaseIndex.firstMatch(artist: matchArtist, albumTitle: matchAlbumTitle)
     }
 
     private var matchArtist: String {
@@ -91,26 +93,28 @@ struct BrowseAlbumDetailView: View {
         }
     }
 
-    /// MusicBrainz order when available; matches against this album’s library tracks when the release is in your library, otherwise against the discovery index.
-    private var browseQueuedRows: [BrowseQueuedRow] {
+    /// Rebuilds track rows once when inputs change — avoids scanning ``discoveryLibraryTracks`` on every body pass (back-navigation freeze on large libraries).
+    private func recomputeBrowseQueuedRows() {
         guard !previewTracks.isEmpty else {
-            return libraryTracks.enumerated().map {
+            browseQueuedRows = libraryTracks.enumerated().map {
                 BrowseQueuedRow(kind: .library($0.element), displayIndex: $0.offset + 1)
             }
+            missingFromBrowseCatalogCount = 0
+            return
         }
-        let pool = isLibraryPlayback ? libraryTracks : app.discoveryLibraryTracks
         var usedLibraryIds = Set<String>()
         var rows: [BrowseQueuedRow] = []
+        var missingCount = 0
         for (loopIdx, preview) in previewTracks.enumerated() {
             let displayIdx = preview.position > 0 ? preview.position : loopIdx + 1
-            let song = downtifySong(forPreview: preview)
-            if let matched = LibraryTrackMatcher.firstLibraryTrack(matching: song, in: pool),
+            if let matched = libraryTrackMatchingPreview(preview),
                !usedLibraryIds.contains(matched.id)
             {
                 rows.append(BrowseQueuedRow(kind: .library(matched), displayIndex: displayIdx))
                 usedLibraryIds.insert(matched.id)
             } else {
                 rows.append(BrowseQueuedRow(kind: .missing(preview), displayIndex: displayIdx))
+                missingCount += 1
             }
         }
         if isLibraryPlayback {
@@ -124,12 +128,8 @@ struct BrowseAlbumDetailView: View {
                 nextIdx += 1
             }
         }
-        return rows
-    }
-
-    private var missingFromBrowseCatalogCount: Int {
-        guard !previewTracks.isEmpty else { return 0 }
-        return previewTracks.filter { libraryTrackMatchingPreview($0) == nil }.count
+        browseQueuedRows = rows
+        missingFromBrowseCatalogCount = missingCount
     }
 
     /// Library tracks on this screen in MB/preview order (for ⋯ playlist + queue actions).
@@ -215,6 +215,9 @@ struct BrowseAlbumDetailView: View {
         }
         .task(id: matchedLibraryAlbum?.id ?? "none") { await loadLibraryTracks() }
         .task(id: "\(isLibraryPlayback)-\(matchArtist)-\(matchAlbumTitle)") { await loadPreviewTracksIfNeeded() }
+        .onChange(of: app.libraryCatalogEpoch) { _, _ in
+            recomputeBrowseQueuedRows()
+        }
         .task(id: displayArtworkURL?.absoluteString ?? "") {
             let p = await ArtworkDynamicGradient.analyzeBackdrop(from: displayArtworkURL)
             await MainActor.run { backdropPalette = p }
@@ -700,16 +703,22 @@ struct BrowseAlbumDetailView: View {
     // MARK: - Actions
 
     private func loadLibraryTracks() async {
-        guard let album = matchedLibraryAlbum, let lib = app.activeLibrary else { return }
+        guard let album = matchedLibraryAlbum, let lib = app.activeLibrary else {
+            libraryTracks = []
+            recomputeBrowseQueuedRows()
+            return
+        }
         isLoadingTracks = true
         defer { isLoadingTracks = false }
         libraryTracks = (try? await lib.tracks(forAlbumId: album.id)) ?? []
+        recomputeBrowseQueuedRows()
     }
 
     private func loadPreviewTracksIfNeeded() async {
         isLoadingPreviewTracks = true
         defer { isLoadingPreviewTracks = false }
         previewTracks = await app.resolveBrowseAlbumPreviewTracks(source: source)
+        recomputeBrowseQueuedRows()
     }
 
     private var previewTracksFooterSummary: String? {
@@ -745,8 +754,11 @@ struct BrowseAlbumDetailView: View {
     }
 
     private func libraryTrackMatchingPreview(_ preview: BrowseAlbumPreviewTrack) -> Track? {
-        let pool = isLibraryPlayback ? libraryTracks : app.discoveryLibraryTracks
-        return LibraryTrackMatcher.firstLibraryTrack(matching: downtifySong(forPreview: preview), in: pool)
+        let song = downtifySong(forPreview: preview)
+        if isLibraryPlayback {
+            return LibraryTrackMatcher.firstLibraryTrack(matching: song, in: libraryTracks)
+        }
+        return app.libraryChartTrackIndex.firstMatch(song: song)
     }
 
     private func primaryBrowseRequestAction() async {

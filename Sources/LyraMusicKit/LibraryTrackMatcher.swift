@@ -200,11 +200,24 @@ struct LibraryChartTrackIndex {
         guard !chartArtists.isEmpty else { return nil }
         let titleKeys = LibraryTrackMatcher.normalizedTitleKeys(from: chart.name)
         guard !titleKeys.isEmpty else { return nil }
+        return firstMatch(titleKeys: titleKeys, artistTokens: chartArtists)
+    }
+
+    /// Same rules as ``LibraryTrackMatcher.firstLibraryTrack(matching:in:)`` for Downtify / browse preview rows.
+    func firstMatch(song: DowntifySong) -> Track? {
+        let songArtists = LibraryTrackMatcher.normalizedDowntifyArtists(song.artists)
+        guard !songArtists.isEmpty else { return nil }
+        let titleKeys = LibraryTrackMatcher.normalizedTitleKeys(from: song.name)
+        guard !titleKeys.isEmpty else { return nil }
+        return firstMatch(titleKeys: titleKeys, artistTokens: songArtists)
+    }
+
+    private func firstMatch(titleKeys: [String], artistTokens: Set<String>) -> Track? {
         var seenTrackIds = Set<String>()
         for titleKey in titleKeys {
             guard let entries = byTitleKey[titleKey] else { continue }
             for entry in entries where seenTrackIds.insert(entry.track.id).inserted {
-                if LibraryTrackMatcher.artistsOverlap(chartArtists, Set([entry.artistKey])) {
+                if LibraryTrackMatcher.artistsOverlap(artistTokens, Set([entry.artistKey])) {
                     return entry.track
                 }
             }

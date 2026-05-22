@@ -338,9 +338,12 @@ struct MusicNewTabView: View {
                 trendingSongRow(track: track)
 
                 if idx < tracks.count - 1 {
-                    Divider()
-                        .background(MusicDesign.separator)
-                        .padding(.leading, 90)
+                    MusicChevronRowDivider(
+                        kind: .custom(
+                            leading: MusicDesign.newTabHorizontalInset + 4 + 56 + 14,
+                            trailing: MusicDesign.newTabHorizontalInset,
+                        )
+                    )
                 }
             }
         }
@@ -418,9 +421,7 @@ struct MusicNewTabView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if lib != nil {
-                Image(systemName: "chevron.right")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(MusicDesign.secondaryLabel.opacity(0.9))
+                MusicNavigationChevron()
                     .frame(width: 28, height: 44)
                     .contentShape(Rectangle())
             } else {

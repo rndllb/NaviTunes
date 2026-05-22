@@ -342,7 +342,6 @@ struct SongRowLeadingIndicators: View {
     let isFavorite: Bool
     var showsStarSlot: Bool = true
     var backdropPalette: ArtworkDynamicGradient.BackdropPalette? = nil
-    var hasSubtitle: Bool = false
     var isNowPlaying: Bool = false
 
     private var starColor: Color {
@@ -357,38 +356,34 @@ struct SongRowLeadingIndicators: View {
         backdropPalette?.heroChromePrimary ?? MusicDesign.accent
     }
 
-    private var rowVerticalAlignment: VerticalAlignment {
-        hasSubtitle ? .top : .center
-    }
-
     var body: some View {
-        HStack(alignment: rowVerticalAlignment, spacing: AlbumTrackIndexColumn.starToNumberSpacing) {
+        HStack(alignment: .center, spacing: AlbumTrackIndexColumn.starToNumberSpacing) {
             if showsStarSlot {
                 Color.clear
                     .frame(width: AlbumTrackIndexColumn.starSlotWidth)
-                    .overlay(alignment: hasSubtitle ? .topLeading : .center) {
+                    .overlay(alignment: .center) {
                         if isFavorite {
                             Image(systemName: "star.fill")
                                 .font(.system(size: 7, weight: .semibold))
                                 .foregroundStyle(starColor)
-                                .padding(.top, hasSubtitle ? 4 : 0)
                                 .allowsHitTesting(false)
                                 .accessibilityHidden(true)
                         }
                     }
             }
             if let trackIndex {
-                if isNowPlaying {
-                    NowPlayingBarsIndicator(player: app.player, color: barsColor)
-                        .frame(width: AlbumTrackIndexColumn.numberWidth, alignment: .leading)
-                } else {
-                    Text("\(trackIndex)")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(indexColor)
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .frame(width: AlbumTrackIndexColumn.numberWidth, alignment: .leading)
+                Group {
+                    if isNowPlaying {
+                        NowPlayingBarsIndicator(player: app.player, color: barsColor)
+                    } else {
+                        Text("\(trackIndex)")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(indexColor)
+                            .monospacedDigit()
+                            .lineLimit(1)
+                    }
                 }
+                .frame(width: AlbumTrackIndexColumn.numberWidth, alignment: .center)
             }
         }
         .frame(width: leadingWidth, alignment: .leading)
@@ -478,10 +473,6 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
         return !subtitle.isEmpty
     }
 
-    private var rowVerticalAlignment: VerticalAlignment {
-        hasSubtitle ? .top : .center
-    }
-
     private var confirmsDownloadedDelete: Bool {
         isInLibrary
             && isOfflineCached
@@ -527,14 +518,13 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
     }
 
     private var trackRowBody: some View {
-        HStack(alignment: rowVerticalAlignment, spacing: 6) {
+        HStack(alignment: .center, spacing: 6) {
             Button(action: onRowTap) {
-                HStack(alignment: rowVerticalAlignment, spacing: AlbumTrackRowLayout.indexToTitleSpacing) {
+                HStack(alignment: .center, spacing: AlbumTrackRowLayout.indexToTitleSpacing) {
                     SongRowLeadingIndicators(
                         trackIndex: index,
                         isFavorite: isFavorite,
                         backdropPalette: backdropPalette,
-                        hasSubtitle: hasSubtitle,
                         isNowPlaying: isNowPlaying
                     )
 

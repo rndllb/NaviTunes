@@ -9,6 +9,7 @@ import AppKit
 /// Library song ⋯ sheet styled like Apple Music (palette strip + inset-divided list).
 struct SongOverflowPanel: View {
     @EnvironmentObject private var app: AppModel
+    @AppStorage(LibraryPinStore.storageKey) private var pinnedStorage: String = "[]"
 
     let track: Track
     let onDismiss: () -> Void
@@ -42,6 +43,14 @@ struct SongOverflowPanel: View {
         app.isSongInLibrary(track.id)
     }
 
+    private var trackPinRef: LibraryPinnedRef {
+        LibraryPinnedRef(kind: .track, itemId: track.id)
+    }
+
+    private var isPinnedToLibrary: Bool {
+        LibraryPinStore.contains(trackPinRef, in: pinnedStorage)
+    }
+
     private var showsDownloadInPalette: Bool {
         isInLibrary && !isOfflineCached
     }
@@ -54,7 +63,16 @@ struct SongOverflowPanel: View {
         VStack(spacing: 0) {
             paletteStrip
             separator
-            listPlaceholderRow(icon: "pin", title: "Pin Song")
+            listActionRow(
+                icon: isPinnedToLibrary ? "pin.slash" : "pin",
+                title: LibraryPinStore.menuLabel(kind: .track, isPinned: isPinnedToLibrary)
+            ) {
+                if !isPinnedToLibrary {
+                    app.retainTrackForLibraryPin(track)
+                }
+                LibraryPinStore.toggle(trackPinRef, storage: &pinnedStorage)
+                onDismiss()
+            }
             if let onAddToPlaylist {
                 listActionRow(icon: "rectangle.stack.badge.plus", title: "Add to Playlist") {
                     onAddToPlaylist()
