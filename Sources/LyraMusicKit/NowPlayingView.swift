@@ -25,7 +25,6 @@ struct NowPlayingView: View {
     @State private var showLyrics = false
     @State private var showQueue = false
     @State private var libraryPath: [NowPlayingLibraryRoute] = []
-    @State private var selectedPlaylist: PlaylistSummary?
     /// Which of the three paged queue sections is currently snapped. Drives the
     /// inter-section haptic so each swipe-and-snap fires its own impact, and
     /// reaching the boundary the user is swiping toward requires a second swipe.
@@ -236,24 +235,9 @@ struct NowPlayingView: View {
             #if os(iOS)
             .toolbar(.hidden, for: .navigationBar)
             #endif
-            .navigationDestination(for: NowPlayingLibraryRoute.self) { route in
-                switch route {
-                case .album(let album):
-                    ServerPlaylistDetailView(album: album)
-                case .artist(let name):
-                    ArtistAlbumsView(artistName: name)
-                case .playlist:
-                    if let playlist = selectedPlaylist {
-                        ServerPlaylistDetailView(playlist: playlist)
-                            .environmentObject(app.offline)
-                    } else {
-                        ContentUnavailableView("Playlist unavailable", systemImage: "music.note.list")
-                    }
-                }
-            }
-            .task(id: artworkURL(for: player.activeTrack)?.absoluteString ?? "") {
-                guard let url = artworkURL(for: player.activeTrack) else {
-                    await MainActor.run { backdropPalette = .fallback }
+            .task(id: "\(artworkURL(for: player.activeTrack)?.absoluteString ?? "")-\(app.playerBackdropEnabled)-\(colorScheme)") {
+                guard app.playerBackdropEnabled, let url = artworkURL(for: player.activeTrack) else {
+                    await MainActor.run { backdropPalette = .listSurface(colorScheme: colorScheme) }
                     return
                 }
                 let p = await ArtworkDynamicGradient.analyzeBackdrop(from: url, style: .nowPlaying)
@@ -782,7 +766,10 @@ struct NowPlayingView: View {
                 artist: track.artist,
                 albumSubtitle: albumSubtitle,
                 libraryAlbum: libraryAlbum,
-                sourcePlaylist: sourcePlaylistForActiveTrack(track),
+                sourcePlaylist: {
+                    if case .playlist(let p) = player.playbackSource { return p }
+                    return nil
+                }(),
                 compact: true,
                 goToAlbumDisabled: libraryAlbum == nil && catalogAlbumFallback(from: track) == nil,
                 onGoToAlbum: {
@@ -1060,55 +1047,58 @@ struct NowPlayingView: View {
     private func dismissAndNavigate(to route: NowPlayingLibraryRoute) {
         let activeTrackId = player.activeTrack?.id
 
+        // Special case: behind the player the user is already on this destination on the current
+        // tab — dismiss the overlay and let the underlying view scroll + highlight.
         switch route {
-        case .playlist:
-            guard let track = player.activeTrack,
-                  let p = sourcePlaylistForActiveTrack(track) else { return }
-            let playlist = playlistForNavigation(id: p.id) ?? p
-            let activeTrackId = track.id
-            Task { @MainActor in
-                app.beginPlaylistFocusSession(playlistId: playlist.id)
-                app.selectedTab = .library
-                app.pendingPlaylistScroll = PendingPlaylistScroll(
-                    playlistId: playlist.id,
-                    trackId: activeTrackId
-                )
-                if !app.isPlaylistDetailMounted(id: playlist.id) {
-                    await app.prefetchPlaylistRows(playlistId: playlist.id)
-                    app.pendingNavigation = .playlist(playlist, scrollToTrackId: activeTrackId)
-                }
-                await app.waitForPlaylistFocus(playlistId: playlist.id)
-                isPresented = false
+        case .album(let album) where app.currentlyVisibleAlbumId == album.id:
+            if let activeTrackId {
+                app.pendingAlbumScroll = PendingAlbumScroll(albumId: album.id, trackId: activeTrackId)
             }
+            isPresented = false
             return
+        case .playlist:
+            if let track = player.activeTrack,
+               let p = sourcePlaylistForActiveTrack(track),
+               app.currentlyVisiblePlaylistId == p.id {
+                app.pendingPlaylistScroll = PendingPlaylistScroll(playlistId: p.id, trackId: track.id)
+                isPresented = false
+                return
+            }
         default:
             break
         }
 
+        // Normal case: strictly sequential — player closes, wait, destination overlay slides in.
         let nav: NowPlayingDeepLink?
         switch route {
         case .album(let album):
-            // Library-only filtered view is fine when the track is in the user's library;
-            // otherwise the filter would hide it, so fall back to the full album view.
             let useLibrarySource = activeTrackId.map { app.isSongInLibrary($0) } ?? true
             nav = .album(album, scrollToTrackId: activeTrackId, librarySource: useLibrarySource)
         case .artist(let name):
             nav = .artist(name)
         case .playlist:
-            nav = nil
+            if let track = player.activeTrack,
+               let p = sourcePlaylistForActiveTrack(track) {
+                let playlist = playlistForNavigation(id: p.id) ?? p
+                nav = .playlist(playlist, scrollToTrackId: activeTrackId)
+            } else {
+                nav = nil
+            }
         }
-        app.selectedTab = .library
+
+        let targetTab = app.selectedTab
         isPresented = false
+        guard let nav else { return }
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(320))
-            app.pendingNavigation = nav
+            if case .playlist(let playlist, _) = nav {
+                await app.prefetchPlaylistRows(playlistId: playlist.id)
+            }
+            try? await Task.sleep(for: .milliseconds(450))
+            app.deepLinkTab = targetTab
+            app.presentedDeepLink = nav
         }
     }
 
-    private func navigateToLibraryRoute(_ route: NowPlayingLibraryRoute) {
-        guard libraryPath.last != route else { return }
-        libraryPath.append(route)
-    }
 
     private func playlistForNavigation(id: String) -> PlaylistSummary? {
         if let playlist = app.libraryPlaylists.first(where: { $0.id == id }) {
