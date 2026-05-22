@@ -39,7 +39,7 @@ struct DeepLinkDestinationContent: View {
         case .album(let album, let scrollToTrackId, let librarySource):
             ServerPlaylistDetailView(album: album, librarySource: librarySource, scrollToTrackId: scrollToTrackId)
         case .artist(let name):
-            ArtistAlbumsView(artistName: name)
+            ArtistPageView(input: .named(name))
         case .playlist(let playlist, let scrollToTrackId):
             ServerPlaylistDetailView(
                 playlist: playlist,
