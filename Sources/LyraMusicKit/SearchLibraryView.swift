@@ -52,7 +52,7 @@ struct SearchLibraryView: View {
         case .playlist(let playlist):
             ServerPlaylistDetailView(playlist: playlist)
         case .artist(let artist):
-            LibraryArtistAlbumsView(artist: artist)
+            ArtistPageView(input: .libraryArtist(artist))
         case .genre(let genre):
             LibraryGenreAlbumsView(genre: genre)
         case .downtify(let song):

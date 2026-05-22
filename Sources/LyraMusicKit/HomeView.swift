@@ -2,6 +2,14 @@ import SwiftUI
 
 /// Apple Music–style **Home** tab: personalized sections pulled from the user's library.
 /// Every section is a single horizontal-scroll shelf — matches Apple Music's home layout.
+/// One circular tile in the Home → "New Artists Added" shelf. Synthesized
+/// in-memory from ``AppModel/recentlyAddedAlbums`` so there's no extra fetch.
+private struct HomeArtistTile: Identifiable {
+    let id: String
+    let name: String
+    let artworkURL: URL?
+}
+
 struct HomeView: View {
     @EnvironmentObject private var app: AppModel
     @State private var showFloatingHeader = true
@@ -14,6 +22,26 @@ struct HomeView: View {
 
     private var newReleasesAlbums: [AlbumSummary] {
         Array(app.recentlyAddedAlbums.dropFirst(topPicksAlbums.count).prefix(20))
+    }
+
+    /// Most recently added unique artists, derived by walking ``AppModel/recentlyAddedAlbums``
+    /// (already sorted newest-first) and deduping by normalized artist name. Capped at 12 so
+    /// the shelf doesn't run the full library in one row.
+    private var newlyAddedArtists: [HomeArtistTile] {
+        var seen = Set<String>()
+        var out: [HomeArtistTile] = []
+        for album in app.recentlyAddedAlbums {
+            let normalized = LibraryTrackMatcher.normalize(album.artist)
+            guard !normalized.isEmpty else { continue }
+            guard seen.insert(normalized).inserted else { continue }
+            out.append(HomeArtistTile(
+                id: "\(normalized)",
+                name: album.artist,
+                artworkURL: album.artworkURL
+            ))
+            if out.count >= 12 { break }
+        }
+        return out
     }
 
     private var madeForYouPlaylists: [PlaylistSummary] {
@@ -42,6 +70,10 @@ struct HomeView: View {
                                 title: "Top Picks for You",
                                 albums: topPicksAlbums
                             )
+                        }
+
+                        if !newlyAddedArtists.isEmpty {
+                            newArtistsShelf(title: "New Artists Added", artists: newlyAddedArtists)
                         }
 
                         if !app.homeRecentlyPlayed.isEmpty {
@@ -199,6 +231,41 @@ struct HomeView: View {
         }
     }
 
+    private func newArtistsShelf(title: String, artists: [HomeArtistTile]) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionHeader(title: title)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 16) {
+                    ForEach(artists) { artist in
+                        NavigationLink {
+                            ArtistPageView(input: .named(artist.name))
+                        } label: {
+                            newArtistCircleTile(artist: artist)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, inset)
+            }
+        }
+    }
+
+    private func newArtistCircleTile(artist: HomeArtistTile) -> some View {
+        VStack(spacing: 8) {
+            AlbumArtworkView(url: artist.artworkURL, cornerRadius: 60)
+                .frame(width: 110, height: 110)
+                .clipShape(Circle())
+            Text(artist.name)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .frame(minWidth: 120, idealWidth: 120, maxWidth: 120, minHeight: 30, alignment: .top)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private func playlistShelf(title: String, playlists: [PlaylistSummary]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             sectionHeader(title: title)
@@ -227,16 +294,7 @@ struct HomeView: View {
         return VStack(alignment: .leading, spacing: 10) {
             AlbumArtworkView(url: album.artworkURL, cornerRadius: MusicDesign.heroCorner)
                 .frame(width: width, height: width)
-            Text(album.title)
-                .font(.headline)
-                .foregroundStyle(.primary)
-                .lineLimit(2)
-                .frame(width: width, alignment: .leading)
-            Text(album.artist)
-                .font(.subheadline)
-                .foregroundStyle(MusicDesign.secondaryLabel)
-                .lineLimit(1)
-                .frame(width: width, alignment: .leading)
+            shelfLabelBlock(title: album.title, subtitle: album.artist, width: width)
         }
     }
 
@@ -244,16 +302,7 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 8) {
             AlbumArtworkView(url: album.artworkURL, cornerRadius: MusicDesign.heroCorner)
                 .frame(width: MusicDesign.shelfCardWidth, height: MusicDesign.shelfCardHeight)
-            Text(album.title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(2)
-                .frame(width: MusicDesign.shelfCardWidth, alignment: .leading)
-            Text(album.artist)
-                .font(.caption)
-                .foregroundStyle(MusicDesign.secondaryLabel)
-                .lineLimit(1)
-                .frame(width: MusicDesign.shelfCardWidth, alignment: .leading)
+            shelfLabelBlock(title: album.title, subtitle: album.artist, width: MusicDesign.shelfCardWidth)
         }
     }
 
@@ -261,16 +310,41 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 8) {
             AlbumArtworkView(url: playlist.artworkURL, cornerRadius: MusicDesign.heroCorner)
                 .frame(width: MusicDesign.shelfCardWidth, height: MusicDesign.shelfCardHeight)
-            Text(playlist.name)
+            shelfLabelBlock(
+                title: playlist.name,
+                subtitle: playlist.songCount.map { $0 == 1 ? "1 song" : "\($0) songs" } ?? "Playlist",
+                width: MusicDesign.shelfCardWidth
+            )
+        }
+    }
+
+    /// Tight title + subtitle pair used by every shelf card. The two labels sit
+    /// directly adjacent (spacing 2), and the **combined** block reserves the
+    /// 2-line title + 1-line subtitle height. When the title only takes 1 line
+    /// (short album/playlist names), the leftover space falls below the
+    /// subtitle — not between title and subtitle — so the cards stay aligned
+    /// across the row without an awkward gap inside the label.
+    private func shelfLabelBlock(title: String, subtitle: String, width: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
                 .lineLimit(2)
-                .frame(width: MusicDesign.shelfCardWidth, alignment: .leading)
-            Text(playlist.songCount.map { $0 == 1 ? "1 song" : "\($0) songs" } ?? "Playlist")
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(subtitle)
                 .font(.caption)
                 .foregroundStyle(MusicDesign.secondaryLabel)
                 .lineLimit(1)
-                .frame(width: MusicDesign.shelfCardWidth, alignment: .leading)
         }
+        .frame(
+            minWidth: width, idealWidth: width, maxWidth: width,
+            minHeight: Self.shelfLabelBlockMinHeight, alignment: .topLeading
+        )
     }
+
+    /// Reserved height for the combined `(title, subtitle)` block: two title
+    /// lines + spacing + one subtitle line. Keeps shelf rows aligned regardless
+    /// of how long the individual album/playlist names are.
+    private static let shelfLabelBlockMinHeight: CGFloat = 56
 }

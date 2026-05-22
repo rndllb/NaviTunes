@@ -114,6 +114,11 @@ public final class AppModel: ObservableObject {
     /// Stored separately from the local list so the merged Home shelf can update live as either side changes.
     @Published private(set) var homeRecentlyPlayedServerAlbums: [AlbumSummary] = []
     @Published private(set) var homeGenreShelves: [(genre: String, albums: [AlbumSummary])] = []
+    /// Sticky per-session random pick of which genres get a shelf on Home. Locked in on the
+    /// first successful ``refreshHome()`` of the session; subsequent refreshes reuse it so the
+    /// Home layout doesn't reshuffle on every tab visit or pull-to-refresh. Cleared on sign-out
+    /// and server-identity changes (alongside ``homeGenreShelves``), and reset by cold launch.
+    private var homeSelectedGenres: [LibraryGenreSummary]?
 
     /// Live merge of the local play log and the server's recently-played albums.
     @Published private(set) var homeRecentlyPlayed: [RecentPlayedItem] = []
@@ -155,6 +160,14 @@ public final class AppModel: ObservableObject {
 
     private static let favoriteTrackIdsKey = "LyraMusic.favoriteTrackIds"
     @Published private(set) var favoriteTrackIds: Set<String> = []
+
+    /// Set of artists the user has manually favorited from ``ArtistPageView``.
+    /// Stored as `LibraryTrackMatcher.normalize`d names so the same artist hits the
+    /// same key regardless of source (server artist row vs Last.fm row vs typed search).
+    /// Local-only — neither Jellyfin nor Subsonic has a "favorite artist" concept
+    /// universally enough to sync against.
+    private static let favoriteArtistNamesKey = "LyraMusic.favoriteArtistNames"
+    @Published private(set) var favoriteArtistNames: Set<String> = []
 
     /// Local "recently played" history (mix of playlist + album entries) so Home can show a
     /// Recently Played shelf even when the backend doesn't expose play history. Newest first.
@@ -621,6 +634,7 @@ public final class AppModel: ObservableObject {
         recentlyAddedAlbums = []
         homeRecentlyPlayedServerAlbums = []
         homeGenreShelves = []
+        homeSelectedGenres = nil
         recentlyPlayedEntries = []
         UserDefaults.standard.removeObject(forKey: Self.recentlyPlayedEntriesKey)
         UserDefaults.standard.removeObject(forKey: Self.recentlyPlayedAlbumIdsKey)
@@ -793,6 +807,7 @@ public final class AppModel: ObservableObject {
         recentlyAddedAlbums = []
         homeRecentlyPlayedServerAlbums = []
         homeGenreShelves = []
+        homeSelectedGenres = nil
         discoveryLibraryTracks = []
         libraryPlaylists = []
         libraryMagicPlaylistId = nil
@@ -921,27 +936,39 @@ public final class AppModel: ObservableObject {
 
     public func refreshHome() async {
         guard let lib = activeLibrary else { return }
+        let needsGenrePick = homeSelectedGenres == nil
         async let played = (try? await lib.recentlyPlayed(limit: 12)) ?? []
-        async let genres = (try? await lib.libraryGenres(limit: 20)) ?? []
+        async let genres: [LibraryGenreSummary] = {
+            guard needsGenrePick else { return [] }
+            return (try? await lib.libraryGenres(limit: 20)) ?? []
+        }()
         let (playedResult, genresResult) = await (played, genres)
         homeRecentlyPlayedServerAlbums = playedResult
         rebuildHomeRecentlyPlayed()
-        let pickedGenres = Array(genresResult.shuffled().prefix(4))
-        let shelves = await withTaskGroup(of: (genre: String, albums: [AlbumSummary])?.self) { group in
-        for g in pickedGenres {
+        let pickedGenres: [LibraryGenreSummary]
+        if let locked = homeSelectedGenres {
+            pickedGenres = locked
+        } else {
+            pickedGenres = Array(genresResult.shuffled().prefix(4))
+            if !pickedGenres.isEmpty {
+                homeSelectedGenres = pickedGenres
+            }
+        }
+        let indexed = await withTaskGroup(of: (Int, (genre: String, albums: [AlbumSummary]))?.self) { group in
+            for (idx, g) in pickedGenres.enumerated() {
                 group.addTask {
-            let albums = (try? await lib.albums(inGenre: g, limit: 8)) ?? []
+                    let albums = (try? await lib.albums(inGenre: g, limit: 8)) ?? []
                     guard !albums.isEmpty else { return nil }
-                    return (genre: g.name, albums: albums)
+                    return (idx, (genre: g.name, albums: albums))
                 }
             }
-            var rows: [(genre: String, albums: [AlbumSummary])] = []
+            var rows: [(Int, (genre: String, albums: [AlbumSummary]))] = []
             for await row in group {
                 if let row { rows.append(row) }
             }
             return rows
         }
-        homeGenreShelves = shelves
+        homeGenreShelves = indexed.sorted { $0.0 < $1.0 }.map { $0.1 }
     }
 
     /// Single cold-start / sign-in library refresh (deduped).
@@ -2034,6 +2061,26 @@ public final class AppModel: ObservableObject {
 
     private func loadFavoriteTrackIdsFromDefaults() {
         favoriteTrackIds = Set(UserDefaults.standard.stringArray(forKey: Self.favoriteTrackIdsKey) ?? [])
+        favoriteArtistNames = Set(UserDefaults.standard.stringArray(forKey: Self.favoriteArtistNamesKey) ?? [])
+    }
+
+    /// Toggles the favorite state for an artist by name. Stored locally only.
+    func toggleFavoriteArtist(name: String) {
+        let key = LibraryTrackMatcher.normalize(name)
+        guard !key.isEmpty else { return }
+        var next = favoriteArtistNames
+        if next.contains(key) {
+            next.remove(key)
+        } else {
+            next.insert(key)
+        }
+        favoriteArtistNames = next
+        UserDefaults.standard.set(Array(next), forKey: Self.favoriteArtistNamesKey)
+    }
+
+    func isArtistFavorited(name: String) -> Bool {
+        let key = LibraryTrackMatcher.normalize(name)
+        return !key.isEmpty && favoriteArtistNames.contains(key)
     }
 
     private func loadRecentlyPlayedEntriesFromDefaults() {

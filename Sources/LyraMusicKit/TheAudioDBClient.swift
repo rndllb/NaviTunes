@@ -207,4 +207,83 @@ enum TheAudioDBClient {
         }
         return out
     }
+
+    // MARK: - Artist details (artist page enrichment)
+
+    /// Enrichment payload from TheAudioDB `search.php?s=<name>` — banner artwork,
+    /// biography, origin, formed year, and primary genre tag. Every field is
+    /// optional because TheAudioDB coverage is uneven (well-known acts are
+    /// thorough; smaller artists may have only a name + thumb).
+    struct ArtistDetails: Sendable, Equatable {
+        let name: String
+        let wideArtworkURL: URL?
+        let thumbArtworkURL: URL?
+        let biography: String?
+        let country: String?
+        let formedYear: Int?
+        let genre: String?
+    }
+
+    static func fetchArtistDetails(name: String, apiKey: String = publicDemoKey) async -> ArtistDetails? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        var comps = URLComponents()
+        comps.scheme = "https"
+        comps.host = "www.theaudiodb.com"
+        comps.path = "/api/v1/json/\(apiKey)/search.php"
+        comps.queryItems = [URLQueryItem(name: "s", value: trimmed)]
+        guard let url = comps.url else { return nil }
+
+        do {
+            let (data, response) = try await trendingSession.data(from: url)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+            guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let artists = obj["artists"] as? [[String: Any]],
+                  let dict = artists.first
+            else { return nil }
+            return parseArtistDetails(dict)
+        } catch {
+            return nil
+        }
+    }
+
+    private static func parseArtistDetails(_ dict: [String: Any]) -> ArtistDetails? {
+        let name = (dict["strArtist"] as? String).trimmedNonEmpty ?? ""
+        guard !name.isEmpty else { return nil }
+
+        let wideKeys = ["strArtistFanart", "strArtistFanart2", "strArtistFanart3", "strArtistBanner", "strArtistWideThumb"]
+        let thumbKeys = ["strArtistThumb", "strArtistCutout", "strArtistLogo"]
+
+        // English-only: TheAudioDB returns multi-language bios but the user
+        // wants English. If `strBiographyEN` is missing we leave bio nil here
+        // and let the caller fall back to another source (Last.fm artist.getInfo)
+        // rather than surfacing German / French text the user can't read.
+        let bio = (dict["strBiographyEN"] as? String).trimmedNonEmpty
+
+        let formedYear: Int? = {
+            if let s = (dict["intFormedYear"] as? String).trimmedNonEmpty, let n = Int(s), n > 0 { return n }
+            if let s = (dict["intBornYear"] as? String).trimmedNonEmpty, let n = Int(s), n > 0 { return n }
+            return nil
+        }()
+
+        return ArtistDetails(
+            name: name,
+            wideArtworkURL: firstURL(in: dict, keys: wideKeys),
+            thumbArtworkURL: firstURL(in: dict, keys: thumbKeys),
+            biography: bio,
+            country: (dict["strCountry"] as? String).trimmedNonEmpty,
+            formedYear: formedYear,
+            genre: (dict["strGenre"] as? String).trimmedNonEmpty
+        )
+    }
+
+    private static func firstURL(in dict: [String: Any], keys: [String]) -> URL? {
+        for k in keys {
+            if let s = (dict[k] as? String).trimmedNonEmpty, let u = URL(string: s) {
+                return u
+            }
+        }
+        return nil
+    }
 }
