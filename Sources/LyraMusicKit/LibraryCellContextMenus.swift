@@ -307,16 +307,22 @@ extension View {
         }
     }
 
-    /// Long-press on a Library hub pin tile — unpin only (navigation is a tap).
+    /// Long-press on a Library hub pin tile — delegates to the regular context menu for the
+    /// underlying type so pinned tiles match the rest of the app.
+    @ViewBuilder
     func libraryPinnedItemContextMenu(_ item: LibraryPinnedItem, pinnedStorage: Binding<String>) -> some View {
-        contextMenu {
-            Button(role: .destructive) {
-                LibraryPinStore.remove(item.pinRef, storage: &pinnedStorage.wrappedValue)
-            } label: {
-                Label(
-                    LibraryPinStore.menuLabel(for: item, isPinned: true),
-                    systemImage: "pin.slash"
-                )
+        switch item {
+        case .album(let album):
+            self.libraryAlbumContextMenu(album)
+        case .playlist(let playlist):
+            self.libraryPlaylistContextMenu(playlist)
+        case .track:
+            self.contextMenu {
+                Button(role: .destructive) {
+                    LibraryPinStore.remove(item.pinRef, storage: &pinnedStorage.wrappedValue)
+                } label: {
+                    Label("Unpin", systemImage: "pin.slash")
+                }
             }
         }
     }

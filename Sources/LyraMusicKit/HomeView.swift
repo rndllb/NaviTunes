@@ -107,6 +107,7 @@ struct HomeView: View {
                 await app.refreshLibraryAlbums()
                 await app.refreshHome()
             }
+            .deepLinkPush(tab: .home)
         }
         .tint(MusicDesign.accent)
     }

@@ -8,6 +8,7 @@ import UIKit
 struct BrowseAlbumDetailView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var offline: OfflineDownloadManager
+    @Environment(\.colorScheme) private var colorScheme
     let source: BrowseAlbumDetailSource
 
     @State private var libraryTracks: [Track] = []
@@ -218,7 +219,11 @@ struct BrowseAlbumDetailView: View {
         .onChange(of: app.libraryCatalogEpoch) { _, _ in
             recomputeBrowseQueuedRows()
         }
-        .task(id: displayArtworkURL?.absoluteString ?? "") {
+        .task(id: "\(displayArtworkURL?.absoluteString ?? "")-\(app.albumBackdropEnabled)-\(colorScheme)") {
+            guard app.albumBackdropEnabled else {
+                await MainActor.run { backdropPalette = .listSurface(colorScheme: colorScheme) }
+                return
+            }
             let p = await ArtworkDynamicGradient.analyzeBackdrop(from: displayArtworkURL)
             await MainActor.run { backdropPalette = p }
         }

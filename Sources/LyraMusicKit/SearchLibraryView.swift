@@ -19,6 +19,7 @@ struct SearchLibraryView: View {
             .navigationDestination(for: SearchNavTarget.self) { target in
                 searchDestination(target)
             }
+            .deepLinkPush(tab: .search)
         }
         .overlay(alignment: .top) {
             if navigationPath.isEmpty {

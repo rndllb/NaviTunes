@@ -20,14 +20,62 @@ public struct RootView: View {
 
 // MARK: - Tab model
 
-enum NowPlayingDeepLink: Equatable {
-    /// `librarySource: false` opens the full album view (server catalog tracks); `true`
-    /// opens the library-only filtered view. "Go to Album" from Now Playing flips to
-    /// `false` when the active track isn't in the user's library, so the user lands on
-    /// a view that actually contains the track they're playing.
+enum NowPlayingDeepLink: Hashable {
     case album(AlbumSummary, scrollToTrackId: String? = nil, librarySource: Bool = true)
     case artist(String)
     case playlist(PlaylistSummary, scrollToTrackId: String? = nil)
+}
+
+/// Renders the destination view for a "Go to Album/Playlist/Artist" deep link inside whichever
+/// tab's ``NavigationStack`` pushes it. ``scrollToTrackId`` lands the list at the active track
+/// immediately on first appear (no scroll animation); the already-visible path goes through
+/// ``pendingPlaylistScroll`` / ``pendingAlbumScroll`` and animates the scroll + highlight.
+struct DeepLinkDestinationContent: View {
+    @EnvironmentObject private var app: AppModel
+    let link: NowPlayingDeepLink
+
+    var body: some View {
+        switch link {
+        case .album(let album, let scrollToTrackId, let librarySource):
+            ServerPlaylistDetailView(album: album, librarySource: librarySource, scrollToTrackId: scrollToTrackId)
+        case .artist(let name):
+            ArtistAlbumsView(artistName: name)
+        case .playlist(let playlist, let scrollToTrackId):
+            ServerPlaylistDetailView(
+                playlist: playlist,
+                scrollToTrackId: scrollToTrackId,
+                preloadedRows: app.cachedPlaylistRows(playlistId: playlist.id)
+            )
+        }
+    }
+}
+
+/// Apply to each tab's ``NavigationStack`` root so a "Go to Album/Playlist/Artist" deep link pushes
+/// within that tab. Gated by ``AppModel/deepLinkTab`` so only the tab the user was on at trigger
+/// time consumes the push, and the tab bar stays visible throughout.
+struct DeepLinkPushModifier: ViewModifier {
+    @EnvironmentObject private var app: AppModel
+    let tab: AppTab
+
+    func body(content: Content) -> some View {
+        content.navigationDestination(item: Binding<NowPlayingDeepLink?>(
+            get: { app.deepLinkTab == tab ? app.presentedDeepLink : nil },
+            set: { newValue in
+                if newValue == nil {
+                    app.presentedDeepLink = nil
+                    app.deepLinkTab = nil
+                }
+            }
+        )) { link in
+            DeepLinkDestinationContent(link: link)
+        }
+    }
+}
+
+extension View {
+    func deepLinkPush(tab: AppTab) -> some View {
+        modifier(DeepLinkPushModifier(tab: tab))
+    }
 }
 
 /// Scroll request emitted by "Go to Playlist" so an already-visible ``ServerPlaylistDetailView``
@@ -72,64 +120,101 @@ enum AppTab: Int, Hashable, CaseIterable {
 private struct MainShellView: View {
     @EnvironmentObject private var app: AppModel
     @State private var showNowPlaying = false
+    /// Source namespace for the iOS 18+ zoom transition. The mini-player tap
+    /// area marks itself as the source with ``matchedTransitionSource``; the
+    /// presented full player applies ``navigationTransition(.zoom(...))`` so
+    /// the system drives the entire shared-element animation between them —
+    /// no manual matched-geometry plumbing required.
+    @Namespace private var playerArtworkNamespace
 
     var body: some View {
-        ZStack {
-            TabView(selection: $app.selectedTab) {
-                Tab("Home", systemImage: AppTab.home.systemImage, value: AppTab.home) {
-                    HomeView()
-                }
-                Tab("New", systemImage: AppTab.new.systemImage, value: AppTab.new) {
-                    MusicNewTabView()
-                }
-                Tab("Radio", systemImage: AppTab.radio.systemImage, value: AppTab.radio) {
-                    RadioTabView()
-                }
-                Tab("Library", systemImage: AppTab.library.systemImage, value: AppTab.library) {
-                    LibraryView()
-                }
-                Tab(value: AppTab.search, role: .search) {
-                    SearchLibraryView()
-                } label: {
-                    Label("Search", systemImage: AppTab.search.systemImage)
-                }
+        TabView(selection: $app.selectedTab) {
+            Tab("Home", systemImage: AppTab.home.systemImage, value: AppTab.home) {
+                HomeView()
             }
-            .tint(MusicDesign.accent)
-            #if os(iOS)
-            .tabBarMinimizeBehavior(app.selectedTab == .search ? .never : .onScrollDown)
-            #endif
-            .musicNativeTabChrome(isEnabled: app.player.showsMiniPlayerChrome) {
-                TabViewMiniPlayerAccessory(
-                    showNowPlaying: $showNowPlaying,
-                    player: app.player
+            Tab("New", systemImage: AppTab.new.systemImage, value: AppTab.new) {
+                MusicNewTabView()
+            }
+            Tab("Radio", systemImage: AppTab.radio.systemImage, value: AppTab.radio) {
+                RadioTabView()
+            }
+            Tab("Library", systemImage: AppTab.library.systemImage, value: AppTab.library) {
+                LibraryView()
+            }
+            Tab(value: AppTab.search, role: .search) {
+                SearchLibraryView()
+            } label: {
+                Label("Search", systemImage: AppTab.search.systemImage)
+            }
+        }
+        .tint(MusicDesign.accent)
+        #if os(iOS)
+        .tabBarMinimizeBehavior(app.selectedTab == .search ? .never : .onScrollDown)
+        #endif
+        .musicNativeTabChrome(isEnabled: app.player.showsMiniPlayerChrome) {
+            TabViewMiniPlayerAccessory(
+                showNowPlaying: $showNowPlaying,
+                player: app.player,
+                artworkNamespace: playerArtworkNamespace
+            )
+            .environmentObject(app)
+        }
+        .environmentObject(app.offline)
+        .task {
+            app.scheduleLibraryBootstrap()
+        }
+        .sheet(item: $app.playlistPickerPayload) { payload in
+            AddToPlaylistSheet(tracks: payload.tracks)
+                .environmentObject(app)
+        }
+        .modifier(LibraryTrackDeletionChrome())
+        .modifier(LibraryErrorAlertChrome())
+        .modifier(NowPlayingFullScreenCoverModifier(
+            isPresented: $showNowPlaying,
+            artworkNamespace: playerArtworkNamespace,
+        ))
+        .musicTransientToastChrome()
+    }
+}
+
+/// Cross-platform shim: on iOS, presents the full player via
+/// ``fullScreenCover`` with the iOS 18 `.zoom` shared-element transition
+/// originating from the mini-player tap area. On macOS / other platforms
+/// (where `fullScreenCover` and `navigationTransition` aren't available),
+/// falls back to a plain overlay so the rest of the build keeps working.
+private struct NowPlayingFullScreenCoverModifier: ViewModifier {
+    @Binding var isPresented: Bool
+    let artworkNamespace: Namespace.ID
+    @EnvironmentObject private var app: AppModel
+
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        content.fullScreenCover(isPresented: $isPresented) {
+            NowPlayingGestureHost(isPresented: $isPresented)
+                .ignoresSafeArea()
+                .navigationTransition(
+                    .zoom(sourceID: "playerArtwork", in: artworkNamespace),
                 )
                 .environmentObject(app)
-            }
-            .environmentObject(app.offline)
-            .task {
-                app.scheduleLibraryBootstrap()
-            }
-            .sheet(item: $app.playlistPickerPayload) { payload in
-                AddToPlaylistSheet(tracks: payload.tracks)
-                    .environmentObject(app)
-            }
-            .modifier(LibraryTrackDeletionChrome())
-            .modifier(LibraryErrorAlertChrome())
-
-            if showNowPlaying {
-                NowPlayingGestureHost(isPresented: $showNowPlaying)
+                .environmentObject(app.offline)
+        }
+        #else
+        ZStack {
+            content
+            if isPresented {
+                NowPlayingGestureHost(isPresented: $isPresented)
                     .ignoresSafeArea()
                     .zIndex(1)
                     .transition(.move(edge: .bottom))
+                    .environmentObject(app)
+                    .environmentObject(app.offline)
             }
         }
         .animation(
-            showNowPlaying
-                ? .spring(response: 0.45, dampingFraction: 0.85)
-                : nil,
-            value: showNowPlaying
+            isPresented ? .spring(response: 0.45, dampingFraction: 0.85) : nil,
+            value: isPresented,
         )
-        .musicTransientToastChrome()
+        #endif
     }
 }
 
@@ -142,6 +227,9 @@ private struct TabViewMiniPlayerAccessory: View {
     @EnvironmentObject private var app: AppModel
     @Binding var showNowPlaying: Bool
     @ObservedObject var player: PlaybackEngine
+    /// Forwarded into the mini player so the tap button can mark itself as the
+    /// zoom-transition source for the presented full player.
+    let artworkNamespace: Namespace.ID
 
     private var layout: MiniPlayerLayout {
         #if os(iOS)
@@ -152,11 +240,20 @@ private struct TabViewMiniPlayerAccessory: View {
     }
 
     var body: some View {
+        // The matched-transition-source modifier lives here — on the
+        // accessory itself, which is rendered exactly once — instead of inside
+        // ``MiniPlayerView`` on each layout's tap button. During the tab bar's
+        // morph between `.inline` and `.expanded` placements, both layouts
+        // could briefly be alive, registering two sources with the same id;
+        // SwiftUI would then fail to pick one and fall back to the default
+        // `fullScreenCover` slide-up animation. Anchoring at this layer keeps
+        // exactly one source registered no matter what's happening below.
         MiniPlayerView(
             showNowPlaying: $showNowPlaying,
             player: player,
             layout: layout
         )
+        .matchedTransitionSource(id: "playerArtwork", in: artworkNamespace)
     }
 }
 
@@ -294,20 +391,22 @@ private struct NowPlayingGestureHost: View {
                     }
                     return
                 }
+                // Hand the dismiss off to ``.fullScreenCover``'s
+                // `.navigationTransition(.zoom)` — *do not* slide the view down
+                // manually or disable animations on the `isPresented` mutation,
+                // both of which previously bypassed the zoom and made the
+                // dismiss look like the default cover slide-down. We just
+                // flip `isPresented` and let the system animate the zoom back
+                // to the mini player's matched-transition-source frame.
                 isDismissAnimating = true
-                let dismissTarget = max(hostHeight, predictedDy, dy) + 40
-                withAnimation(.easeOut(duration: 0.28)) {
-                    dragOffset = dismissTarget
-                }
+                isPresented = false
+                // Reset transient drag transforms after the cover's zoom
+                // animation has completed (slightly longer than the system
+                // transition window so the reset doesn't snap mid-animation).
                 Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(280))
-                    var transaction = Transaction()
-                    transaction.disablesAnimations = true
-                    withTransaction(transaction) {
-                        isPresented = false
-                        dragOffset = 0
-                        isDismissAnimating = false
-                    }
+                    try? await Task.sleep(for: .milliseconds(420))
+                    dragOffset = 0
+                    isDismissAnimating = false
                 }
             }
     }

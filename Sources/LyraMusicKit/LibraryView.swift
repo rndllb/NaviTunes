@@ -49,10 +49,6 @@ private enum RecentLibraryItem: Identifiable {
 
 // MARK: - Section config
 
-struct DeepLinkArtist: Identifiable, Hashable {
-    let name: String
-    var id: String { name }
-}
 
 struct LibrarySectionItem: Codable, Identifiable, Equatable {
     var id: String
@@ -122,14 +118,6 @@ struct LibraryView: View {
     @State private var showNewPlaylistSheet = false
     @State private var showEditSections = false
     @State private var showFloatingHeader = true
-    @State private var deepLinkAlbum: AlbumSummary? = nil
-    /// Honored by the deep-link album destination — `false` opens the full catalog
-    /// album view when "Go to Album" is followed for a non-library track.
-    @State private var deepLinkAlbumLibrarySource: Bool = true
-    @State private var deepLinkArtist: DeepLinkArtist? = nil
-    @State private var deepLinkPlaylist: PlaylistSummary? = nil
-    @State private var pendingScrollToTrackId: String? = nil
-
     private let pinnedColumns = MusicDesign.libraryHubGridColumns(count: 3)
     private let recentColumns = MusicDesign.libraryHubGridColumns(count: 2)
 
@@ -210,47 +198,11 @@ struct LibraryView: View {
             .sheet(isPresented: $showEditSections) {
                 EditLibrarySectionsSheet(configRaw: $sectionConfigRaw)
             }
-            .navigationDestination(item: $deepLinkAlbum) { album in
-                ServerPlaylistDetailView(album: album, librarySource: deepLinkAlbumLibrarySource, scrollToTrackId: pendingScrollToTrackId)
-            }
-            .navigationDestination(item: $deepLinkArtist) { artist in
-                ArtistAlbumsView(artistName: artist.name)
-            }
-            .navigationDestination(item: $deepLinkPlaylist) { playlist in
-                ServerPlaylistDetailView(
-                    playlist: playlist,
-                    scrollToTrackId: pendingScrollToTrackId,
-                    preloadedRows: app.cachedPlaylistRows(playlistId: playlist.id)
-                )
-            }
+            .deepLinkPush(tab: .library)
         }
         .tint(MusicDesign.accent)
         .onAppear {
             LibraryPinStore.migrateLegacyPlaylistPinsIfNeeded(storage: &pinnedStorage)
-        }
-        .onChange(of: app.pendingNavigation) { _, nav in
-            guard let nav else { return }
-            app.pendingNavigation = nil
-            switch nav {
-            case .album(let album, let scrollToTrackId, let librarySource):
-                pendingScrollToTrackId = scrollToTrackId
-                deepLinkAlbumLibrarySource = librarySource
-                deepLinkAlbum = album
-            case .artist(let name):
-                deepLinkArtist = DeepLinkArtist(name: name)
-            case .playlist(let playlist, let scrollToTrackId):
-                if app.isPlaylistDetailMounted(id: playlist.id) {
-                    if let scrollToTrackId {
-                        app.pendingPlaylistScroll = PendingPlaylistScroll(
-                            playlistId: playlist.id,
-                            trackId: scrollToTrackId
-                        )
-                    }
-                    return
-                }
-                pendingScrollToTrackId = scrollToTrackId
-                deepLinkPlaylist = playlist
-            }
         }
     }
 

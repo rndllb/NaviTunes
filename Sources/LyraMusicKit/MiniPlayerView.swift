@@ -201,6 +201,7 @@ struct MiniPlayerView: View {
         .padding(.vertical, isTabAccessory ? 2 : 5)
         .modifier(MiniPlayerChromeModifier(applyCapsule: layout == .standalone))
     }
+
 }
 
 private struct MiniPlayerChromeModifier: ViewModifier {
