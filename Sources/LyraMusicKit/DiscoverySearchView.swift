@@ -171,12 +171,14 @@ private enum RecentSearchEntityStore {
 /// Downtify download candidate (Download). Server hits already in the user's
 /// personal library are filtered out upstream (they live in the Library tab).
 private enum HybridRow: Identifiable {
+    case serverArtist(LibraryArtistSummary)
     case serverSong(Track)
     case serverAlbum(AlbumSummary)
     case downtify(DowntifySong)
 
     var id: String {
         switch self {
+        case .serverArtist(let a): return "srv-artist-\(a.id)"
         case .serverSong(let t): return "srv-song-\(t.id)"
         case .serverAlbum(let a): return "srv-album-\(a.id)"
         case .downtify(let s): return "dt-\(s.songId)"
@@ -274,6 +276,15 @@ struct DiscoverySearchView: View {
 
         var scored: [(row: HybridRow, score: Double, kindPriority: Int)] = []
 
+        // Artists pinned to the top of Top Results. Each artist gets a large
+        // score bump so any matching artist surfaces above albums/songs/Downtify
+        // — Apple Music does the same: tapping search for "Deftones" returns
+        // the artist row first, then their albums, then their songs.
+        for artist in serverResults.artists {
+            let s = Self.relevanceScore(title: artist.name, artist: artist.name, query: q)
+            scored.append((.serverArtist(artist), s + 1.0, -1))
+        }
+
         for album in serverResults.albums where !personalAlbumIds.contains(album.id) {
             let s = Self.relevanceScore(title: album.title, artist: album.artist, query: q)
             // Slight bump for albums so when score ties with a single track,
@@ -302,7 +313,7 @@ struct DiscoverySearchView: View {
         return scored
             .sorted { lhs, rhs in
                 if lhs.score != rhs.score { return lhs.score > rhs.score }
-                // Equal score → preserve a stable order (album > song > downtify).
+                // Equal score → preserve a stable order (artist > album > song > downtify).
                 return lhs.kindPriority < rhs.kindPriority
             }
             .map(\.row)
@@ -631,6 +642,8 @@ struct DiscoverySearchView: View {
     @ViewBuilder
     private func hybridRowView(_ row: HybridRow) -> some View {
         switch row {
+        case .serverArtist(let artist):
+            serverArtistRow(artist)
         case .serverAlbum(let album):
             serverAlbumRow(album)
         case .serverSong(let track):
@@ -638,6 +651,42 @@ struct DiscoverySearchView: View {
         case .downtify(let song):
             downtifyRow(song)
         }
+    }
+
+    /// Top-Results artist row — circular avatar + name, navigates to the new
+    /// ``ArtistPageView``. Mirrors the library search-results artist row visually
+    /// so the two surfaces feel consistent.
+    private func serverArtistRow(_ artist: LibraryArtistSummary) -> some View {
+        Button {
+            recordRecent(.init(
+                kind: .artist,
+                primaryId: artist.id,
+                title: artist.name,
+                artworkURL: artist.artworkURL,
+            ))
+            navigationPath.append(SearchNavTarget.artist(artist))
+        } label: {
+            HStack(spacing: 12) {
+                AlbumArtworkView(url: artist.artworkURL, cornerRadius: rowArtworkSide / 2)
+                    .frame(width: rowArtworkSide, height: rowArtworkSide)
+                    .clipShape(Circle())
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(artist.name)
+                        .font(entityTitleFont)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text("Artist")
+                        .font(entitySubtitleFont)
+                        .foregroundStyle(MusicDesign.secondaryLabel)
+                }
+                Spacer(minLength: 0)
+                navChevron
+            }
+            .padding(.vertical, entityVerticalPadding)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(discoverRowBackground)
     }
 
     // MARK: - Hybrid: server-album row (Add pill)
