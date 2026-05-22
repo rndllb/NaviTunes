@@ -217,7 +217,11 @@ struct LibraryView: View {
                 ArtistAlbumsView(artistName: artist.name)
             }
             .navigationDestination(item: $deepLinkPlaylist) { playlist in
-                ServerPlaylistDetailView(playlist: playlist, scrollToTrackId: pendingScrollToTrackId)
+                ServerPlaylistDetailView(
+                    playlist: playlist,
+                    scrollToTrackId: pendingScrollToTrackId,
+                    preloadedRows: app.cachedPlaylistRows(playlistId: playlist.id)
+                )
             }
         }
         .tint(MusicDesign.accent)
@@ -235,6 +239,15 @@ struct LibraryView: View {
             case .artist(let name):
                 deepLinkArtist = DeepLinkArtist(name: name)
             case .playlist(let playlist, let scrollToTrackId):
+                if app.isPlaylistDetailMounted(id: playlist.id) {
+                    if let scrollToTrackId {
+                        app.pendingPlaylistScroll = PendingPlaylistScroll(
+                            playlistId: playlist.id,
+                            trackId: scrollToTrackId
+                        )
+                    }
+                    return
+                }
                 pendingScrollToTrackId = scrollToTrackId
                 deepLinkPlaylist = playlist
             }
@@ -453,7 +466,16 @@ struct LibraryView: View {
 
     private func recentCell(_ item: RecentLibraryItem) -> some View {
         LibraryHubGridCell(title: item.title, subtitle: item.subtitle) {
-            AlbumArtworkView(url: item.artworkURL, cornerRadius: MusicDesign.gridAlbumCorner)
+            AlbumArtworkView(url: resolvedRecentArtworkURL(for: item), cornerRadius: MusicDesign.gridAlbumCorner)
+        }
+    }
+
+    private func resolvedRecentArtworkURL(for item: RecentLibraryItem) -> URL? {
+        switch item {
+        case .album(let album):
+            return app.resolvedArtworkURL(for: album)
+        case .playlist(let playlist):
+            return app.resolvedArtworkURL(for: playlist)
         }
     }
 
@@ -496,7 +518,18 @@ struct LibraryView: View {
             }
             .aspectRatio(1, contentMode: .fit)
         default:
-            AlbumArtworkView(url: item.artworkURL, cornerRadius: MusicDesign.gridAlbumCorner)
+            AlbumArtworkView(url: resolvedPinnedArtworkURL(for: item), cornerRadius: MusicDesign.gridAlbumCorner)
+        }
+    }
+
+    private func resolvedPinnedArtworkURL(for item: LibraryPinnedItem) -> URL? {
+        switch item {
+        case .album(let album):
+            return app.resolvedArtworkURL(for: album)
+        case .playlist(let playlist):
+            return app.resolvedArtworkURL(for: playlist)
+        case .track(let track):
+            return app.resolvedArtworkURL(for: track)
         }
     }
 }
@@ -2144,11 +2177,12 @@ struct AlbumsGridView: View {
 }
 
 private struct AlbumGridCell: View {
+    @EnvironmentObject private var app: AppModel
     let album: AlbumSummary
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            AlbumArtworkView(url: album.artworkURL, cornerRadius: MusicDesign.albumCorner)
+            AlbumArtworkView(url: app.resolvedArtworkURL(for: album), cornerRadius: MusicDesign.albumCorner)
             Text(album.title)
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(.primary)

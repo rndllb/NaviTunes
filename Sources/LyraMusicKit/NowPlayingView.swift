@@ -639,10 +639,7 @@ struct NowPlayingView: View {
                         artist: track.artist,
                         albumSubtitle: albumSubtitle,
                         libraryAlbum: libraryAlbum,
-                        sourcePlaylist: {
-                            if case .playlist(let p) = player.playbackSource { return p }
-                            return nil
-                        }(),
+                        sourcePlaylist: sourcePlaylistForActiveTrack(track),
                         compact: true,
                         goToAlbumDisabled: libraryAlbum == nil && catalogAlbumFallback(from: track) == nil,
                         onGoToAlbum: {
@@ -785,10 +782,7 @@ struct NowPlayingView: View {
                 artist: track.artist,
                 albumSubtitle: albumSubtitle,
                 libraryAlbum: libraryAlbum,
-                sourcePlaylist: {
-                    if case .playlist(let p) = app.player.playbackSource { return p }
-                    return nil
-                }(),
+                sourcePlaylist: sourcePlaylistForActiveTrack(track),
                 compact: true,
                 goToAlbumDisabled: libraryAlbum == nil && catalogAlbumFallback(from: track) == nil,
                 onGoToAlbum: {
@@ -1000,10 +994,7 @@ struct NowPlayingView: View {
                         albumSubtitle: albumSubtitle,
                         libraryAlbum: libraryAlbum,
                         heroBackdropPalette: backdropPalette,
-                        sourcePlaylist: {
-                            if case .playlist(let p) = player.playbackSource { return p }
-                            return nil
-                        }(),
+                        sourcePlaylist: sourcePlaylistForActiveTrack(track),
                         goToAlbumDisabled: libraryAlbum == nil && catalogAlbumFallback(from: track) == nil,
                         onGoToAlbum: {
                             if let album = libraryAlbum {
@@ -1068,6 +1059,32 @@ struct NowPlayingView: View {
 
     private func dismissAndNavigate(to route: NowPlayingLibraryRoute) {
         let activeTrackId = player.activeTrack?.id
+
+        switch route {
+        case .playlist:
+            guard let track = player.activeTrack,
+                  let p = sourcePlaylistForActiveTrack(track) else { return }
+            let playlist = playlistForNavigation(id: p.id) ?? p
+            let activeTrackId = track.id
+            Task { @MainActor in
+                app.beginPlaylistFocusSession(playlistId: playlist.id)
+                app.selectedTab = .library
+                app.pendingPlaylistScroll = PendingPlaylistScroll(
+                    playlistId: playlist.id,
+                    trackId: activeTrackId
+                )
+                if !app.isPlaylistDetailMounted(id: playlist.id) {
+                    await app.prefetchPlaylistRows(playlistId: playlist.id)
+                    app.pendingNavigation = .playlist(playlist, scrollToTrackId: activeTrackId)
+                }
+                await app.waitForPlaylistFocus(playlistId: playlist.id)
+                isPresented = false
+            }
+            return
+        default:
+            break
+        }
+
         let nav: NowPlayingDeepLink?
         switch route {
         case .album(let album):
@@ -1075,28 +1092,15 @@ struct NowPlayingView: View {
             // otherwise the filter would hide it, so fall back to the full album view.
             let useLibrarySource = activeTrackId.map { app.isSongInLibrary($0) } ?? true
             nav = .album(album, scrollToTrackId: activeTrackId, librarySource: useLibrarySource)
-            if let activeTrackId {
-                app.pendingAlbumScroll = PendingAlbumScroll(albumId: album.id, trackId: activeTrackId)
-            }
         case .artist(let name):
             nav = .artist(name)
         case .playlist:
-            if case .playlist(let p) = player.playbackSource {
-                let playlist = playlistForNavigation(id: p.id) ?? p
-                nav = .playlist(playlist, scrollToTrackId: activeTrackId)
-                if let activeTrackId {
-                    app.pendingPlaylistScroll = PendingPlaylistScroll(playlistId: playlist.id, trackId: activeTrackId)
-                }
-            } else {
-                nav = nil
-            }
+            nav = nil
         }
         app.selectedTab = .library
         isPresented = false
-        // Defer navigation until the dismiss animation has completed so the
-        // LibraryView NavigationStack is stable when the push is triggered.
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(600))
+            try? await Task.sleep(for: .milliseconds(320))
             app.pendingNavigation = nav
         }
     }
@@ -1114,6 +1118,10 @@ struct NowPlayingView: View {
             return playlist
         }
         return nil
+    }
+
+    private func sourcePlaylistForActiveTrack(_ track: Track) -> PlaylistSummary? {
+        app.sourcePlaylistForNowPlaying(activeTrack: track, playbackSource: player.playbackSource)
     }
 
     private func progressBlock(track: Track) -> some View {

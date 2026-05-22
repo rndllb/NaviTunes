@@ -6,6 +6,12 @@ enum ArtworkURLCache {
     private static let folderName = "LyraMusic/ArtworkCache"
     private static let memory = NSCache<NSString, NSData>()
 
+    static func clearAll() {
+        memory.removeAllObjects()
+        guard let dir = try? cacheDirectory() else { return }
+        try? FileManager.default.removeItem(at: dir)
+    }
+
     static func data(for url: URL) async -> Data? {
         let key = cacheKey(for: url)
         if let cached = memory.object(forKey: key as NSString) as Data? {

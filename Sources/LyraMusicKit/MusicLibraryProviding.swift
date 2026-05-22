@@ -50,6 +50,8 @@ struct AlbumSummary: Identifiable, Hashable, Codable {
     let title: String
     let artist: String
     let artworkURL: URL?
+    /// Navidrome Subsonic `coverArt` id (may differ from album `id`).
+    let coverArtId: String?
     /// Track count when the backend reports it (optional surfacing in Library / grids).
     let trackCount: Int?
     /// When the album was added to the library (Jellyfin DateCreated, etc.), when known.
@@ -66,6 +68,7 @@ struct AlbumSummary: Identifiable, Hashable, Codable {
         title: String,
         artist: String,
         artworkURL: URL?,
+        coverArtId: String? = nil,
         trackCount: Int? = nil,
         libraryAddedDate: Date? = nil,
         genres: [String] = [],
@@ -76,6 +79,7 @@ struct AlbumSummary: Identifiable, Hashable, Codable {
         self.title = title
         self.artist = artist
         self.artworkURL = artworkURL
+        self.coverArtId = coverArtId
         self.trackCount = trackCount
         self.libraryAddedDate = libraryAddedDate
         self.genres = genres

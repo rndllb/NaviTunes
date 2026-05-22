@@ -347,7 +347,7 @@ struct AlbumArtworkView: View {
                     Color.clear
                 }
             }
-            .task(id: artworkID) {
+            .task(id: url.absoluteString) {
                 await load(url: url)
             }
         } else if let meshArtworkSeed {
@@ -359,8 +359,8 @@ struct AlbumArtworkView: View {
     }
 
     private func load(url: URL) async {
-        let id = DecodedArtworkCache.stableID(for: url, maxPixelSize: maxDecodePixels)
-        if loadedArtworkID == id, decoded != nil {
+        let loadKey = url.absoluteString
+        if loadedArtworkID == loadKey, decoded != nil {
             return
         }
         // Suppress animation only for image-load state changes — the previous
@@ -372,13 +372,13 @@ struct AlbumArtworkView: View {
             withTransaction(Transaction(animation: nil)) {
                 decoded = cached
                 loadFailed = false
-                loadedArtworkID = id
+                loadedArtworkID = loadKey
             }
             return
         }
         withTransaction(Transaction(animation: nil)) {
             loadFailed = false
-            if loadedArtworkID != id {
+            if loadedArtworkID != loadKey {
                 decoded = nil
             }
         }
@@ -387,7 +387,7 @@ struct AlbumArtworkView: View {
             withTransaction(Transaction(animation: nil)) {
                 decoded = cg
                 loadFailed = cg == nil
-                loadedArtworkID = id
+                loadedArtworkID = loadKey
             }
         }
     }

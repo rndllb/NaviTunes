@@ -78,6 +78,14 @@ public final class AppModel: ObservableObject {
     /// Same as ``pendingPlaylistScroll`` but for album-mode detail views.
     @Published var pendingAlbumScroll: PendingAlbumScroll? = nil
 
+    /// Most recently mounted playlist detail id (ref-counted). Used by Go to Playlist to
+    /// scroll in place instead of pushing a duplicate detail view.
+    @Published private(set) var visiblePlaylistDetailId: String? = nil
+    private var mountedPlaylistDetailCounts: [String: Int] = [:]
+
+    private var playlistFocusCompletedIds: Set<String> = []
+    private var playlistFocusWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+
     /// Brief bottom toast (e.g. "Added to Queue"). Auto-clears after ``showTransientToast``
     /// is called; the ``MusicTransientToastChrome`` view modifier renders it.
     @Published var transientToast: String? = nil
@@ -140,6 +148,8 @@ public final class AppModel: ObservableObject {
     private(set) var libraryAlbumReleaseIndex: LibraryAlbumReleaseIndex = .empty
     private var libraryBootstrapTask: Task<Void, Never>?
     private var trackIndexTask: Task<Void, Never>?
+    /// In-memory playlist tracklists for instant detail hydration (Go to Playlist, revisit).
+    private var playlistRowsCache: [String: [PlaylistRowItem]] = [:]
 
     private static let favoriteTrackIdsKey = "LyraMusic.favoriteTrackIds"
     @Published private(set) var favoriteTrackIds: Set<String> = []
@@ -472,6 +482,7 @@ public final class AppModel: ObservableObject {
         }
         isAuthenticating = true
         defer { isAuthenticating = false }
+        let priorSessionKey = mediaSessionKey
         do {
             switch backendKind {
             case .jellyfin:
@@ -486,7 +497,6 @@ public final class AppModel: ObservableObject {
                     accessToken: client.sessionAccessToken,
                     userId: client.sessionUserId,
                 )
-                await Self.registerMediaAuthHeaders(host: base.host, headers: client.httpHeadersForMediaRequests())
             case .navidrome:
                 let client = NavidromeClient(baseURL: base)
                 try await client.signIn(username: username, password: password)
@@ -499,6 +509,13 @@ public final class AppModel: ObservableObject {
                     password: password,
                     subsonicToken: client.sessionToken,
                 )
+            }
+            await clearMediaArtworkCaches()
+            if priorSessionKey != mediaSessionKey {
+                clearLibraryMediaCatalog()
+            }
+            if backendKind == .jellyfin, let client = jellyfin {
+                await Self.registerMediaAuthHeaders(host: base.host, headers: client.httpHeadersForMediaRequests())
             }
             // Enter the app immediately after auth — library refresh can take a long time on large servers.
             isSignedIn = true
@@ -622,6 +639,7 @@ public final class AppModel: ObservableObject {
         UserDefaults.standard.removeObject(forKey: Self.lastLibrarySyncAtKey)
         LibrarySnapshotStore.clear()
         PlaybackQueueStore.clear()
+        clearMediaArtworkCachesSync()
         hasInternetPath = true
         serverConnectionHealth = .unknown
     }
@@ -629,15 +647,18 @@ public final class AppModel: ObservableObject {
     /// Prefer on-disk artwork, then per-track URL, then cached album art, then server cover lookup.
     func resolvedArtworkURL(for track: Track) -> URL? {
         if let local = offline.localArtworkURL(forTrackId: track.id) { return local }
-        if let trackArt = track.artworkURL { return trackArt }
-        if let album = libraryAlbumsById[track.albumId] {
-            if let localAlbum = offline.localArtworkURL(forAlbumId: album.id) { return localAlbum }
-            if let albumArt = album.artworkURL { return albumArt }
-        }
         switch backendKind {
         case .navidrome:
-            return navidrome?.coverArtURL(forId: track.albumId, size: 400)
+            return navidromeFreshCoverArtURL(
+                coverArtId: navidromeCoverArtId(for: track),
+                fallbackId: track.albumId
+            )
         case .jellyfin:
+            if let trackArt = sanitizeArtworkURL(track.artworkURL) { return trackArt }
+            if let album = libraryAlbumsById[track.albumId] {
+                if let localAlbum = offline.localArtworkURL(forAlbumId: album.id) { return localAlbum }
+                if let albumArt = sanitizeArtworkURL(album.artworkURL) { return albumArt }
+            }
             return jellyfin?.albumPrimaryImageURL(albumId: track.albumId)
         }
     }
@@ -649,7 +670,123 @@ public final class AppModel: ObservableObject {
     }
 
     func resolvedArtworkURL(for album: AlbumSummary) -> URL? {
-        offline.localArtworkURL(forAlbumId: album.id) ?? album.artworkURL
+        if let local = offline.localArtworkURL(forAlbumId: album.id) { return local }
+        switch backendKind {
+        case .navidrome:
+            return navidromeFreshCoverArtURL(
+                coverArtId: album.coverArtId ?? navidromeCoverArtId(from: album.artworkURL),
+                fallbackId: album.id
+            )
+        case .jellyfin:
+            if let albumArt = sanitizeArtworkURL(album.artworkURL) { return albumArt }
+            return jellyfin?.albumPrimaryImageURL(albumId: album.id)
+        }
+    }
+
+    func resolvedArtworkURL(for playlist: PlaylistSummary) -> URL? {
+        switch backendKind {
+        case .navidrome:
+            return navidromeFreshCoverArtURL(
+                coverArtId: playlist.coverArtId ?? navidromeCoverArtId(from: playlist.artworkURL),
+                fallbackId: playlist.id
+            )
+        case .jellyfin:
+            if let art = sanitizeArtworkURL(playlist.artworkURL) { return art }
+            return jellyfin?.albumPrimaryImageURL(albumId: playlist.id)
+        }
+    }
+
+    private func navidromeCoverArtId(for track: Track) -> String? {
+        if let fromTrack = navidromeCoverArtId(from: track.artworkURL) { return fromTrack }
+        if let album = libraryAlbumsById[track.albumId] {
+            return album.coverArtId ?? navidromeCoverArtId(from: album.artworkURL)
+        }
+        return nil
+    }
+
+    private func navidromeCoverArtId(from url: URL?) -> String? {
+        guard let url,
+              let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let id = comps.queryItems?.first(where: { $0.name == "id" })?.value
+        else { return nil }
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Navidrome embeds salted auth in cover URLs — always rebuild from the active client
+    /// so snapshot / re-login never leaves stale `t`/`s` tokens that 401 in the loader.
+    private func navidromeFreshCoverArtURL(coverArtId: String?, fallbackId: String) -> URL? {
+        let id = coverArtId ?? fallbackId
+        guard !id.isEmpty else { return nil }
+        return navidrome?.coverArtURL(forId: id, size: 400)
+    }
+
+    private var activeServerBaseURL: URL? {
+        URL(string: baseURLString.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private var mediaSessionKey: String {
+        let base = baseURLString.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let user = username.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return "\(backendKind)|\(base)|\(user)"
+    }
+
+    /// Rejects artwork URLs baked into an old snapshot/client (e.g. Jellyfin URLs after switching to Navidrome).
+    private func sanitizeArtworkURL(_ url: URL?) -> URL? {
+        guard let url, artworkURLMatchesActiveSession(url) else { return nil }
+        return url
+    }
+
+    private func artworkURLMatchesActiveSession(_ url: URL) -> Bool {
+        guard isSignedIn,
+              let base = activeServerBaseURL,
+              let baseHost = base.host?.lowercased(),
+              let urlHost = url.host?.lowercased(),
+              baseHost == urlHost
+        else { return false }
+
+        let basePort = base.port ?? (base.scheme == "https" ? 443 : 80)
+        let urlPort = url.port ?? (url.scheme == "https" ? 443 : 80)
+        guard basePort == urlPort else { return false }
+
+        let path = url.path.lowercased()
+        switch backendKind {
+        case .jellyfin:
+            return !path.contains("/rest/")
+        case .navidrome:
+            return path.contains("/rest/")
+        }
+    }
+
+    private func clearMediaArtworkCaches() async {
+        ArtworkURLCache.clearAll()
+        DecodedArtworkCache.clearAll()
+        await MediaAuthHeaderRegistry.shared.clear()
+    }
+
+    private func clearMediaArtworkCachesSync() {
+        ArtworkURLCache.clearAll()
+        DecodedArtworkCache.clearAll()
+        Task { await MediaAuthHeaderRegistry.shared.clear() }
+    }
+
+    /// Drops in-memory library media when the active server identity changes without an explicit sign-out.
+    private func clearLibraryMediaCatalog() {
+        libraryAlbums = []
+        recentlyAddedAlbums = []
+        homeRecentlyPlayedServerAlbums = []
+        homeGenreShelves = []
+        discoveryLibraryTracks = []
+        libraryPlaylists = []
+        libraryMagicPlaylistId = nil
+        librarySongIds = []
+        libraryAlbumEntries = []
+        libraryPlaylistEntries = []
+        libraryCatalogEpoch = 0
+        libraryStatistics = .empty
+        lastLibrarySyncAt = nil
+        playlistRowsCache.removeAll()
+        LibrarySnapshotStore.clear()
     }
 
     func persistLibrarySnapshot() {
@@ -1001,10 +1138,15 @@ public final class AppModel: ObservableObject {
     /// render in Library → Albums and Recently Added.
     private func backfillMissingLibraryAlbumSummaries() async {
         let knownIds = Set(libraryAlbumsById.keys)
+        let staleNavidromeIds = libraryAlbumEntries.map(\.id).filter { id in
+            guard backendKind == .navidrome, let album = libraryAlbumsById[id] else { return false }
+            return album.coverArtId == nil
+        }
         let missingIds = libraryAlbumEntries.map(\.id).filter { !knownIds.contains($0) }
-        guard !missingIds.isEmpty else { return }
+        let idsToFetch = Array(Set(missingIds + staleNavidromeIds))
+        guard !idsToFetch.isEmpty else { return }
         var fetched: [AlbumSummary] = []
-        for id in missingIds {
+        for id in idsToFetch {
             let summary: AlbumSummary?
             switch backendKind {
             case .jellyfin:
@@ -1015,13 +1157,12 @@ public final class AppModel: ObservableObject {
             if let summary { fetched.append(summary) }
         }
         guard !fetched.isEmpty else { return }
-        // Merge into the catalog in one assignment so the @Published setter only
-        // fires once and `libraryAlbumsById` rebuilds once.
         var merged = libraryAlbums
-        let existing = Set(merged.map(\.id))
-        for album in fetched where !existing.contains(album.id) {
-            merged.append(album)
+        var byId = Dictionary(uniqueKeysWithValues: merged.map { ($0.id, $0) })
+        for album in fetched {
+            byId[album.id] = album
         }
+        merged = Array(byId.values)
         libraryAlbums = merged
         persistLibrarySnapshot()
     }
@@ -1185,6 +1326,7 @@ public final class AppModel: ObservableObject {
             title: track.albumTitle.isEmpty ? "Album" : track.albumTitle,
             artist: track.artist,
             artworkURL: track.artworkURL,
+            coverArtId: navidromeCoverArtId(for: track),
             trackCount: nil,
             libraryAddedDate: track.libraryAddedDate,
             genres: track.genres,
@@ -1394,19 +1536,89 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    func cachedPlaylistRows(playlistId: String) -> [PlaylistRowItem]? {
+        playlistRowsCache[playlistId]
+    }
+
+    func registerMountedPlaylistDetail(id: String) {
+        mountedPlaylistDetailCounts[id, default: 0] += 1
+        visiblePlaylistDetailId = id
+    }
+
+    func unregisterMountedPlaylistDetail(id: String) {
+        let remaining = (mountedPlaylistDetailCounts[id] ?? 1) - 1
+        if remaining <= 0 {
+            mountedPlaylistDetailCounts.removeValue(forKey: id)
+        } else {
+            mountedPlaylistDetailCounts[id] = remaining
+        }
+        visiblePlaylistDetailId = mountedPlaylistDetailCounts.keys.first
+    }
+
+    func isPlaylistDetailMounted(id: String) -> Bool {
+        (mountedPlaylistDetailCounts[id] ?? 0) > 0
+    }
+
+    func beginPlaylistFocusSession(playlistId: String) {
+        playlistFocusCompletedIds.remove(playlistId)
+        playlistFocusWaiters.removeValue(forKey: playlistId)
+    }
+
+    func markPlaylistFocusComplete(playlistId: String) {
+        if var waiters = playlistFocusWaiters.removeValue(forKey: playlistId), !waiters.isEmpty {
+            waiters.forEach { $0.resume() }
+        } else {
+            playlistFocusCompletedIds.insert(playlistId)
+        }
+    }
+
+    func waitForPlaylistFocus(playlistId: String, timeoutSeconds: Double = 2.0) async {
+        if playlistFocusCompletedIds.remove(playlistId) != nil {
+            return
+        }
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { @MainActor in
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    self.playlistFocusWaiters[playlistId, default: []].append(continuation)
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(timeoutSeconds))
+            }
+            await group.next()
+            group.cancelAll()
+        }
+        if var waiters = playlistFocusWaiters.removeValue(forKey: playlistId) {
+            waiters.forEach { $0.resume() }
+            playlistFocusWaiters.removeValue(forKey: playlistId)
+        }
+    }
+
+    func prefetchPlaylistRows(playlistId: String) async {
+        guard playlistRowsCache[playlistId] == nil else { return }
+        _ = try? await fetchPlaylistRows(playlistId: playlistId)
+    }
+
+    func invalidatePlaylistRowsCache(playlistId: String) {
+        playlistRowsCache.removeValue(forKey: playlistId)
+    }
+
     func fetchPlaylistRows(playlistId: String) async throws -> [PlaylistRowItem] {
+        let rows: [PlaylistRowItem]
         switch backendKind {
         case .jellyfin:
             guard let client = jellyfin else {
                 throw URLError(.userAuthenticationRequired)
             }
-            return try await client.fetchPlaylistRows(playlistId: playlistId)
+            rows = try await client.fetchPlaylistRows(playlistId: playlistId)
         case .navidrome:
             guard let client = navidrome else {
                 throw URLError(.userAuthenticationRequired)
             }
-            return try await client.fetchPlaylistRows(playlistId: playlistId)
+            rows = try await client.fetchPlaylistRows(playlistId: playlistId)
         }
+        playlistRowsCache[playlistId] = rows
+        return rows
     }
 
     @discardableResult
@@ -1674,20 +1886,19 @@ public final class AppModel: ObservableObject {
 
     func albumSummary(for track: Track) -> AlbumSummary {
         if let cached = libraryAlbumsById[track.albumId] {
-            var album = cached
-            if let local = resolvedArtworkURL(for: cached) {
-                album = AlbumSummary(
-                    id: album.id,
-                    title: album.title,
-                    artist: album.artist,
-                    artworkURL: local,
-                    trackCount: album.trackCount,
-                    libraryAddedDate: album.libraryAddedDate,
-                    genres: album.genres,
-                    releaseYear: album.releaseYear,
-                )
-            }
-            return album
+            let art = resolvedArtworkURL(for: cached)
+            return AlbumSummary(
+                id: cached.id,
+                title: cached.title,
+                artist: cached.artist,
+                artworkURL: art,
+                coverArtId: cached.coverArtId,
+                trackCount: cached.trackCount,
+                libraryAddedDate: cached.libraryAddedDate,
+                genres: cached.genres,
+                releaseYear: cached.releaseYear,
+                releaseDate: cached.releaseDate,
+            )
         }
         let art = resolvedArtworkURL(for: track)
         return AlbumSummary(
@@ -1695,6 +1906,7 @@ public final class AppModel: ObservableObject {
             title: track.albumTitle.isEmpty ? "Album" : track.albumTitle,
             artist: track.artist,
             artworkURL: art,
+            coverArtId: navidromeCoverArtId(for: track),
             trackCount: nil,
             libraryAddedDate: track.libraryAddedDate,
             genres: track.genres,
@@ -1887,6 +2099,20 @@ public final class AppModel: ObservableObject {
 
     func playlistLastPlayedDate(forPlaylistId id: String) -> Date? {
         playlistLastPlayedDates[id]
+    }
+
+    /// Resolves which playlist Now Playing → Go to Playlist should open for the active track.
+    /// User-queued tracks remember the playlist they were inserted from; otherwise falls back to ``PlaybackEngine/playbackSource``.
+    func sourcePlaylistForNowPlaying(activeTrack: Track?, playbackSource: PlaybackSource?) -> PlaylistSummary? {
+        guard let track = activeTrack else { return nil }
+        if let originId = player.originPlaylistId(forTrackId: track.id),
+           let match = libraryPlaylists.first(where: { $0.id == originId }) {
+            return match
+        }
+        if case .playlist(let playlist) = playbackSource {
+            return libraryPlaylists.first(where: { $0.id == playlist.id }) ?? playlist
+        }
+        return nil
     }
 
     private func loadPlaylistLastPlayedDatesFromDefaults() {

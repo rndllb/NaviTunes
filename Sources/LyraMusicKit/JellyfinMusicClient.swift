@@ -862,7 +862,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
             URLQueryItem(name: "SortBy", value: "SortName"),
             URLQueryItem(name: "SortOrder", value: "Ascending"),
             URLQueryItem(name: "Limit", value: "\(cap)"),
-            URLQueryItem(name: "Fields", value: "ChildCount,IsPublic,DateCreated,DateModified"),
+            URLQueryItem(name: "Fields", value: "ChildCount,IsPublic,DateCreated,DateModified,ImageTags"),
         ]
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
@@ -1195,7 +1195,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
             URLQueryItem(name: "Recursive", value: "true"),
             URLQueryItem(name: "SearchTerm", value: name),
             URLQueryItem(name: "Limit", value: "50"),
-            URLQueryItem(name: "Fields", value: "ChildCount,IsPublic,DateCreated,DateModified"),
+            URLQueryItem(name: "Fields", value: "ChildCount,IsPublic,DateCreated,DateModified,ImageTags"),
         ]
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
@@ -1286,6 +1286,9 @@ final class JellyfinMusicClient: MusicLibraryProviding {
            ) {
             comps.queryItems = [URLQueryItem(name: "tag", value: primary)]
             art = mediaURLWithQueryAuth(comps.url!, extraQuery: [])
+        }
+        if art == nil {
+            art = mediaURLWithQueryAuth(apiURL("Items", id, "Images", "Primary"), extraQuery: [])
         }
         return PlaylistSummary(
             id: id,
@@ -1510,7 +1513,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
             id: id,
             title: name,
             artist: artist,
-            artworkURL: art,
+            artworkURL: art ?? albumPrimaryImageURL(albumId: id),
             trackCount: childCount,
             libraryAddedDate: libraryAddedDate,
             genres: genres,

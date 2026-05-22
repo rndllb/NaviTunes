@@ -70,6 +70,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private var advanceWork: Task<Void, Never>?
     /// Captured at skip/jump/end before the async ``advance()`` task runs — avoids losing play intent.
     private var shouldAutoPlayAfterAdvance = false
+    /// When a track is inserted via Play Next / Add to Queue from a playlist detail view, remember
+    /// which playlist it came from so Now Playing → Go to Playlist navigates correctly.
+    private var trackOriginPlaylistIds: [String: String] = [:]
     /// True while ``advance()`` is loading the next item — ignores stale `.paused` KVO during handoff.
     private var isAdvancingToNextItem = false
 
@@ -214,6 +217,24 @@ final class PlaybackEngine: NSObject, ObservableObject {
         return queue[currentIndex]
     }
 
+    /// Playlist the given queue item was queued from (Play Next / Add to Queue), if any.
+    func originPlaylistId(forTrackId trackId: String) -> String? {
+        trackOriginPlaylistIds[trackId]
+    }
+
+    private func recordTrackOriginPlaylist(_ trackIds: some Sequence<String>, playlistId: String?) {
+        guard let playlistId else { return }
+        for id in trackIds {
+            trackOriginPlaylistIds[id] = playlistId
+        }
+    }
+
+    private func clearTrackOriginPlaylists(_ trackIds: some Sequence<String>) {
+        for id in trackIds {
+            trackOriginPlaylistIds.removeValue(forKey: id)
+        }
+    }
+
     private func revealMiniPlayerChrome() {
         guard activeTrack != nil else { return }
         showsMiniPlayerChrome = true
@@ -234,6 +255,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         playbackSource = nil
         showsMiniPlayerChrome = false
         userQueuedTrackIds.removeAll()
+        trackOriginPlaylistIds.removeAll()
         unshuffledQueue = nil
         cancelNowPlayingArtworkLoad()
         updateNowPlaying(nil)
@@ -365,6 +387,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         playbackSource = source
         // Fresh source = no user-queued items yet.
         userQueuedTrackIds.removeAll()
+        trackOriginPlaylistIds.removeAll()
         unshuffledQueue = nil
         sourceQueueOrder = normalized
         // Caller may flip this back to `.on` (e.g. ``playAlbumShuffled``) after the queue lands.
@@ -384,7 +407,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         if let started = activeTrack { onTrackStarted?(started) }
     }
 
-    func playNext(library: MusicLibraryProviding?, track: Track) async throws {
+    func playNext(library: MusicLibraryProviding?, track: Track, sourcePlaylistId: String? = nil) async throws {
         if let library { self.library = library }
         let normalized = tracksWithResolvedArtwork([track])[0]
         if queue.isEmpty {
@@ -395,9 +418,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
         let insertAt = min(currentIndex + 1, queue.count)
         queue.insert(normalized, at: insertAt)
         userQueuedTrackIds.insert(normalized.id)
+        recordTrackOriginPlaylist([normalized.id], playlistId: sourcePlaylistId)
     }
 
-    func playTracksNext(library: MusicLibraryProviding?, tracks: [Track]) async throws {
+    func playTracksNext(library: MusicLibraryProviding?, tracks: [Track], sourcePlaylistId: String? = nil) async throws {
         guard !tracks.isEmpty else { return }
         if let library { self.library = library }
         if queue.isEmpty {
@@ -411,13 +435,14 @@ final class PlaybackEngine: NSObject, ObservableObject {
             queue.insert(t, at: insertAt + i)
             userQueuedTrackIds.insert(t.id)
         }
+        recordTrackOriginPlaylist(normalized.map(\.id), playlistId: sourcePlaylistId)
     }
 
-    func addToQueue(library: MusicLibraryProviding?, track: Track) async throws {
-        try await addTracksToQueue(library: library, tracks: [track])
+    func addToQueue(library: MusicLibraryProviding?, track: Track, sourcePlaylistId: String? = nil) async throws {
+        try await addTracksToQueue(library: library, tracks: [track], sourcePlaylistId: sourcePlaylistId)
     }
 
-    func addTracksToQueue(library: MusicLibraryProviding?, tracks: [Track]) async throws {
+    func addTracksToQueue(library: MusicLibraryProviding?, tracks: [Track], sourcePlaylistId: String? = nil) async throws {
         guard !tracks.isEmpty else { return }
         if let library { self.library = library }
         if queue.isEmpty {
@@ -428,6 +453,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         removeUpcomingOccurrences(of: Set(normalized.map(\.id)))
         queue.append(contentsOf: normalized)
         for t in normalized { userQueuedTrackIds.insert(t.id) }
+        recordTrackOriginPlaylist(normalized.map(\.id), playlistId: sourcePlaylistId)
     }
 
     private func tracksWithResolvedArtwork(_ tracks: [Track]) -> [Track] {
@@ -461,6 +487,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         let previousId = activeTrack?.id
         queue.removeAll { trackIds.contains($0.id) }
         userQueuedTrackIds.subtract(trackIds)
+        clearTrackOriginPlaylists(trackIds)
         if queue.isEmpty {
             reset()
             return
