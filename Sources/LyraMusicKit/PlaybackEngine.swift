@@ -105,6 +105,12 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// → Queue → History list, which records on start (not on scrobble threshold).
     var onTrackStarted: ((Track) -> Void)?
 
+    /// Fires the moment the user explicitly skips forward (`skipNext`). NOT fired by
+    /// natural end-of-track advances or by `skipPrevious`. Drives Kill Mode's
+    /// "mark for removal" path — `AppModel` inspects the source + queue to decide
+    /// whether to mark the outgoing track.
+    var onTrackSkipped: ((Track, PlaybackSource?) -> Void)?
+
     private var didConfigureRemoteCommands = false
     private var nowPlayingArtworkTask: Task<Void, Never>?
     private var nowPlayingArtworkTrackId: String?
@@ -686,6 +692,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
     func skipNext() {
         // Shuffle is a queue-reordering action — advance sequentially regardless of mode.
         guard currentIndex + 1 < queue.count else { return }
+        let outgoing = queue[currentIndex]
+        onTrackSkipped?(outgoing, playbackSource)
         captureAutoPlayIntentForAdvance()
         currentIndex += 1
         resetUIProgressForTrackHandoff()

@@ -31,6 +31,9 @@ struct SettingsView: View {
             app.prefetchAccountAvatar()
             Task { await app.refreshServerConnectionHealth() }
             Task { await app.refreshNavidromeUserMetadata() }
+            // Statistics are pulled on appear rather than during bootstrap so the
+            // first-launch sync doesn't pay for counts the user can't yet see.
+            Task { await app.refreshLibraryStatistics() }
         }
         .onChange(of: app.isSignedIn) { _, _ in
             SettingsFormDrafts.pullServer(from: app, into: &serverDraft)

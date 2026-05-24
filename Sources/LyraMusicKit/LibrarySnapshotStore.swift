@@ -44,12 +44,24 @@ enum LibrarySnapshotStore {
         return snap
     }
 
+    /// Off-main JSON decode + disk read. Use from app startup so the main thread
+    /// stays free while the (potentially multi-MB) snapshot deserializes.
+    static func loadAsync() async -> LibrarySnapshot? {
+        await Task.detached(priority: .userInitiated) { load() }.value
+    }
+
     static func save(_ snapshot: LibrarySnapshot) {
         guard let url = try? fileURL() else { return }
         var snap = snapshot
         snap.savedAt = Date()
         guard let data = try? JSONEncoder().encode(snap) else { return }
         try? data.write(to: url, options: .atomic)
+    }
+
+    /// Off-main JSON encode + atomic write. Callers should hand off a value snapshot
+    /// captured on the main actor; the encode happens on a background priority task.
+    static func saveAsync(_ snapshot: LibrarySnapshot) {
+        Task.detached(priority: .utility) { save(snapshot) }
     }
 
     static func clear() {
