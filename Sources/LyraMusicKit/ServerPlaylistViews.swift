@@ -365,7 +365,13 @@ struct ServerPlaylistDetailView: View {
                 .scrollContentBackground(.hidden)
                 .background(Color.clear)
                 .environment(\.defaultMinListRowHeight, isAlbum ? 0 : 44)
-                .onChange(of: rows.map(\.track.id)) { _, _ in
+                .onChange(of: rows.map(\.track.id), initial: true) { _, _ in
+                    // `initial: true` so the deep-link push path also scrolls when the
+                    // playlist was preloaded via `app.prefetchPlaylistRows`: in that case
+                    // rows are populated in `init` and `load()` skips reassigning when the
+                    // fresh fetch matches, so without firing on initial mount the
+                    // scroll-to-track never runs. `didScrollToFocusTrack` inside the
+                    // callee guards against duplicate scrolls if rows later change.
                     scrollToFocusedTrackIfNeeded(proxy: scrollProxy)
                 }
                 .modifier(DetailScrollSignalObserver(
@@ -571,7 +577,8 @@ struct ServerPlaylistDetailView: View {
                 .menuOrder(.fixed)
             }
         } else {
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
+                killModeToolbarButton
                 Menu {
                     playlistOverflowMenuContent
                 } label: {
@@ -580,6 +587,32 @@ struct ServerPlaylistDetailView: View {
                 }
                 .menuOrder(.fixed)
             }
+        }
+    }
+
+    /// Sits in the trailing toolbar group, immediately left of the 3-dot menu. Hidden
+    /// unless there is at least one pending removal — Kill Mode on/off lives in the menu.
+    @ViewBuilder
+    private var killModeToolbarButton: some View {
+        let count = killModePendingCount
+        if count > 0 {
+            NavigationLink {
+                PlaylistKillListView(playlistId: playlist.id, rows: rows)
+            } label: {
+                Image(systemName: "scissors")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.red)
+                    .overlay(alignment: .topTrailing) {
+                        Text("\(count)")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 4)
+                            .frame(minWidth: 14, minHeight: 14)
+                            .background(Capsule().fill(Color.red))
+                            .offset(x: 8, y: -6)
+                    }
+            }
+            .accessibilityLabel("\(count) song\(count == 1 ? "" : "s") to remove")
         }
     }
 
@@ -806,6 +839,19 @@ struct ServerPlaylistDetailView: View {
         .tint(Color.primary)
 
         Section {
+            Button {
+                app.toggleKillMode(playlistId: playlist.id)
+            } label: {
+                let enabled = app.isKillModeEnabled(playlistId: playlist.id)
+                Label {
+                    Text("Kill Mode  ")
+                        + Text(enabled ? "ON" : "OFF")
+                            .foregroundColor(enabled ? .red : .secondary)
+                            .fontWeight(.bold)
+                } icon: {
+                    Image(systemName: "scissors")
+                }
+            }
             Button {} label: {
                 Label("Suggest Less", systemImage: "hand.thumbsdown")
             }
@@ -840,6 +886,16 @@ struct ServerPlaylistDetailView: View {
                 .padding(.top, 6)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    /// Pending tracks (Kill Mode) that still resolve to a current playlist row. Stale ids
+    /// from tracks already removed by other paths are excluded from the toolbar badge.
+    private var killModePendingCount: Int {
+        guard !isAlbum else { return 0 }
+        let pending = app.killModePendingTrackIds(playlistId: playlist.id)
+        guard !pending.isEmpty else { return 0 }
+        let rowIds = Set(rows.map(\.track.id))
+        return pending.intersection(rowIds).count
     }
 
     private var actionButtonTriplet: some View {

@@ -161,6 +161,16 @@ public final class AppModel: ObservableObject {
     private static let favoriteTrackIdsKey = "LyraMusic.favoriteTrackIds"
     @Published private(set) var favoriteTrackIds: Set<String> = []
 
+    /// Per-playlist "Kill Mode" toggle. When a playlist id is in this set, any user-initiated
+    /// `skipNext` while playing FROM that playlist appends the outgoing track to the playlist's
+    /// pending-removal set. Disabling Kill Mode does NOT clear the pending list.
+    @Published private(set) var killModeEnabledPlaylistIds: Set<String> = []
+
+    /// playlistId → ordered list of track ids queued for removal by Kill Mode, newest first.
+    /// Order matters: the kill list view renders most-recent skips at the top. Reviewed and
+    /// committed by the user via the kill list view (per-row swipe or "Remove All").
+    @Published private(set) var killModePendingRemovals: [String: [String]] = [:]
+
     /// Set of artists the user has manually favorited from ``ArtistPageView``.
     /// Stored as `LibraryTrackMatcher.normalize`d names so the same artist hits the
     /// same key regardless of source (server artist row vs Last.fm row vs typed search).
@@ -446,6 +456,8 @@ public final class AppModel: ObservableObject {
         loadRecentlyPlayedEntriesFromDefaults()
         loadRecentlyPlayedTracksFromDefaults()
         loadPlaylistLastPlayedDatesFromDefaults()
+        killModeEnabledPlaylistIds = KillModeStore.loadEnabled()
+        killModePendingRemovals = KillModeStore.loadPending()
         player.onTrackScrobbled = { [weak self] track, source in
             Task { @MainActor in
                 self?.recordRecentPlay(track: track, source: source)
@@ -454,6 +466,11 @@ public final class AppModel: ObservableObject {
         player.onTrackStarted = { [weak self] track in
             Task { @MainActor in
                 self?.recordRecentTrackPlay(track)
+            }
+        }
+        player.onTrackSkipped = { [weak self] track, source in
+            Task { @MainActor in
+                self?.handleKillModeSkip(track: track, source: source)
             }
         }
         installPlaybackQueueAutosave()
@@ -822,8 +839,11 @@ public final class AppModel: ObservableObject {
     }
 
     func persistLibrarySnapshot() {
-        LibrarySnapshotStore.save(
-            LibrarySnapshot(
+        PerfLog.measure("persistLibrarySnapshot.capture", details: "albums=\(libraryAlbums.count) tracks=\(discoveryLibraryTracks.count) playlists=\(libraryPlaylists.count) songIds=\(librarySongIds.count)") {
+            // Capture a value snapshot on the main actor (cheap thanks to Swift CoW),
+            // then hand the JSON encode + atomic disk write to a background task so
+            // the main thread isn't blocked while we serialize the full library.
+            let snapshot = LibrarySnapshot(
                 albums: libraryAlbums,
                 tracks: discoveryLibraryTracks,
                 playlists: libraryPlaylists,
@@ -832,12 +852,30 @@ public final class AppModel: ObservableObject {
                 librarySongIds: Array(librarySongIds),
                 libraryAlbumEntries: libraryAlbumEntries,
                 libraryPlaylistEntries: libraryPlaylistEntries,
-            ),
-        )
+            )
+            LibrarySnapshotStore.saveAsync(snapshot)
+        }
     }
 
+    /// Kicks the disk-snapshot restore off the main thread. The JSON decode for a
+    /// multi-MB library would otherwise block sign-in / cold launch; the small
+    /// window of "empty state" before the snapshot lands is much better than a hang.
     private func restoreLibraryFromDisk() {
-        if let snap = LibrarySnapshotStore.load() {
+        Task { [weak self] in
+            guard let self else { return }
+            let snap = await LibrarySnapshotStore.loadAsync()
+            self.applyRestoredSnapshot(snap)
+        }
+    }
+
+    private func applyRestoredSnapshot(_ snap: LibrarySnapshot?) {
+        PerfLog.measure("applyRestoredSnapshot", details: snap.map { "albums=\($0.albums.count) tracks=\($0.tracks.count) playlists=\($0.playlists.count) songIds=\($0.librarySongIds.count)" } ?? "nil") {
+            applyRestoredSnapshotBody(snap)
+        }
+    }
+
+    private func applyRestoredSnapshotBody(_ snap: LibrarySnapshot?) {
+        if let snap {
             if !snap.albums.isEmpty { libraryAlbums = snap.albums }
             if !snap.tracks.isEmpty {
                 discoveryLibraryTracks = snap.tracks
@@ -877,23 +915,25 @@ public final class AppModel: ObservableObject {
     }
 
     private func mergeOfflineCatalog() {
-        let offlineTracks = offline.cachedTracks()
-        guard !offlineTracks.isEmpty else { return }
+        PerfLog.measure("mergeOfflineCatalog", details: "lib=\(libraryAlbums.count)/\(discoveryLibraryTracks.count)") {
+            let offlineTracks = offline.cachedTracks()
+            guard !offlineTracks.isEmpty else { return }
 
-        var trackById = Dictionary(uniqueKeysWithValues: discoveryLibraryTracks.map { ($0.id, $0) })
-        for t in offlineTracks {
-            trackById[t.id] = t
-        }
-        discoveryLibraryTracks = Array(trackById.values)
+            var trackById = Dictionary(uniqueKeysWithValues: discoveryLibraryTracks.map { ($0.id, $0) })
+            for t in offlineTracks {
+                trackById[t.id] = t
+            }
+            discoveryLibraryTracks = Array(trackById.values)
 
-        var albumById = Dictionary(uniqueKeysWithValues: libraryAlbums.map { ($0.id, $0) })
-        for album in offline.cachedAlbums() {
-            albumById[album.id] = album
+            var albumById = Dictionary(uniqueKeysWithValues: libraryAlbums.map { ($0.id, $0) })
+            for album in offline.cachedAlbums() {
+                albumById[album.id] = album
+            }
+            libraryAlbums = albumById.values.sorted {
+                $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+            }
+            libraryCatalogEpoch &+= 1
         }
-        libraryAlbums = albumById.values.sorted {
-            $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
-        }
-        libraryCatalogEpoch &+= 1
     }
 
     func beginLibraryTrackDeletion(_ track: Track) {
@@ -983,13 +1023,17 @@ public final class AppModel: ObservableObject {
     }
 
     private func runLibraryBootstrap() async {
-        await refreshLibraryAlbums()
-        recordSuccessfulLibrarySync()
-        async let home: Void = refreshHome()
-        async let stats: Void = refreshLibraryStatistics()
-        async let browse: Void = refreshNewTabBrowse()
-        async let membership: Void = refreshLibraryMembership()
-        _ = await (home, stats, browse, membership)
+        await PerfLog.measureAsync("runLibraryBootstrap", context: .network) {
+            await refreshLibraryAlbums()
+            recordSuccessfulLibrarySync()
+            // Only the surfaces visible at launch (Home shelves + personal-library
+            // membership) run during bootstrap. Statistics (Settings) and the New tab's
+            // MusicBrainz browse are pulled when their views first appear — they were
+            // contributing to the on-launch main-thread crunch without being on screen.
+            async let home: Void = refreshHome()
+            async let membership: Void = refreshLibraryMembership()
+            _ = await (home, membership)
+        }
     }
 
     // MARK: - Library membership (magic playlist)
@@ -1189,16 +1233,39 @@ public final class AppModel: ObservableObject {
         let missingIds = libraryAlbumEntries.map(\.id).filter { !knownIds.contains($0) }
         let idsToFetch = Array(Set(missingIds + staleNavidromeIds))
         guard !idsToFetch.isEmpty else { return }
-        var fetched: [AlbumSummary] = []
-        for id in idsToFetch {
-            let summary: AlbumSummary?
-            switch backendKind {
-            case .jellyfin:
-                summary = try? await jellyfin?.albumSummary(forId: id)
-            case .navidrome:
-                summary = try? await navidrome?.albumSummary(forId: id)
+        PerfLog.event("backfillMissingLibraryAlbumSummaries.start", details: "missing=\(idsToFetch.count)")
+        // Bounded concurrency: N sequential round-trips on first launch was a major
+        // contributor to "library catalog is empty until bootstrap finishes."
+        let backend = backendKind
+        let jellyfinClient = jellyfin
+        let navidromeClient = navidrome
+        let maxConcurrent = 6
+        let fetched: [AlbumSummary] = await withTaskGroup(of: AlbumSummary?.self) { group in
+            var iterator = idsToFetch.makeIterator()
+            var inflight = 0
+            while inflight < maxConcurrent, let id = iterator.next() {
+                group.addTask {
+                    switch backend {
+                    case .jellyfin: return try? await jellyfinClient?.albumSummary(forId: id)
+                    case .navidrome: return try? await navidromeClient?.albumSummary(forId: id)
+                    }
+                }
+                inflight += 1
             }
-            if let summary { fetched.append(summary) }
+            var results: [AlbumSummary] = []
+            results.reserveCapacity(idsToFetch.count)
+            while let summary = await group.next() {
+                if let summary { results.append(summary) }
+                if let id = iterator.next() {
+                    group.addTask {
+                        switch backend {
+                        case .jellyfin: return try? await jellyfinClient?.albumSummary(forId: id)
+                        case .navidrome: return try? await navidromeClient?.albumSummary(forId: id)
+                        }
+                    }
+                }
+            }
+            return results
         }
         guard !fetched.isEmpty else { return }
         var merged = libraryAlbums
@@ -1493,18 +1560,28 @@ public final class AppModel: ObservableObject {
     }
 
     private func rebuildLibraryAlbumIndex() {
-        libraryAlbumsById = Dictionary(uniqueKeysWithValues: libraryAlbums.map { ($0.id, $0) })
-        libraryAlbumReleaseIndex = LibraryAlbumReleaseIndex(albums: libraryAlbums)
+        PerfLog.measure("rebuildLibraryAlbumIndex", details: "albums=\(libraryAlbums.count)") {
+            libraryAlbumsById = Dictionary(uniqueKeysWithValues: libraryAlbums.map { ($0.id, $0) })
+            libraryAlbumReleaseIndex = LibraryAlbumReleaseIndex(albums: libraryAlbums)
+        }
     }
+
+    /// Set while ``refreshLibraryTrackMatchIndex`` is doing the index work off-main
+    /// and the resulting structures will be written directly. Suppresses the on-main
+    /// rebuild that would otherwise duplicate the work in `didSet`.
+    private var skipDiscoveryIndexRebuild = false
 
     /// Rebuild both the title-index (used by Downtify match-Bool checks) and the
     /// chart-track index (used by New tab `Track` lookups) when the discovery
     /// snapshot is reassigned. Centralized so no caller can update one and forget
     /// the other.
     private func rebuildDiscoveryTrackIndices() {
-        discoveryTrackById = Dictionary(uniqueKeysWithValues: discoveryLibraryTracks.map { ($0.id, $0) })
-        libraryTrackTitleIndex = LibraryTrackMatcher.titleIndex(from: discoveryLibraryTracks)
-        libraryChartTrackIndex = LibraryChartTrackIndex(tracks: discoveryLibraryTracks)
+        guard !skipDiscoveryIndexRebuild else { return }
+        PerfLog.measure("rebuildDiscoveryTrackIndices", details: "tracks=\(discoveryLibraryTracks.count)") {
+            discoveryTrackById = Dictionary(uniqueKeysWithValues: discoveryLibraryTracks.map { ($0.id, $0) })
+            libraryTrackTitleIndex = LibraryTrackMatcher.titleIndex(from: discoveryLibraryTracks)
+            libraryChartTrackIndex = LibraryChartTrackIndex(tracks: discoveryLibraryTracks)
+        }
     }
 
     public func refreshLibraryAlbums(limit: Int = AppModel.defaultLibraryAlbumFetchLimit) async {
@@ -1513,11 +1590,16 @@ public final class AppModel: ObservableObject {
         do {
             async let all = lib.albums(limit: limit)
             async let recent = lib.recentlyAdded(limit: 60)
-            libraryAlbums = try await all
+            let fetched = try await all
+            PerfLog.event("refreshLibraryAlbums.fetched", details: "count=\(fetched.count) limit=\(limit)")
+            libraryAlbums = fetched
             recentlyAddedAlbums = (try? await recent) ?? []
             mergeOfflineCatalog()
             persistLibrarySnapshot()
-            scheduleLibraryTrackMatchIndexRefresh()
+            // Discovery / Downtify-match index is deferred — building it for tens of
+            // thousands of tracks blocked the main thread on first launch. Views that
+            // need it (LibrarySongsView, MusicNewTabView, DiscoverySearchView) call
+            // ``scheduleDiscoveryTrackIndexRefreshIfNeeded`` on appear.
             await refreshFavoritesFromServer()
             await refreshLibraryPlaylists()
         } catch {
@@ -1679,7 +1761,84 @@ public final class AppModel: ObservableObject {
             }
             try await client.removeTracksFromPlaylist(playlistId: playlistId, indexes: indexes)
         }
+        stripKillModePending(playlistId: playlistId, trackIds: Set(rows.map(\.track.id)))
         await refreshLibraryPlaylists()
+    }
+
+    // MARK: - Kill Mode
+
+    func isKillModeEnabled(playlistId: String) -> Bool {
+        killModeEnabledPlaylistIds.contains(playlistId)
+    }
+
+    func toggleKillMode(playlistId: String) {
+        if killModeEnabledPlaylistIds.contains(playlistId) {
+            killModeEnabledPlaylistIds.remove(playlistId)
+        } else {
+            killModeEnabledPlaylistIds.insert(playlistId)
+        }
+        KillModeStore.saveEnabled(killModeEnabledPlaylistIds)
+    }
+
+    /// Membership lookup (unordered) — for badge counts and `contains` checks.
+    func killModePendingTrackIds(playlistId: String) -> Set<String> {
+        Set(killModePendingRemovals[playlistId] ?? [])
+    }
+
+    /// Ordered (newest skip first) — for the kill list view.
+    func killModePendingOrderedTrackIds(playlistId: String) -> [String] {
+        killModePendingRemovals[playlistId] ?? []
+    }
+
+    func clearKillModePending(playlistId: String) {
+        guard killModePendingRemovals[playlistId] != nil else { return }
+        killModePendingRemovals[playlistId] = nil
+        KillModeStore.savePending(killModePendingRemovals)
+    }
+
+    /// Removes a single track id from the pending set without touching the playlist.
+    /// Used by the kill-list "Keep" action — undoes a skip-mark without deleting.
+    func restoreFromKillList(playlistId: String, trackId: String) {
+        stripKillModePending(playlistId: playlistId, trackIds: [trackId])
+    }
+
+    /// Commits a subset of pending removals to the backend, then strips them from the pending set.
+    /// Caller passes the resolved `PlaylistRowItem`s (the kill-list view filters its current rows
+    /// down to those whose track id is in the pending set).
+    func commitKillModeRemovals(playlistId: String, rows: [PlaylistRowItem]) async throws {
+        guard !rows.isEmpty else { return }
+        try await removePlaylistRows(playlistId: playlistId, rows: rows)
+    }
+
+    /// Callback hook from `PlaybackEngine.onTrackSkipped`. Marks the outgoing track when:
+    /// (1) playback is sourced from a playlist, (2) Kill Mode is on for that playlist, and
+    /// (3) the track wasn't inserted via Play Next / Add to Queue.
+    private func handleKillModeSkip(track: Track, source: PlaybackSource?) {
+        guard case let .playlist(p)? = source,
+              killModeEnabledPlaylistIds.contains(p.id),
+              !player.userQueuedTrackIds.contains(track.id) else { return }
+        var current = killModePendingRemovals[p.id] ?? []
+        // Dedupe-then-prepend so a re-skipped track moves back to the top of the list.
+        current.removeAll { $0 == track.id }
+        current.insert(track.id, at: 0)
+        killModePendingRemovals[p.id] = current
+        KillModeStore.savePending(killModePendingRemovals)
+    }
+
+    /// Removes the given track ids from the pending list for a playlist and persists. Called
+    /// after any successful playlist deletion path so the pending list never references tracks
+    /// that are no longer in the playlist. Preserves the relative order of remaining entries.
+    private func stripKillModePending(playlistId: String, trackIds: Set<String>) {
+        guard var current = killModePendingRemovals[playlistId], !current.isEmpty else { return }
+        let before = current.count
+        current.removeAll { trackIds.contains($0) }
+        guard current.count != before else { return }
+        if current.isEmpty {
+            killModePendingRemovals[playlistId] = nil
+        } else {
+            killModePendingRemovals[playlistId] = current
+        }
+        KillModeStore.savePending(killModePendingRemovals)
     }
 
     /// Uploads cover art for a library playlist and refreshes playlist metadata. Returns a cache-busted artwork URL for immediate UI refresh.
@@ -1839,9 +1998,12 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    /// Schedules a deduped discovery track index build when albums are loaded but the title index is still empty.
+    /// Schedules a deduped discovery track index build when the title index is still empty.
+    /// Now that the index is built lazily (not during bootstrap), this is the only path
+    /// that kicks it off — called from LibrarySongsView, MusicNewTabView, and
+    /// DiscoverySearchView on appear.
     public func scheduleDiscoveryTrackIndexRefreshIfNeeded() {
-        guard isSignedIn, libraryTrackTitleIndex.isEmpty, !libraryAlbums.isEmpty else { return }
+        guard isSignedIn, libraryTrackTitleIndex.isEmpty else { return }
         scheduleLibraryTrackMatchIndexRefresh()
     }
 
@@ -1862,8 +2024,48 @@ public final class AppModel: ObservableObject {
         libraryTrackIndexLoadError = nil
         defer { isIndexingLibraryTracks = false }
         do {
-            let tracks = try await lib.allTracks(limit: limit)
-            discoveryLibraryTracks = tracks.map { trackWithResolvedArtwork($0) }
+            let tracks = try await PerfLog.measureAsync(
+                "refreshLibraryTrackMatchIndex.fetch",
+                context: .network,
+                details: "limit=\(limit)"
+            ) {
+                try await lib.allTracks(limit: limit)
+            }
+            PerfLog.event("refreshLibraryTrackMatchIndex.fetched", details: "tracks=\(tracks.count)")
+            // Artwork resolution reads main-actor state (album dict, offline cache),
+            // so it stays on the main actor. The heavy index builds (normalize +
+            // regex over every track) are pushed to a background priority task and
+            // their finished results are slotted in on the main actor in one shot.
+            let resolved = PerfLog.measure(
+                "refreshLibraryTrackMatchIndex.resolveArtwork",
+                details: "tracks=\(tracks.count)"
+            ) {
+                tracks.map { trackWithResolvedArtwork($0) }
+            }
+            let computed = await PerfLog.measureAsync(
+                "refreshLibraryTrackMatchIndex.buildIndices",
+                context: .background,
+                details: "tracks=\(resolved.count)"
+            ) {
+                await Task.detached(priority: .userInitiated) {
+                    () -> (byId: [String: Track], titles: [String: Set<String>], chart: LibraryChartTrackIndex) in
+                    let byId = Dictionary(uniqueKeysWithValues: resolved.map { ($0.id, $0) })
+                    let titles = LibraryTrackMatcher.titleIndex(from: resolved)
+                    let chart = LibraryChartTrackIndex(tracks: resolved)
+                    return (byId, titles, chart)
+                }.value
+            }
+            PerfLog.measure(
+                "refreshLibraryTrackMatchIndex.assign",
+                details: "tracks=\(resolved.count) titleKeys=\(computed.titles.count)"
+            ) {
+                skipDiscoveryIndexRebuild = true
+                discoveryLibraryTracks = resolved
+                skipDiscoveryIndexRebuild = false
+                discoveryTrackById = computed.byId
+                libraryTrackTitleIndex = computed.titles
+                libraryChartTrackIndex = computed.chart
+            }
             offline.backfillRecordsIfMissing(knownTracks: tracks)
             mergeOfflineCatalog()
             persistLibrarySnapshot()

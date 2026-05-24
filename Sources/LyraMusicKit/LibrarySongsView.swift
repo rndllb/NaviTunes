@@ -34,6 +34,15 @@ struct LibrarySongsView: View {
     @State private var displayed: [Track] = []
 
     private func recomputeDisplayed() {
+        // Runs on every searchText keystroke. For very large libraries (50K+ tracks)
+        // this filter+sort dominates main-thread time per keystroke — PerfLog will
+        // surface the hitch in Console.app and as `recomputeDisplayed` signposts.
+        PerfLog.measure("LibrarySongsView.recomputeDisplayed", details: "tracks=\(tracks.count) q=\(searchText.count)c filter=\(libraryFilter) sort=\(sort)") {
+            recomputeDisplayedBody()
+        }
+    }
+
+    private func recomputeDisplayedBody() {
         let byLibrary: [Track]
         switch libraryFilter {
         case .allSongs:
@@ -144,6 +153,9 @@ struct LibrarySongsView: View {
             ServerPlaylistDetailView(album: album, librarySource: true)
         }
         .task {
+            // Songs view depends on the discovery track index; that index is built
+            // lazily (not during bootstrap) so we trigger it here.
+            app.scheduleDiscoveryTrackIndexRefreshIfNeeded()
             await load()
         }
         .onChange(of: app.libraryCatalogEpoch) { _, _ in

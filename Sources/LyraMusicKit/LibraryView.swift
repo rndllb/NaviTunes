@@ -1738,6 +1738,12 @@ struct AlbumsGridView: View {
     }
 
     private func recomputeAlbumDisplay() {
+        PerfLog.measure("LibraryView.recomputeAlbumDisplay", details: "base=\(baseAlbums.count) sort=\(sort) q=\(query.count)c") {
+            recomputeAlbumDisplayBody()
+        }
+    }
+
+    private func recomputeAlbumDisplayBody() {
         let base = baseAlbums
         displayedBaseAlbumCount = base.count
 
