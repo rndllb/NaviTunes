@@ -173,7 +173,14 @@ struct NowPlayingView: View {
                     // matched-geometry bridges between two parallel branches at
                     // the same depth, not between branches buried inside per-mode
                     // subtrees.
-                    sharedHeader(track: track)
+                    //
+                    // In queue mode the header is suppressed because the queue
+                    // list owns its own inline now-playing row that scrolls with
+                    // the list — see ``queueNowPlayingModuleRow``.
+                    if !showQueue {
+                        sharedHeader(track: track)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
 
                     // Each mode lives inside a `Group` that's permanently in the
                     // ZStack — only the inner conditional changes. That keeps
@@ -357,38 +364,20 @@ struct NowPlayingView: View {
         }
     }
 
-    /// Middle page — Now Playing header (the divider) at top, then shuffle/repeat,
-    /// then a `List` split into two sections: "Queue" (user-queued tracks, with a
-    /// Clear button) and "Continue Playing — From [source]" (the rest of the source).
-    /// Both sections have 3-line drag handles (system-drawn via active edit mode).
+    /// Middle page — single `List` that owns everything: the inline now-playing
+    /// module as the first row (scrolls off as the user scrolls down), then a
+    /// sticky "shuffle / repeat" header above the upcoming tracks ("Queue" +
+    /// "Continue Playing"). Both reorderable sections still have 3-line drag
+    /// handles (system-drawn via active edit mode); the bottom chrome below is
+    /// untouched by the scrolling list.
     private func nowPlayingPage(track: Track, upNext: [Track]) -> some View {
         let userQueueTracks = upNext.filter { player.userQueuedTrackIds.contains($0.id) }
         let continuePlayingTracks = upNext.filter { !player.userQueuedTrackIds.contains($0.id) }
-
-        return VStack(spacing: 0) {
-            shuffleRepeatRow
-                .padding(.top, 10)
-                .padding(.bottom, 6)
-
-            Rectangle()
-                .fill(fgDivider)
-                .frame(height: 0.5)
-                .padding(.top, 6)
-
-            if userQueueTracks.isEmpty && continuePlayingTracks.isEmpty {
-                Spacer(minLength: 0)
-                Text("Nothing up next")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(fgMuted)
-                    .padding(.vertical, 24)
-                Spacer(minLength: 0)
-            } else {
-                queueAndContinuePlayingList(
-                    userQueue: userQueueTracks,
-                    continuePlaying: continuePlayingTracks
-                )
-            }
-        }
+        return queueAndContinuePlayingList(
+            track: track,
+            userQueue: userQueueTracks,
+            continuePlaying: continuePlayingTracks
+        )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
@@ -398,10 +387,123 @@ struct NowPlayingView: View {
         return title.isEmpty ? nil : title
     }
 
-    /// Single `List` with two reorderable sections — Apple Music's Queue + Continue Playing layout.
-    private func queueAndContinuePlayingList(userQueue: [Track], continuePlaying: [Track]) -> some View {
-        List {
-            if !userQueue.isEmpty {
+    /// Inline now-playing row used at the top of the queue list — artwork +
+    /// title + artist menu + star + ellipsis. Scrolls off naturally as the
+    /// list scrolls down, leaving the sticky shuffle/repeat header behind.
+    private func queueNowPlayingModuleRow(track: Track) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            artworkView(for: track, cornerRadius: 6)
+                .frame(width: 56, height: 56)
+                // Matched-geometry destination: morphs from the big standard
+                // artwork into this small leading slot when the user opens the
+                // queue (and back to the big artwork when they close it).
+                .matchedGeometryEffect(id: "nowPlayingArtwork", in: artworkNamespace)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(track.title)
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(fgPrimary)
+                    .lineLimit(1)
+                compactArtistMenu(track: track)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            compactHeaderActionButtons(track: track)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 14)
+        .padding(.bottom, 6)
+    }
+
+    private var queueListClearButton: some View {
+        Button {
+            player.clearUserQueue()
+        } label: {
+            Text("Clear")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(fgPrimary)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(Capsule().fill(fgCapsule))
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Wraps the shuffle/repeat row into a section header so that it pins to the
+    /// top of the visible list once the inline now-playing module scrolls off,
+    /// matching the "compresses into just the repeat and shuffle buttons"
+    /// behavior. Optionally pairs it with a section title + trailing accessory.
+    ///
+    /// Applies `.listRowInsets(EdgeInsets())` so the backdrop spans edge-to-edge
+    /// — without this, the List's default row insets leave a strip of queue
+    /// artwork peeking through on the leading side when the header pins.
+    @ViewBuilder
+    private func queueStickyHeader(
+        title: String? = nil,
+        subtitle: String? = nil,
+        includeShuffleRepeat: Bool,
+        trailing: AnyView? = nil
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if includeShuffleRepeat {
+                shuffleRepeatRow
+            }
+            if let title {
+                HStack(alignment: .center, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title)
+                            .font(.title3.weight(.bold))
+                            .foregroundStyle(fgPrimary)
+                            .textCase(nil)
+                        if let subtitle {
+                            Text(subtitle)
+                                .font(.subheadline)
+                                .foregroundStyle(fgSecondary)
+                                .textCase(nil)
+                        }
+                    }
+                    Spacer()
+                    if let trailing {
+                        trailing
+                    }
+                }
+                .padding(.horizontal, 20)
+            }
+        }
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(heroSolidBackdropColor)
+        .listRowInsets(EdgeInsets())
+    }
+
+    private var heroSolidBackdropColor: Color {
+        player.activeTrack != nil
+            ? backdropPalette.heroSolidBackdropColor
+            : (colorScheme == .dark ? Color(red: 0.11, green: 0.11, blue: 0.12) : MusicDesign.background)
+    }
+
+    /// Single `List` with the inline now-playing module + reorderable Queue
+    /// / Continue Playing sections. The first section's sticky header carries
+    /// the shuffle/repeat row so it stays visible after the module scrolls
+    /// off.
+    private func queueAndContinuePlayingList(
+        track: Track,
+        userQueue: [Track],
+        continuePlaying: [Track]
+    ) -> some View {
+        let hasUserQueue = !userQueue.isEmpty
+        let hasContinue = !continuePlaying.isEmpty
+        return List {
+            Section {
+                queueNowPlayingModuleRow(track: track)
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .moveDisabled(true)
+                    .deleteDisabled(true)
+            }
+
+            if hasUserQueue {
                 Section {
                     ForEach(userQueue, id: \.id) { t in
                         queueListRow(track: t)
@@ -410,30 +512,15 @@ struct NowPlayingView: View {
                         moveWithinSection(tracks: userQueue, source: source, destination: destination)
                     }
                 } header: {
-                    HStack {
-                        Text("Queue")
-                            .font(.title3.weight(.bold))
-                            .foregroundStyle(fgPrimary)
-                            .textCase(nil)
-                        Spacer()
-                        Button {
-                            player.clearUserQueue()
-                        } label: {
-                            Text("Clear")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(fgPrimary)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 6)
-                                .background(Capsule().fill(fgCapsule))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(.top, 6)
-                    .padding(.bottom, 2)
+                    queueStickyHeader(
+                        title: "Queue",
+                        includeShuffleRepeat: true,
+                        trailing: AnyView(queueListClearButton)
+                    )
                 }
             }
 
-            if !continuePlaying.isEmpty {
+            if hasContinue {
                 Section {
                     ForEach(continuePlaying, id: \.id) { t in
                         queueListRow(track: t)
@@ -442,20 +529,25 @@ struct NowPlayingView: View {
                         moveWithinSection(tracks: continuePlaying, source: source, destination: destination)
                     }
                 } header: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Continue Playing")
-                            .font(.title3.weight(.bold))
-                            .foregroundStyle(fgPrimary)
-                            .textCase(nil)
-                        if let label = continuePlayingSourceLabel {
-                            Text("From \(label)")
-                                .font(.subheadline)
-                                .foregroundStyle(fgSecondary)
-                                .textCase(nil)
-                        }
-                    }
-                    .padding(.top, 6)
-                    .padding(.bottom, 2)
+                    queueStickyHeader(
+                        title: "Continue Playing",
+                        subtitle: continuePlayingSourceLabel.map { "From \($0)" },
+                        includeShuffleRepeat: !hasUserQueue
+                    )
+                }
+            }
+
+            if !hasUserQueue && !hasContinue {
+                Section {
+                    Text("Nothing up next")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(fgMuted)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 24)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                } header: {
+                    queueStickyHeader(includeShuffleRepeat: true)
                 }
             }
         }
@@ -466,7 +558,7 @@ struct NowPlayingView: View {
         .tint(fgPrimary)
         .background {
             NowPlayingQueueListTableChrome(
-                reorderTint: UIColor(fgPrimary),
+                reorderTint: UIColor(fgPrimary.opacity(0.35)),
                 scrollIndicatorStyle: queueScrollIndicatorStyle,
             )
         }
@@ -726,16 +818,14 @@ struct NowPlayingView: View {
                 }
                 .buttonStyle(.plain)
 
-                if let activeTrack = player.activeTrack {
-                    Menu {
-                        ShareLink(item: "\(activeTrack.title) — \(activeTrack.artist)")
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(fgPrimary)
-                            .frame(width: 30, height: 30)
-                            .background(Circle().fill(fgCapsule))
-                    }
+                Menu {
+                    nowPlayingTrackMenuContent(track: track)
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(fgPrimary)
+                        .frame(width: 30, height: 30)
+                        .background(Circle().fill(fgCapsule))
                 }
             }
         }
@@ -809,7 +899,7 @@ struct NowPlayingView: View {
             .buttonStyle(.plain)
 
             Menu {
-                ShareLink(item: "\(track.title) — \(track.artist)")
+                nowPlayingTrackMenuContent(track: track)
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.body.weight(.semibold))
@@ -818,6 +908,103 @@ struct NowPlayingView: View {
                     .background(Circle().fill(fgCapsule))
             }
         }
+    }
+
+    /// Standard song overflow menu used by the ellipsis button on the Now Playing
+    /// header (regardless of mode — main player, lyrics, queue). Matches the
+    /// shape used by library / album / browse song rows so the affordances are
+    /// consistent app-wide; only the actions that don't make sense for the
+    /// currently-playing track (Play, Play Next) are omitted.
+    @ViewBuilder
+    private func nowPlayingTrackMenuContent(track: Track) -> some View {
+        let isInLibrary = app.isSongInLibrary(track.id)
+        let isOfflineCached = app.offline.downloadedTrackIds.contains(track.id)
+        let isFavorite = app.favoriteTrackIds.contains(track.id)
+        let albumForNav: AlbumSummary? = app.libraryAlbums.first(where: { $0.id == track.albumId })
+            ?? catalogAlbumFallback(from: track)
+
+        ControlGroup {
+            if !isInLibrary {
+                Button {
+                    Task { await app.addSongToLibrary(track) }
+                } label: {
+                    Label("Add to Library", systemImage: "plus")
+                }
+            } else if !isOfflineCached {
+                Button {
+                    Task {
+                        guard let lib = app.activeLibrary else { return }
+                        try? await downloadNowPlayingTrack(track, lib: lib)
+                    }
+                } label: {
+                    Label("Download", systemImage: "arrow.down")
+                }
+            }
+            Button {
+                app.toggleFavoriteTrack(id: track.id)
+            } label: {
+                Label(
+                    isFavorite ? "Unfavorite" : "Favorite",
+                    systemImage: isFavorite ? "star.fill" : "star"
+                )
+            }
+            ShareLink(item: "\(track.title) — \(track.artist)") {
+                Label("Share", systemImage: "square.and.arrow.up")
+            }
+        }
+        .tint(Color.primary)
+
+        Section {
+            Button {
+                app.presentAddToPlaylist(tracks: [track])
+            } label: {
+                Label("Add to Playlist", systemImage: "rectangle.stack.badge.plus")
+            }
+        }
+        .tint(Color.primary)
+
+        if let album = albumForNav {
+            Section {
+                Button {
+                    dismissAndNavigate(to: .album(album))
+                } label: {
+                    Label("Go to Album", systemImage: "music.note.square")
+                }
+            }
+            .tint(Color.primary)
+        }
+
+        Section {
+            Button {} label: { Label("Suggest Less", systemImage: "hand.thumbsdown") }
+        }
+        .tint(Color.primary)
+
+        if isOfflineCached {
+            Section {
+                Button {
+                    try? app.offline.remove(trackId: track.id)
+                } label: {
+                    Label("Remove Download", systemImage: "arrow.down.circle.dotted")
+                }
+            }
+            .tint(Color.primary)
+        }
+
+        if isInLibrary {
+            Section {
+                Button(role: .destructive) {
+                    Task { await app.removeSongFromLibrary(track) }
+                } label: {
+                    Label("Delete from Library", systemImage: "trash")
+                }
+            }
+            .tint(MusicDesign.destructiveAction)
+        }
+    }
+
+    private func downloadNowPlayingTrack(_ track: Track, lib: MusicLibraryProviding) async throws {
+        let url = try lib.offlineDownloadURL(for: track)
+        try await app.offline.cache(track: track, remote: url, headers: lib.httpHeadersForMediaRequests())
     }
 
     /// Isolated scale wrapper for the play/pause pulse. Keeping the
@@ -873,7 +1060,9 @@ struct NowPlayingView: View {
     /// separate wrapper so its play/pause `.animation` context can't bleed into
     /// the compact morph and desync the artwork.
     private func sharedHeader(track: Track) -> some View {
-        let compact = showLyrics || showQueue
+        // Queue mode renders its own inline header inside the scroll view, so
+        // only lyrics mode drives the compact morph here.
+        let compact = showLyrics
         let bigSize = albumArtPlayingSide
         let smallSize: CGFloat = 56
         let artworkSize: CGFloat = compact ? smallSize : bigSize
@@ -911,6 +1100,10 @@ struct NowPlayingView: View {
                         y: compact ? 4 : 12,
                     )
                     .position(x: xCenter, y: yCenter)
+                    // Matched-geometry source: lets the artwork morph smoothly
+                    // into the queue list's inline now-playing row (and back)
+                    // when the user toggles between standard and queue modes.
+                    .matchedGeometryEffect(id: "nowPlayingArtwork", in: artworkNamespace)
 
                 if compact {
                     HStack(alignment: .center, spacing: 12) {
@@ -1015,16 +1208,14 @@ struct NowPlayingView: View {
                 }
                 .buttonStyle(.plain)
 
-                if let activeTrack = player.activeTrack {
-                    Menu {
-                        ShareLink(item: "\(activeTrack.title) — \(activeTrack.artist)")
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(fgPrimary)
-                            .frame(width: 30, height: 30)
-                            .background(Circle().fill(fgCapsule))
-                    }
+                Menu {
+                    nowPlayingTrackMenuContent(track: track)
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(fgPrimary)
+                        .frame(width: 30, height: 30)
+                        .background(Circle().fill(fgCapsule))
                 }
             }
         }
