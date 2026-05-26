@@ -1435,6 +1435,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         center.pauseCommand.removeTarget(nil)
         center.nextTrackCommand.removeTarget(nil)
         center.previousTrackCommand.removeTarget(nil)
+        center.changePlaybackPositionCommand.removeTarget(nil)
 
         center.playCommand.addTarget { [weak self] _ in
             Task { @MainActor in self?.resumePlaybackFromRemoteCommand() }
@@ -1450,6 +1451,16 @@ final class PlaybackEngine: NSObject, ObservableObject {
         }
         center.previousTrackCommand.addTarget { [weak self] _ in
             Task { @MainActor in self?.skipPrevious() }
+            return .success
+        }
+        center.changePlaybackPositionCommand.isEnabled = true
+        center.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard
+                let self,
+                let positionEvent = event as? MPChangePlaybackPositionCommandEvent,
+                positionEvent.positionTime.isFinite
+            else { return .commandFailed }
+            Task { @MainActor in self.seek(toSeconds: positionEvent.positionTime) }
             return .success
         }
     }

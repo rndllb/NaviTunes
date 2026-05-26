@@ -22,6 +22,22 @@ struct ArtistNowPlayingMenuButton: UIViewRepresentable {
     let onGoToArtist: () -> Void
     var onGoToPlaylist: (() -> Void)? = nil
 
+    /// Caches the inputs last applied so we can skip reassigning `button.menu` and
+    /// `button.configuration` on every SwiftUI re-render. Reassigning a presented
+    /// `UIMenu` causes a visible flicker — and the parent body re-evaluates every
+    /// `PlaybackEngine.currentTime` tick during playback, none of which affect any
+    /// menu content. The coordinator also holds the latest callbacks so cached
+    /// `UIAction` handlers always invoke fresh state.
+    final class Coordinator {
+        var onGoToAlbum: () -> Void = {}
+        var onGoToArtist: () -> Void = {}
+        var onGoToPlaylist: (() -> Void)?
+        var lastMenuSignature: String?
+        var lastConfigSignature: String?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
     func makeUIView(context: Context) -> UIButton {
         let button = UIButton(type: .system)
         button.contentHorizontalAlignment = .leading
@@ -33,70 +49,90 @@ struct ArtistNowPlayingMenuButton: UIViewRepresentable {
     }
 
     func updateUIView(_ button: UIButton, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.onGoToAlbum = onGoToAlbum
+        coordinator.onGoToArtist = onGoToArtist
+        coordinator.onGoToPlaylist = onGoToPlaylist
+
         let isDarkSystem = context.environment.colorScheme == .dark
-        var cfg = UIButton.Configuration.plain()
-        cfg.title = artist
-        if heroBackdropPalette != nil {
-            cfg.baseForegroundColor = UIColor.white.withAlphaComponent(0.55)
-        } else {
-            cfg.baseForegroundColor = isDarkSystem ? UIColor.white.withAlphaComponent(0.55) : UIColor.secondaryLabel
-        }
-        cfg.titleLineBreakMode = .byTruncatingTail
-        let textStyle: UIFont.TextStyle = compact ? .subheadline : .title3
-        cfg.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-            var out = incoming
-            out.font = UIFont.preferredFont(forTextStyle: textStyle)
-            return out
-        }
-        cfg.contentInsets = .zero
-        cfg.titlePadding = 0
-        button.configuration = cfg
-        if heroBackdropPalette != nil {
-            button.tintColor = .white
-        } else {
-            button.tintColor = isDarkSystem ? .white : .label
+        let hasBackdrop = heroBackdropPalette != nil
+
+        let configSig = [
+            artist,
+            hasBackdrop ? "1" : "0",
+            isDarkSystem ? "1" : "0",
+            compact ? "1" : "0"
+        ].joined(separator: "\u{1F}")
+
+        if coordinator.lastConfigSignature != configSig {
+            coordinator.lastConfigSignature = configSig
+            var cfg = UIButton.Configuration.plain()
+            cfg.title = artist
+            if hasBackdrop {
+                cfg.baseForegroundColor = UIColor.white.withAlphaComponent(0.55)
+            } else {
+                cfg.baseForegroundColor = isDarkSystem ? UIColor.white.withAlphaComponent(0.55) : UIColor.secondaryLabel
+            }
+            cfg.titleLineBreakMode = .byTruncatingTail
+            let textStyle: UIFont.TextStyle = compact ? .subheadline : .title3
+            cfg.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+                var out = incoming
+                out.font = UIFont.preferredFont(forTextStyle: textStyle)
+                return out
+            }
+            cfg.contentInsets = .zero
+            cfg.titlePadding = 0
+            button.configuration = cfg
+            button.tintColor = hasBackdrop ? .white : (isDarkSystem ? .white : .label)
         }
 
         let albumLine = albumSubtitle.trimmingCharacters(in: .whitespacesAndNewlines)
         let artistLine = artist.trimmingCharacters(in: .whitespacesAndNewlines)
-
         let disabled = goToAlbumDisabled ?? (libraryAlbum == nil)
-        let albumAction = UIAction(
-            title: "Go to Album",
-            subtitle: albumLine.isEmpty ? "—" : albumLine,
-            image: UIImage(systemName: "square.stack.fill"),
-            attributes: disabled ? [.disabled] : []
-        ) { _ in
-            DispatchQueue.main.async {
-                onGoToAlbum()
-            }
-        }
+        let hasPlaylistAction = sourcePlaylist != nil && onGoToPlaylist != nil
 
-        let artistAction = UIAction(
-            title: "Go to Artist",
-            subtitle: artistLine.isEmpty ? "—" : artistLine,
-            image: UIImage(systemName: "music.mic")
-        ) { _ in
-            DispatchQueue.main.async {
-                onGoToArtist()
-            }
-        }
+        let menuSig = [
+            artistLine,
+            albumLine,
+            disabled ? "1" : "0",
+            hasPlaylistAction ? (sourcePlaylist?.id ?? "") : "",
+            hasPlaylistAction ? (sourcePlaylist?.name ?? "") : ""
+        ].joined(separator: "\u{1F}")
 
-        var children: [UIMenuElement] = [artistAction, albumAction]
-        if let sourcePlaylist, let onGoToPlaylist {
-            let playlistAction = UIAction(
-                title: "Go to Playlist",
-                subtitle: sourcePlaylist.name,
-                image: UIImage(systemName: "music.note.list")
-            ) { _ in
-                DispatchQueue.main.async {
-                    onGoToPlaylist()
+        if coordinator.lastMenuSignature != menuSig {
+            coordinator.lastMenuSignature = menuSig
+
+            let albumAction = UIAction(
+                title: "Go to Album",
+                subtitle: albumLine.isEmpty ? "—" : albumLine,
+                image: UIImage(systemName: "square.stack.fill"),
+                attributes: disabled ? [.disabled] : []
+            ) { [weak coordinator] _ in
+                DispatchQueue.main.async { coordinator?.onGoToAlbum() }
+            }
+
+            let artistAction = UIAction(
+                title: "Go to Artist",
+                subtitle: artistLine.isEmpty ? "—" : artistLine,
+                image: UIImage(systemName: "music.mic")
+            ) { [weak coordinator] _ in
+                DispatchQueue.main.async { coordinator?.onGoToArtist() }
+            }
+
+            var children: [UIMenuElement] = [artistAction, albumAction]
+            if let sourcePlaylist, hasPlaylistAction {
+                let playlistAction = UIAction(
+                    title: "Go to Playlist",
+                    subtitle: sourcePlaylist.name,
+                    image: UIImage(systemName: "music.note.list")
+                ) { [weak coordinator] _ in
+                    DispatchQueue.main.async { coordinator?.onGoToPlaylist?() }
                 }
+                children.append(playlistAction)
             }
-            children.append(playlistAction)
-        }
 
-        button.menu = UIMenu(children: children)
+            button.menu = UIMenu(children: children)
+        }
     }
 }
 
