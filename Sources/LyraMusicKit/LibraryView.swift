@@ -461,14 +461,7 @@ struct LibraryView: View {
     private func pinnedItemArtwork(_ item: LibraryPinnedItem) -> some View {
         switch item {
         case .playlist(let playlist) where playlist.id == "__favorite_songs__":
-            ZStack {
-                RoundedRectangle(cornerRadius: MusicDesign.gridAlbumCorner, style: .continuous)
-                    .fill(MusicDesign.accent.opacity(0.18))
-                Image(systemName: "star.fill")
-                    .font(.system(size: 32, weight: .semibold))
-                    .foregroundStyle(MusicDesign.accent)
-            }
-            .aspectRatio(1, contentMode: .fit)
+            FavoriteSongsPlaylistArtwork(cornerRadius: MusicDesign.gridAlbumCorner)
         default:
             AlbumArtworkView(url: resolvedPinnedArtworkURL(for: item), cornerRadius: MusicDesign.gridAlbumCorner)
         }
@@ -853,14 +846,7 @@ struct LibraryPlaylistsView: View {
     @ViewBuilder
     private func playlistArtworkFixed(_ playlist: PlaylistSummary, size: CGFloat, cornerRadius: CGFloat) -> some View {
         if playlist.id == favoriteSongsId {
-            ZStack {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(MusicDesign.accent.opacity(0.18))
-                Image(systemName: "star.fill")
-                    .font(.system(size: size * 0.38, weight: .semibold))
-                    .foregroundStyle(MusicDesign.accent)
-            }
-            .frame(width: size, height: size)
+            FavoriteSongsPlaylistArtwork(cornerRadius: cornerRadius, size: size)
         } else {
             AlbumArtworkView(url: playlist.artworkURL, cornerRadius: cornerRadius)
                 .frame(width: size, height: size)
@@ -870,14 +856,7 @@ struct LibraryPlaylistsView: View {
     @ViewBuilder
     private func playlistArtworkFill(_ playlist: PlaylistSummary, cornerRadius: CGFloat) -> some View {
         if playlist.id == favoriteSongsId {
-            ZStack {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(MusicDesign.accent.opacity(0.18))
-                    .aspectRatio(1, contentMode: .fit)
-                Image(systemName: "star.fill")
-                    .font(.system(size: 28, weight: .semibold))
-                    .foregroundStyle(MusicDesign.accent)
-            }
+            FavoriteSongsPlaylistArtwork(cornerRadius: cornerRadius)
         } else {
             AlbumArtworkView(url: playlist.artworkURL, cornerRadius: cornerRadius)
         }
@@ -903,7 +882,40 @@ struct LibraryPlaylistsView: View {
     }
 }
 
-/// White tile with a large accent ``star.fill`` for ``FavoritePlaylistView`` hero artwork.
+/// Favorite Songs playlist tile — accent star on a neutral background (no square icon).
+private struct FavoriteSongsPlaylistArtwork: View {
+    var cornerRadius: CGFloat
+    var size: CGFloat?
+
+    private var starPointSize: CGFloat {
+        if let size { return size * 0.38 }
+        return 28
+    }
+
+    var body: some View {
+        Group {
+            if let size {
+                artworkBody
+                    .frame(width: size, height: size)
+            } else {
+                artworkBody
+                    .aspectRatio(1, contentMode: .fit)
+            }
+        }
+    }
+
+    private var artworkBody: some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(MusicDesign.tertiarySurfaceFill)
+            .overlay {
+                Image(systemName: "star.fill")
+                    .font(.system(size: starPointSize, weight: .semibold))
+                    .foregroundStyle(MusicDesign.accent)
+            }
+    }
+}
+
+/// White hero tile for ``FavoritePlaylistView`` — large accent star, no square framing.
 private struct FavoriteSongsHeroArtwork: View {
     let side: CGFloat
     let cornerRadius: CGFloat
@@ -913,7 +925,7 @@ private struct FavoriteSongsHeroArtwork: View {
             .fill(Color.white)
             .overlay {
                 Image(systemName: "star.fill")
-                    .font(.system(size: side * 0.42))
+                    .font(.system(size: side * 0.42, weight: .semibold))
                     .foregroundStyle(MusicDesign.accent)
             }
             .frame(width: side, height: side)

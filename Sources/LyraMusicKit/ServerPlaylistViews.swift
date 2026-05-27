@@ -475,6 +475,8 @@ struct ServerPlaylistDetailView: View {
         }
         .modifier(DownloadedAlbumActionPresentation(
             isPresented: $showDownloadedAlbumActions,
+            itemKind: isAlbum ? .album : .playlist,
+            includeDeleteFromLibrary: isAlbum,
             onRemoveDownload: { removeAllAlbumOfflineDownloads() },
             onDeleteFromLibrary: { Task { await deleteAlbumFromLibraryAndOffline() } },
         ))
@@ -735,9 +737,15 @@ struct ServerPlaylistDetailView: View {
         return !tracks.isEmpty && tracks.allSatisfy { app.offline.downloadedTrackIds.contains($0.id) }
     }
 
+    private var showsDownloadedCheckmark: Bool {
+        if isAlbum, let album = albumOrNil {
+            return app.isAlbumInLibrary(album.id) && allTracksCached
+        }
+        return !isAlbum && allTracksCached
+    }
+
     private var showsDownloadedAlbumCheckmark: Bool {
-        guard isAlbum, let album = albumOrNil else { return false }
-        return app.isAlbumInLibrary(album.id) && allTracksCached
+        showsDownloadedCheckmark && isAlbum
     }
 
     private var allTracksFavorited: Bool {
@@ -759,27 +767,44 @@ struct ServerPlaylistDetailView: View {
 
     @ViewBuilder
     private var playlistOverflowMenuContent: some View {
-        ControlGroup {
-            Button {
-                Task { await downloadAllTracks() }
-            } label: {
-                Label("Download", systemImage: "arrow.down.circle")
-            }
-            .disabled(rows.isEmpty || isDownloadingAll || allTracksCached)
+        if !showsDownloadedCheckmark {
+            ControlGroup {
+                Button {
+                    Task { await downloadAllTracks() }
+                } label: {
+                    Label("Download", systemImage: "arrow.down.circle")
+                }
+                .disabled(rows.isEmpty || isDownloadingAll || allTracksCached)
 
-            Button(action: toggleAllTrackFavorites) {
-                Label(
-                    allTracksFavorited ? "Favorited" : "Favorite",
-                    systemImage: allTracksFavorited ? "star.fill" : "star"
-                )
-            }
-            .disabled(rows.isEmpty)
+                Button(action: toggleAllTrackFavorites) {
+                    Label(
+                        allTracksFavorited ? "Favorited" : "Favorite",
+                        systemImage: allTracksFavorited ? "star.fill" : "star"
+                    )
+                }
+                .disabled(rows.isEmpty)
 
-            ShareLink(item: navigationTitleText.isEmpty ? playlist.name : navigationTitleText) {
-                Label("Share", systemImage: "square.and.arrow.up")
+                ShareLink(item: navigationTitleText.isEmpty ? playlist.name : navigationTitleText) {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }
             }
+            .tint(Color.primary)
+        } else {
+            ControlGroup {
+                Button(action: toggleAllTrackFavorites) {
+                    Label(
+                        allTracksFavorited ? "Favorited" : "Favorite",
+                        systemImage: allTracksFavorited ? "star.fill" : "star"
+                    )
+                }
+                .disabled(rows.isEmpty)
+
+                ShareLink(item: navigationTitleText.isEmpty ? playlist.name : navigationTitleText) {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }
+            }
+            .tint(Color.primary)
         }
-        .tint(Color.primary)
 
         Section {
             Button(action: togglePlaylistPinned) {
@@ -954,7 +979,8 @@ struct ServerPlaylistDetailView: View {
     }
 
     /// Right-hand action in the hero triplet. Album mode: `plus` → `arrow.down` → `checkmark`
-    /// when fully downloaded (checkmark opens manage-download sheet). Playlist mode: download all.
+    /// when fully downloaded (checkmark opens manage-download sheet). Playlist mode: same
+    /// download → checkmark flow when every track is cached offline.
     @ViewBuilder
     private var primaryActionButton: some View {
         if let album = albumOrNil, !app.isAlbumInLibrary(album.id) {
@@ -970,7 +996,7 @@ struct ServerPlaylistDetailView: View {
             .buttonStyle(.plain)
             .disabled(rows.isEmpty)
             .accessibilityLabel("Add to library")
-        } else if showsDownloadedAlbumCheckmark {
+        } else if showsDownloadedCheckmark {
             Button {
                 showDownloadedAlbumActions = true
             } label: {
@@ -981,7 +1007,7 @@ struct ServerPlaylistDetailView: View {
                     .background(Circle().fill(heroCircleFill))
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Manage download and library")
+            .accessibilityLabel(isAlbum ? "Manage download and library" : "Manage downloads")
         } else {
             Button {
                 Task { await downloadAllTracks() }

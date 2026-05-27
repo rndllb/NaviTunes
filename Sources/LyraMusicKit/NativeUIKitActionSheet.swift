@@ -6,6 +6,7 @@ import UIKit
 enum DownloadedLibraryItemKind {
     case album
     case song
+    case playlist
 
     var confirmationTitle: String {
         switch self {
@@ -13,6 +14,8 @@ enum DownloadedLibraryItemKind {
             return "Do you want to remove this album from your downloads or delete it from your library?"
         case .song:
             return "Do you want to remove this song from your downloads or delete it from your library?"
+        case .playlist:
+            return "Remove all songs in this playlist from your downloads?"
         }
     }
 }
@@ -22,6 +25,7 @@ enum DownloadedLibraryItemKind {
 struct DownloadedAlbumActionPresentation: ViewModifier {
     @Binding var isPresented: Bool
     var itemKind: DownloadedLibraryItemKind = .album
+    var includeDeleteFromLibrary: Bool = true
     let onRemoveDownload: () -> Void
     let onDeleteFromLibrary: () -> Void
 
@@ -31,6 +35,7 @@ struct DownloadedAlbumActionPresentation: ViewModifier {
             NativeUIAlertActionSheetBridge(
                 isPresented: $isPresented,
                 title: itemKind.confirmationTitle,
+                includeDeleteFromLibrary: includeDeleteFromLibrary,
                 onRemoveDownload: onRemoveDownload,
                 onDeleteFromLibrary: onDeleteFromLibrary,
             )
@@ -39,8 +44,13 @@ struct DownloadedAlbumActionPresentation: ViewModifier {
         #else
         content
             .confirmationDialog(itemKind.confirmationTitle, isPresented: $isPresented, titleVisibility: .visible) {
-                Button("Only Remove Download", action: onRemoveDownload)
-                Button("Delete from Library", role: .destructive, action: onDeleteFromLibrary)
+                Button(
+                    includeDeleteFromLibrary ? "Only Remove Download" : "Remove Download",
+                    action: onRemoveDownload
+                )
+                if includeDeleteFromLibrary {
+                    Button("Delete from Library", role: .destructive, action: onDeleteFromLibrary)
+                }
                 Button("Cancel", role: .cancel) {}
             }
         #endif
@@ -87,6 +97,7 @@ extension View {
 struct NativeUIAlertActionSheetBridge: UIViewControllerRepresentable {
     @Binding var isPresented: Bool
     let title: String
+    var includeDeleteFromLibrary: Bool = true
     let onRemoveDownload: () -> Void
     let onDeleteFromLibrary: () -> Void
 
@@ -134,19 +145,24 @@ struct NativeUIAlertActionSheetBridge: UIViewControllerRepresentable {
             )
 
             sheet.addAction(
-                UIAlertAction(title: "Only Remove Download", style: .default) { [weak self] _ in
+                UIAlertAction(
+                    title: parent.includeDeleteFromLibrary ? "Only Remove Download" : "Remove Download",
+                    style: .default,
+                ) { [weak self] _ in
                     self?.finish(dismissAnimated: true) {
                         self?.parent.onRemoveDownload()
                     }
                 },
             )
-            sheet.addAction(
-                UIAlertAction(title: "Delete from Library", style: .destructive) { [weak self] _ in
-                    self?.finish(dismissAnimated: true) {
-                        self?.parent.onDeleteFromLibrary()
-                    }
-                },
-            )
+            if parent.includeDeleteFromLibrary {
+                sheet.addAction(
+                    UIAlertAction(title: "Delete from Library", style: .destructive) { [weak self] _ in
+                        self?.finish(dismissAnimated: true) {
+                            self?.parent.onDeleteFromLibrary()
+                        }
+                    },
+                )
+            }
             sheet.addAction(
                 UIAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in
                     self?.finish(dismissAnimated: true)
