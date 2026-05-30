@@ -149,6 +149,7 @@ public final class AppModel: ObservableObject {
 
     let player = PlaybackEngine()
     let offline = OfflineDownloadManager()
+    let downtify = DowntifyDownloadManager()
 
     private var libraryAlbumsById: [String: AlbumSummary] = [:]
     /// O(1) "is this chart album in the user's library?" lookup. Rebuilt alongside ``libraryAlbumsById``.
@@ -449,6 +450,10 @@ public final class AppModel: ObservableObject {
         offline.$downloadedTrackIds
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        downtify.onJobFinished = { [weak self] job in
+            guard let self else { return }
+            Task { await self.handleDowntifyJobFinished(job) }
+        }
         loadPersistedSettings()
         startNetworkMonitor()
         loadKeychain()
@@ -1374,6 +1379,53 @@ public final class AppModel: ObservableObject {
         }
         await persistLibraryMembershipPayload()
         persistLibrarySnapshot()
+        // Signal that the catalog state changed so library/album detail views
+        // refetch their server rows. Without this, the album-merge view keeps its
+        // pre-download `rows` snapshot — `librarySongIds` includes the new track
+        // but the rows list doesn't, so the merge still classifies the preview
+        // row as missing and the UI shows "needs download".
+        libraryCatalogEpoch &+= 1
+    }
+
+    /// Called when a Downtify job finishes. On success, ask the backend to scan
+    /// (Subsonic `startScan` / Jellyfin `Library/Refresh`) and then keep retrying
+    /// `searchCatalog` until the new file surfaces — typically within a few
+    /// seconds of the scan, but Navidrome/Jellyfin schedules vary so we give it
+    /// up to a minute. When found, add the track to the personal library.
+    func handleDowntifyJobFinished(_ job: DowntifyJob) async {
+        guard job.status == .done else {
+            if job.status == .failed {
+                showTransientToast("Download failed")
+            }
+            return
+        }
+        guard let lib = activeLibrary else { return }
+        let title = job.title ?? ""
+        let artist = job.artist ?? ""
+        guard !title.isEmpty else { return }
+
+        // Kick off the server-side scan immediately so it can race the retry loop.
+        Task { try? await lib.triggerLibraryScan() }
+
+        let probe = DowntifySong(songId: job.url, name: title,
+                                 artists: artist.isEmpty ? [] : [artist],
+                                 albumName: "", url: job.url, coverURL: nil, year: nil, explicit: false)
+        // ~60s total budget: 20 attempts × 3s. The early attempts catch fast scans
+        // (Navidrome typically), the later ones catch slow ones (Jellyfin libraries
+        // with many items). First check fires immediately in case the file was
+        // already scanned by a prior pass.
+        for attempt in 0..<20 {
+            if attempt > 0 { try? await Task.sleep(for: .seconds(3)) }
+            let results = (try? await lib.searchCatalog(query: "\(artist) \(title)", limit: 30)) ?? .empty
+            if let match = LibraryTrackMatcher.firstLibraryTrack(matching: probe, in: results.songs) {
+                await addSongToLibrary(match)
+                showTransientToast("Added “\(match.title)”")
+                return
+            }
+        }
+        // Downloaded but the backend hasn't surfaced it within the budget. The
+        // file is on disk; the next scheduled scan will pick it up.
+        showTransientToast("Downloaded “\(title)”")
     }
 
     /// Adds every track of `album` to the magic playlist and records the album entry.

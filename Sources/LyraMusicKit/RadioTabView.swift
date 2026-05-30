@@ -3,6 +3,7 @@ import SwiftUI
 /// **Radio** tab — Navidrome internet radio with a featured grid and genre-grouped stations.
 struct RadioTabView: View {
     @EnvironmentObject private var app: AppModel
+    @State private var navigationPath = NavigationPath()
     @State private var showFloatingHeader = true
     @State private var featuredStations: [InternetRadioStation] = []
     @State private var liveRadioGroups: [LiveRadioGroup] = []
@@ -30,7 +31,7 @@ struct RadioTabView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navigationPath) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     if !app.isSignedIn {
@@ -77,7 +78,7 @@ struct RadioTabView: View {
             .musicNavigationBarTitleDisplayMode(.inline)
             .task(id: radioLoadKey) { await load() }
             .refreshable { await load() }
-            .deepLinkPush(tab: .radio)
+            .deepLinkPush(tab: .radio, path: $navigationPath)
         }
         .tint(MusicDesign.accent)
     }

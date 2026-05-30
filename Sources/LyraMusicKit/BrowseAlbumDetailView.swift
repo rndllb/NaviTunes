@@ -8,6 +8,7 @@ import UIKit
 struct BrowseAlbumDetailView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var offline: OfflineDownloadManager
+    @EnvironmentObject private var downtify: DowntifyDownloadManager
     @Environment(\.colorScheme) private var colorScheme
     let source: BrowseAlbumDetailSource
 
@@ -20,8 +21,6 @@ struct BrowseAlbumDetailView: View {
     @State private var toast: String?
     @State private var backdropPalette: ArtworkDynamicGradient.BackdropPalette = .fallback
     @State private var isDownloading = false
-    @State private var downloadingPreviewTrackIds: Set<String> = []
-    @State private var previewDowntifyFraction: [String: Double] = [:]
     @State private var navigateLibraryAlbum: AlbumSummary?
     @State private var trackPendingDownloadedDelete: Track?
 
@@ -565,12 +564,11 @@ struct BrowseAlbumDetailView: View {
             if let durationLine { parts.append(durationLine) }
             return parts.joined(separator: " · ")
         }()
+        let previewJob = downtifyJob(forPreview: preview)
+        let isRequestingPreview = previewJob.map { !$0.status.isTerminal } ?? false
         let downtifyOfflineState: OfflineDownloadUIState? = {
-            guard downloadingPreviewTrackIds.contains(preview.id) else { return nil }
-            if let fr = previewDowntifyFraction[preview.id] {
-                return .progress(min(1, max(0, fr)))
-            }
-            return .indeterminate
+            guard let previewJob, !previewJob.status.isTerminal else { return nil }
+            return .progress(min(1, max(0, previewJob.progress)))
         }()
 
         return AppleMusicAlbumTrackRow(
@@ -580,7 +578,7 @@ struct BrowseAlbumDetailView: View {
             offlineDownload: downtifyOfflineState,
             isOfflineCached: false,
             onCancelOfflineDownload: nil,
-            onTapStartOfflineDownload: app.downtifyConfigured && !downloadingPreviewTrackIds.contains(preview.id)
+            onTapStartOfflineDownload: app.downtifyConfigured && !isRequestingPreview
                 ? { Task { await requestPreviewTrackViaDowntify(preview) } }
                 : nil,
             showsOfflineIndicator: true,
@@ -595,7 +593,7 @@ struct BrowseAlbumDetailView: View {
                     onAdd: {
                         Task { await requestPreviewTrackViaDowntify(preview) }
                     },
-                    addDisabled: !app.downtifyConfigured || downloadingPreviewTrackIds.contains(preview.id)
+                    addDisabled: !app.downtifyConfigured || isRequestingPreview
                 )
             }
         )
@@ -774,6 +772,16 @@ struct BrowseAlbumDetailView: View {
         }
     }
 
+    /// The manager job for a preview row, matched by normalized title (previews have no URL).
+    private func downtifyJob(forPreview preview: BrowseAlbumPreviewTrack) -> DowntifyJob? {
+        let keys = Set(LibraryTrackMatcher.normalizedTitleKeys(from: preview.title))
+        guard !keys.isEmpty else { return nil }
+        return downtify.jobs.values.first { job in
+            guard let t = job.title, !t.isEmpty else { return false }
+            return !Set(LibraryTrackMatcher.normalizedTitleKeys(from: t)).isDisjoint(with: keys)
+        }
+    }
+
     private func requestPreviewTrackViaDowntify(_ preview: BrowseAlbumPreviewTrack) async {
         guard app.downtifyConfigured else {
             flashToast("Add your Downtify URL in Settings first.")
@@ -784,22 +792,8 @@ struct BrowseAlbumDetailView: View {
             flashToast("Already in your library")
             return
         }
-        downloadingPreviewTrackIds.insert(preview.id)
-        previewDowntifyFraction[preview.id] = 0
-        defer {
-            downloadingPreviewTrackIds.remove(preview.id)
-            previewDowntifyFraction.removeValue(forKey: preview.id)
-        }
-        do {
-            let songName = try await DowntifyClient.download(artist: matchArtist, title: preview.title) { p in
-                Task { @MainActor in
-                    previewDowntifyFraction[preview.id] = p
-                }
-            }
-            flashToast("Downloading \"\(songName)\"")
-        } catch {
-            flashToast(error.musicPlaybackToastMessage)
-        }
+        await downtify.enqueue(artist: matchArtist, title: preview.title)
+        flashToast("Requested “\(preview.title)”")
     }
 
     private func requestAllPreviewTracksSequentially() async {
@@ -811,11 +805,8 @@ struct BrowseAlbumDetailView: View {
             await sendToDowntify()
             return
         }
-        isDownloading = true
-        defer { isDownloading = false }
-        var succeeded = 0
+        var requested = 0
         var skipped = 0
-        var failed = 0
         for preview in previewTracks {
             if libraryTrackMatchingPreview(preview) != nil {
                 skipped += 1
@@ -826,30 +817,15 @@ struct BrowseAlbumDetailView: View {
                 skipped += 1
                 continue
             }
-            downloadingPreviewTrackIds.insert(preview.id)
-            previewDowntifyFraction[preview.id] = 0
-            do {
-                _ = try await DowntifyClient.download(artist: matchArtist, title: preview.title) { p in
-                    Task { @MainActor in
-                        previewDowntifyFraction[preview.id] = p
-                    }
-                }
-                succeeded += 1
-            } catch {
-                failed += 1
-            }
-            downloadingPreviewTrackIds.remove(preview.id)
-            previewDowntifyFraction.removeValue(forKey: preview.id)
-            try? await Task.sleep(nanoseconds: 400_000_000)
+            await downtify.enqueue(artist: matchArtist, title: preview.title)
+            requested += 1
         }
-        if succeeded > 0, failed == 0 {
-            flashToast(skipped > 0 ? "Requested \(succeeded) tracks (\(skipped) already in library)." : "Requested \(succeeded) tracks.")
-        } else if succeeded > 0 {
-            flashToast("Requested \(succeeded) tracks; \(failed) failed\(skipped > 0 ? "; \(skipped) skipped" : "").")
-        } else if failed > 0 {
-            flashToast("Couldn’t start downloads.")
+        if requested > 0 {
+            flashToast(skipped > 0 ? "Requested \(requested) tracks (\(skipped) already in library)." : "Requested \(requested) tracks.")
         } else if skipped > 0 {
             flashToast("Every track is already in your library.")
+        } else {
+            flashToast("Couldn’t start downloads.")
         }
     }
 

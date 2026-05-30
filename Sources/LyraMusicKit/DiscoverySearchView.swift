@@ -188,6 +188,7 @@ private enum HybridRow: Identifiable {
 
 struct DiscoverySearchView: View {
     @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var downtify: DowntifyDownloadManager
     @Binding var searchText: String
     @Binding var scope: SearchScope
     @Binding var navigationPath: NavigationPath
@@ -215,8 +216,6 @@ struct DiscoverySearchView: View {
     @State private var genresLoadError: String?
 
     // Per-row interaction state.
-    @State private var downloadingIds: Set<String> = []
-    @State private var downtifyDownloadFraction: [String: Double] = [:]
     @State private var addingAlbumIds: Set<String> = []
     @State private var toast: String?
 
@@ -748,7 +747,9 @@ struct DiscoverySearchView: View {
                 subtitle: track.artist,
                 artworkURL: track.artworkURL,
             ))
-            navigationPath.append(SearchNavTarget.song(track))
+            // Tapping a song in search goes to the song's album page (Apple Music
+            // behavior). The 3-dot menu still has Play / Play Next for direct playback.
+            navigationPath.append(SearchNavTarget.album(app.albumSummary(for: track)))
         } label: {
             HStack(spacing: 12) {
                 AlbumArtworkView(url: track.artworkURL)
@@ -783,7 +784,10 @@ struct DiscoverySearchView: View {
     private func serverSongContextMenu(_ track: Track) -> some View {
         Section {
             Button {
-                navigationPath.append(SearchNavTarget.song(track))
+                Task { @MainActor in
+                    guard let lib = app.activeLibrary else { return }
+                    try? await app.player.playAlbum(library: lib, tracks: [track], startIndex: 0)
+                }
             } label: {
                 Label("Play", systemImage: "play")
             }
@@ -860,27 +864,26 @@ struct DiscoverySearchView: View {
             }
             .buttonStyle(.plain)
 
-            if downloadingIds.contains(song.songId) {
+            if let job = downtify.job(forURL: song.url), !job.status.isTerminal {
                 VStack(alignment: .trailing, spacing: 3) {
-                    if let fr = downtifyDownloadFraction[song.songId] {
-                        ProgressView(value: min(1, fr))
-                            .tint(MusicDesign.accent)
-                            .frame(width: 56)
-                        Text("\(Int((min(1, fr) * 100).rounded()))%")
-                            .font(.caption2.weight(.medium).monospacedDigit())
-                            .foregroundStyle(MusicDesign.secondaryLabel)
-                    } else {
-                        ProgressView()
-                            .tint(MusicDesign.accent)
-                    }
+                    ProgressView(value: min(1, job.progress))
+                        .tint(MusicDesign.accent)
+                        .frame(width: 56)
+                    Text("\(Int((min(1, job.progress) * 100).rounded()))%")
+                        .font(.caption2.weight(.medium).monospacedDigit())
+                        .foregroundStyle(MusicDesign.secondaryLabel)
                 }
                 .frame(width: 56, alignment: .trailing)
+            } else if let job = downtify.job(forURL: song.url), job.status == .failed {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .foregroundStyle(.red)
+                    .frame(width: 56, alignment: .trailing)
             } else {
                 statePillButton(
                     label: "Download",
                     systemImage: "arrow.down",
                     busy: false,
-                    disabled: !app.downtifyConfigured,
+                    disabled: !app.downtifyConfigured || downtify.isActive(url: song.url),
                 ) {
                     Task { await downloadSong(song) }
                 }
@@ -1057,7 +1060,7 @@ struct DiscoverySearchView: View {
                                     subtitle: track.artist,
                                     artworkURL: track.artworkURL,
                                 ))
-                                navigationPath.append(SearchNavTarget.song(track))
+                                navigationPath.append(SearchNavTarget.album(app.albumSummary(for: track)))
                             } label: {
                                 HStack {
                                     personalSongRow(track)
@@ -1398,27 +1401,16 @@ struct DiscoverySearchView: View {
     }
 
     private func downloadSong(_ song: DowntifySong) async {
-        guard !downloadingIds.contains(song.songId) else { return }
         guard !LibraryTrackMatcher.matchesLibrary(song, titleIndex: app.libraryTrackTitleIndex) else {
             flashToast("Already in your library")
             return
         }
-        downloadingIds.insert(song.songId)
-        downtifyDownloadFraction[song.songId] = 0
-        defer {
-            downloadingIds.remove(song.songId)
-            downtifyDownloadFraction.removeValue(forKey: song.songId)
+        guard app.downtifyConfigured else {
+            flashToast("Add your Downtify URL in Settings first.")
+            return
         }
-        do {
-            let name = try await DowntifyClient.downloadSong(song) { p in
-                Task { @MainActor in
-                    downtifyDownloadFraction[song.songId] = p
-                }
-            }
-            flashToast("Downloading \"\(name)\"")
-        } catch {
-            flashToast(error.localizedDescription)
-        }
+        await downtify.enqueue(song: song)
+        flashToast("Requested “\(song.name)”")
     }
 
     private func flashToast(_ msg: String) {
@@ -1456,16 +1448,14 @@ struct DiscoverLibraryScopeBar: View {
 // MARK: - Downtify song detail
 
 /// Pushed when a Downtify result is tapped. Apple-Music-style preview with a
-/// large artwork, song metadata, and a primary Download action. Polls the
-/// shared download progress dictionary indirectly through its own state since
-/// the parent view's `downloadingIds`/`downtifyDownloadFraction` aren't
-/// reachable across a navigation push.
+/// large artwork, song metadata, and a primary Download action. Download state
+/// comes from the shared `DowntifyDownloadManager`, so progress survives the
+/// navigation push and matches the search row.
 struct DowntifySongDetailView: View {
     @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var downtify: DowntifyDownloadManager
     let song: DowntifySong
 
-    @State private var isDownloading = false
-    @State private var downloadFraction: Double = 0
     @State private var statusMessage: String?
 
     private var artistsLine: String { song.artists.joined(separator: ", ") }
@@ -1564,15 +1554,22 @@ struct DowntifySongDetailView: View {
                 .padding(.horizontal, 28)
                 .padding(.vertical, 12)
                 .background(Capsule().fill(MusicDesign.chromeCapsuleFill))
-        } else if isDownloading {
+        } else if let job = downtify.job(forURL: song.url), !job.status.isTerminal {
             VStack(spacing: 6) {
-                ProgressView(value: min(1, downloadFraction))
+                ProgressView(value: min(1, job.progress))
                     .tint(MusicDesign.accent)
                     .frame(width: 220)
-                Text("\(Int((min(1, downloadFraction) * 100).rounded()))%")
+                Text("\(Int((min(1, job.progress) * 100).rounded()))%")
                     .font(.subheadline.weight(.semibold).monospacedDigit())
                     .foregroundStyle(MusicDesign.secondaryLabel)
             }
+        } else if let job = downtify.job(forURL: song.url), job.status == .failed {
+            Label("Download failed", systemImage: "exclamationmark.circle.fill")
+                .font(.headline)
+                .foregroundStyle(.red)
+                .padding(.horizontal, 28)
+                .padding(.vertical, 12)
+                .background(Capsule().fill(MusicDesign.chromeCapsuleFill))
         } else {
             Button {
                 Task { await runDownload() }
@@ -1591,17 +1588,11 @@ struct DowntifySongDetailView: View {
     }
 
     private func runDownload() async {
-        isDownloading = true
-        downloadFraction = 0
-        statusMessage = nil
-        defer { isDownloading = false }
-        do {
-            let name = try await DowntifyClient.downloadSong(song) { p in
-                Task { @MainActor in downloadFraction = p }
-            }
-            statusMessage = "Downloading \"\(name)\""
-        } catch {
-            statusMessage = error.localizedDescription
+        guard app.downtifyConfigured else {
+            statusMessage = "Add your Downtify URL in Settings first."
+            return
         }
+        await downtify.enqueue(song: song)
+        statusMessage = "Requested “\(song.name)”"
     }
 }

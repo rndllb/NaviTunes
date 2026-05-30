@@ -13,6 +13,7 @@ private struct HomeArtistTile: Identifiable {
 struct HomeView: View {
     @EnvironmentObject private var app: AppModel
     @State private var showFloatingHeader = true
+    @State private var navigationPath = NavigationPath()
 
     private let inset: CGFloat = MusicDesign.newTabHorizontalInset
 
@@ -49,7 +50,7 @@ struct HomeView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navigationPath) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 32) {
                     if app.libraryAlbums.isEmpty && app.libraryAlbumsLoadError == nil {
@@ -139,7 +140,7 @@ struct HomeView: View {
                 await app.refreshLibraryAlbums()
                 await app.refreshHome()
             }
-            .deepLinkPush(tab: .home)
+            .deepLinkPush(tab: .home, path: $navigationPath)
         }
         .tint(MusicDesign.accent)
     }

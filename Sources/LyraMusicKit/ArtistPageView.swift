@@ -16,6 +16,11 @@ import UIKit
 struct ArtistPageView: View {
     @EnvironmentObject private var app: AppModel
     @StateObject private var model: ArtistViewModel
+    /// Local push target for "Go to Album" menu actions fired from rows inside this
+    /// artist page. Using `@State` here (not `app.presentedDeepLink`) keeps the push
+    /// on **this** page's NavigationStack, so Back returns to this artist instead of
+    /// the tab root.
+    @State private var navigateAlbum: AlbumSummary?
 
     init(input: ArtistPageInput) {
         _model = StateObject(wrappedValue: ArtistViewModel(input: input))
@@ -28,7 +33,7 @@ struct ArtistPageView: View {
             LazyVStack(spacing: 0) {
                 ArtistHeroSection(model: model, scrollSpace: Self.scrollCoordinateSpace)
 
-                ArtistTopSongsSection(model: model)
+                ArtistTopSongsSection(model: model, onGoToAlbum: { navigateAlbum = $0 })
                 ArtistDiscographyCarousel(model: model, bucket: .albums, title: "Albums", layout: .prominent)
                 ArtistDiscographyCarousel(model: model, bucket: .singlesAndEPs, title: "Singles & EPs", layout: .compact)
                 ArtistDiscographyCarousel(model: model, bucket: .live, title: "Live Albums", layout: .compact)
@@ -71,6 +76,9 @@ struct ArtistPageView: View {
                 ProgressView()
                     .tint(MusicDesign.accent)
             }
+        }
+        .navigationDestination(item: $navigateAlbum) { album in
+            ServerPlaylistDetailView(album: album, librarySource: app.isAlbumInLibrary(album.id))
         }
     }
 
@@ -342,6 +350,7 @@ private struct ArtistSectionHeader: View {
 
 private struct ArtistTopSongsSection: View {
     @ObservedObject var model: ArtistViewModel
+    let onGoToAlbum: (AlbumSummary) -> Void
     @State private var requestSheetFor: ArtistTopSongRow?
 
     private static let rowsPerPage = 4
@@ -360,7 +369,9 @@ private struct ArtistTopSongsSection: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(alignment: .top, spacing: 16) {
                         ForEach(Array(pages.enumerated()), id: \.offset) { _, page in
-                            ArtistTopSongsPage(rows: page, onRequest: { requestSheetFor = $0 })
+                            ArtistTopSongsPage(rows: page,
+                                               onRequest: { requestSheetFor = $0 },
+                                               onGoToAlbum: onGoToAlbum)
                         }
                     }
                     .padding(.horizontal, 20)
@@ -388,6 +399,7 @@ private struct ArtistTopSongsSection: View {
 private struct ArtistTopSongsPage: View {
     let rows: [ArtistTopSongRow]
     let onRequest: (ArtistTopSongRow) -> Void
+    let onGoToAlbum: (AlbumSummary) -> Void
 
     private var pageWidth: CGFloat {
         #if os(iOS)
@@ -400,7 +412,7 @@ private struct ArtistTopSongsPage: View {
     var body: some View {
         VStack(spacing: 0) {
             ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                ArtistTopSongRowView(row: row, onRequest: onRequest)
+                ArtistTopSongRowView(row: row, onRequest: onRequest, onGoToAlbum: onGoToAlbum)
                 if index < rows.count - 1 {
                     Rectangle()
                         .fill(MusicDesign.secondaryLabel.opacity(0.18))
@@ -417,6 +429,7 @@ private struct ArtistTopSongRowView: View {
     @EnvironmentObject private var app: AppModel
     let row: ArtistTopSongRow
     let onRequest: (ArtistTopSongRow) -> Void
+    let onGoToAlbum: (AlbumSummary) -> Void
 
     private let artSide: CGFloat = 44
 
@@ -458,7 +471,7 @@ private struct ArtistTopSongRowView: View {
 
                 Spacer(minLength: 6)
 
-                ArtistTopSongOverflowMenu(row: row, onRequest: onRequest)
+                ArtistTopSongOverflowMenu(row: row, onRequest: onRequest, onGoToAlbum: onGoToAlbum)
             }
             .padding(.vertical, 6)
             .contentShape(Rectangle())
@@ -478,31 +491,57 @@ private struct ArtistTopSongRowView: View {
     }
 }
 
+/// Top Songs row ⋯ menu. Library tracks render the shared `StandardSongMenuContent`
+/// so the option set matches every other song-row ⋯ in the app. Preview-only tracks
+/// (the artist's catalog lookup found no matching server track) fall back to the
+/// chart-style menu whose primary action is Request via Downtify.
 private struct ArtistTopSongOverflowMenu: View {
     @EnvironmentObject private var app: AppModel
     let row: ArtistTopSongRow
     let onRequest: (ArtistTopSongRow) -> Void
+    let onGoToAlbum: (AlbumSummary) -> Void
 
     var body: some View {
         Menu {
             if let track = row.libraryTrack {
-                Button {
-                    Task {
-                        guard let lib = app.activeLibrary else { return }
-                        try? await app.player.playAlbum(library: lib, tracks: [track], startIndex: 0)
-                    }
-                } label: { Label("Play", systemImage: "play.fill") }
-
-                Button {
-                    app.toggleFavoriteTrack(id: track.id)
-                } label: {
-                    let isFav = app.favoriteTrackIds.contains(track.id)
-                    Label(isFav ? "Favorited" : "Favorite", systemImage: isFav ? "star.fill" : "star")
-                }
+                StandardSongMenuContent(
+                    track: track,
+                    onPlayNext: {
+                        Task { @MainActor in
+                            try? await app.player.playTracksNext(library: app.activeLibrary, tracks: [track])
+                        }
+                    },
+                    onAddToQueue: {
+                        Task { @MainActor in
+                            guard let lib = app.activeLibrary else { return }
+                            try? await app.player.addToQueue(library: lib, track: track, sourcePlaylistId: nil)
+                        }
+                    },
+                    onFavorite: { app.toggleFavoriteTrack(id: track.id) },
+                    onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
+                    onAddToLibrary: app.isSongInLibrary(track.id)
+                        ? nil
+                        : { Task { await app.addSongToLibrary(track) } },
+                    onDownload: app.isSongInLibrary(track.id) && !app.offline.downloadedTrackIds.contains(track.id)
+                        ? { cacheOffline(track: track) }
+                        : nil,
+                    onRemoveDownload: app.offline.downloadedTrackIds.contains(track.id)
+                        ? { try? app.offline.remove(trackId: track.id) }
+                        : nil,
+                    onGoToAlbum: { onGoToAlbum(app.albumSummary(for: track)) },
+                    onRemoveFromLibrary: app.isSongInLibrary(track.id)
+                        ? { Task { await app.removeSongFromLibrary(track) } }
+                        : nil,
+                    onDeleteFromLibrary: app.canDeleteFromLibrary
+                        ? { app.beginLibraryTrackDeletion(track) }
+                        : nil
+                )
             } else {
-                Button {
-                    onRequest(row)
-                } label: { Label("Request via Downtify", systemImage: "arrow.down.circle") }
+                ChartStyleSongOverflowMenuContent(
+                    shareItem: "\(row.title) — \(row.artist)",
+                    onAdd: { onRequest(row) },
+                    addDisabled: !app.downtifyConfigured
+                )
             }
         } label: {
             Image(systemName: "ellipsis")
@@ -512,6 +551,16 @@ private struct ArtistTopSongOverflowMenu: View {
                 .contentShape(Rectangle())
         }
         .menuOrder(.fixed)
+    }
+
+    private func cacheOffline(track: Track) {
+        Task {
+            guard let lib = app.activeLibrary else { return }
+            do {
+                let url = try lib.offlineDownloadURL(for: track)
+                try await app.offline.cache(track: track, remote: url, headers: lib.httpHeadersForMediaRequests())
+            } catch {}
+        }
     }
 }
 

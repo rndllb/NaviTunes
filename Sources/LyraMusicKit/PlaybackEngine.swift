@@ -518,6 +518,15 @@ final class PlaybackEngine: NSObject, ObservableObject {
             player.pause()
             isPlaying = false
         } else {
+            // Track finished with nothing queued behind it (repeatMode .off, last track) →
+            // AVPlayer is parked at duration; play() would be a no-op. Restart from 0.
+            if let item = player.currentItem {
+                let cur = item.currentTime().seconds
+                let dur = item.duration.seconds
+                if dur.isFinite, dur > 0, cur >= dur - 0.25 {
+                    player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+                }
+            }
             beginPlayback(on: player)
             isPlaying = true
         }

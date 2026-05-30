@@ -1056,6 +1056,14 @@ final class NavidromeClient: MusicLibraryProviding {
         throw NavidromeClientError.libraryTrackDeleteUnsupported
     }
 
+    /// Subsonic `startScan`. Fires the server's media scan so files Downtify just
+    /// dropped on disk surface in the catalog. The Subsonic spec returns a
+    /// `scanStatus` envelope; we don't await completion here — callers poll for
+    /// the new track via `searchCatalog` instead.
+    func triggerLibraryScan() async throws {
+        _ = try await subsonicRequest(path: "startScan")
+    }
+
     func searchCatalog(query: String, limit: Int) async throws -> CatalogSearchResults {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return .empty }
