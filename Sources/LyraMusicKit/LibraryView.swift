@@ -118,6 +118,7 @@ struct LibraryView: View {
     @State private var showNewPlaylistSheet = false
     @State private var showEditSections = false
     @State private var showFloatingHeader = true
+    @State private var navigationPath = NavigationPath()
     private let pinnedColumns = MusicDesign.libraryHubGridColumns(count: 3)
     private let recentColumns = MusicDesign.libraryHubGridColumns(count: 2)
 
@@ -169,7 +170,7 @@ struct LibraryView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navigationPath) {
             ScrollView {
                 libraryScrollMainContent
             }
@@ -198,7 +199,7 @@ struct LibraryView: View {
             .sheet(isPresented: $showEditSections) {
                 EditLibrarySectionsSheet(configRaw: $sectionConfigRaw)
             }
-            .deepLinkPush(tab: .library)
+            .deepLinkPush(tab: .library, path: $navigationPath)
         }
         .tint(MusicDesign.accent)
         .onAppear {

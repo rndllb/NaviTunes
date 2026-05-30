@@ -50,31 +50,36 @@ struct DeepLinkDestinationContent: View {
     }
 }
 
-/// Apply to each tab's ``NavigationStack`` root so a "Go to Album/Playlist/Artist" deep link pushes
-/// within that tab. Gated by ``AppModel/deepLinkTab`` so only the tab the user was on at trigger
-/// time consumes the push, and the tab bar stays visible throughout.
+/// Apply to each tab's ``NavigationStack`` root so a "Go to Album/Playlist/Artist" deep link
+/// pushes within that tab. Path-based (`NavigationPath`-append), not single-slot
+/// `.navigationDestination(item:)` — the old binding-based approach replaced the current
+/// destination when a second deep link fired (e.g. user on an artist page hits Now Playing
+/// → Go to Artist → the new artist swapped in instead of stacking on top). Gated by
+/// ``AppModel/deepLinkTab`` so only the tab the user was on at trigger time consumes the push,
+/// and the tab bar stays visible throughout.
 struct DeepLinkPushModifier: ViewModifier {
     @EnvironmentObject private var app: AppModel
+    @Binding var path: NavigationPath
     let tab: AppTab
 
     func body(content: Content) -> some View {
-        content.navigationDestination(item: Binding<NowPlayingDeepLink?>(
-            get: { app.deepLinkTab == tab ? app.presentedDeepLink : nil },
-            set: { newValue in
-                if newValue == nil {
-                    app.presentedDeepLink = nil
-                    app.deepLinkTab = nil
-                }
+        content
+            .navigationDestination(for: NowPlayingDeepLink.self) { link in
+                DeepLinkDestinationContent(link: link)
             }
-        )) { link in
-            DeepLinkDestinationContent(link: link)
-        }
+            .onChange(of: app.presentedDeepLink) { _, newValue in
+                guard app.deepLinkTab == tab, let link = newValue else { return }
+                path.append(link)
+                // Consume so a subsequent set of the same link still triggers onChange.
+                app.presentedDeepLink = nil
+                app.deepLinkTab = nil
+            }
     }
 }
 
 extension View {
-    func deepLinkPush(tab: AppTab) -> some View {
-        modifier(DeepLinkPushModifier(tab: tab))
+    func deepLinkPush(tab: AppTab, path: Binding<NavigationPath>) -> some View {
+        modifier(DeepLinkPushModifier(path: path, tab: tab))
     }
 }
 
@@ -160,6 +165,7 @@ private struct MainShellView: View {
             .environmentObject(app)
         }
         .environmentObject(app.offline)
+        .environmentObject(app.downtify)
         .task {
             app.scheduleLibraryBootstrap()
         }
@@ -197,6 +203,7 @@ private struct NowPlayingFullScreenCoverModifier: ViewModifier {
                 )
                 .environmentObject(app)
                 .environmentObject(app.offline)
+                .environmentObject(app.downtify)
         }
         #else
         ZStack {
@@ -208,6 +215,7 @@ private struct NowPlayingFullScreenCoverModifier: ViewModifier {
                     .transition(.move(edge: .bottom))
                     .environmentObject(app)
                     .environmentObject(app.offline)
+                    .environmentObject(app.downtify)
             }
         }
         .animation(
@@ -348,6 +356,7 @@ private struct NowPlayingGestureHost: View {
         }
             .environmentObject(app)
             .environmentObject(app.offline)
+            .environmentObject(app.downtify)
             .scaleEffect(1 - dragProgress * 0.06, anchor: .center)
             .clipShape(RoundedRectangle(cornerRadius: dragProgress * 28, style: .continuous))
             .offset(y: max(0, dragOffset))

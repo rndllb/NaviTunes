@@ -1073,6 +1073,25 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         }
     }
 
+    /// `POST Library/Refresh`. Tells Jellyfin to walk every media library so the
+    /// audio file Downtify just wrote becomes visible. Fire-and-forget; callers
+    /// poll `searchCatalog` for the new item afterwards.
+    func triggerLibraryScan() async throws {
+        try requireSignedInUser()
+        let url = apiURL("Library", "Refresh")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("0", forHTTPHeaderField: "Content-Length")
+        applyAuth(&req)
+        let (_, res) = try await URLSession.shared.data(for: req)
+        guard let http = res as? HTTPURLResponse, (200...299).contains(http.statusCode) || http.statusCode == 204 else {
+            throw JellyfinClientError.badResponse(
+                status: (res as? HTTPURLResponse)?.statusCode ?? -1,
+                message: "Could not start library scan.",
+            )
+        }
+    }
+
     func searchCatalog(query: String, limit: Int) async throws -> CatalogSearchResults {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return .empty }

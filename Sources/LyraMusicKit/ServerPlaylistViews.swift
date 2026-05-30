@@ -291,9 +291,15 @@ struct ServerPlaylistDetailView: View {
 
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var offline: OfflineDownloadManager
+    @EnvironmentObject private var downtify: DowntifyDownloadManager
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     @State private var rows: [PlaylistRowItem] = []
+    @State private var previewTracks: [BrowseAlbumPreviewTrack] = []
+    @State private var missingTrackCount: Int = 0
+    /// Album mode only: held true while the MusicBrainz tracklist is in flight so the
+    /// whole list stays in its loading state and the missing rows never pop in late.
+    @State private var isLoadingPreviewTracks: Bool = false
     @State private var isLoading = true
     @State private var loadError: String?
     @State private var searchText = ""
@@ -316,6 +322,58 @@ struct ServerPlaylistDetailView: View {
     @State private var scrollHighlightTask: Task<Void, Never>?
     @State private var displayedRows: [PlaylistRowItem] = []
 
+    /// Album-mode unified row: a real library track, or a MusicBrainz-only track the
+    /// user can request via Downtify.
+    private enum AlbumMergedRow: Identifiable {
+        case library(PlaylistRowItem, displayIndex: Int)
+        case missing(BrowseAlbumPreviewTrack, displayIndex: Int)
+
+        var id: String {
+            switch self {
+            case .library(let r, _): return "lib-\(r.rowId)"
+            case .missing(let p, _): return "miss-\(p.id)"
+            }
+        }
+
+        var displayIndexValue: Int {
+            switch self {
+            case .library(_, let i), .missing(_, let i): return i
+            }
+        }
+    }
+
+    /// Album-mode merged rows: MusicBrainz order, library tracks matched in, missing
+    /// tracks as Request rows, server orphans appended. Empty when not applicable.
+    private var albumMergedRows: [AlbumMergedRow] {
+        guard isAlbum, !previewTracks.isEmpty else { return [] }
+        let libraryRows = displayedRows  // already sorted disc/index + complete-album filtered
+        var usedRowIds = Set<String>()
+        var out: [AlbumMergedRow] = []
+
+        for (loopIdx, preview) in previewTracks.enumerated() {
+            let displayIdx = preview.position > 0 ? preview.position : loopIdx + 1
+            let probe = DowntifySong(songId: "mb:\(preview.id)", name: preview.title,
+                                     artists: [albumOrNil?.artist ?? ""], albumName: albumOrNil?.title ?? "",
+                                     url: "", coverURL: nil, year: nil, explicit: false)
+            if let match = libraryRows.first(where: {
+                !usedRowIds.contains($0.rowId) &&
+                LibraryTrackMatcher.trackMatchesDowntifySong($0.track, song: probe)
+            }) {
+                out.append(.library(match, displayIndex: displayIdx))
+                usedRowIds.insert(match.rowId)
+            } else {
+                out.append(.missing(preview, displayIndex: displayIdx))
+            }
+        }
+        // Append library orphans MusicBrainz didn't list.
+        var nextIdx = (out.map(\.displayIndexValue).max() ?? 0) + 1
+        for row in libraryRows where !usedRowIds.contains(row.rowId) {
+            out.append(.library(row, displayIndex: nextIdx))
+            nextIdx += 1
+        }
+        return out
+    }
+
     private func recomputeDisplayedRows() {
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let base: [PlaylistRowItem]
@@ -329,6 +387,29 @@ struct ServerPlaylistDetailView: View {
             }
         }
         displayedRows = sortedRows(base)
+        missingTrackCount = albumMergedRows.reduce(0) { acc, row in
+            if case .missing = row { return acc + 1 }
+            return acc
+        }
+    }
+
+    /// Album mode only: fetch the full MusicBrainz tracklist so missing tracks can be
+    /// shown + requested. Best-effort; failure silently falls back to server-only rows.
+    /// Drives `isLoadingPreviewTracks` so the host view can keep its single loading
+    /// state up until previews resolve — owned + missing rows then appear together.
+    private func loadPreviewTracksIfAlbum() async {
+        guard let album = albumOrNil, previewTracks.isEmpty else { return }
+        isLoadingPreviewTracks = true
+        defer { isLoadingPreviewTracks = false }
+        guard let rgId = await MusicBrainzTracklistClient.findReleaseGroupId(
+            artist: album.artist, albumTitle: album.title
+        ) else { return }
+        let tracks = await MusicBrainzTracklistClient.tracksForReleaseGroup(rgId)
+        guard !tracks.isEmpty else { return }
+        await MainActor.run {
+            self.previewTracks = tracks
+            recomputeDisplayedRows()
+        }
     }
 
     var body: some View {
@@ -354,6 +435,8 @@ struct ServerPlaylistDetailView: View {
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                         .listRowInsets(EdgeInsets())
+
+                        requestAllMissingButton
                     }
 
                     trackRows
@@ -411,7 +494,14 @@ struct ServerPlaylistDetailView: View {
             albumId: albumOrNil?.id,
             dismiss: { dismiss() }
         ))
-        .task { await load() }
+        .task {
+            // Parallel so total wait = max(server, MusicBrainz). The view stays in
+            // the loading branch until BOTH return, so the missing rows don't pop
+            // in late after the owned rows have already rendered.
+            async let serverLoad: Void = load()
+            async let previewLoad: Void = loadPreviewTracksIfAlbum()
+            _ = await (serverLoad, previewLoad)
+        }
         .task(id: "\(source.artworkURL?.absoluteString ?? "")-\(app.playlistBackdropEnabled)-\(colorScheme)") {
             guard app.playlistBackdropEnabled else {
                 await MainActor.run { backdropPalette = .listSurface(colorScheme: colorScheme) }
@@ -501,6 +591,8 @@ struct ServerPlaylistDetailView: View {
         .onChange(of: sortOrder) { _, _ in recomputeDisplayedRows() }
         .onChange(of: showCompleteAlbum) { _, _ in recomputeDisplayedRows() }
         .onChange(of: app.libraryCatalogEpoch) { _, _ in recomputeDisplayedRows() }
+        .onChange(of: app.librarySongIds) { _, _ in recomputeDisplayedRows() }
+        .onChange(of: previewTracks.map(\.id)) { _, _ in recomputeDisplayedRows() }
     }
 
     /// Branched rows for the List: empty / loading states + the track ForEach +
@@ -508,7 +600,7 @@ struct ServerPlaylistDetailView: View {
     @ViewBuilder
     private var trackRows: some View {
         let visible = displayedRows
-        if isLoading, rows.isEmpty {
+        if isLoading || (isAlbum && isLoadingPreviewTracks), rows.isEmpty || (isAlbum && isLoadingPreviewTracks) {
             ProgressView()
                 .tint(MusicDesign.accent)
                 .frame(maxWidth: .infinity)
@@ -531,6 +623,28 @@ struct ServerPlaylistDetailView: View {
             .padding(.top, 32)
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
+        } else if isAlbum, !previewTracks.isEmpty {
+            let merged = albumMergedRows
+            ForEach(Array(merged.enumerated()), id: \.element.id) { index, mergedRow in
+                let showsBottomDivider = index < merged.count - 1
+                switch mergedRow {
+                case .library(let row, let displayIndex):
+                    let highlightOpacity: Double = row.rowId == highlightedRowId ? 0.28 : 0
+                    songRow(row, displayIndex: displayIndex, showsBottomDivider: showsBottomDivider)
+                        .albumTrackListRowStyle(highlightOpacity: highlightOpacity)
+                case .missing(let preview, let displayIndex):
+                    missingAlbumRow(preview, displayIndex: displayIndex, showsBottomDivider: showsBottomDivider)
+                        .albumTrackListRowStyle()
+                }
+            }
+            showCompleteAlbumToggle
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets())
+            albumFooterBlock
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets())
         } else {
             ForEach(Array(visible.enumerated()), id: \.element.rowId) { index, row in
                 let showsBottomDivider = index < visible.count - 1
@@ -1132,6 +1246,129 @@ struct ServerPlaylistDetailView: View {
                 if lhsDate != rhsDate { return lhsDate > rhsDate }
                 return $0.track.title.localizedCaseInsensitiveCompare($1.track.title) == .orderedAscending
             }
+        }
+    }
+
+    @ViewBuilder
+    private var requestAllMissingButton: some View {
+        if isAlbum, missingTrackCount > 0 {
+            Button {
+                Task { await requestAllMissingTracks() }
+            } label: {
+                Label("Request \(missingTrackCount) Missing", systemImage: "arrow.down.circle.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(Capsule().fill(MusicDesign.accent))
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+            .disabled(!app.downtifyConfigured)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 8)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets())
+        }
+    }
+
+    /// MusicBrainz-only track row. Matches the album-mode `LibrarySongRow` layout
+    /// (same index column, fonts, min-height, and padding) so missing rows sit flush
+    /// with owned rows; only the title is greyed and the trailing control is Request.
+    @ViewBuilder
+    private func missingAlbumRow(_ preview: BrowseAlbumPreviewTrack, displayIndex: Int, showsBottomDivider: Bool) -> some View {
+        let job = downtifyJob(forPreview: preview)
+        HStack(alignment: .center, spacing: 10) {
+            HStack(alignment: .center, spacing: AlbumTrackRowLayout.indexToTitleSpacing) {
+                SongRowLeadingIndicators(
+                    trackIndex: displayIndex,
+                    isFavorite: false,
+                    backdropPalette: backdropPalette
+                )
+                Text(preview.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(MusicDesign.secondaryLabel)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            // Fixed trailing slot so the progress bar and request glyph sit in the
+            // same column across rows. Once we have any job, always show a determinate
+            // bar (even at 0%) — never an indeterminate spinner — so the row reads as
+            // honestly waiting at 0 rather than infinitely loading.
+            Group {
+                if let job, !job.status.isTerminal {
+                    ProgressView(value: job.progress)
+                        .tint(MusicDesign.accent)
+                } else if let job, job.status == .failed {
+                    Image(systemName: "exclamationmark.circle")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.red)
+                } else {
+                    Button {
+                        Task { await requestMissingTrack(preview) }
+                    } label: {
+                        Image(systemName: "arrow.down.circle")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(MusicDesign.accent)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!app.downtifyConfigured)
+                }
+            }
+            .frame(width: 60, height: 22, alignment: .trailing)
+        }
+        .padding(.horizontal, AlbumTrackRowLayout.horizontalPadding)
+        .padding(.vertical, AlbumTrackRowLayout.verticalRowPadding)
+        .frame(minHeight: AlbumTrackRowLayout.rowMinHeight)
+        .overlay(alignment: .bottom) {
+            if showsBottomDivider {
+                AppleMusicAlbumTrackDivider(
+                    palette: backdropPalette,
+                    titleLeadingInset: AlbumTrackRowLayout.librarySongTitleLeadingFromScreenEdge
+                )
+                .allowsHitTesting(false)
+            }
+        }
+    }
+
+    /// Match a preview row to a manager job by normalized title (previews have no URL).
+    private func downtifyJob(forPreview preview: BrowseAlbumPreviewTrack) -> DowntifyJob? {
+        let keys = Set(LibraryTrackMatcher.normalizedTitleKeys(from: preview.title))
+        guard !keys.isEmpty else { return nil }
+        return downtify.jobs.values.first { job in
+            guard let t = job.title, !t.isEmpty else { return false }
+            return !Set(LibraryTrackMatcher.normalizedTitleKeys(from: t)).isDisjoint(with: keys)
+        }
+    }
+
+    private func requestMissingTrack(_ preview: BrowseAlbumPreviewTrack) async {
+        guard app.downtifyConfigured else {
+            app.showTransientToast("Add your Downtify URL in Settings first.")
+            return
+        }
+        await downtify.enqueue(artist: albumOrNil?.artist ?? "", title: preview.title)
+        app.showTransientToast("Requested “\(preview.title)”")
+    }
+
+    private func requestAllMissingTracks() async {
+        guard app.downtifyConfigured else {
+            app.showTransientToast("Add your Downtify URL in Settings first.")
+            return
+        }
+        let artist = albumOrNil?.artist ?? ""
+        let missing = albumMergedRows.compactMap { row -> BrowseAlbumPreviewTrack? in
+            if case .missing(let preview, _) = row { return preview }
+            return nil
+        }
+        guard !missing.isEmpty else {
+            app.showTransientToast("Nothing to request")
+            return
+        }
+        // Submit concurrently so every row flips to a progress state at once instead of
+        // one-by-one as each sequential search resolves.
+        app.showTransientToast("Requested \(missing.count) tracks")
+        for preview in missing {
+            Task { await downtify.enqueue(artist: artist, title: preview.title) }
         }
     }
 

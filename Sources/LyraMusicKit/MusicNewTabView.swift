@@ -5,6 +5,7 @@ import UIKit
 
 struct MusicNewTabView: View {
     @EnvironmentObject private var app: AppModel
+    @State private var navigationPath = NavigationPath()
     @State private var navigateLibraryTrack: Track?
     @State private var navigateLibraryAlbum: AlbumSummary?
     @State private var browseChartSingle: ChartTrack?
@@ -45,7 +46,7 @@ struct MusicNewTabView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navigationPath) {
             ScrollView {
                 newTabMainScrollColumn
             }
@@ -92,7 +93,7 @@ struct MusicNewTabView: View {
                     kind: tr.browseKind
                 ))
             }
-            .deepLinkPush(tab: .new)
+            .deepLinkPush(tab: .new, path: $navigationPath)
         }
         .overlay(alignment: .bottom) {
             if let downtifyToast {

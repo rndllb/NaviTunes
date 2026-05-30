@@ -1,0 +1,142 @@
+import SwiftUI
+
+/// Shared content body for any song-row 3-dot (⋯) Menu in the app. Mirrors the
+/// option set used by `LibrarySongRow`'s inline Menu so every surface that exposes
+/// per-song actions shows the same options in the same order — search, artist
+/// page Top Songs, queue, browse, etc. New song-row surfaces should construct
+/// their own ⋯ button (sized to that surface's chrome) and use this view as the
+/// Menu's content rather than rolling a custom subset.
+///
+/// Each callback is optional; sections that depend on a missing callback are
+/// hidden. Pass `nil` for actions that don't apply at this surface.
+struct StandardSongMenuContent: View {
+    @EnvironmentObject private var app: AppModel
+    @AppStorage(LibraryPinStore.storageKey) private var pinnedStorage: String = "[]"
+
+    let track: Track
+
+    var onPlayNext: (() -> Void)? = nil
+    var onAddToQueue: (() -> Void)? = nil
+    var onFavorite: (() -> Void)? = nil
+    var onAddToPlaylist: (() -> Void)? = nil
+    var onAddToLibrary: (() -> Void)? = nil
+    var onDownload: (() -> Void)? = nil
+    var onRemoveDownload: (() -> Void)? = nil
+    var onGoToAlbum: (() -> Void)? = nil
+    var onGoToArtist: (() -> Void)? = nil
+    var onRemoveFromLibrary: (() -> Void)? = nil
+    var onDeleteFromLibrary: (() -> Void)? = nil
+
+    private var isInLibrary: Bool { app.isSongInLibrary(track.id) }
+    private var isOfflineCached: Bool { app.offline.downloadedTrackIds.contains(track.id) }
+    private var isFavorite: Bool { app.favoriteTrackIds.contains(track.id) }
+    private var trackPinRef: LibraryPinnedRef { LibraryPinnedRef(kind: .track, itemId: track.id) }
+    private var isPinnedToLibrary: Bool { LibraryPinStore.contains(trackPinRef, in: pinnedStorage) }
+    private var canDeleteFromLibrary: Bool { app.canDeleteFromLibrary }
+
+    var body: some View {
+        ControlGroup {
+            if !isInLibrary, let onAddToLibrary {
+                Button(action: onAddToLibrary) {
+                    Label("Add to Library", systemImage: "plus")
+                }
+            } else if isInLibrary, !isOfflineCached, let onDownload {
+                Button(action: onDownload) {
+                    Label("Download", systemImage: "arrow.down")
+                }
+            }
+            if let onFavorite {
+                Button(action: onFavorite) {
+                    Label(isFavorite ? "Unfavorite" : "Favorite",
+                          systemImage: isFavorite ? "star.fill" : "star")
+                }
+            }
+            ShareLink(item: "\(track.title) — \(track.artist)") {
+                Label("Share", systemImage: "square.and.arrow.up")
+            }
+        }
+        .tint(Color.primary)
+
+        Section {
+            Button {
+                if !isPinnedToLibrary {
+                    app.retainTrackForLibraryPin(track)
+                }
+                LibraryPinStore.toggle(trackPinRef, storage: &pinnedStorage)
+            } label: {
+                Label(
+                    LibraryPinStore.menuLabel(kind: .track, isPinned: isPinnedToLibrary),
+                    systemImage: isPinnedToLibrary ? "pin.slash" : "pin"
+                )
+            }
+            if let onAddToPlaylist {
+                Button(action: onAddToPlaylist) {
+                    Label("Add to Playlist", systemImage: "rectangle.stack.badge.plus")
+                }
+            }
+        }
+        .tint(Color.primary)
+
+        if onPlayNext != nil || onAddToQueue != nil {
+            Section {
+                if let onPlayNext {
+                    Button(action: onPlayNext) {
+                        Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                    }
+                }
+                if let onAddToQueue {
+                    Button(action: onAddToQueue) {
+                        Label("Add to Queue", systemImage: "text.append")
+                    }
+                }
+            }
+            .tint(Color.primary)
+        }
+
+        if onGoToAlbum != nil || onGoToArtist != nil {
+            Section {
+                if let onGoToAlbum {
+                    Button(action: onGoToAlbum) {
+                        Label("Go to Album", systemImage: "music.note.square")
+                    }
+                }
+                if let onGoToArtist {
+                    Button(action: onGoToArtist) {
+                        Label("Go to Artist", systemImage: "music.microphone")
+                    }
+                }
+            }
+            .tint(Color.primary)
+        }
+
+        Section {
+            Button {} label: { Label("Suggest Less", systemImage: "hand.thumbsdown") }
+        }
+        .tint(Color.primary)
+
+        if isOfflineCached, let onRemoveDownload {
+            Section {
+                Button(action: onRemoveDownload) {
+                    Label("Remove Download", systemImage: "arrow.down.circle.dotted")
+                }
+            }
+            .tint(Color.primary)
+        }
+
+        if onRemoveFromLibrary != nil || (canDeleteFromLibrary && onDeleteFromLibrary != nil) {
+            Section {
+                if let onRemoveFromLibrary {
+                    Button(role: .destructive, action: onRemoveFromLibrary) {
+                        Label("Delete from Library", systemImage: "trash")
+                    }
+                }
+                if canDeleteFromLibrary, let onDeleteFromLibrary {
+                    Button(role: .destructive, action: onDeleteFromLibrary) {
+                        Label("Delete File from Server", systemImage: "xmark.bin")
+                    }
+                }
+            }
+            .tint(MusicDesign.destructiveAction)
+        }
+    }
+}
