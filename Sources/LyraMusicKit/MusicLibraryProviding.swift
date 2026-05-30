@@ -397,6 +397,11 @@ protocol MusicLibraryProviding: AnyObject {
     /// Used by the Discovery → Downtify hybrid tab to surface "already on the server,
     /// just not in your library yet" candidates alongside Downtify download results.
     func searchCatalog(query: String, limit: Int) async throws -> CatalogSearchResults
+
+    /// Ask the backend to scan its music library so files Downtify just wrote
+    /// surface in the catalog. Best-effort and fire-and-forget: failure is fine —
+    /// the catalog will pick up the new file on its next scheduled scan anyway.
+    func triggerLibraryScan() async throws
 }
 
 extension MusicLibraryProviding {
@@ -406,6 +411,9 @@ extension MusicLibraryProviding {
     func searchCatalog(query: String, limit: Int) async throws -> CatalogSearchResults {
         .empty
     }
+
+    /// Default no-op so backends without a scan endpoint still satisfy the protocol.
+    func triggerLibraryScan() async throws {}
 
     func fallbackStreamURLs(for track: Track) -> [URL] { [] }
     func offlineDownloadURL(for track: Track) throws -> URL { try streamURL(for: track) }
