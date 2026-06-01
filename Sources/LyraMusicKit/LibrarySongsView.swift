@@ -116,6 +116,20 @@ struct LibrarySongsView: View {
     }
 
     var body: some View {
+        songsListRoot
+            .modifier(LibrarySongsLifecycleModifier(
+                load: { await load() },
+                recomputeDisplayed: recomputeDisplayed,
+                libraryFilter: libraryFilter
+            ))
+            .downloadedTrackDeleteSheet(
+                track: $trackPendingDownloadedDelete,
+                app: app,
+                offline: offline
+            )
+    }
+
+    private var songsListRoot: some View {
         List {
             Section {
                 playShuffleRow
@@ -152,37 +166,9 @@ struct LibrarySongsView: View {
         .navigationDestination(item: $navigateAlbum) { album in
             ServerPlaylistDetailView(album: album, librarySource: true)
         }
-        .task {
-            // Songs view depends on the discovery track index; that index is built
-            // lazily (not during bootstrap) so we trigger it here.
-            app.scheduleDiscoveryTrackIndexRefreshIfNeeded()
-            await load()
-        }
-        .onChange(of: app.libraryCatalogEpoch) { _, _ in
-            Task { await load() }
-        }
         .onChange(of: tracks) { _, _ in recomputeDisplayed() }
         .onChange(of: searchText) { _, _ in recomputeDisplayed() }
-        .onChange(of: libraryFilter) { _, _ in
-            Task { await load() }
-        }
         .onChange(of: sort) { _, _ in recomputeDisplayed() }
-        .onChange(of: app.favoriteTrackIds) { _, _ in
-            if libraryFilter == .favorites { recomputeDisplayed() }
-        }
-        .onChange(of: app.offline.downloadedTrackIds) { _, _ in
-            if libraryFilter == .downloads {
-                Task { await load() }
-            }
-        }
-        .onChange(of: app.librarySongIds) { _, _ in
-            tracks = libraryTracksFromCatalog()
-        }
-        .downloadedTrackDeleteSheet(
-            track: $trackPendingDownloadedDelete,
-            app: app,
-            offline: offline
-        )
     }
 
     @ViewBuilder
@@ -385,30 +371,12 @@ struct LibrarySongsView: View {
             loadError = tracks.isEmpty ? "Sign in to browse your library." : nil
             return
         }
-        // Source of truth = the magic-playlist song set. Resolve IDs against the in-memory
-        // catalog (built by ``AppModel.refreshLibraryTrackMatchIndex``). Anything not yet
-        // indexed will fill in on the next library refresh.
-        tracks = libraryTracksFromCatalog()
-    }
 
-    private func libraryTracksFromCatalog() -> [Track] {
-        let ids = app.librarySongIds
-        guard !ids.isEmpty else { return [] }
-        var seen = Set<String>()
-        var out: [Track] = []
-        out.reserveCapacity(ids.count)
-        for track in app.discoveryLibraryTracks where ids.contains(track.id) {
-            if seen.insert(track.id).inserted {
-                out.append(track)
-            }
+        if app.libraryMagicPlaylistId == nil, app.librarySongIds.isEmpty {
+            await app.refreshLibraryMembership()
         }
-        // Pick up any cached-offline tracks that haven't been merged into discoveryLibraryTracks yet.
-        for track in app.offline.cachedTracks() where ids.contains(track.id) {
-            if seen.insert(track.id).inserted {
-                out.append(track)
-            }
-        }
-        return out
+
+        tracks = await app.tracksForPersonalLibrary()
     }
 
     private func playAll() async {
@@ -1090,4 +1058,39 @@ extension View {
             .listRowSeparator(.hidden)
     }
 
+}
+
+private struct LibrarySongsLifecycleModifier: ViewModifier {
+    @EnvironmentObject private var app: AppModel
+    let load: () async -> Void
+    let recomputeDisplayed: () -> Void
+    let libraryFilter: LibrarySongLibraryFilter
+
+    func body(content: Content) -> some View {
+        content
+            .task { await load() }
+            .onChange(of: app.libraryCatalogEpoch) { _, _ in
+                Task { await load() }
+            }
+            .onChange(of: libraryFilter) { _, _ in
+                Task { await load() }
+            }
+            .onChange(of: app.favoriteTrackIds) { _, _ in
+                if libraryFilter == .favorites { recomputeDisplayed() }
+            }
+            .onChange(of: app.offline.downloadedTrackIds) { _, _ in
+                switch libraryFilter {
+                case .downloads, .allSongs:
+                    Task { await load() }
+                case .favorites:
+                    break
+                }
+            }
+            .onChange(of: app.librarySongIds) { _, _ in
+                Task { await load() }
+            }
+            .onChange(of: app.libraryMagicPlaylistId) { _, _ in
+                Task { await load() }
+            }
+    }
 }

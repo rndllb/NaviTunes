@@ -387,6 +387,27 @@ struct ServerPlaylistDetailView: View {
         }
     }
 
+    /// Personal-library album detail (Library tab) where some server tracks may be hidden
+    /// until the user taps Show Complete Album.
+    private var isPersonalLibraryAlbum: Bool {
+        guard let album = albumOrNil, librarySource else { return false }
+        return app.isAlbumInLibrary(album.id)
+    }
+
+    /// MusicBrainz merge rows (missing / Request tracks) — only after Show Complete Album
+    /// for personal-library albums; always on for catalog browse where Downtify applies.
+    private var shouldShowMergedAlbumTracklist: Bool {
+        guard isAlbum, !previewTracks.isEmpty else { return false }
+        if isPersonalLibraryAlbum { return showCompleteAlbum }
+        return true
+    }
+
+    private var shouldLoadAlbumPreviewTracks: Bool {
+        guard isAlbum else { return false }
+        if isPersonalLibraryAlbum { return showCompleteAlbum }
+        return true
+    }
+
     /// Album-mode merged rows: MusicBrainz order, library tracks matched in, missing
     /// tracks as Request rows, server orphans appended. Empty when not applicable.
     private var albumMergedRows: [AlbumMergedRow] {
@@ -394,6 +415,7 @@ struct ServerPlaylistDetailView: View {
         let libraryRows = displayedRows  // already sorted disc/index + complete-album filtered
         var usedRowIds = Set<String>()
         var out: [AlbumMergedRow] = []
+        let includeMissing = shouldShowMergedAlbumTracklist
 
         for (loopIdx, preview) in previewTracks.enumerated() {
             let displayIdx = preview.position > 0 ? preview.position : loopIdx + 1
@@ -406,7 +428,7 @@ struct ServerPlaylistDetailView: View {
             }) {
                 out.append(.library(match, displayIndex: displayIdx))
                 usedRowIds.insert(match.rowId)
-            } else {
+            } else if includeMissing {
                 out.append(.missing(preview, displayIndex: displayIdx))
             }
         }
@@ -537,7 +559,12 @@ struct ServerPlaylistDetailView: View {
             .onChange(of: rows) { _, _ in recomputeDisplayedRows() }
             .onChange(of: searchText) { _, _ in recomputeDisplayedRows() }
             .onChange(of: sortOrder) { _, _ in recomputeDisplayedRows() }
-            .onChange(of: showCompleteAlbum) { _, _ in recomputeDisplayedRows() }
+            .onChange(of: showCompleteAlbum) { _, expanded in
+                recomputeDisplayedRows()
+                if expanded, isAlbum, previewTracks.isEmpty {
+                    Task { await loadPreviewTracksIfAlbum() }
+                }
+            }
             .onChange(of: app.libraryCatalogEpoch) { _, _ in recomputeDisplayedRows() }
             .onChange(of: app.librarySongIds) { _, _ in recomputeDisplayedRows() }
             .onChange(of: previewTracks.map(\.id)) { _, _ in recomputeDisplayedRows() }
@@ -690,7 +717,7 @@ struct ServerPlaylistDetailView: View {
             .padding(.top, 32)
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
-        } else if isAlbum, !previewTracks.isEmpty {
+        } else if shouldShowMergedAlbumTracklist {
             let merged = albumMergedRows
             ForEach(Array(merged.enumerated()), id: \.element.id) { index, mergedRow in
                 let showsBottomDivider = index < merged.count - 1
@@ -1535,7 +1562,7 @@ struct ServerPlaylistDetailView: View {
                 rows = []
             }
         }
-        if isAlbum, previewTracks.isEmpty {
+        if isAlbum, previewTracks.isEmpty, shouldLoadAlbumPreviewTracks {
             Task { await loadPreviewTracksIfAlbum() }
         }
     }

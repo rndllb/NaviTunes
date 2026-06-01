@@ -1425,6 +1425,7 @@ public final class AppModel: ObservableObject {
         librarySongIds = Set(fetch.trackIds)
         libraryAlbumEntries = payload.albums
         libraryPlaylistEntries = payload.playlists
+        invalidatePlaylistRowsCache(playlistId: playlistId)
         Task { await backfillMissingLibraryAlbumSummaries() }
         if backendKind == .navidrome {
             Task { await refreshMagicPlaylistAvatar(playlistId: playlistId) }
@@ -1702,6 +1703,60 @@ public final class AppModel: ObservableObject {
         return offline.tracksMatchingDownloadedIds(catalogById: discoveryTrackById)
     }
 
+    /// Tracks for **Library → Songs** — loads the magic playlist from the server so every
+    /// library song appears, not only rows already present in the discovery index or offline cache.
+    func tracksForPersonalLibrary() async -> [Track] {
+        guard isSignedIn else { return [] }
+
+        var resolved: [Track] = []
+        if let playlistId = libraryMagicPlaylistId {
+            let rows: [PlaylistRowItem]
+            if let cached = cachedPlaylistRows(playlistId: playlistId) {
+                rows = cached
+            } else if let fetched = try? await fetchPlaylistRows(playlistId: playlistId) {
+                rows = fetched
+            } else {
+                rows = []
+            }
+            resolved = rows.map { trackWithResolvedArtwork($0.track) }
+        }
+
+        if !librarySongIds.isEmpty {
+            if resolved.isEmpty {
+                resolved = personalLibraryTracksFromCatalog()
+            } else {
+                let allowed = librarySongIds
+                resolved = resolved.filter { allowed.contains($0.id) }
+            }
+        }
+
+        var seen = Set(resolved.map(\.id))
+        for track in personalLibraryTracksFromCatalog() where seen.insert(track.id).inserted {
+            resolved.append(track)
+        }
+        return resolved
+    }
+
+    /// Best-effort resolve of ``librarySongIds`` against the in-memory catalog + offline manifest.
+    func personalLibraryTracksFromCatalog() -> [Track] {
+        let ids = librarySongIds
+        guard !ids.isEmpty else { return [] }
+        var seen = Set<String>()
+        var out: [Track] = []
+        out.reserveCapacity(ids.count)
+        for id in ids {
+            if let track = discoveryTrackById[id], seen.insert(id).inserted {
+                out.append(trackWithResolvedArtwork(track))
+            }
+        }
+        for track in offline.cachedTracks() where ids.contains(track.id) {
+            if seen.insert(track.id).inserted {
+                out.append(trackWithResolvedArtwork(track))
+            }
+        }
+        return out
+    }
+
     /// `true` when the playlist is in the user's library (separate from the user's
     /// owned playlists — only those they explicitly added via ``addPlaylistToLibrary``).
     func isPlaylistInLibrary(_ id: String) -> Bool {
@@ -1733,6 +1788,7 @@ public final class AppModel: ObservableObject {
         }
         await persistLibraryMembershipPayload()
         persistLibrarySnapshot()
+        invalidatePlaylistRowsCache(playlistId: playlistId)
         // Signal that the catalog state changed so library/album detail views
         // refetch their server rows. Without this, the album-merge view keeps its
         // pre-download `rows` snapshot — `librarySongIds` includes the new track
@@ -1812,6 +1868,7 @@ public final class AppModel: ObservableObject {
         }
         await persistLibraryMembershipPayload()
         persistLibrarySnapshot()
+        invalidatePlaylistRowsCache(playlistId: playlistId)
     }
 
     /// Appends an album to `libraryAlbums` if it isn't already cached, so views that
@@ -1884,6 +1941,7 @@ public final class AppModel: ObservableObject {
             }
         }
         persistLibrarySnapshot()
+        invalidatePlaylistRowsCache(playlistId: playlistId)
     }
 
     /// Removes every track of `album` from the magic playlist and drops the album entry.
@@ -1910,6 +1968,7 @@ public final class AppModel: ObservableObject {
         }
         await persistLibraryMembershipPayload()
         persistLibrarySnapshot()
+        invalidatePlaylistRowsCache(playlistId: playlistId)
     }
 
     /// Registers a server playlist in the user's Lyra library. The playlist itself is
