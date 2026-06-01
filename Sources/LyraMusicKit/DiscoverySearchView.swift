@@ -616,6 +616,12 @@ struct DiscoverySearchView: View {
     }
 
     private func loadServerGenresIfNeeded() async {
+        guard !app.effectiveOfflineMode else {
+            serverGenres = []
+            genresLoadError = nil
+            isLoadingGenres = false
+            return
+        }
         guard let lib = app.activeLibrary else {
             serverGenres = []
             genresLoadError = nil
@@ -738,21 +744,22 @@ struct DiscoverySearchView: View {
     // MARK: - Hybrid: server-song row (Add pill, tap = play)
 
     private func serverSongRow(_ track: Track) -> some View {
-        Button {
+        let artworkURL = app.resolvedArtworkURL(for: track)
+        return Button {
             recordRecent(.init(
                 kind: .song,
                 primaryId: track.id,
                 secondaryId: track.albumId,
                 title: track.title,
                 subtitle: track.artist,
-                artworkURL: track.artworkURL,
+                artworkURL: artworkURL,
             ))
             // Tapping a song in search goes to the song's album page (Apple Music
             // behavior). The 3-dot menu still has Play / Play Next for direct playback.
             navigationPath.append(SearchNavTarget.album(app.albumSummary(for: track)))
         } label: {
             HStack(spacing: 12) {
-                AlbumArtworkView(url: track.artworkURL)
+                AlbumArtworkView(url: artworkURL)
                     .frame(width: rowArtworkSide, height: rowArtworkSide)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(track.title)
@@ -837,6 +844,10 @@ struct DiscoverySearchView: View {
                 Label("Share", systemImage: "square.and.arrow.up")
             }
         }
+        NavidromeShareMenuSection(
+            itemId: track.id,
+            description: "\(track.title) — \(track.artist)"
+        )
     }
 
     // MARK: - Hybrid: Downtify row (Download pill + tappable detail)
@@ -1058,7 +1069,7 @@ struct DiscoverySearchView: View {
                                     secondaryId: track.albumId,
                                     title: track.title,
                                     subtitle: track.artist,
-                                    artworkURL: track.artworkURL,
+                                    artworkURL: app.resolvedArtworkURL(for: track),
                                 ))
                                 navigationPath.append(SearchNavTarget.album(app.albumSummary(for: track)))
                             } label: {
@@ -1233,7 +1244,7 @@ struct DiscoverySearchView: View {
 
     private func personalSongRow(_ track: Track) -> some View {
         HStack(spacing: 12) {
-            AlbumArtworkView(url: track.artworkURL)
+            AlbumArtworkView(url: app.resolvedArtworkURL(for: track))
                 .frame(width: rowArtworkSide, height: rowArtworkSide)
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.title)
@@ -1360,8 +1371,17 @@ struct DiscoverySearchView: View {
     }
 
     private func runHybridSearch(query: String) async {
+        if app.effectiveOfflineMode {
+            let offline = app.searchOfflineCatalog(query: query, limit: 30)
+            if Task.isCancelled || trimmedQuery != query { return }
+            serverResults = offline
+            downtifyResults = []
+            isFetching = false
+            return
+        }
+
         let lib = app.activeLibrary
-        let downtifyOK = app.downtifyConfigured
+        let downtifyOK = app.downtifyConfigured && !app.effectiveOfflineMode
 
         let server: CatalogSearchResults
         if let lib {

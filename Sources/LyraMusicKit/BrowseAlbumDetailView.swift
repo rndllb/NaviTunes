@@ -149,8 +149,6 @@ struct BrowseAlbumDetailView: View {
 
     private var browseHasToolbarExtras: Bool {
         if !isLibraryPlayback, previewTracks.isEmpty { return true }
-        if missingFromBrowseCatalogCount > 0 { return true }
-        if !isLibraryPlayback, !previewTracks.isEmpty { return true }
         return false
     }
 
@@ -283,24 +281,6 @@ struct BrowseAlbumDetailView: View {
                         Label("Request via Downtify", systemImage: "arrow.down.circle.fill")
                     }
                     .disabled(!app.downtifyConfigured)
-                }
-                if missingFromBrowseCatalogCount > 0 {
-                    Button {
-                        Task { await requestAllPreviewTracksSequentially() }
-                    } label: {
-                        Label(
-                            "Request \(missingFromBrowseCatalogCount) missing tracks",
-                            systemImage: "arrow.down.circle.fill"
-                        )
-                    }
-                    .disabled(!app.downtifyConfigured || isDownloading)
-                } else if !isLibraryPlayback, !previewTracks.isEmpty {
-                    Button {
-                        Task { await requestAllPreviewTracksSequentially() }
-                    } label: {
-                        Label("Request all tracks", systemImage: "arrow.down.circle.fill")
-                    }
-                    .disabled(!app.downtifyConfigured || isDownloading)
                 }
             }
             .tint(Color.primary)
@@ -577,11 +557,10 @@ struct BrowseAlbumDetailView: View {
             subtitle: subtitle,
             offlineDownload: downtifyOfflineState,
             isOfflineCached: false,
-            onCancelOfflineDownload: nil,
-            onTapStartOfflineDownload: app.downtifyConfigured && !isRequestingPreview
-                ? { Task { await requestPreviewTrackViaDowntify(preview) } }
-                : nil,
-            showsOfflineIndicator: true,
+            isInLibrary: false,
+            isInServerCatalog: false,
+            greysTitle: true,
+            showsOfflineIndicator: isRequestingPreview,
             backdropPalette: backdropPalette,
             showsBottomDivider: showsBottomDivider,
             onRowTap: {
@@ -647,10 +626,10 @@ struct BrowseAlbumDetailView: View {
         }
         .tint(Color.primary)
 
-        Section {
-            Button {} label: { Label("Suggest Less", systemImage: "hand.thumbsdown") }
-        }
-        .tint(Color.primary)
+        NavidromeShareMenuSection(
+            itemId: track.id,
+            description: "\(track.title) — \(track.artist)"
+        )
 
         if isInLibrary, isOfflineCached {
             Section {
@@ -845,18 +824,17 @@ struct BrowseAlbumDetailView: View {
     }
 
     private func browseDownloadLibraryTracksForOffline() async {
-        guard let lib = app.activeLibrary, !browseToolbarPlaylistTracks.isEmpty else { return }
-        var succeeded = 0
-        for track in browseToolbarPlaylistTracks {
-            try? await cache(track: track, lib: lib)
-            succeeded += 1
+        guard app.activeLibrary != nil, !browseToolbarPlaylistTracks.isEmpty else { return }
+        if let album = matchedLibraryAlbum {
+            app.enqueueOfflineAlbum(album, tracks: browseToolbarPlaylistTracks)
+        } else {
+            app.offline.enqueueTracks(browseToolbarPlaylistTracks)
         }
-        flashToast("\(succeeded) track\(succeeded == 1 ? "" : "s") downloaded")
+        flashToast("Added to download queue")
     }
 
     private func cache(track: Track, lib: MusicLibraryProviding) async throws {
-        let url = try lib.offlineDownloadURL(for: track)
-        try await app.offline.cache(track: track, remote: url, headers: lib.httpHeadersForMediaRequests())
+        app.enqueueOfflineTrack(track)
     }
 
     private func sendToDowntify() async {

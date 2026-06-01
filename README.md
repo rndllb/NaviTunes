@@ -6,131 +6,166 @@ Built in SwiftUI for iOS 26, with an Apple Music–style layout: Home / New / Ra
 
 ## Features
 
-- **Self-hosted backends** — sign in to Jellyfin or Navidrome with a single URL + credentials. Test the URL before logging in with the **Test Connection** button (it does a no-auth probe of `/System/Info/Public` or `/rest/ping.view`).
-- **Subsonic salted-token auth** for Navidrome — the password never travels in the URL.
-- **Streaming + offline** — stream FLAC/MP3/AAC over your server's native APIs, or save tracks/albums for offline playback with a structured `Artist/Album/track.ext` layout. Bitrate tiers (`Original`, `320`, `256`, `128 kbps`) configurable separately for Wi-Fi streaming, cellular streaming, and downloads.
-- **Now Playing** — Lock Screen, Control Center, AirPlay route picker, and (on iPhone) the system volume bridge.
-- **Discovery** — MusicBrainz new releases (toggleable), TheAudioDB regional trending, and an iTunes-backed artwork resolver for chart entries.
-- **Library tools** — favorites, server playlists (read/write where supported), per-album hero artwork with dynamic gradients, recently added / recently played shelves, 6-band graphic EQ with savable presets.
-- **Search** — across library + remote discovery sources, with track-resolution against your local library so chart hits link back to your own copy.
-- **Settings tab** — User profile + live server-health pill, library statistics, sync status, media-quality picker (per-network bitrate), appearance (theme + accent + alternate app icon), plugins (MusicBrainz toggle, Downtify companion-app integration), about.
-- **Appearance customization** — system / light / dark theme, accent color picker, and 9 alternate app icons (`pink / orange / yellow / green / teal / blue / indigo / purple / lightgray`) plus the default `AppIcon`.
-- **Downtify integration** — optional companion app that intercepts download requests so audio files land in a destination of your choice. Configurable URL under Settings → Plugins.
+### Backends & sign-in
+
+- **Jellyfin** and **Navidrome** (Subsonic API) with a single URL + credentials.
+- **Test Connection** on login (`/System/Info/Public` or `/rest/ping.view`).
+- **Secondary server URL** with automatic/manual failover.
+- **Self-signed HTTPS** trust override for homelab servers.
+- **Subsonic salted-token auth** — password never travels in the URL.
+- Credentials stored in Keychain only.
+
+### Home
+
+- **Top Picks**, **New Artists Added**, **Recently Played** (local + server albums).
+- **Tuned In** dynamic mixes — On Repeat, Favorites, Rediscover, New in Your Library (2×2 mosaic cover art).
+- **Your Playlists**, genre shelves, **New Releases** (server catalog).
+- Mixes also appear under **Library → Playlists** (toggle in Settings); mix detail uses the same layout as album detail (no remove-from-playlist).
+
+### Library
+
+- Albums, Songs, Playlists, Artists, Genres, Favorites, Downloaded.
+- **Personal library** (“My Library”) synced via a server-side magic playlist (`__lyra_*`) with accurate per-item “Recently Added (yours)” dates.
+- Configurable sections, pins, server playlist CRUD where supported.
+- Per-album hero artwork with dynamic gradients.
+- **Kill mode** for playlist editing (batch remove + commit).
+
+### Discovery & search
+
+- **Discovery** tab — server catalog search (MusicBrainz new releases, TheAudioDB trending, iTunes artwork enrichment).
+- **Library search** — personal library only (songs in your magic playlist / indexed discovery cache).
+- **Downtify** integration — request missing tracks via companion app; optional auto-add to personal library after server scan.
+
+### Playback
+
+- Full queue, shuffle, repeat, play next, add to queue, reorder in Now Playing.
+- Mini player, persisted queue restore, playback speed, sleep timer, skip-interval buttons.
+- Lock-screen remote: skip track vs skip interval modes.
+- **Play more like this**, play artist (configurable: top songs / shuffle album / full discography), go to artist/album/playlist.
+- **Synced lyrics** (Navidrome structured LRC / Jellyfin lyrics API) with Apple Music–style focus scroll; plain-text lyrics shown unsynced.
+- **My Listening** analytics — streaks, heatmap, top artists/tracks from completed server scrobbles.
+- Stale track ID recovery after server rescans (queue + downloads + personal library).
+
+### Offline & downloads
+
+- Stream or save tracks/albums/playlists/favorites.
+- Structured `Artist/Album/track.ext` download layout with manifest.
+- Wi‑Fi-only downloads, storage cap, cache browser, download queue UI.
+- Manual **offline mode** + **auto-offline** (non-Wi‑Fi or away from home SSID).
+- Auto-download on favorite.
+- Separate **Wi‑Fi / cellular streaming** bitrate & format and **download** quality tiers.
+
+### Settings
+
+- **Sound & Playback** — streaming quality, download quality, player controls, album metadata refresh threshold, artist play mode.
+- **Library & Data** — show mixes in Playlists, scrobble browser/exclusions, **My Listening**, client backup/restore (scrobbles, exclusions, prefs — not credentials or server library), Navidrome share links (create from item menus, list/delete in Settings), library scan controls.
+- **Appearance** — system/light/dark theme, accent color, 9 alternate app icons.
+- **Server health** pill, **library statistics** (Jellyfin: accurate totals; Navidrome: approximate from album index), sync status.
+- **6-band graphic EQ** with savable presets.
+
+### Integrations
+
+- **Server scrobbling** — now playing + completed plays with pending queue and retry.
+- **CarPlay** (`CarPlayCoordinator`).
+- Transient toasts for queue/library confirmations.
+- Navidrome profile picture via magic-playlist cover upload.
 
 ## Project structure
 
 ```
-Lyra-Music/
+Lyra Music IOS/
 ├── Package.swift                       # SwiftPM root
 ├── Sources/
-│   ├── LyraMusicKit/                   # All views, models, clients, playback engine
-│   │   ├── AppModel.swift              # @Observable / ObservableObject app-wide state
-│   │   ├── AppSettingsModels.swift     # Theme, quality, EQ, server-health models
-│   │   ├── SettingsView.swift          # Settings tab UI
-│   │   ├── SettingsFormDrafts.swift    # Draft/commit pattern for form edits
-│   │   ├── LoginView.swift             # Login + Test Connection
-│   │   ├── LyraAccentLogo.swift        # Branded logo that follows accent preset
-│   │   ├── MusicDesignSystem.swift     # Accent presets, picker grid, design tokens
-│   │   ├── JellyfinMusicClient.swift   # Jellyfin backend
-│   │   ├── NavidromeClient.swift       # Navidrome / Subsonic backend
-│   │   ├── PlaybackEngine.swift        # AVPlayer wrapper + remote command center
-│   │   ├── OfflineDownloadManager.swift
-│   │   └── …                           # Tabs, browse, search, playback, etc.
-│   └── LyraMusic/                      # Tiny SwiftPM executable shim (for `swift build`)
+│   └── LyraMusicKit/                   # All views, models, clients, playback engine
+│       ├── AppModel.swift              # App-wide state
+│       ├── JellyfinMusicClient.swift
+│       ├── NavidromeClient.swift
+│       ├── PlaybackEngine.swift
+│       ├── HomeMixBuilder.swift        # Tuned In mixes
+│       ├── OfflineDownloadManager.swift
+│       └── …
 └── LyraMusicHost/
-    ├── LyraMusicHost.xcodeproj         # The iOS app target
+    ├── LyraMusicHost.xcodeproj         # iOS app target
     └── LyraMusicHost/
-        ├── LyraMusicHostApp.swift      # @main entry point
-        ├── Info.plist
-        └── AppIcons/                   # AppIcon.icon + 9 LyraIcon-<color>.icon variants
+        ├── LyraMusicHostApp.swift
+        └── AppIcons/
 ```
 
-`LyraMusicHost.xcodeproj` references the root `Package.swift` as a local Swift package and pulls in `LyraMusicKit`. **Only open the `.xcodeproj`** — opening `Package.swift` directly in a second Xcode window will cause "package already opened" / "missing package product" errors.
+Open **`LyraMusicHost/LyraMusicHost.xcodeproj`** only — opening `Package.swift` in a second Xcode window can cause package resolution conflicts.
 
 ## Requirements
 
 - **Xcode 16** or later (Swift 6.2 toolchain)
-- **iOS 26** deployment target on device or Simulator
-- macOS 15 to host `swift build` from the command line
+- **iOS 26** deployment target
+- macOS 15+ for CLI `swift build`
 
 ## Building and running
-
-### In Xcode
 
 ```bash
 open LyraMusicHost/LyraMusicHost.xcodeproj
 ```
 
-Select an iOS device or Simulator, ⌘B to build, ⌘R to run. The host project resolves the local Swift package automatically.
-
-### From the CLI
+Or from the CLI (compile check only):
 
 ```bash
-swift build              # builds LyraMusicKit + LyraMusic shim for macOS host
+xcodebuild -workspace LyraMusicHost/LyraMusicHost.xcodeproj/project.xcworkspace \
+  -scheme LyraMusicHost -destination 'generic/platform=iOS Simulator' build
 ```
-
-The CLI build is only useful for verifying that `LyraMusicKit` compiles cleanly — the actual app ships from the Xcode project.
 
 ## Configuration
 
-### Connecting to a server
+### Server URL
 
-The login screen takes a base URL + username + password. Plain `http://` is allowed (`NSAllowsArbitraryLoads` is enabled in Info.plist) so it works against:
-
-- LAN servers (RFC1918 / `.local`)
-- Tailscale CGNAT (`100.64.0.0/10`)
-- Reverse-proxied / tunnelled servers
-- Public IPs without TLS
-
-HTTPS is still preferred whenever your server supports it.
-
-### Appearance
-
-Settings → Appearance lets the user pick:
-- **Theme** — System / Light / Dark (drives SwiftUI `.preferredColorScheme`).
-- **Accent color** — A grid of preset accents in `MusicDesignSystem.AppAccentPreset`. The selection feeds into chrome, logo, and now-playing tints.
-- **App icon** — System alternate-icon API switches the home-screen icon to one of the color variants in `LyraMusicHost/AppIcons/`.
+Plain `http://` is allowed for LAN, Tailscale, and homelab setups (`NSAllowsArbitraryLoads` in Info.plist). HTTPS is preferred when available.
 
 ### Media quality
 
-Settings → Media Quality has three independent pickers:
-- **Wi-Fi streaming** — `StreamQualityTier` (`Original` / `320 kbps`).
-- **Cellular streaming** — same tiers, defaulted to `320` to be polite on data plans.
-- **Downloads** — `DownloadQualityTier` (`Original` / `320` / `256` / `128 kbps`), with per-backend mapping to Jellyfin's `audioBitRate` and Navidrome's `maxBitRate`.
+Settings → Sound & Playback: independent Wi‑Fi streaming, cellular streaming, and download quality/format pickers.
 
 ### Downtify
 
-If you run the Downtify companion app, point Lyra at it under Settings → Plugins → Downtify. When configured, a download button appears on track rows that opens a search sheet in Downtify.
+Settings → Plugins → Downtify URL. When configured, download/search actions appear on tracks missing from your library.
 
 ### Discovery sources
 
-- **MusicBrainz** is contacted with a project-identifying `User-Agent` per their TOS.
-- **TheAudioDB** uses the publisher's documented demo key.
-- **iTunes Search API** is used for artwork enrichment on chart entries.
+- MusicBrainz (project User-Agent per TOS)
+- TheAudioDB (demo key)
+- iTunes Search API (chart artwork)
 
-## Architecture notes
+## Architecture (short)
 
-- `AppModel` (a `@MainActor` `ObservableObject`) owns the active client (`jellyfin` or `navidrome`), library snapshot, playback engine, offline manager, and all user-tweakable settings (`themePreference`, `accentPresetId`, `wifiStreamQuality`, `cellularStreamQuality`, `downloadQualityTier`, `musicBrainzEnabled`, EQ state, etc.).
-- `MusicLibraryProviding` is the cross-backend abstraction; `JellyfinMusicClient` and `NavidromeClient` implement it. Both expose `probeAuthStatus() -> ServerReachabilityProbe` for cold-launch session reconciliation.
-- `PlaybackEngine` wraps `AVPlayer` + `MPNowPlayingInfoCenter` + `MPRemoteCommandCenter` and feeds Lock Screen / AirPlay metadata. Bitrate selection respects the active streaming tier and the current network class.
-- `OfflineDownloadManager` writes a structured download tree under `Documents/LyraMusic/Downloads/` with a JSON manifest mapping track IDs to relative paths. Filenames are sanitized (control chars / leading dots / traversal tokens / trailing dots stripped) and a containment check verifies the resolved destination is inside the downloads root before every write.
-- `LibrarySnapshotStore` persists albums + tracks + playlists + favorites between launches under Application Support.
-- `MediaAuthHeaderRegistry` is an actor that lets artwork / avatar / decoder loaders inject per-host `Authorization` headers, so Jellyfin's bearer token never appears in image URLs. `ArtworkURLCache` injects these headers at the cache layer so cached and uncached fetches both authenticate cleanly.
-- `SettingsFormDrafts` is the draft-then-commit pattern used by `LoginView` and the server section of `SettingsView` — fields edit a local `ServerConnectionDraft` until the user explicitly pushes it back to `AppModel`.
-- `ServerConnectionHealth` is the live reachability state surfaced in the Settings profile pill (`unknown` / `checking` / `noNetwork` / `connected` / `unreachable(reason)`).
+- `AppModel` — active client, library snapshot, playback, offline manager, settings.
+- `MusicLibraryProviding` — cross-backend abstraction (`JellyfinMusicClient`, `NavidromeClient`).
+- `PlaybackEngine` — `AVPlayer` + Now Playing + remote commands.
+- `OfflineDownloadManager` — downloads under `Documents/LyraMusic/Downloads/`.
+- `LibrarySnapshotStore` — persisted albums/tracks/playlists between launches.
+- Personal library — magic playlist + JSON membership payload on server.
+
+See **CLAUDE.md** for backend capability differences, library semantics, lyrics parsing, and contributor conventions.
+
+## Known limitations
+
+| Area | Limitation |
+|------|------------|
+| **Radio tab** | Layout placeholder — no live stations wired to your server yet. |
+| **Some overflow items** | A few menu rows are still stubs (e.g. Start Collaboration, Move to Folder, some chart preview actions). |
+| **Server catalog vs personal library** | Home “New Releases” / Top Picks use server catalog; Library “Recently Added” uses your personal magic playlist. |
+| **Tuned In mixes** | Require ≥ 3 tracks per mix; On Repeat / Rediscover use **completed server scrobbles**, not local play history alone. |
+| **Lyrics** | Plain-text / unsynced sources do not auto-scroll. Sync quality depends on source LRC or structured timestamps. |
+| **Auto-offline** | Restricts Discovery search to downloaded content; does not fully gate Home/Library streaming. SSID detection needs location permission on iOS. |
+| **Client backup** | Exports local scrobbles, exclusions, playback prefs — not credentials, audio files, or server magic-playlist state. |
+| **Jellyfin “similar tracks”** | Artist search shuffle, not true similarity API. |
+| **Navidrome library stats** | Settings → Library counts are approximate (album index + summed `trackCount`; large libraries may hit the fetch cap). |
+| **Navidrome share from charts** | Create Share Link needs a server track/album/playlist id — chart preview rows without one skip the action. |
 
 ## Security
 
-- **Credentials**: Keychain only (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, `kSecAttrSynchronizable=false`).
-- **Navidrome auth**: per-request salted-token (`t=md5(password+salt)` with a fresh 16-byte salt) — the password is never in the URL.
-- **Jellyfin auth**: `Authorization: MediaBrowser Token=...` header on every request, including media and artwork. The token is not appended to URLs.
-- **Cold launch**: a restored session is probed with `probeAuthStatus()` before the app re-POSTs credentials, so the password is only sent again when the server explicitly rejected the existing session.
-- **Offline downloads**: server-supplied artist/album/title strings are sanitized (rejecting `.`, `..`, leading/trailing dots, control chars) and the destination path is bounds-checked against the downloads root before every write.
-
-## Status
-
-Active development. The **Radio** tab is intentionally a layout-only placeholder — `RadioTabView` shows decorative station tiles with a footnote calling out that live stations aren't wired to your server yet. A handful of overflow-menu items ("Create Station", "Pin Song", "View Credits", "Suggest Less") remain stubs. The Now Playing share menu uses `ShareLink`, and Favorite / Play Next / Go to Album hooks across the chart and browse-album overflow menus are functional.
+- Keychain credentials (`AfterFirstUnlockThisDeviceOnly`, not iCloud-synced).
+- Jellyfin: bearer token in headers, not URLs.
+- Navidrome: salted token per request.
+- Cold launch probes existing session before re-sending password.
+- Download paths sanitized and containment-checked.
 
 ## License
 
-No license declared. Treat as all rights reserved unless and until a license file is added.
+No license declared. Treat as all rights reserved unless a license file is added.

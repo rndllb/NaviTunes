@@ -135,6 +135,7 @@ struct MiniPlayerView: View {
         let artSize = MusicDesign.miniPlayerArtwork
         let spacing: CGFloat = isTabAccessory ? 8 : 12
         let showsSkip = layout == .standalone || layout == .tabViewAccessoryExpanded
+        let liveRadio = track.isInternetRadioStream
 
         HStack(alignment: .center, spacing: spacing) {
             Button {
@@ -185,11 +186,12 @@ struct MiniPlayerView: View {
                     } label: {
                         Image(systemName: "forward.fill")
                             .font(.system(size: isTabAccessory ? 14 : 17, weight: .semibold))
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(liveRadio ? MusicDesign.secondaryLabel.opacity(0.45) : .primary)
                             .frame(width: isTabAccessory ? 28 : 32, height: isTabAccessory ? 28 : 32)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .disabled(liveRadio)
                 }
             }
             .padding(.leading, 2)

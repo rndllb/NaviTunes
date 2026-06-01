@@ -21,7 +21,9 @@ struct LyraMusicHostApp: App {
                     case .inactive, .background:
                         appModel.syncHomeScreenIconForAccentIfNeeded()
                         appModel.persistPlaybackQueue()
-                    default:
+                    case .active:
+                        appModel.handleAppBecameActive()
+                    @unknown default:
                         break
                     }
                 }

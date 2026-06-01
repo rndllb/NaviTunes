@@ -46,6 +46,18 @@ final class PlaybackEngine: NSObject, ObservableObject {
     @Published var shuffleMode: ShuffleMode = .off
     @Published var repeatMode: RepeatMode = .off
     @Published private(set) var playbackSource: PlaybackSource?
+    /// User preference mirrored from ``AppModel`` — drives optional Now Playing chrome.
+    var showSkipIntervalButtons = false
+    var showSleepTimerButton = false
+    var skipBackwardInterval: TimeInterval = 15
+    var skipForwardInterval: TimeInterval = 30
+    var remoteControlMode: RemoteControlMode = .skipTrack
+    @Published var playbackRate: Float = 1.0
+    @Published private(set) var sleepTimerEndDate: Date?
+    /// Proactive album metadata refresh before loading a stream (``AppModel``).
+    var refreshTrackBeforePlay: ((Track) async -> Track)?
+    /// Reactive stale-id recovery when every stream candidate fails (``AppModel``).
+    var recoverStaleTrackOnFailure: ((Track) async -> StaleSongRecoveryResult?)?
     /// Drives the tab-bar mini player pill — false after a cold restore until the user starts playback.
     @Published private(set) var showsMiniPlayerChrome = false
     /// Stores the pre-shuffle queue order for restoring when shuffle is toggled off.
@@ -112,6 +124,11 @@ final class PlaybackEngine: NSObject, ObservableObject {
     var onTrackSkipped: ((Track, PlaybackSource?) -> Void)?
 
     private var didConfigureRemoteCommands = false
+    private var sleepTimerTask: Task<Void, Never>?
+    private var nextTrackRemoteTarget: Any?
+    private var previousTrackRemoteTarget: Any?
+    private var skipForwardRemoteTarget: Any?
+    private var skipBackwardRemoteTarget: Any?
     private var nowPlayingArtworkTask: Task<Void, Never>?
     private var nowPlayingArtworkTrackId: String?
     private var nowPlayingArtwork: MPMediaItemArtwork?
@@ -323,7 +340,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         // the mini player so the saved track + playhead are visible on launch. Only the
         // never-played cold-launch path leaves this `false`.
         showsMiniPlayerChrome = activeTrack != nil
-        configureRemoteCommands()
+        configureRemoteCommandsIfNeeded()
         updateNowPlaying(nil)
     }
 
@@ -408,7 +425,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         beginPlayback(on: player)
         isPlaying = true
         scrobbledForCurrentTrack = false
-        configureRemoteCommands()
+        configureRemoteCommandsIfNeeded()
         revealMiniPlayerChrome()
         if let started = activeTrack { onTrackStarted?(started) }
     }
@@ -552,6 +569,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     private func pausePlaybackFromRemoteCommand() {
+        pausePlayback()
+    }
+
+    func pausePlayback() {
         guard let player else { return }
         if player.rate > 0.01 {
             player.pause()
@@ -566,7 +587,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
         effectivePlaybackDuration()
     }
 
-    func seek(to fraction: Double, completion: (() -> Void)? = nil) {
+    /// Seek to a normalized scrub fraction in `0...1`.
+    func seek(toFraction fraction: Double, completion: (() -> Void)? = nil) {
         Task {
             let d = await resolvePlaybackDuration()
             guard d > 0 else {
@@ -576,6 +598,11 @@ final class PlaybackEngine: NSObject, ObservableObject {
             let targetSeconds = max(0, min(fraction, 1)) * d
             await performSeek(toSeconds: targetSeconds, completion: completion)
         }
+    }
+
+    /// Backward-compatible alias — only values in `0...1` are valid fractions.
+    func seek(to fraction: Double, completion: (() -> Void)? = nil) {
+        seek(toFraction: fraction, completion: completion)
     }
 
     func seek(toSeconds targetSeconds: TimeInterval, completion: (() -> Void)? = nil) {
@@ -711,17 +738,157 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
     func skipPrevious() {
         if currentTime > 3 {
-            seek(to: 0)
+            seek(toSeconds: 0)
             return
         }
         guard currentIndex > 0 else {
-            seek(to: 0)
+            seek(toSeconds: 0)
             return
         }
         captureAutoPlayIntentForAdvance()
         currentIndex -= 1
         resetUIProgressForTrackHandoff()
         scheduleAdvance()
+    }
+
+    func skipForward(by interval: TimeInterval? = nil) {
+        let step = interval ?? skipForwardInterval
+        guard step > 0 else { return }
+        let head = currentPlaybackPosition()
+        let d = effectivePlaybackDuration()
+        guard d > 0 else { return }
+        // Seeking to the exact end fires AVPlayerItemDidPlayToEndTime and advances the queue.
+        let endGuard: TimeInterval = 1.0
+        let maxTarget = max(0, d - endGuard)
+        let target = min(maxTarget, head + step)
+        guard target > head + 0.05 else { return }
+        seek(toSeconds: target)
+    }
+
+    func skipBackward(by interval: TimeInterval? = nil) {
+        let step = interval ?? skipBackwardInterval
+        guard step > 0 else { return }
+        let head = currentPlaybackPosition()
+        let target = max(0, head - step)
+        guard abs(target - head) > 0.05 else { return }
+        seek(toSeconds: target)
+    }
+
+    /// Best-effort live playhead for interval skips (lock screen must not use throttled ``currentTime``).
+    private func currentPlaybackPosition() -> TimeInterval {
+        if let player {
+            let t = player.currentTime().seconds
+            if t.isFinite, t >= 0 { return t }
+        }
+        if playbackHead.isFinite, playbackHead > 0 { return playbackHead }
+        return currentTime
+    }
+
+    func cyclePlaybackRate() {
+        let rates = PlaybackRateOption.allCases.map(\.rawValue)
+        guard let idx = rates.firstIndex(of: playbackRate) else {
+            playbackRate = 1.0
+            applyPlaybackRateToPlayer()
+            return
+        }
+        let next = rates[(idx + 1) % rates.count]
+        playbackRate = next
+        applyPlaybackRateToPlayer()
+    }
+
+    func setPlaybackRate(_ rate: Float) {
+        playbackRate = rate
+        applyPlaybackRateToPlayer()
+    }
+
+    func startSleepTimer(minutes: Int) {
+        guard minutes > 0 else { return }
+        startSleepTimer(until: Date().addingTimeInterval(TimeInterval(minutes * 60)))
+    }
+
+    func startSleepTimer(until endDate: Date) {
+        cancelSleepTimer()
+        sleepTimerEndDate = endDate
+        let interval = endDate.timeIntervalSinceNow
+        guard interval > 0 else {
+            sleepTimerEndDate = nil
+            return
+        }
+        sleepTimerTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(interval))
+            guard !Task.isCancelled else { return }
+            self?.pausePlayback()
+            self?.sleepTimerEndDate = nil
+        }
+    }
+
+    func cancelSleepTimer() {
+        sleepTimerTask?.cancel()
+        sleepTimerTask = nil
+        sleepTimerEndDate = nil
+    }
+
+    func updateRemoteCommands() {
+        configureRemoteCommandsIfNeeded()
+        let center = MPRemoteCommandCenter.shared()
+
+        if let nextTrackRemoteTarget {
+            center.nextTrackCommand.removeTarget(nextTrackRemoteTarget)
+            self.nextTrackRemoteTarget = nil
+        }
+        if let previousTrackRemoteTarget {
+            center.previousTrackCommand.removeTarget(previousTrackRemoteTarget)
+            self.previousTrackRemoteTarget = nil
+        }
+        if let skipForwardRemoteTarget {
+            center.skipForwardCommand.removeTarget(skipForwardRemoteTarget)
+            self.skipForwardRemoteTarget = nil
+        }
+        if let skipBackwardRemoteTarget {
+            center.skipBackwardCommand.removeTarget(skipBackwardRemoteTarget)
+            self.skipBackwardRemoteTarget = nil
+        }
+        center.nextTrackCommand.removeTarget(nil)
+        center.previousTrackCommand.removeTarget(nil)
+        center.skipForwardCommand.removeTarget(nil)
+        center.skipBackwardCommand.removeTarget(nil)
+
+        switch remoteControlMode {
+        case .skipTrack:
+            center.nextTrackCommand.isEnabled = true
+            center.previousTrackCommand.isEnabled = true
+            center.skipForwardCommand.isEnabled = false
+            center.skipBackwardCommand.isEnabled = false
+
+            nextTrackRemoteTarget = center.nextTrackCommand.addTarget { [weak self] _ in
+                Task { @MainActor in self?.skipNext() }
+                return .success
+            }
+            previousTrackRemoteTarget = center.previousTrackCommand.addTarget { [weak self] _ in
+                Task { @MainActor in self?.skipPrevious() }
+                return .success
+            }
+        case .skipInterval:
+            center.nextTrackCommand.isEnabled = false
+            center.previousTrackCommand.isEnabled = false
+            center.skipForwardCommand.isEnabled = true
+            center.skipBackwardCommand.isEnabled = true
+            center.skipForwardCommand.preferredIntervals = [NSNumber(value: skipForwardInterval)]
+            center.skipBackwardCommand.preferredIntervals = [NSNumber(value: skipBackwardInterval)]
+
+            skipForwardRemoteTarget = center.skipForwardCommand.addTarget { [weak self] event in
+                guard let self else { return .commandFailed }
+                let step = (event as? MPSkipIntervalCommandEvent)?.interval ?? self.skipForwardInterval
+                Task { @MainActor in self.skipForward(by: step) }
+                return .success
+            }
+            skipBackwardRemoteTarget = center.skipBackwardCommand.addTarget { [weak self] event in
+                guard let self else { return .commandFailed }
+                let step = (event as? MPSkipIntervalCommandEvent)?.interval ?? self.skipBackwardInterval
+                Task { @MainActor in self.skipBackward(by: step) }
+                return .success
+            }
+        }
     }
 
     /// True when the "continue playing" section is out of the natural source order, but shuffle
@@ -832,6 +999,12 @@ final class PlaybackEngine: NSObject, ObservableObject {
         // Capture before teardown — new AVPlayer starts `.paused` and KVO must not clear intent.
         let shouldAutoPlay = shouldAutoPlayAfterAdvance || isPlaying || (player?.rate ?? 0) > 0.01
         shouldAutoPlayAfterAdvance = false
+        if var track = currentTrack, let refresh = refreshTrackBeforePlay {
+            let refreshed = await refresh(track)
+            if refreshed.id != track.id, queue.indices.contains(currentIndex) {
+                queue[currentIndex] = refreshed
+            }
+        }
         let epoch = beginPlaybackSession()
         isAdvancingToNextItem = true
         defer { isAdvancingToNextItem = false }
@@ -863,7 +1036,14 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// Starts AVPlayer and updates lock screen / Dynamic Island playback rate.
     private func beginPlayback(on player: AVPlayer) {
         activateAudioSession()
-        player.playImmediately(atRate: 1.0)
+        player.playImmediately(atRate: playbackRate)
+        refreshNowPlaying()
+    }
+
+    private func applyPlaybackRateToPlayer() {
+        if let player, isPlaying {
+            player.rate = playbackRate
+        }
         refreshNowPlaying()
     }
 
@@ -976,12 +1156,43 @@ final class PlaybackEngine: NSObject, ObservableObject {
         return true
     }
 
-    private func startCurrentItem(epoch: UInt, startSeconds: TimeInterval = 0, autoPlay: Bool = false) async throws {
+    func applyTrackSwaps(_ swaps: [String: Track]) {
+        guard !swaps.isEmpty else { return }
+        queue = queue.map { swaps[$0.id] ?? $0 }
+        if var uq = unshuffledQueue {
+            uq = uq.map { swaps[$0.id] ?? $0 }
+            unshuffledQueue = uq
+        }
+        if var sq = sourceQueueOrder {
+            sq = sq.map { swaps[$0.id] ?? $0 }
+            sourceQueueOrder = sq
+        }
+        var nextUserQueued = userQueuedTrackIds
+        for (oldId, newTrack) in swaps {
+            if nextUserQueued.remove(oldId) != nil {
+                nextUserQueued.insert(newTrack.id)
+            }
+            if let playlistId = trackOriginPlaylistIds.removeValue(forKey: oldId) {
+                trackOriginPlaylistIds[newTrack.id] = playlistId
+            }
+        }
+        userQueuedTrackIds = nextUserQueued
+    }
+
+    private func startCurrentItem(epoch: UInt, startSeconds: TimeInterval = 0, autoPlay: Bool = false, allowStaleRecovery: Bool = true) async throws {
         guard isPlaybackEpochCurrent(epoch) else { return }
         guard let track = currentTrack else { throw PlaybackEngineError.missingTrack }
 
+        if let refresh = refreshTrackBeforePlay {
+            let refreshed = await refresh(track)
+            if refreshed.id != track.id, queue.indices.contains(currentIndex) {
+                queue[currentIndex] = refreshed
+            }
+        }
+        guard let activeTrack = currentTrack else { throw PlaybackEngineError.missingTrack }
+
         var candidates: [(url: URL, headers: [String: String])] = []
-        if let saved = offline?.localFile(for: track.id) {
+        if let saved = offline?.localFile(for: activeTrack.id) {
             candidates.append((saved, [:]))
         }
         var seen = Set(candidates.map { $0.url.absoluteString })
@@ -991,18 +1202,18 @@ final class PlaybackEngine: NSObject, ObservableObject {
             seen.insert(key)
             candidates.append((u, h))
         }
-        if let direct = track.streamOverrideURL {
+        if let direct = activeTrack.streamOverrideURL {
             appendUnique(direct, [:])
         }
         if let library {
             let serverHeaders = library.httpHeadersForMediaRequests()
             if let jellyfin = library as? JellyfinMusicClient {
-                for u in jellyfin.allStreamingURLs(for: track) {
+                for u in jellyfin.allStreamingURLs(for: activeTrack) {
                     appendUnique(u, serverHeaders)
                 }
             } else {
-                appendUnique(try library.streamURL(for: track), serverHeaders)
-                for u in library.fallbackStreamURLs(for: track) {
+                appendUnique(try library.streamURL(for: activeTrack), serverHeaders)
+                for u in library.fallbackStreamURLs(for: activeTrack) {
                     appendUnique(u, serverHeaders)
                 }
             }
@@ -1019,7 +1230,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
                 if try await loadPlayerItem(
                     epoch: epoch,
                     candidate: candidate,
-                    track: track,
+                    track: activeTrack,
                     startSeconds: startSeconds,
                     autoPlay: autoPlay,
                 ) {
@@ -1032,6 +1243,19 @@ final class PlaybackEngine: NSObject, ObservableObject {
         }
 
         guard isPlaybackEpochCurrent(epoch) else { return }
+        if allowStaleRecovery,
+           let recovery = recoverStaleTrackOnFailure,
+           let result = await recovery(activeTrack),
+           !result.swaps.isEmpty {
+            applyTrackSwaps(result.swaps)
+            try await startCurrentItem(
+                epoch: epoch,
+                startSeconds: startSeconds,
+                autoPlay: autoPlay,
+                allowStaleRecovery: false,
+            )
+            return
+        }
         teardownPlayer()
         throw lastError ?? URLError(.cannotLoadFromNetwork)
     }
@@ -1278,11 +1502,20 @@ final class PlaybackEngine: NSObject, ObservableObject {
             lyrics = []
             return
         }
-        lyrics = (try? await library.lyrics(for: track)) ?? []
+        let trackId = track.id
+        let epoch = playbackEpoch
+        let fetched = (try? await library.lyrics(for: track)) ?? []
+        guard isPlaybackEpochCurrent(epoch), currentTrack?.id == trackId else { return }
+        lyrics = fetched
     }
 
     private func resolvedArtworkURL(for track: Track) -> URL? {
         if let local = offline?.localArtworkURL(forTrackId: track.id) { return local }
+        if let localAlbum = offline?.localArtworkURL(forAlbumId: track.albumId) { return localAlbum }
+        if let file = track.artworkURL, file.isFileURL,
+           FileManager.default.fileExists(atPath: file.path) {
+            return file
+        }
         return resolveArtwork?(track) ?? track.artworkURL
     }
 
@@ -1414,7 +1647,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             }
             now[MPMediaItemPropertyPlaybackDuration] = info.duration
             now[MPNowPlayingInfoPropertyElapsedPlaybackTime] = playbackHead
-            now[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
+            now[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? playbackRate : 0.0
             now[MPNowPlayingInfoPropertyMediaType] = MPNowPlayingInfoMediaType.audio.rawValue
             if let artwork {
                 now[MPMediaItemPropertyArtwork] = artwork
@@ -1436,14 +1669,12 @@ final class PlaybackEngine: NSObject, ObservableObject {
         }
     }
 
-    private func configureRemoteCommands() {
+    private func configureRemoteCommandsIfNeeded() {
         guard !didConfigureRemoteCommands else { return }
         didConfigureRemoteCommands = true
         let center = MPRemoteCommandCenter.shared()
         center.playCommand.removeTarget(nil)
         center.pauseCommand.removeTarget(nil)
-        center.nextTrackCommand.removeTarget(nil)
-        center.previousTrackCommand.removeTarget(nil)
         center.changePlaybackPositionCommand.removeTarget(nil)
 
         center.playCommand.addTarget { [weak self] _ in
@@ -1452,14 +1683,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
         }
         center.pauseCommand.addTarget { [weak self] _ in
             Task { @MainActor in self?.pausePlaybackFromRemoteCommand() }
-            return .success
-        }
-        center.nextTrackCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.skipNext() }
-            return .success
-        }
-        center.previousTrackCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.skipPrevious() }
             return .success
         }
         center.changePlaybackPositionCommand.isEnabled = true
@@ -1472,6 +1695,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             Task { @MainActor in self.seek(toSeconds: positionEvent.positionTime) }
             return .success
         }
+        updateRemoteCommands()
     }
 }
 

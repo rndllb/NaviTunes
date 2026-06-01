@@ -38,11 +38,6 @@ enum ChartStyleSongOverflowChrome {
             }
             .tint(Color.primary)
         }
-
-        Section {
-            Button {} label: { Label("Suggest Less", systemImage: "hand.thumbsdown") }
-        }
-        .tint(Color.primary)
     }
 }
 
@@ -51,6 +46,7 @@ struct ChartStyleSongOverflowMenuContent: View {
     let shareItem: String
     let onAdd: () -> Void
     var addDisabled: Bool = false
+    var navidromeShareItemId: String? = nil
     var onGoToAlbum: (() -> Void)? = nil
     var onAddToPlaylist: (() -> Void)? = nil
     var onPlayNext: (() -> Void)? = nil
@@ -83,6 +79,10 @@ struct ChartStyleSongOverflowMenuContent: View {
             onAddToPlaylist: onAddToPlaylist,
             onPlayNext: onPlayNext
         )
+
+        if let navidromeShareItemId {
+            NavidromeShareMenuSection(itemId: navidromeShareItemId, description: shareItem)
+        }
     }
 }
 
@@ -220,14 +220,6 @@ struct AlbumToolbarOverflowMenuContent<ExtraContent: View>: View {
                     }
                     .disabled(true)
                 }
-            }
-            .tint(Color.primary)
-
-            Section {
-                Button {} label: {
-                    Label("Suggest Less", systemImage: "hand.thumbsdown")
-                }
-                .disabled(true)
             }
             .tint(Color.primary)
         }

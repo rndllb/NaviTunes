@@ -66,7 +66,28 @@ enum ArtworkDynamicGradient {
             data = await ArtworkURLCache.data(for: url)
         }
         guard let data, !data.isEmpty, let cgImage = cgImage(fromImageData: data) else { return .fallback }
-        return await Task.detached(priority: .utility) {
+        return await analyzeBackdrop(from: cgImage, style: style)
+    }
+
+    /// Internet radio mesh artwork → same backdrop analysis path as cover art.
+    static func analyzeBackdrop(
+        fromMeshSeedKey seedKey: String,
+        style: BackdropAnalysisStyle = .nowPlaying,
+    ) async -> BackdropPalette {
+        #if os(iOS)
+        let cgImage = await MainActor.run { RadioStationMeshArtwork.renderCGImage(seedKey: seedKey) }
+        guard let cgImage else { return .fallback }
+        return await analyzeBackdrop(from: cgImage, style: style)
+        #else
+        return .fallback
+        #endif
+    }
+
+    private static func analyzeBackdrop(
+        from cgImage: CGImage,
+        style: BackdropAnalysisStyle,
+    ) async -> BackdropPalette {
+        await Task.detached(priority: .utility) {
             switch style {
             case .detail:
                 makeDetailBackdropPalette(from: cgImage)

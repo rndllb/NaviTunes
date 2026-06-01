@@ -104,7 +104,7 @@ struct PlaylistKillListView: View {
 
     private func rowView(_ row: PlaylistRowItem) -> some View {
         HStack(spacing: 12) {
-            AlbumArtworkView(url: row.track.artworkURL, cornerRadius: 6)
+            AlbumArtworkView(url: app.resolvedArtworkURL(for: row.track), cornerRadius: 6)
                 .frame(width: 44, height: 44)
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.track.title)

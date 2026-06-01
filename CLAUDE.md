@@ -17,6 +17,9 @@ This app talks to two pluggable music backends. The active one is chosen at logi
 | Playlist `DateCreated` | Present on `Playlists` items | Present on `getPlaylists` entries |
 | Album `DateCreated` | Server scan/upload time | Server scan/upload time |
 | Recently-added albums | `Items?SortBy=DateCreated&IncludeItemTypes=MusicAlbum` | `getAlbumList2?type=newest` |
+| Lyrics | `/Audio/{id}/Lyrics` JSON (ticks / 1e7) | `getLyricsBySongId` structured + `getLyrics` plain fallback |
+| Share links | — | `createShare` / list / delete; create from item context menus |
+| Library scan | — | `startScan` / status |
 
 `libraryAddedDate` on `AlbumSummary` / `Track` / `PlaylistSummary` (`MusicLibraryProviding.swift`, `PlaylistModels.swift`) is **server-side** — it's when the server scanned/created the item, not when the current user added it to their library. Be careful when surfacing this as "Recently Added" in user-facing UI.
 
@@ -42,6 +45,30 @@ The app surfaces two distinct collections. The naming is a footgun — `AppModel
 
 Rule of thumb: anything that means "things the *user* owns / has added" must read from `librarySongIds` / `libraryAlbumEntries` / `libraryPlaylistEntries`, not `libraryAlbums`. Search scopes follow the same split: the Library tab in Discovery searches **personal** state; the Downtify tab is a hybrid of **server catalog** + Downtify download candidates.
 
+## Home mixes (Tuned In)
+
+- Built in `HomeMixBuilder.swift`, cached on `AppModel.homeMixes`, refreshed via `rebuildHomeMixes()` / `refreshHomeMixes()`.
+- Mix types: **On Repeat**, **Favorites**, **Rediscover**, **New in Your Library** — each needs **≥ 3 tracks** or it is omitted.
+- **On Repeat** / **Rediscover** read `ScrobbleService.store.completed` (successful **server** scrobbles), not `recentlyPlayedTracks` alone.
+- **Favorites** intersects `favoriteTrackIds` with `discoveryLibraryTracks` (partial until discovery index finishes).
+- Synthetic playlist IDs: `__lyra_home_mix:<mixId>` via `HomeMix.asPlaylistSummary()`.
+- Library → Playlists surfaces mixes when `AppModel.showHomeMixesInPlaylists` is true (Settings → Library & Data).
+- Mix detail: `ServerPlaylistDetailView(homeMixId:)` — album-style UI, mosaic hero, no remove-from-playlist.
+
+## Lyrics
+
+- Loaded in `PlaybackEngine.loadLyrics()` → `MusicLibraryProviding.lyrics(for:)`. Assignment is guarded by playback epoch + track id to avoid races on fast skip.
+- **Navidrome:** `getLyricsBySongId` structured blocks preferred; merges with `getLyrics` plain text and picks best synced candidate (`NavidromeClient.lyrics`). Parser in `NavidromeLyricsParser`:
+  - LRC `[offset:±ms]` uses **add-to-start** semantics (Navidrome stores LRC offset verbatim).
+  - Detects seconds vs milliseconds when structured `start` values are ≤ 600.
+  - Re-parses row `value` text as embedded LRC when timestamps are inline.
+- **Jellyfin:** `JellyfinLyricsParser` — .NET ticks / 1e7.
+- **UI:** `LyricsFocusScrollView` in `NowPlayingView.swift`. Sync enabled when `[LyricLine].lyricsAppearSynced` (≥ 2 distinct timestamps). Unsynced plain text: larger static type, no scroll/highlight/tap-to-seek.
+
+## Stale track IDs
+
+After server rescans, media file ids can change. `AppModel.recoverStaleTrackIfNeeded` + `StaleSongMatching.buildSwapMap` remap queue, downloads, favorites, and personal library ids via `applyTrackIDSwaps`, which also rewrites the magic playlist on the server when library membership was affected.
+
 ## Conventions
 
 - Nothing custom, prioritize using apple library stuff first. Reach for stock SwiftUI / UIKit / system APIs (`.contextMenu(menuItems:preview:)`, `ShareLink`, `NavigationStack`, `.searchable`, etc.) before building bespoke chrome or gestures.
@@ -59,6 +86,62 @@ iOS has no stock toast/snackbar primitive. The app ships a minimal one built fro
 - Use for ephemeral user-action confirmations only (e.g. "Added to Queue", "Playing Next"). For anything modal/blocking (errors, destructive confirmation, choices) use `.alert` / `.confirmationDialog` — toasts are not interactive.
 
 If you wire a new action that ends in a queue/library/playlist mutation and a user might want feedback, call `app.showTransientToast(...)` from the closure. The haptic is bundled — don't re-fire `UIImpactFeedbackGenerator` separately at the call site.
+
+## Sound & playback settings
+
+User-facing settings live under **Settings → Sound & Playback** (`SettingsPlaybackView.swift`) and **Settings → Library & Data** (`SettingsLibraryDataView.swift`). Preferences persist in `UserDefaults` on `AppModel` and push to backend clients via `pushQualitySettingsToClients()`.
+
+- **Streaming** — separate Wi‑Fi / cellular max bitrate (`StreamBitRateOption`) and format (`StreamFormatOption`). Active pair follows `prefersCellularStreamingQuality`. Navidrome sends Subsonic `format` + `maxBitRate` query params; Jellyfin maps format to progressive stream containers.
+- **Downloads** — `DownloadQualityTier` + `DownloadFormatOption` (separate from streaming).
+- **Player** — skip interval buttons, sleep timer chrome, default playback speed, lock-screen remote mode (skip track vs skip interval). Wired through `PlaybackEngine` + `syncPlaybackPreferencesToEngine()`.
+- **Artist play mode** — top songs / shuffle album / full discography (`ArtistPlayMode` in settings + long-press override on artist page).
+- **Album cache refresh** — `metadataRefreshThreshold` triggers `refreshAlbumTracksIfNeeded(for:)` before playback to swap stale track IDs.
+
+## Server listening history (scrobbling)
+
+Lyra submits **server** scrobbles separately from local Recently Played shelves:
+
+- `PlaybackEngine.maybeScrobble` → `AppModel.recordRecentPlay` (local) **and** `ScrobbleService.recordCompletedScrobble` (server queue).
+- `PlaybackEngine.onTrackStarted` → `ScrobbleService.sendNowPlaying` (Subsonic `scrobble?submission=false`; Jellyfin `Sessions/Playing`).
+- Pending scrobbles persist in `ScrobbleStore`; `ScrobbleService.processPendingScrobbles()` drains on submit, periodic timer, and network restore. Failures skip individual items (queue continues). Blocked when `AppModel.effectiveOfflineMode`.
+- Exclusions: album/artist/playlist ids in `ScrobbleStore.exclusions`; manage under Library & Data or via Now Playing track menu.
+- **My Listening** (`MyListeningView`) — analytics from completed scrobbles only.
+
+## Offline modes
+
+- **Manual offline** (`AppModel.offlineMode`) — user toggle.
+- **Auto-offline** (`AppModel.autoOfflineActive`) — non-Wi‑Fi and/or away from configured home SSID (`AutoOfflineHelper`, may need location for SSID).
+- **`effectiveOfflineMode`** — union of both; used for Discovery search gating and scrobble suppression.
+- Auto-offline Settings copy: limits Discovery search to downloaded content; Home/Library browsing and streaming are not fully offline-gated.
+
+## Client backup
+
+`LyraClientBackup` / `ClientBackupControlsView` — export/import scrobbles, scrobble exclusions, playback preferences. Does **not** include credentials, downloaded audio, or server magic-playlist contents.
+
+## Navidrome shares
+
+- **Create:** `NavidromeShareMenuSection` / `AppModel.createNavidromeShareAndNotify` — wired into album, track, and playlist context menus (Navidrome only). Copies URL to pasteboard + transient toast.
+- **Manage:** `NavidromeSharesView` under Settings lists/deletes existing server shares.
+- Chart/Downtify preview rows without a server item id omit the share action.
+
+## Settings & disk I/O
+
+- **Library statistics** (`SettingsView` → Library section): fetched on appear via `AppModel.refreshLibraryStatistics()`, not during bootstrap. Jellyfin uses `TotalRecordCount` (lightweight). Navidrome uses `getArtists` + `getAlbumList2` and sums album `trackCount` for songs — **do not** call `allTracks(limit:)` for counts.
+- **Cache row labels** (image/metadata counts in Downloads): loaded once via `AppModel.localCacheUsageSummaryAsync()` → `OfflineDiskCacheMetrics` on a background task. Never decode `LibrarySnapshotStore` or walk download folders from a SwiftUI `body`.
+- **Download byte totals** — `OfflineDownloadManager.recalculateCacheBytes()` scans the downloads folder off the main actor; coalesces rapid calls via a generation counter.
+- **Snapshot I/O** — prefer `LibrarySnapshotStore.loadAsync()` / `saveAsync()` for startup and background work; synchronous `load()` is for small admin tools only.
+
+## Known unfixed / partial issues
+
+Document for contributors — not an exhaustive bug list:
+
+| Issue | Notes |
+|-------|--------|
+| Some overflow rows | Stubs remain (`Start Collaboration`, `Move to Folder`, some chart preview actions). |
+| Plain unsynced lyrics | No auto-scroll by design. |
+| Jellyfin “similar tracks” | Artist search shuffle, not a similarity API. |
+| Home mixes | Minimum 3 tracks per mix; still needs enough scrobble/history signal for On Repeat / Rediscover. |
+| Navidrome Settings stats | Song totals sum album `trackCount` — may differ slightly from true track count on odd tagging; album/artist counts cap at the fetch limit on very large libraries. |
 
 ## Build / run
 

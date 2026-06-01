@@ -12,6 +12,43 @@ enum ArtworkURLCache {
         try? FileManager.default.removeItem(at: dir)
     }
 
+    static func listDiskEntries() -> [CachedImageEntry] {
+        guard let dir = try? cacheDirectory(),
+              let urls = try? FileManager.default.contentsOfDirectory(
+                  at: dir,
+                  includingPropertiesForKeys: [.fileSizeKey],
+                  options: [.skipsHiddenFiles],
+              )
+        else { return [] }
+
+        return urls
+            .filter { !$0.hasDirectoryPath }
+            .map { url in
+                let key = url.deletingPathExtension().lastPathComponent
+                let bytes = Int64((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+                return CachedImageEntry(
+                    id: "remote-art:\(key)",
+                    source: .remoteArtwork,
+                    title: String(key.prefix(12)) + "…",
+                    subtitle: url.lastPathComponent,
+                    fileBytes: bytes,
+                    previewURL: url,
+                    deleteToken: key,
+                )
+            }
+            .sorted { $0.fileBytes > $1.fileBytes }
+    }
+
+    static func totalDiskBytes() -> Int64 {
+        listDiskEntries().reduce(0) { $0 + $1.fileBytes }
+    }
+
+    static func removeDiskEntry(key: String) {
+        guard let url = try? fileURL(key: key) else { return }
+        memory.removeObject(forKey: key as NSString)
+        try? FileManager.default.removeItem(at: url)
+    }
+
     static func data(for url: URL) async -> Data? {
         let key = cacheKey(for: url)
         if let cached = memory.object(forKey: key as NSString) as Data? {

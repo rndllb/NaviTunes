@@ -204,14 +204,25 @@ private enum PlaylistTrackSortOrder: String, CaseIterable, Identifiable {
 enum LibraryDetailSource {
     case playlist(PlaylistSummary)
     case album(AlbumSummary, librarySource: Bool)
+    case homeMix(mixId: String)
 
     var isAlbum: Bool {
         if case .album = self { return true }
         return false
     }
 
+    var isHomeMix: Bool {
+        if case .homeMix = self { return true }
+        return false
+    }
+
     var albumOrNil: AlbumSummary? {
         if case .album(let album, _) = self { return album }
+        return nil
+    }
+
+    var homeMixIdOrNil: String? {
+        if case .homeMix(let id) = self { return id }
         return nil
     }
 
@@ -229,6 +240,7 @@ enum LibraryDetailSource {
         switch self {
         case .album(let a, _): return a.artworkURL
         case .playlist(let p): return p.artworkURL
+        case .homeMix: return nil
         }
     }
 
@@ -236,6 +248,7 @@ enum LibraryDetailSource {
         switch self {
         case .album(let a, _): return a.title
         case .playlist(let p): return p.name
+        case .homeMix: return "Mix"
         }
     }
 
@@ -243,6 +256,7 @@ enum LibraryDetailSource {
         switch self {
         case .album(let a, _): return "album-\(a.id)"
         case .playlist(let p): return "playlist-\(p.id)"
+        case .homeMix(let id): return "homeMix-\(id)"
         }
     }
 }
@@ -273,6 +287,12 @@ struct ServerPlaylistDetailView: View {
         self.tracksVisibility = tracksVisibility
     }
 
+    init(homeMixId: String, tracksVisibility: Bool = true) {
+        self.source = .homeMix(mixId: homeMixId)
+        self.scrollToTrackId = nil
+        self.tracksVisibility = tracksVisibility
+    }
+
     /// Legacy accessor — the playlist-mode payload. Force-unwrap is safe at every
     /// call site originally written for ``init(playlist:)``; album-mode call sites
     /// short-circuit via ``isAlbum`` before touching this.
@@ -286,8 +306,34 @@ struct ServerPlaylistDetailView: View {
     }
 
     private var isAlbum: Bool { source.isAlbum }
+    private var isHomeMix: Bool { source.isHomeMix }
+    /// Album detail layout (numbered rows, hero triplet, no in-page search). Also used for dynamic home mixes.
+    private var isAlbumStyleDetail: Bool { isAlbum || isHomeMix }
+
+    private var activeHomeMix: HomeMix? {
+        guard let mixId = source.homeMixIdOrNil else { return nil }
+        return app.homeMixes.first { $0.id == mixId }
+    }
+
+    private var homeMixContentToken: String {
+        guard let mix = activeHomeMix else { return "" }
+        return mix.tracks.map(\.id).joined(separator: "|")
+    }
     private var albumOrNil: AlbumSummary? { source.albumOrNil }
     private var librarySource: Bool { source.librarySource }
+
+    /// Hero/backdrop art — uses offline disk art + fresh server URLs, not stale snapshot URLs.
+    private var resolvedDetailArtworkURL: URL? {
+        if isHomeMix { return activeHomeMix?.artworkURLs.first }
+        switch source {
+        case .album(let album, _):
+            return app.resolvedArtworkURL(for: album)
+        case .playlist(let playlist):
+            return app.resolvedArtworkURL(for: playlist)
+        case .homeMix:
+            return nil
+        }
+    }
 
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var offline: OfflineDownloadManager
@@ -296,7 +342,6 @@ struct ServerPlaylistDetailView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var rows: [PlaylistRowItem] = []
     @State private var previewTracks: [BrowseAlbumPreviewTrack] = []
-    @State private var missingTrackCount: Int = 0
     /// Album mode only: held true while the MusicBrainz tracklist is in flight so the
     /// whole list stays in its loading state and the missing rows never pop in late.
     @State private var isLoadingPreviewTracks: Bool = false
@@ -387,10 +432,6 @@ struct ServerPlaylistDetailView: View {
             }
         }
         displayedRows = sortedRows(base)
-        missingTrackCount = albumMergedRows.reduce(0) { acc, row in
-            if case .missing = row { return acc + 1 }
-            return acc
-        }
     }
 
     /// Album mode only: fetch the full MusicBrainz tracklist so missing tracks can be
@@ -413,186 +454,212 @@ struct ServerPlaylistDetailView: View {
     }
 
     var body: some View {
-        ScrollViewReader { scrollProxy in
-            ZStack(alignment: .top) {
-                AlbumHeroBackdropView(artworkURL: source.artworkURL, palette: backdropPalette)
-
-                List {
-                    Section {
-                        PlaylistHeroOrPillsHeader(
-                            hero: { heroBlock.padding(.top, 8).padding(.bottom, 22) },
-                            pills: {
-                                LibraryPlayShuffleRow(
-                                    isDisabled: displayedRows.isEmpty,
-                                    onPlay: { Task { await playAll() } },
-                                    onShuffle: { Task { await shuffleAll() } }
-                                )
-                                .padding(.horizontal, 20)
-                                .padding(.top, 8)
-                                .padding(.bottom, 14)
-                            }
-                        )
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
-                        .listRowInsets(EdgeInsets())
-
-                        requestAllMissingButton
-                    }
-
-                    trackRows
-                }
-                .listStyle(.plain)
-                .listSectionSpacing(0)
-                .listRowSpacing(isAlbum ? 5 : 0)
-                .modifier(AlbumDetailListContentMargins(isAlbum: isAlbum))
-                .scrollContentBackground(.hidden)
-                .background(Color.clear)
-                .environment(\.defaultMinListRowHeight, isAlbum ? 0 : 44)
-                .onChange(of: rows.map(\.track.id), initial: true) { _, _ in
-                    // `initial: true` so the deep-link push path also scrolls when the
-                    // playlist was preloaded via `app.prefetchPlaylistRows`: in that case
-                    // rows are populated in `init` and `load()` skips reassigning when the
-                    // fresh fetch matches, so without firing on initial mount the
-                    // scroll-to-track never runs. `didScrollToFocusTrack` inside the
-                    // callee guards against duplicate scrolls if rows later change.
-                    scrollToFocusedTrackIfNeeded(proxy: scrollProxy)
-                }
-                .modifier(DetailScrollSignalObserver(
-                    playlistId: source.playlistOrNil?.id,
-                    albumId: source.albumOrNil?.id,
-                    onScrollRequested: { trackId in
-                        activeScrollTrackId = trackId
-                        didScrollToFocusTrack = false
-                        scrollToFocusedTrackIfNeeded(proxy: scrollProxy)
-                    }
-                ))
+        detailScrollContainer
+            .playlistTrackSearchable(enabled: !isAlbumStyleDetail, text: $searchText)
+            .navigationTitle("")
+            .musicNavigationBarTitleDisplayMode(.inline)
+            .modifier(DetailNavigationChrome(palette: backdropPalette))
+            .musicNavigationBarVisibleWhenPushed()
+            .navigationDestination(item: $navigateAlbum) { album in
+                ServerPlaylistDetailView(album: album, librarySource: true)
             }
+            .onAppear(perform: detailOnAppear)
+            .modifier(LibraryAlbumDismissObserver(
+                isAlbum: isAlbum,
+                librarySource: librarySource,
+                albumId: albumOrNil?.id,
+                dismiss: { dismiss() }
+            ))
+            .task { await load() }
+            .task(id: detailBackdropTaskID) {
+                await refreshDetailBackdropPalette()
+            }
+            .onChange(of: app.libraryCatalogEpoch) { _, _ in
+                Task { await load() }
+            }
+            .onChange(of: app.homeMixes.map(\.id)) { _, _ in
+                guard isHomeMix else { return }
+                Task { await load() }
+            }
+            .onChange(of: homeMixContentToken) { _, _ in
+                guard isHomeMix else { return }
+                Task { await load() }
+            }
+            .refreshable {
+                if isHomeMix { app.refreshHomeMixes() }
+                await load()
+            }
+            .alert(
+                "Remove from Playlist?",
+                isPresented: Binding(
+                    get: { rowPendingRemoval != nil },
+                    set: { if !$0 { rowPendingRemoval = nil } }
+                )
+            ) {
+                Button("Cancel", role: .cancel) {
+                    rowPendingRemoval = nil
+                }
+                Button("Remove", role: .destructive) {
+                    guard let row = rowPendingRemoval else { return }
+                    rowPendingRemoval = nil
+                    Task { await removeRow(row) }
+                }
+            } message: {
+                Text("Would you like to remove this song from this playlist?")
+            }
+            .toolbar { detailToolbarContent }
+            .sheet(isPresented: $showPlaylistEditor) {
+                playlistEditorSheet
+            }
+            .confirmationDialog(
+                "Delete “\(navigationTitleText.isEmpty ? source.displayName : navigationTitleText)”?",
+                isPresented: $showDeleteConfirm,
+                titleVisibility: .visible,
+            ) {
+                Button("Delete", role: .destructive) {
+                    Task { await deletePlaylist() }
+                }
+                Button("Cancel", role: .cancel) {}
+            }
+            .modifier(DownloadedAlbumActionPresentation(
+                isPresented: $showDownloadedAlbumActions,
+                itemKind: isAlbum ? .album : .playlist,
+                includeDeleteFromLibrary: isAlbum,
+                onRemoveDownload: { removeAllAlbumOfflineDownloads() },
+                onDeleteFromLibrary: { Task { await deleteAlbumFromLibraryAndOffline() } },
+            ))
+            .downloadedTrackDeleteSheet(
+                track: $trackPendingDownloadedDelete,
+                app: app,
+                offline: offline
+            )
+            .onDisappear(perform: detailOnDisappear)
+            .onChange(of: rows) { _, _ in recomputeDisplayedRows() }
+            .onChange(of: searchText) { _, _ in recomputeDisplayedRows() }
+            .onChange(of: sortOrder) { _, _ in recomputeDisplayedRows() }
+            .onChange(of: showCompleteAlbum) { _, _ in recomputeDisplayedRows() }
+            .onChange(of: app.libraryCatalogEpoch) { _, _ in recomputeDisplayedRows() }
+            .onChange(of: app.librarySongIds) { _, _ in recomputeDisplayedRows() }
+            .onChange(of: previewTracks.map(\.id)) { _, _ in recomputeDisplayedRows() }
+    }
+
+    private var detailBackdropTaskID: String {
+        "\(resolvedDetailArtworkURL?.absoluteString ?? "")-\(app.playlistBackdropEnabled)-\(colorScheme)"
+    }
+
+    private func refreshDetailBackdropPalette() async {
+        guard app.playlistBackdropEnabled else {
+            await MainActor.run { backdropPalette = .listSurface(colorScheme: colorScheme) }
+            return
         }
-        .playlistTrackSearchable(enabled: !isAlbum, text: $searchText)
-        .navigationTitle("")
-        .musicNavigationBarTitleDisplayMode(.inline)
-        .modifier(DetailNavigationChrome(palette: backdropPalette))
-        .musicNavigationBarVisibleWhenPushed()
-        .navigationDestination(item: $navigateAlbum) { album in
-            ServerPlaylistDetailView(album: album, librarySource: true)
-        }
-        .onAppear {
-            if navigationTitleText.isEmpty {
+        let palette = await ArtworkDynamicGradient.analyzeBackdrop(from: resolvedDetailArtworkURL)
+        await MainActor.run { backdropPalette = palette }
+    }
+
+    private func detailOnAppear() {
+        if navigationTitleText.isEmpty {
+            if isHomeMix, let mix = activeHomeMix {
+                navigationTitleText = mix.title
+            } else {
                 navigationTitleText = source.displayName
             }
-            if tracksVisibility {
-                switch source {
-                case .playlist(let p): app.currentlyVisiblePlaylistId = p.id
-                case .album(let a, _): app.currentlyVisibleAlbumId = a.id
+        }
+        if tracksVisibility {
+            switch source {
+            case .playlist(let p): app.currentlyVisiblePlaylistId = p.id
+            case .album(let a, _): app.currentlyVisibleAlbumId = a.id
+            case .homeMix: break
+            }
+        }
+        hydrateFromCacheIfNeeded()
+    }
+
+    private func detailOnDisappear() {
+        scrollHighlightTask?.cancel()
+        if tracksVisibility {
+            switch source {
+            case .playlist(let p):
+                if app.currentlyVisiblePlaylistId == p.id { app.currentlyVisiblePlaylistId = nil }
+            case .album(let a, _):
+                if app.currentlyVisibleAlbumId == a.id { app.currentlyVisibleAlbumId = nil }
+            case .homeMix:
+                break
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var playlistEditorSheet: some View {
+        if let p = source.playlistOrNil {
+            PlaylistEditSheet(
+                playlist: app.libraryPlaylists.first(where: { $0.id == p.id }) ?? p,
+                rows: rows,
+                onSaved: { newName in
+                    if let newName {
+                        navigationTitleText = newName
+                    }
+                    Task { await load() }
                 }
-            }
-            hydrateFromCacheIfNeeded()
-        }
-        .modifier(LibraryAlbumDismissObserver(
-            isAlbum: isAlbum,
-            librarySource: librarySource,
-            albumId: albumOrNil?.id,
-            dismiss: { dismiss() }
-        ))
-        .task {
-            // Parallel so total wait = max(server, MusicBrainz). The view stays in
-            // the loading branch until BOTH return, so the missing rows don't pop
-            // in late after the owned rows have already rendered.
-            async let serverLoad: Void = load()
-            async let previewLoad: Void = loadPreviewTracksIfAlbum()
-            _ = await (serverLoad, previewLoad)
-        }
-        .task(id: "\(source.artworkURL?.absoluteString ?? "")-\(app.playlistBackdropEnabled)-\(colorScheme)") {
-            guard app.playlistBackdropEnabled else {
-                await MainActor.run { backdropPalette = .listSurface(colorScheme: colorScheme) }
-                return
-            }
-            let p = await ArtworkDynamicGradient.analyzeBackdrop(from: source.artworkURL)
-            await MainActor.run { backdropPalette = p }
-        }
-        .onChange(of: app.libraryCatalogEpoch) { _, _ in
-            Task { await load() }
-        }
-        .refreshable { await load() }
-        .alert(
-            "Remove from Playlist?",
-            isPresented: Binding(
-                get: { rowPendingRemoval != nil },
-                set: { if !$0 { rowPendingRemoval = nil } }
             )
-        ) {
-            Button("Cancel", role: .cancel) {
-                rowPendingRemoval = nil
-            }
-            Button("Remove", role: .destructive) {
-                guard let row = rowPendingRemoval else { return }
-                rowPendingRemoval = nil
-                Task { await removeRow(row) }
-            }
-        } message: {
-            Text("Would you like to remove this song from this playlist?")
+            .environmentObject(app)
+#if os(iOS)
+            .presentationDetents([.large])
+#endif
         }
-        .toolbar { detailToolbarContent }
-        .sheet(isPresented: $showPlaylistEditor) {
-            // Edit sheet is playlist-only — guarded by ``beginRename`` so it never
-            // opens in album mode anyway.
-            if let p = source.playlistOrNil {
-                PlaylistEditSheet(
-                    playlist: app.libraryPlaylists.first(where: { $0.id == p.id }) ?? p,
-                    rows: rows,
-                    onSaved: { newName in
-                        if let newName {
-                            navigationTitleText = newName
-                        }
-                        Task { await load() }
+    }
+
+    private var detailScrollContainer: some View {
+        ScrollViewReader { scrollProxy in
+            ZStack(alignment: .top) {
+                AlbumHeroBackdropView(artworkURL: resolvedDetailArtworkURL, palette: backdropPalette)
+                detailTrackList(scrollProxy: scrollProxy)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func detailTrackList(scrollProxy: ScrollViewProxy) -> some View {
+        List {
+            Section {
+                PlaylistHeroOrPillsHeader(
+                    hero: { heroBlock.padding(.top, 8).padding(.bottom, 22) },
+                    pills: {
+                        LibraryPlayShuffleRow(
+                            isDisabled: displayedRows.isEmpty,
+                            onPlay: { Task { await playAll() } },
+                            onShuffle: { Task { await shuffleAll() } }
+                        )
+                        .padding(.horizontal, 20)
+                        .padding(.top, 8)
+                        .padding(.bottom, 14)
                     }
                 )
-                .environmentObject(app)
-#if os(iOS)
-                .presentationDetents([.large])
-#endif
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets())
             }
+
+            trackRows
         }
-        .confirmationDialog(
-            "Delete “\(navigationTitleText.isEmpty ? source.displayName : navigationTitleText)”?",
-            isPresented: $showDeleteConfirm,
-            titleVisibility: .visible,
-        ) {
-            Button("Delete", role: .destructive) {
-                Task { await deletePlaylist() }
+        .listStyle(.plain)
+        .listSectionSpacing(0)
+        .listRowSpacing(isAlbumStyleDetail ? 5 : 0)
+        .modifier(AlbumDetailListContentMargins(isAlbum: isAlbumStyleDetail))
+        .scrollContentBackground(.hidden)
+        .background(Color.clear)
+        .environment(\.defaultMinListRowHeight, isAlbumStyleDetail ? 0 : 44)
+        .onChange(of: rows.map(\.track.id), initial: true) { _, _ in
+            scrollToFocusedTrackIfNeeded(proxy: scrollProxy)
+        }
+        .modifier(DetailScrollSignalObserver(
+            playlistId: source.playlistOrNil?.id,
+            albumId: source.albumOrNil?.id,
+            onScrollRequested: { trackId in
+                activeScrollTrackId = trackId
+                didScrollToFocusTrack = false
+                scrollToFocusedTrackIfNeeded(proxy: scrollProxy)
             }
-            Button("Cancel", role: .cancel) {}
-        }
-        .modifier(DownloadedAlbumActionPresentation(
-            isPresented: $showDownloadedAlbumActions,
-            itemKind: isAlbum ? .album : .playlist,
-            includeDeleteFromLibrary: isAlbum,
-            onRemoveDownload: { removeAllAlbumOfflineDownloads() },
-            onDeleteFromLibrary: { Task { await deleteAlbumFromLibraryAndOffline() } },
         ))
-        .downloadedTrackDeleteSheet(
-            track: $trackPendingDownloadedDelete,
-            app: app,
-            offline: offline
-        )
-        .onDisappear {
-            scrollHighlightTask?.cancel()
-            if tracksVisibility {
-                switch source {
-                case .playlist(let p):
-                    if app.currentlyVisiblePlaylistId == p.id { app.currentlyVisiblePlaylistId = nil }
-                case .album(let a, _):
-                    if app.currentlyVisibleAlbumId == a.id { app.currentlyVisibleAlbumId = nil }
-                }
-            }
-        }
-        .onChange(of: rows) { _, _ in recomputeDisplayedRows() }
-        .onChange(of: searchText) { _, _ in recomputeDisplayedRows() }
-        .onChange(of: sortOrder) { _, _ in recomputeDisplayedRows() }
-        .onChange(of: showCompleteAlbum) { _, _ in recomputeDisplayedRows() }
-        .onChange(of: app.libraryCatalogEpoch) { _, _ in recomputeDisplayedRows() }
-        .onChange(of: app.librarySongIds) { _, _ in recomputeDisplayedRows() }
-        .onChange(of: previewTracks.map(\.id)) { _, _ in recomputeDisplayedRows() }
     }
 
     /// Branched rows for the List: empty / loading states + the track ForEach +
@@ -600,7 +667,7 @@ struct ServerPlaylistDetailView: View {
     @ViewBuilder
     private var trackRows: some View {
         let visible = displayedRows
-        if isLoading || (isAlbum && isLoadingPreviewTracks), rows.isEmpty || (isAlbum && isLoadingPreviewTracks) {
+        if isLoading, rows.isEmpty {
             ProgressView()
                 .tint(MusicDesign.accent)
                 .frame(maxWidth: .infinity)
@@ -649,7 +716,7 @@ struct ServerPlaylistDetailView: View {
             ForEach(Array(visible.enumerated()), id: \.element.rowId) { index, row in
                 let showsBottomDivider = index < visible.count - 1
                 let highlightOpacity: Double = row.rowId == highlightedRowId ? 0.28 : 0
-                if isAlbum {
+                if isAlbumStyleDetail {
                     songRow(row, displayIndex: index + 1, showsBottomDivider: showsBottomDivider)
                         .albumTrackListRowStyle(highlightOpacity: highlightOpacity)
                 } else {
@@ -675,9 +742,9 @@ struct ServerPlaylistDetailView: View {
     /// download-all and library actions.
     @ToolbarContentBuilder
     private var detailToolbarContent: some ToolbarContent {
-        if isAlbum {
+        if isAlbumStyleDetail {
             ToolbarItemGroup(placement: MusicToolbar.trailingItemPlacement) {
-                if let url = source.artworkURL {
+                if let url = resolvedDetailArtworkURL {
                     ShareLink(item: url) {
                         Image(systemName: "square.and.arrow.up")
                             .font(.body.weight(.semibold))
@@ -685,7 +752,11 @@ struct ServerPlaylistDetailView: View {
                     }
                 }
                 Menu {
-                    albumOverflowMenuContent
+                    if isHomeMix {
+                        homeMixOverflowMenuContent
+                    } else {
+                        albumOverflowMenuContent
+                    }
                 } label: {
                     Image(systemName: "ellipsis")
                         .foregroundStyle(backdropPalette.heroChromePrimary)
@@ -734,6 +805,7 @@ struct ServerPlaylistDetailView: View {
 
     private var emptyDescription: String {
         if !searchText.isEmpty { return "Nothing matches your search." }
+        if isHomeMix { return "This mix updates from your listening history and may change when you refresh." }
         if isAlbum { return "No tracks returned for this album." }
         return "Add tracks from your library. Changes sync with \(app.backendKind.title)."
     }
@@ -773,6 +845,8 @@ struct ServerPlaylistDetailView: View {
                 parts.append("Updated \(formatter.localizedString(for: date, relativeTo: Date()))")
             }
             return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        case .homeMix:
+            return activeHomeMix?.libraryDetailSubtitle
         }
     }
 
@@ -811,8 +885,8 @@ struct ServerPlaylistDetailView: View {
                         ArtistPageView(input: .named(split.artist))
                     } label: {
                         Text(split.artist)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(MusicDesign.accent)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(backdropPalette.heroChromeSecondary)
                             .fixedSize(horizontal: true, vertical: false)
                     }
                     .buttonStyle(.plain)
@@ -852,10 +926,13 @@ struct ServerPlaylistDetailView: View {
     }
 
     private var showsDownloadedCheckmark: Bool {
+        if isHomeMix {
+            return allTracksCached
+        }
         if isAlbum, let album = albumOrNil {
             return app.isAlbumInLibrary(album.id) && allTracksCached
         }
-        return !isAlbum && allTracksCached
+        return !isAlbumStyleDetail && allTracksCached
     }
 
     private var showsDownloadedAlbumCheckmark: Bool {
@@ -991,12 +1068,13 @@ struct ServerPlaylistDetailView: View {
                     Image(systemName: "scissors")
                 }
             }
-            Button {} label: {
-                Label("Suggest Less", systemImage: "hand.thumbsdown")
-            }
-            .disabled(true)
         }
         .tint(Color.primary)
+
+        NavidromeShareMenuSection(
+            itemId: playlist.id,
+            description: navigationTitleText.isEmpty ? playlist.name : navigationTitleText
+        )
 
         Section {
             Button("Delete playlist", role: .destructive) {
@@ -1007,7 +1085,7 @@ struct ServerPlaylistDetailView: View {
 
     private var heroBlock: some View {
         VStack(spacing: 18) {
-            AlbumArtworkView(url: source.artworkURL, cornerRadius: 14)
+            heroArtwork
                 .frame(width: heroArtSide, height: heroArtSide)
                 .shadow(color: .black.opacity(0.45), radius: 24, y: 14)
 
@@ -1027,10 +1105,23 @@ struct ServerPlaylistDetailView: View {
         .frame(maxWidth: .infinity)
     }
 
+    @ViewBuilder
+    private var heroArtwork: some View {
+        if isHomeMix, let mix = activeHomeMix {
+            MixCollageArtworkView(
+                urls: mix.artworkURLs,
+                fallbackSeed: "homeMix:\(mix.id)",
+                cornerRadius: 14
+            )
+        } else {
+            AlbumArtworkView(url: resolvedDetailArtworkURL, cornerRadius: 14)
+        }
+    }
+
     /// Pending tracks (Kill Mode) that still resolve to a current playlist row. Stale ids
     /// from tracks already removed by other paths are excluded from the toolbar badge.
     private var killModePendingCount: Int {
-        guard !isAlbum else { return 0 }
+        guard !isAlbumStyleDetail else { return 0 }
         let pending = app.killModePendingTrackIds(playlistId: playlist.id)
         guard !pending.isEmpty else { return 0 }
         let rowIds = Set(rows.map(\.track.id))
@@ -1149,25 +1240,34 @@ struct ServerPlaylistDetailView: View {
     }
 
     private func removeAllAlbumOfflineDownloads() {
-        app.removeOfflineDownloads(trackIds: allOrderedTracks.map(\.id))
+        if let album = albumOrNil {
+            app.removeOfflineCachedItem(itemId: album.id)
+        } else if case .playlist(let playlist) = source {
+            app.removeOfflineCachedItem(itemId: playlist.id)
+        } else {
+            app.removeOfflineDownloads(trackIds: allOrderedTracks.map(\.id))
+        }
     }
 
     private func deleteAlbumFromLibraryAndOffline() async {
         guard let album = albumOrNil else { return }
-        app.removeOfflineDownloads(trackIds: allOrderedTracks.map(\.id))
+        app.removeOfflineCachedItem(itemId: album.id)
         await app.removeAlbumFromLibrary(album)
     }
 
     private func downloadAllTracks() async {
-        guard let lib = app.activeLibrary, !rows.isEmpty else { return }
+        guard app.activeLibrary != nil, !allOrderedTracks.isEmpty else { return }
         isDownloadingAll = true
         defer { isDownloadingAll = false }
-        for row in rows {
-            do {
-                let url = try lib.offlineDownloadURL(for: row.track)
-                try await app.offline.cache(track: row.track, remote: url, headers: lib.httpHeadersForMediaRequests())
-            } catch {}
+        let tracks = allOrderedTracks
+        if let album = albumOrNil {
+            app.enqueueOfflineAlbum(album, tracks: tracks)
+        } else if case .playlist(let playlist) = source {
+            app.enqueueOfflinePlaylist(playlist, tracks: tracks)
+        } else {
+            app.offline.enqueueTracks(tracks)
         }
+        app.showTransientToast("Added to download queue")
     }
 
     private func beginRename() {
@@ -1249,86 +1349,39 @@ struct ServerPlaylistDetailView: View {
         }
     }
 
-    @ViewBuilder
-    private var requestAllMissingButton: some View {
-        if isAlbum, missingTrackCount > 0 {
-            Button {
-                Task { await requestAllMissingTracks() }
-            } label: {
-                Label("Request \(missingTrackCount) Missing", systemImage: "arrow.down.circle.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(Capsule().fill(MusicDesign.accent))
-                    .foregroundStyle(.white)
-            }
-            .buttonStyle(.plain)
-            .disabled(!app.downtifyConfigured)
-            .padding(.horizontal, 20)
-            .padding(.bottom, 8)
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-            .listRowInsets(EdgeInsets())
-        }
-    }
-
-    /// MusicBrainz-only track row. Matches the album-mode `LibrarySongRow` layout
-    /// (same index column, fonts, min-height, and padding) so missing rows sit flush
-    /// with owned rows; only the title is greyed and the trailing control is Request.
+    /// MusicBrainz-only track row — same chrome as owned rows; tap (play affordance) requests via Downtify.
     @ViewBuilder
     private func missingAlbumRow(_ preview: BrowseAlbumPreviewTrack, displayIndex: Int, showsBottomDivider: Bool) -> some View {
-        let job = downtifyJob(forPreview: preview)
-        HStack(alignment: .center, spacing: 10) {
-            HStack(alignment: .center, spacing: AlbumTrackRowLayout.indexToTitleSpacing) {
-                SongRowLeadingIndicators(
-                    trackIndex: displayIndex,
-                    isFavorite: false,
-                    backdropPalette: backdropPalette
+        let previewJob = downtifyJob(forPreview: preview)
+        let isRequesting = previewJob.map { !$0.status.isTerminal } ?? false
+        let downtifyProgress: OfflineDownloadUIState? = {
+            guard let previewJob, !previewJob.status.isTerminal else { return nil }
+            return .progress(min(1, max(0, previewJob.progress)))
+        }()
+
+        AppleMusicAlbumTrackRow(
+            index: displayIndex,
+            title: preview.title,
+            subtitle: "Not in library",
+            offlineDownload: downtifyProgress,
+            isOfflineCached: false,
+            isInLibrary: false,
+            isInServerCatalog: false,
+            greysTitle: true,
+            showsOfflineIndicator: isRequesting,
+            backdropPalette: backdropPalette,
+            showsBottomDivider: showsBottomDivider,
+            onRowTap: {
+                Task { await requestMissingTrack(preview) }
+            },
+            menuContent: {
+                ChartStyleSongOverflowMenuContent(
+                    shareItem: "\(preview.title) — \(albumOrNil?.artist ?? "")",
+                    onAdd: { Task { await requestMissingTrack(preview) } },
+                    addDisabled: !app.downtifyConfigured || isRequesting
                 )
-                Text(preview.title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(MusicDesign.secondaryLabel)
-                    .lineLimit(1)
             }
-            Spacer(minLength: 8)
-            // Fixed trailing slot so the progress bar and request glyph sit in the
-            // same column across rows. Once we have any job, always show a determinate
-            // bar (even at 0%) — never an indeterminate spinner — so the row reads as
-            // honestly waiting at 0 rather than infinitely loading.
-            Group {
-                if let job, !job.status.isTerminal {
-                    ProgressView(value: job.progress)
-                        .tint(MusicDesign.accent)
-                } else if let job, job.status == .failed {
-                    Image(systemName: "exclamationmark.circle")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(.red)
-                } else {
-                    Button {
-                        Task { await requestMissingTrack(preview) }
-                    } label: {
-                        Image(systemName: "arrow.down.circle")
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(MusicDesign.accent)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!app.downtifyConfigured)
-                }
-            }
-            .frame(width: 60, height: 22, alignment: .trailing)
-        }
-        .padding(.horizontal, AlbumTrackRowLayout.horizontalPadding)
-        .padding(.vertical, AlbumTrackRowLayout.verticalRowPadding)
-        .frame(minHeight: AlbumTrackRowLayout.rowMinHeight)
-        .overlay(alignment: .bottom) {
-            if showsBottomDivider {
-                AppleMusicAlbumTrackDivider(
-                    palette: backdropPalette,
-                    titleLeadingInset: AlbumTrackRowLayout.librarySongTitleLeadingFromScreenEdge
-                )
-                .allowsHitTesting(false)
-            }
-        }
+        )
     }
 
     /// Match a preview row to a manager job by normalized title (previews have no URL).
@@ -1350,36 +1403,15 @@ struct ServerPlaylistDetailView: View {
         app.showTransientToast("Requested “\(preview.title)”")
     }
 
-    private func requestAllMissingTracks() async {
-        guard app.downtifyConfigured else {
-            app.showTransientToast("Add your Downtify URL in Settings first.")
-            return
-        }
-        let artist = albumOrNil?.artist ?? ""
-        let missing = albumMergedRows.compactMap { row -> BrowseAlbumPreviewTrack? in
-            if case .missing(let preview, _) = row { return preview }
-            return nil
-        }
-        guard !missing.isEmpty else {
-            app.showTransientToast("Nothing to request")
-            return
-        }
-        // Submit concurrently so every row flips to a progress state at once instead of
-        // one-by-one as each sequential search resolves.
-        app.showTransientToast("Requested \(missing.count) tracks")
-        for preview in missing {
-            Task { await downtify.enqueue(artist: artist, title: preview.title) }
-        }
-    }
-
     private func songRow(_ row: PlaylistRowItem, displayIndex: Int, showsBottomDivider: Bool) -> some View {
         // Album mode and playlist mode share the exact same row chrome (swipe actions,
         // 3-dot menu options). The only branch is `onRemoveFromPlaylist` — albums don't
         // belong to a playlist that the user can remove tracks from, so the swipe
         // action collapses to "Delete File from Server" (admin) or nothing.
-        let removeFromPlaylist: (() -> Void)? = isAlbum ? nil : { rowPendingRemoval = row }
+        let removeFromPlaylist: (() -> Void)? = isAlbumStyleDetail ? nil : { rowPendingRemoval = row }
         return LibrarySongRow(
             track: row.track,
+            artworkURL: app.resolvedArtworkURL(for: row.track),
             itemSize: app.songListItemSize,
             isFavorite: app.favoriteTrackIds.contains(row.track.id),
             isNowPlaying: app.player.activeTrack?.id == row.track.id,
@@ -1392,7 +1424,7 @@ struct ServerPlaylistDetailView: View {
             onPlayNext: {
                 Task {
                     guard let lib = app.activeLibrary else { return }
-                    let originId = isAlbum ? nil : source.playlistOrNil?.id
+                    let originId = isAlbumStyleDetail ? nil : source.playlistOrNil?.id
                     try? await app.player.playNext(library: lib, track: row.track, sourcePlaylistId: originId)
                     await MainActor.run { app.showTransientToast("Playing Next") }
                 }
@@ -1400,13 +1432,13 @@ struct ServerPlaylistDetailView: View {
             onAddToQueue: {
                 Task {
                     guard let lib = app.activeLibrary else { return }
-                    let originId = isAlbum ? nil : source.playlistOrNil?.id
+                    let originId = isAlbumStyleDetail ? nil : source.playlistOrNil?.id
                     try? await app.player.addToQueue(library: lib, track: row.track, sourcePlaylistId: originId)
                     await MainActor.run { app.showTransientToast("Added to Queue") }
                 }
             },
             hasActiveQueue: !app.player.queue.isEmpty,
-            onGoToAlbum: isAlbum ? nil : { navigateAlbum = app.albumSummary(for: row.track) },
+            onGoToAlbum: isAlbumStyleDetail ? nil : { navigateAlbum = app.albumSummary(for: row.track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [row.track]) },
             onRemoveFromPlaylist: removeFromPlaylist,
             onRemoveFromLibrary: app.isSongInLibrary(row.track.id)
@@ -1418,15 +1450,15 @@ struct ServerPlaylistDetailView: View {
             onAddToLibrary: app.isSongInLibrary(row.track.id)
                 ? nil : { Task { await app.addSongToLibrary(row.track) } },
             isInLibrary: app.isSongInLibrary(row.track.id),
-            hidesAddToLibraryChip: !isAlbum,
-            showsArtwork: !isAlbum,
-            showsArtist: !isAlbum,
+            hidesAddToLibraryChip: !isAlbumStyleDetail,
+            showsArtwork: !isAlbumStyleDetail,
+            showsArtist: !isAlbumStyleDetail,
             rowBackgroundFill: .clear,
-            usesAlbumSwipeChrome: isAlbum,
+            usesAlbumSwipeChrome: isAlbumStyleDetail,
             showsBottomDivider: showsBottomDivider,
-            dividerPalette: isAlbum ? backdropPalette : nil,
-            rowLabelPalette: isAlbum ? nil : backdropPalette,
-            trackDisplayIndex: isAlbum ? displayIndex : nil,
+            dividerPalette: isAlbumStyleDetail ? backdropPalette : nil,
+            rowLabelPalette: isAlbumStyleDetail ? nil : backdropPalette,
+            trackDisplayIndex: isAlbumStyleDetail ? displayIndex : nil,
             onPresentDownloadedDeleteSheet: {
                 trackPendingDownloadedDelete = row.track
             }
@@ -1435,11 +1467,7 @@ struct ServerPlaylistDetailView: View {
     }
 
     private func cacheOffline(track: Track) async {
-        guard let lib = app.activeLibrary else { return }
-        do {
-            let url = try lib.offlineDownloadURL(for: track)
-            try await app.offline.cache(track: track, remote: url, headers: lib.httpHeadersForMediaRequests())
-        } catch {}
+        app.enqueueOfflineTrack(track)
     }
 
     private func hydrateFromCacheIfNeeded() {
@@ -1474,13 +1502,31 @@ struct ServerPlaylistDetailView: View {
                     rows = fresh
                 }
             case .album(let album, _):
-                guard let lib = app.activeLibrary else {
-                    if rows.isEmpty { rows = [] }
-                    return
+                let offlineTracks = offline.cachedTracks(forAlbumId: album.id)
+                if !offlineTracks.isEmpty,
+                   offlineTracks.allSatisfy({ offline.downloadedTrackIds.contains($0.id) }) {
+                    rows = offlineTracks.enumerated().map { idx, track in
+                        PlaylistRowItem(rowId: "album-\(album.id)-\(idx)-\(track.id)", track: track)
+                    }
+                } else if let lib = app.activeLibrary {
+                    let tracks = try await lib.tracks(forAlbumId: album.id)
+                    rows = tracks.enumerated().map { idx, track in
+                        PlaylistRowItem(rowId: "album-\(album.id)-\(idx)-\(track.id)", track: track)
+                    }
+                } else if rows.isEmpty {
+                    rows = []
                 }
-                let tracks = try await lib.tracks(forAlbumId: album.id)
-                rows = tracks.enumerated().map { idx, track in
-                    PlaylistRowItem(rowId: "album-\(album.id)-\(idx)-\(track.id)", track: track)
+            case .homeMix(let mixId):
+                if let mix = app.homeMixes.first(where: { $0.id == mixId }) {
+                    navigationTitleText = mix.title
+                    let fresh = mix.tracks.enumerated().map { idx, track in
+                        PlaylistRowItem(rowId: "homemix-\(mixId)-\(idx)-\(track.id)", track: track)
+                    }
+                    if rows.isEmpty || fresh.map(\.track.id) != rows.map(\.track.id) {
+                        rows = fresh
+                    }
+                } else if rows.isEmpty {
+                    rows = []
                 }
             }
         } catch {
@@ -1489,9 +1535,13 @@ struct ServerPlaylistDetailView: View {
                 rows = []
             }
         }
+        if isAlbum, previewTracks.isEmpty {
+            Task { await loadPreviewTracksIfAlbum() }
+        }
     }
 
     private func removeRow(_ row: PlaylistRowItem) async {
+        guard !isHomeMix else { return }
         do {
             try await app.removePlaylistRow(playlistId: playlist.id, row: row)
             await load()
@@ -1514,9 +1564,7 @@ struct ServerPlaylistDetailView: View {
     }
 
     private var playbackSource: PlaybackSource? {
-        if isAlbum {
-            // Album mode: ad-hoc queue with no playlist origin — Now Playing history
-            // will record the album path via the track's `albumId` fallback.
+        if isAlbumStyleDetail {
             return nil
         }
         return .playlist(app.libraryPlaylists.first(where: { $0.id == playlist.id }) ?? playlist)
@@ -1548,6 +1596,40 @@ struct ServerPlaylistDetailView: View {
 
     /// Album-mode overflow menu (in the navigation bar). Distinct from playlist's
     /// rename/delete-playlist actions.
+    @ViewBuilder
+    private var homeMixOverflowMenuContent: some View {
+        if !showsDownloadedCheckmark {
+            ControlGroup {
+                Button {
+                    Task { await downloadAllTracks() }
+                } label: {
+                    Label("Download All", systemImage: "arrow.down.circle")
+                }
+                .disabled(rows.isEmpty || isDownloadingAll || allTracksCached)
+
+                Button(action: toggleAllTrackFavorites) {
+                    Label(
+                        allTracksFavorited ? "Favorited" : "Favorite",
+                        systemImage: allTracksFavorited ? "star.fill" : "star"
+                    )
+                }
+                .disabled(rows.isEmpty)
+            }
+            .tint(Color.primary)
+        } else {
+            ControlGroup {
+                Button(action: toggleAllTrackFavorites) {
+                    Label(
+                        allTracksFavorited ? "Favorited" : "Favorite",
+                        systemImage: allTracksFavorited ? "star.fill" : "star"
+                    )
+                }
+                .disabled(rows.isEmpty)
+            }
+            .tint(Color.primary)
+        }
+    }
+
     @ViewBuilder
     private var albumOverflowMenuContent: some View {
         if let album = albumOrNil {
@@ -1590,6 +1672,11 @@ struct ServerPlaylistDetailView: View {
                     }
                 }
             }
+
+            NavidromeShareMenuSection(
+                itemId: album.id,
+                description: "\(album.title) — \(album.artist)"
+            )
         }
     }
 
@@ -2098,6 +2185,7 @@ private func playlistCoverPreviewImage(data: Data) -> Image? { nil }
 #endif
 
 private struct PlaylistEditableTrackRow: View {
+    @EnvironmentObject private var app: AppModel
     let row: PlaylistRowItem
     let isSelected: Bool
     let onToggle: () -> Void
@@ -2112,7 +2200,7 @@ private struct PlaylistEditableTrackRow: View {
             }
             .buttonStyle(.plain)
 
-            AlbumArtworkView(url: row.track.artworkURL, cornerRadius: 5)
+            AlbumArtworkView(url: app.resolvedArtworkURL(for: row.track), cornerRadius: 5)
                 .frame(width: 46, height: 46)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -2184,7 +2272,7 @@ private struct PlaylistTrackAddSheet: View {
                             HStack(spacing: 12) {
                                 Image(systemName: selectedTrackIds.contains(track.id) ? "checkmark.circle.fill" : "circle")
                                     .foregroundStyle(selectedTrackIds.contains(track.id) ? MusicDesign.accent : MusicDesign.secondaryLabel)
-                                AlbumArtworkView(url: track.artworkURL, cornerRadius: 5)
+                                AlbumArtworkView(url: app.resolvedArtworkURL(for: track), cornerRadius: 5)
                                     .frame(width: 44, height: 44)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(track.title)

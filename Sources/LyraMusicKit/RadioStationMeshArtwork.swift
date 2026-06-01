@@ -1,5 +1,8 @@
 import SwiftUI
 import simd
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Deterministic mesh artwork for Navidrome internet radio (no cover art from server).
 enum RadioStationMeshArtwork {
@@ -14,6 +17,17 @@ enum RadioStationMeshArtwork {
     static func seedKey(for track: Track) -> String? {
         track.isInternetRadioStream ? track.id : nil
     }
+
+    #if os(iOS)
+    @MainActor
+    static func renderCGImage(seedKey: String, side: CGFloat = 600) -> CGImage? {
+        let content = RadioStationMeshArtworkView(seedKey: seedKey, cornerRadius: 0)
+            .frame(width: side, height: side)
+        let renderer = ImageRenderer(content: content)
+        renderer.scale = UIScreen.main.scale
+        return renderer.cgImage
+    }
+    #endif
 }
 
 // MARK: - View

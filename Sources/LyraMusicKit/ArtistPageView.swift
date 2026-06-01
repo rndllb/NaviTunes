@@ -212,7 +212,7 @@ private struct ArtistHeroPlayButton: View {
 
     var body: some View {
         Button {
-            Task { await playAll() }
+            Task { await playAll(mode: app.artistPlayMode) }
         } label: {
             Image(systemName: "play.fill")
                 .font(.title3.weight(.bold))
@@ -222,12 +222,23 @@ private struct ArtistHeroPlayButton: View {
                 .shadow(color: .black.opacity(0.45), radius: 8, y: 4)
         }
         .buttonStyle(.plain)
-        .disabled(model.playbackTracks.isEmpty)
+        .disabled(!model.hasPlayableTracks)
+        .contextMenu {
+            ForEach(ArtistPlayMode.allCases) { mode in
+                Button {
+                    Task { await playAll(mode: mode) }
+                } label: {
+                    Label(mode.playMenuTitle, systemImage: "play.fill")
+                }
+                .disabled(model.playbackTracks(for: mode).isEmpty)
+            }
+        }
     }
 
-    private func playAll() async {
-        guard let lib = app.activeLibrary, !model.playbackTracks.isEmpty else { return }
-        try? await app.player.playAlbum(library: lib, tracks: model.playbackTracks, startIndex: 0)
+    private func playAll(mode: ArtistPlayMode) async {
+        let tracks = model.playbackTracks(for: mode)
+        guard let lib = app.activeLibrary, !tracks.isEmpty else { return }
+        try? await app.player.playAlbum(library: lib, tracks: tracks, startIndex: 0)
     }
 }
 
@@ -554,13 +565,7 @@ private struct ArtistTopSongOverflowMenu: View {
     }
 
     private func cacheOffline(track: Track) {
-        Task {
-            guard let lib = app.activeLibrary else { return }
-            do {
-                let url = try lib.offlineDownloadURL(for: track)
-                try await app.offline.cache(track: track, remote: url, headers: lib.httpHeadersForMediaRequests())
-            } catch {}
-        }
+        app.enqueueOfflineTrack(track)
     }
 }
 

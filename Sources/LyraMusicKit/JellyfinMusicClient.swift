@@ -40,7 +40,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
     private static let jellyfinAudioItemFields =
         "MediaStreams,Genres,GenreItems,Genre,ProductionYear,PremiereDate,AlbumArtist,Album,ArtistItems,ImageTags,RunTimeTicks,ParentIndexNumber,IndexNumber,Name,DateCreated,AlbumId,ParentId"
 
-    private let baseURL: URL
+    private(set) var baseURL: URL
     private var accessToken: String = ""
     private var userId: String = ""
     /// From authenticate response; improves caching when requesting ``accountPrimaryImageURL()``.
@@ -54,6 +54,9 @@ final class JellyfinMusicClient: MusicLibraryProviding {
     var streamingBitrateCapBps: Int?
     /// Optional cap for offline save URLs (transcoded MP3 / FLAC paths).
     var offlineBitrateCapBps: Int?
+    /// User-selected streaming format; nil container means follow track codec.
+    var streamingFormat: StreamFormatOption = .raw
+    var offlineFormat: DownloadFormatOption = .mp3
 
     var displayName: String { "Jellyfin" }
 
@@ -84,6 +87,10 @@ final class JellyfinMusicClient: MusicLibraryProviding {
 
     init(baseURL: URL) {
         self.baseURL = Self.normalizeBaseURL(baseURL)
+    }
+
+    func updateBaseURL(_ url: URL) {
+        baseURL = Self.normalizeBaseURL(url)
     }
 
     /// Restores a prior sign-in from the keychain so the app can browse cached library offline.
@@ -143,7 +150,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
             "Pw": password,
         ])
 
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
@@ -183,7 +190,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
             var req = URLRequest(url: url)
             req.cachePolicy = .reloadIgnoringLocalCacheData
             applyAuth(&req)
-            let (_, res) = try await URLSession.shared.data(for: req)
+            let (_, res) = try await URLSession.lyra.data(for: req)
             guard let http = res as? HTTPURLResponse, (200 ..< 300).contains(http.statusCode) else {
                 throw URLError(.cannotConnectToHost)
             }
@@ -192,7 +199,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         let url = apiURL("System", "Ping")
         var req = URLRequest(url: url)
         req.cachePolicy = .reloadIgnoringLocalCacheData
-        let (_, res) = try await URLSession.shared.data(for: req)
+        let (_, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse, (200 ..< 300).contains(http.statusCode) else {
             throw URLError(.cannotConnectToHost)
         }
@@ -209,7 +216,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         req.cachePolicy = .reloadIgnoringLocalCacheData
         applyAuth(&req)
         do {
-            let (_, res) = try await URLSession.shared.data(for: req)
+            let (_, res) = try await URLSession.lyra.data(for: req)
             guard let http = res as? HTTPURLResponse else { return .unreachable }
             if http.statusCode == 401 || http.statusCode == 403 { return .authRejected }
             return (200 ..< 300).contains(http.statusCode) ? .ok : .unreachable
@@ -225,7 +232,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         var req = URLRequest(url: url)
         applyAuth(&req)
         do {
-            let (data, res) = try await URLSession.shared.data(for: req)
+            let (data, res) = try await URLSession.lyra.data(for: req)
             guard let http = res as? HTTPURLResponse, http.statusCode == 200 else { return }
             guard let remote = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
             applyPolicy(fromUserDict: remote)
@@ -341,7 +348,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         ]
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
-        let (data, _) = try await URLSession.shared.data(for: req)
+        let (data, _) = try await URLSession.lyra.data(for: req)
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let items = json?["Items"] as? [[String: Any]] ?? []
         return items.compactMap(parseAlbum)
@@ -363,7 +370,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         ]
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
@@ -387,7 +394,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         ]
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
@@ -415,7 +422,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         ]
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
-        let (data, _) = try await URLSession.shared.data(for: req)
+        let (data, _) = try await URLSession.lyra.data(for: req)
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let items = json?["Items"] as? [[String: Any]] ?? []
         return items.compactMap(parseAlbum)
@@ -436,7 +443,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         ]
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
-        let (data, _) = try await URLSession.shared.data(for: req)
+        let (data, _) = try await URLSession.lyra.data(for: req)
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let items = json?["Items"] as? [[String: Any]] ?? []
         return items.compactMap { dict -> Track? in
@@ -469,7 +476,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         comps.queryItems = queryItems
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
-        let (data, _) = try await URLSession.shared.data(for: req)
+        let (data, _) = try await URLSession.lyra.data(for: req)
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let items = json?["Items"] as? [[String: Any]] ?? []
         return items.compactMap(parseAlbum)
@@ -488,7 +495,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         ]
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
-        let (data, _) = try await URLSession.shared.data(for: req)
+        let (data, _) = try await URLSession.lyra.data(for: req)
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let items = json?["Items"] as? [[String: Any]] ?? []
         return items.compactMap { parseTrack(dict: $0, albumId: albumId) }
@@ -529,7 +536,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         ]
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
-        let (data, _) = try await URLSession.shared.data(for: req)
+        let (data, _) = try await URLSession.lyra.data(for: req)
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let items = json?["Items"] as? [[String: Any]] ?? []
         return items.compactMap { dict -> Track? in
@@ -615,8 +622,9 @@ final class JellyfinMusicClient: MusicLibraryProviding {
     }
 
     private func orderedStreamingURLs(for track: Track) -> [URL] {
-        let primaryContainer = Self.preferredStreamContainer(for: track)
-        let allowStatic = streamingBitrateCapBps == nil
+        let userContainer = streamingFormat.jellyfinPrimaryContainer
+        let primaryContainer = userContainer ?? Self.preferredStreamContainer(for: track)
+        let allowStatic = streamingBitrateCapBps == nil && userContainer == nil
         var urls: [URL] = []
         var seen = Set<String>()
 
@@ -659,11 +667,51 @@ final class JellyfinMusicClient: MusicLibraryProviding {
     }
 
     func offlineDownloadURL(for track: Track) throws -> URL {
-        let codec = track.audioCodec?.lowercased() ?? ""
-        if codec == "flac" {
-            return progressiveStreamURL(trackId: track.id, container: "flac", mode: .offline, staticDirect: true)
+        let container = offlineFormat.jellyfinContainer
+        let staticDirect = container == "flac" && offlineFormat == .raw
+        return progressiveStreamURL(trackId: track.id, container: container, mode: .offline, staticDirect: staticDirect)
+    }
+
+    func reportNowPlaying(trackId: String) async throws {
+        try await reportPlaybackSession(trackId: trackId, event: "play", positionSeconds: 0)
+    }
+
+    func submitScrobble(trackId: String, timestamp: Date) async throws {
+        try await reportPlaybackSession(trackId: trackId, event: "stop", positionSeconds: nil, playedAt: timestamp)
+    }
+
+    private func reportPlaybackSession(
+        trackId: String,
+        event: String,
+        positionSeconds: TimeInterval?,
+        playedAt: Date? = nil
+    ) async throws {
+        guard !userId.isEmpty, !accessToken.isEmpty else { return }
+        let url = apiURL("Sessions", "Playing")
+        var body: [String: Any] = [
+            "ItemId": trackId,
+            "CanSeek": true,
+            "IsPaused": false,
+            "IsMuted": false,
+            "PlayMethod": "DirectStream",
+            "EventName": event,
+        ]
+        if let positionSeconds {
+            body["PositionTicks"] = Int64(positionSeconds * 10_000_000)
         }
-        return progressiveStreamURL(trackId: track.id, container: "mp3", mode: .offline, staticDirect: false)
+        if let playedAt {
+            body["PlayedAt"] = Self.jellyfinISOFrac.string(from: playedAt)
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        applyAuth(&req)
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (_, res) = try await URLSession.lyra.data(for: req)
+        guard let http = res as? HTTPURLResponse, (200 ..< 300).contains(http.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
     }
 
     func fallbackStreamURLs(for track: Track) -> [URL] {
@@ -701,7 +749,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         }
         var req = URLRequest(url: url)
         applyAuth(&req)
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
@@ -729,7 +777,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         }
         var req = URLRequest(url: url)
         applyAuth(&req)
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
@@ -746,7 +794,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
     /// Build a media URL **without** placing the bearer token in the query string.
     /// Callers must inject `Authorization: MediaBrowser Token=...` via headers — see
     /// `httpHeadersForMediaRequests()` (for `AVURLAssetHTTPHeaderFieldsKey` / `URLRequest`)
-    /// and `MediaAuthHeaderRegistry` (for artwork loaders behind `URLSession.shared`).
+    /// and `MediaAuthHeaderRegistry` (for artwork loaders behind `URLSession.lyra`).
     ///
     /// Putting `ApiKey=` in URLs leaks the full user access token into:
     ///   - Jellyfin's HTTP access log (`$request_uri`)
@@ -774,10 +822,12 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         let url = apiURL("Audio", track.id, "Lyrics")
         var req = URLRequest(url: url)
         applyAuth(&req)
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse else { return [] }
         if http.statusCode == 404 { return [] }
-        guard http.statusCode == 200 else { return [] }
+        guard http.statusCode == 200 else {
+            throw JellyfinClientError.badResponse(status: http.statusCode, message: "Could not load lyrics.")
+        }
         return JellyfinLyricsParser.parse(data: data)
     }
 
@@ -792,7 +842,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         var req = URLRequest(url: url)
         req.httpMethod = favorite ? "POST" : "DELETE"
         applyAuth(&req)
-        let (_, res) = try await URLSession.shared.data(for: req)
+        let (_, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
@@ -821,7 +871,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         ]
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
@@ -866,7 +916,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         ]
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
@@ -889,7 +939,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         ]
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
@@ -916,7 +966,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
             "IsPublic": isPublic,
         ]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
@@ -949,7 +999,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         var req = URLRequest(url: comps.url!)
         req.httpMethod = "POST"
         applyAuth(&req)
-        let (_, res) = try await URLSession.shared.data(for: req)
+        let (_, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw JellyfinClientError.badResponse(status: (res as? HTTPURLResponse)?.statusCode ?? -1, message: "Could not add to playlist.")
         }
@@ -966,7 +1016,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         var req = URLRequest(url: comps.url!)
         req.httpMethod = "DELETE"
         applyAuth(&req)
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse, (200...299).contains(http.statusCode) || http.statusCode == 204 else {
             let snippet = Self.humanReadableError(from: data) ?? ""
             throw JellyfinClientError.badResponse(
@@ -988,7 +1038,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
             body["IsPublic"] = isPublic
         }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse, (200...299).contains(http.statusCode) || http.statusCode == 204 else {
             let snippet = Self.humanReadableError(from: data) ?? ""
             throw JellyfinClientError.badResponse(
@@ -1005,7 +1055,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         var req = URLRequest(url: comps.url!)
         req.httpMethod = "DELETE"
         applyAuth(&req)
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse, (200...299).contains(http.statusCode) || http.statusCode == 204 else {
             let snippet = Self.humanReadableError(from: data) ?? ""
             throw JellyfinClientError.badResponse(
@@ -1031,7 +1081,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         applyAuth(&req)
         req.setValue(contentType, forHTTPHeaderField: "Content-Type")
         req.httpBody = imageData
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse, (200...299).contains(http.statusCode) || http.statusCode == 204 else {
             let snippet = Self.humanReadableError(from: data) ?? ""
             throw JellyfinClientError.badResponse(
@@ -1057,7 +1107,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         var req = URLRequest(url: comps.url!)
         req.httpMethod = "DELETE"
         applyAuth(&req)
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse, (200...299).contains(http.statusCode) || http.statusCode == 204 else {
             let snippet = Self.humanReadableError(from: data) ?? ""
             throw JellyfinClientError.badResponse(
@@ -1083,7 +1133,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         req.httpMethod = "POST"
         req.setValue("0", forHTTPHeaderField: "Content-Length")
         applyAuth(&req)
-        let (_, res) = try await URLSession.shared.data(for: req)
+        let (_, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse, (200...299).contains(http.statusCode) || http.statusCode == 204 else {
             throw JellyfinClientError.badResponse(
                 status: (res as? HTTPURLResponse)?.statusCode ?? -1,
@@ -1108,6 +1158,41 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         return CatalogSearchResults(songs: songs, albums: albums, artists: artists)
     }
 
+    func similarTracks(to track: Track, limit: Int) async throws -> [Track] {
+        let cap = max(1, min(limit, 100))
+        let artistQuery = track.artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !artistQuery.isEmpty else { return [] }
+        let results = try await searchCatalog(query: artistQuery, limit: cap + 8)
+        return results.songs
+            .filter { $0.id != track.id }
+            .shuffled()
+            .prefix(cap)
+            .map { $0 }
+    }
+
+    func randomTracks(limit: Int, genre: String?) async throws -> [Track] {
+        let cap = max(1, min(limit, 100))
+        let albumsList = try await albums(limit: min(120, cap * 3))
+        var out: [Track] = []
+        for album in albumsList.shuffled() {
+            let tracks = try await tracks(forAlbumId: album.id)
+            if let genre {
+                let trimmed = genre.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                out.append(contentsOf: tracks.filter {
+                    $0.genres.contains(where: { $0.lowercased() == trimmed })
+                        || album.genres.contains(where: { $0.lowercased() == trimmed })
+                })
+            } else {
+                out.append(contentsOf: tracks)
+            }
+            if out.count >= cap { break }
+        }
+        if out.isEmpty, genre != nil {
+            return try await randomTracks(limit: limit, genre: nil)
+        }
+        return Array(out.shuffled().prefix(cap))
+    }
+
     private func searchAudioItems(query: String, limit: Int) async throws -> [Track] {
         var comps = URLComponents(url: apiURL("Users", userId, "Items"), resolvingAgainstBaseURL: false)!
         comps.queryItems = [
@@ -1119,7 +1204,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         ]
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
@@ -1146,7 +1231,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         ]
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
@@ -1166,7 +1251,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         ]
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
@@ -1185,7 +1270,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         comps.queryItems = [URLQueryItem(name: "Fields", value: Self.jellyfinAlbumListFields)]
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else { return nil }
         guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         return parseAlbum(dict)
@@ -1218,7 +1303,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         ]
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
@@ -1267,7 +1352,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         applyAuth(&req)
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: meta)
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse, (200...299).contains(http.statusCode) || http.statusCode == 204 else {
             let snippet = Self.humanReadableError(from: data) ?? ""
             throw JellyfinClientError.badResponse(
@@ -1281,7 +1366,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         let url = apiURL("Users", userId, "Items", playlistId)
         var req = URLRequest(url: url)
         applyAuth(&req)
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
@@ -1365,7 +1450,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         comps.queryItems = q
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
@@ -1417,7 +1502,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         ]
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
-        let (data, res) = try await URLSession.shared.data(for: req)
+        let (data, res) = try await URLSession.lyra.data(for: req)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }

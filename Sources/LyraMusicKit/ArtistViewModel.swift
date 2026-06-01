@@ -132,7 +132,28 @@ final class ArtistViewModel: ObservableObject {
             || (jellyfinOverview?.isEmpty == false)
     }
 
-    var playbackTracks: [Track] { serverTracks }
+    var hasPlayableTracks: Bool {
+        !topSongs.compactMap(\.libraryTrack).isEmpty || !serverTracks.isEmpty
+    }
+
+    func playbackTracks(for mode: ArtistPlayMode) -> [Track] {
+        switch mode {
+        case .topSongs:
+            let fromTop = topSongs.compactMap(\.libraryTrack)
+            if !fromTop.isEmpty { return fromTop }
+            return sortedServerTracks()
+        case .fullCatalog:
+            return sortedServerTracks()
+        }
+    }
+
+    private func sortedServerTracks() -> [Track] {
+        serverTracks.sorted { lhs, rhs in
+            if lhs.discNumber != rhs.discNumber { return lhs.discNumber < rhs.discNumber }
+            if lhs.indexNumber != rhs.indexNumber { return lhs.indexNumber < rhs.indexNumber }
+            return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+        }
+    }
 
     /// Drives the whole page: resolve the server artist id (when input was a bare name),
     /// then kick off server catalog + Last.fm + TheAudioDB + MusicBrainz in parallel.

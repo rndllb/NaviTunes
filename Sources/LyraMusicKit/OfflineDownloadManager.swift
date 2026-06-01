@@ -5,6 +5,7 @@ import Foundation
 enum OfflineDownloadError: Error {
     case pathEscapesRoot
     case unrecognizedAudioFormat
+    case storageLimitReached
 }
 
 /// UI state for an in-flight library offline save (HTTP byte progress when `Content-Length` is known).
@@ -15,25 +16,39 @@ enum OfflineDownloadUIState: Equatable {
     case progress(Double)
 }
 
-private struct OfflineTrackRecord: Codable {
+struct OfflineTrackRecord: Codable {
     var track: Track
     var album: AlbumSummary?
     /// Path relative to Downloads root, e.g. `.artwork/albums/{id}.jpg`
     var artworkRelativePath: String?
 }
 
-private struct OfflineManifestPayload: Codable {
-    var version: Int = 3
+struct OfflineManifestPayload: Codable {
+    var version: Int = 4
     /// Track id → path relative to the Downloads root (folders use `/`).
     var tracks: [String: String] = [:]
     /// Full metadata + local artwork for offline UI and playback.
     var records: [String: OfflineTrackRecord] = [:]
+    /// Album / playlist / favorites groupings for refcount-aware bulk delete (manifest v4).
+    var cachedItems: [String: OfflineCachedItemRecord] = [:]
 }
 
 @MainActor
 final class OfflineDownloadManager: ObservableObject {
+    /// Separate from `URLSession.shared` so large offline audio downloads don't starve artwork fetches.
+    private static let downloadURLSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.httpMaximumConnectionsPerHost = 2
+        config.waitsForConnectivity = true
+        return URLSession(configuration: config)
+    }()
     @Published private(set) var downloadedTrackIds: Set<String> = []
     @Published private(set) var activeDownloads: [String: OfflineDownloadUIState] = [:]
+    @Published var downloadQueue: [OfflineDownloadQueueItem] = []
+    @Published var totalCacheBytes: Int64 = 0
+    @Published var isStorageFull = false
+    @Published var isQueuePaused = false
+    @Published var queuePauseReason: String?
 
     /// Soft-cancel + in-flight `URLSession` task cancellation.
     private var cancelledDownloadIds = Set<String>()
@@ -41,9 +56,26 @@ final class OfflineDownloadManager: ObservableObject {
     private var downloadProgressObservations: [String: NSKeyValueObservation] = [:]
     private var lastReportedDownloadFraction: [String: Double] = [:]
 
-    private static let manifestFilename = "offline-manifest.json"
+    // MARK: - Queue worker state
 
-    /// In-memory manifest; invalidated whenever the on-disk manifest changes.
+    typealias LibraryProvider = @MainActor () -> MusicLibraryProviding?
+    typealias NetworkPolicy = @MainActor () -> (online: Bool, wifiLike: Bool)
+
+    var maxConcurrentDownloads: OfflineMaxConcurrentDownloads = .three
+    var wifiOnlyDownloads = false
+    var storageLimitMode: OfflineStorageLimitMode = .none
+    var maxCacheSizeGB: Double = 0
+
+    var libraryProvider: LibraryProvider?
+    var networkPolicy: NetworkPolicy = { (true, true) }
+    /// Resolves a fetchable cover URL at download/backfill time (``AppModel.resolvedArtworkURL(for:)``).
+    var artworkURLForTrack: ((Track) -> URL?)?
+    var isProcessingQueue = false
+    var queueWorkerTask: Task<Void, Never>?
+    var activeQueueTrackIds = Set<String>()
+
+    private static let manifestFilename = "offline-manifest.json"
+    static let queueFilename = "offline-queue.json"
     private static var manifestCache: OfflineManifestPayload?
     /// One-time index of legacy `{trackId}__*` files at the downloads root.
     private static var legacyFlatFileByTrackId: [String: URL]?
@@ -63,7 +95,35 @@ final class OfflineDownloadManager: ObservableObject {
             backfillRecordsIfMissing(knownTracks: [])
         }
         downloadedTrackIds = (try? Self.manifestTrackIds()) ?? []
-        Task { await enrichCachedDurationsIfNeeded() }
+        downloadQueue = (try? Self.loadQueue()) ?? []
+        recalculateCacheBytes()
+        Task {
+            await enrichCachedDurationsIfNeeded()
+            await enrichCachedArtworkIfNeeded()
+        }
+    }
+
+    func configure(
+        libraryProvider: @escaping LibraryProvider,
+        networkPolicy: @escaping NetworkPolicy,
+    ) {
+        self.libraryProvider = libraryProvider
+        self.networkPolicy = networkPolicy
+        recoverStalledDownloads()
+        kickQueueWorker()
+    }
+
+    func handleAppBecameActive() {
+        recoverStalledDownloads()
+        kickQueueWorker()
+        Task { await enrichCachedArtworkIfNeeded() }
+    }
+
+    func persistQueueMutation(_ mutate: (inout [OfflineDownloadQueueItem]) -> Void) {
+        var items = downloadQueue
+        mutate(&items)
+        downloadQueue = items
+        saveQueue()
     }
 
     /// Fills manifest `records` for downloads saved before metadata was persisted (manifest v2).
@@ -73,7 +133,7 @@ final class OfflineDownloadManager: ObservableObject {
 
     /// Saved under **Documents/LyraMusic/Downloads** — browse via Files when sharing is enabled.
     /// Layout: `{Artist}/{Album}/{disc}-{track} {Title}.{ext}` with ``offline-manifest.json`` mapping ids → paths.
-    private static func downloadsFolder() throws -> URL {
+    nonisolated static func downloadsFolder() throws -> URL {
         let base = try FileManager.default.url(
             for: .documentDirectory,
             in: .userDomainMask,
@@ -89,7 +149,7 @@ final class OfflineDownloadManager: ObservableObject {
         try downloadsFolder().appendingPathComponent(manifestFilename)
     }
 
-    private static func loadManifest() throws -> OfflineManifestPayload {
+    static func loadManifest() throws -> OfflineManifestPayload {
         if let manifestCache { return manifestCache }
         let url = try manifestURL()
         guard FileManager.default.fileExists(atPath: url.path),
@@ -103,7 +163,7 @@ final class OfflineDownloadManager: ObservableObject {
         return m
     }
 
-    private static func saveManifest(_ payload: OfflineManifestPayload) throws {
+    static func saveManifest(_ payload: OfflineManifestPayload) throws {
         let url = try manifestURL()
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -118,7 +178,7 @@ final class OfflineDownloadManager: ObservableObject {
         legacyFlatFileByTrackId = nil
     }
 
-    private static func invalidateManifestCache() {
+    static func invalidateManifestCache() {
         manifestCache = nil
         legacyFlatFileByTrackId = nil
     }
@@ -367,7 +427,7 @@ final class OfflineDownloadManager: ObservableObject {
 
     private func downloadToTemporary(request: URLRequest, trackId: String) async throws -> (URL, URLResponse) {
         try await withCheckedThrowingContinuation { continuation in
-            let task = URLSession.shared.downloadTask(with: request) { [weak self] url, response, error in
+            let task = Self.downloadURLSession.downloadTask(with: request) { [weak self] url, response, error in
                 defer {
                     Task { @MainActor in
                         self?.tearDownDownloadObservation(trackId: trackId)
@@ -450,6 +510,12 @@ final class OfflineDownloadManager: ObservableObject {
 
     func cache(track: Track, remote: URL, headers: [String: String]) async throws {
         let trackId = track.id
+        if downloadedTrackIds.contains(trackId), localFile(for: trackId) != nil {
+            return
+        }
+        if isStorageLimitReached(additionalBytes: 0) {
+            throw OfflineDownloadError.storageLimitReached
+        }
         cancelledDownloadIds.remove(trackId)
 
         activeDownloads[trackId] = .indeterminate
@@ -515,7 +581,7 @@ final class OfflineDownloadManager: ObservableObject {
         }
         try FileManager.default.moveItem(at: tmpURL, to: dest)
 
-        let artworkRel = await Self.cacheArtwork(for: track, headers: headers, downloadsRoot: root)
+        let artworkRel = await cacheArtwork(for: track, headers: headers, downloadsRoot: root)
 
         var offlineTrack = track
         if let artworkRel {
@@ -545,6 +611,14 @@ final class OfflineDownloadManager: ObservableObject {
             album: albumSummary,
             artworkRelativePath: artworkRel,
         )
+        if let artworkRel {
+            Self.applyArtworkManifest(
+                relativePath: artworkRel,
+                albumId: track.albumId,
+                downloadsRoot: root,
+                payload: &payload,
+            )
+        }
         try Self.saveManifest(payload)
 
         downloadedTrackIds.insert(track.id)
@@ -633,17 +707,32 @@ final class OfflineDownloadManager: ObservableObject {
 
     func cachedAlbums() -> [AlbumSummary] {
         let payload = (try? Self.loadManifest()) ?? OfflineManifestPayload()
+        guard let root = try? Self.downloadsFolder() else { return [] }
         var byId: [String: AlbumSummary] = [:]
         for rec in payload.records.values {
+            let localArt = localArtworkURL(forAlbumId: rec.track.albumId)
+                ?? rec.artworkRelativePath.flatMap { Self.localFileArtworkURL(relative: $0, root: root) }
             if let album = rec.album {
-                byId[album.id] = album
+                byId[album.id] = AlbumSummary(
+                    id: album.id,
+                    title: album.title,
+                    artist: album.artist,
+                    artworkURL: localArt ?? album.artworkURL,
+                    coverArtId: album.coverArtId,
+                    trackCount: album.trackCount,
+                    libraryAddedDate: album.libraryAddedDate,
+                    genres: album.genres,
+                    releaseYear: album.releaseYear,
+                    releaseDate: album.releaseDate,
+                )
             } else {
                 let t = rec.track
+                let art = localArt ?? t.artworkURL
                 byId[t.albumId] = AlbumSummary(
                     id: t.albumId,
                     title: t.albumTitle.isEmpty ? "Album" : t.albumTitle,
                     artist: t.artist,
-                    artworkURL: t.artworkURL,
+                    artworkURL: art,
                     trackCount: nil,
                     libraryAddedDate: t.libraryAddedDate,
                     genres: t.genres,
@@ -675,14 +764,26 @@ final class OfflineDownloadManager: ObservableObject {
                 latestByAlbum[albumId] = mtime
             }
             if albumById[albumId] == nil {
+                let localArt = localArtworkURL(forAlbumId: albumId)
                 if let album = record?.album {
-                    albumById[albumId] = album
+                    albumById[albumId] = AlbumSummary(
+                        id: album.id,
+                        title: album.title,
+                        artist: album.artist,
+                        artworkURL: localArt ?? album.artworkURL,
+                        coverArtId: album.coverArtId,
+                        trackCount: album.trackCount,
+                        libraryAddedDate: album.libraryAddedDate,
+                        genres: album.genres,
+                        releaseYear: album.releaseYear,
+                        releaseDate: album.releaseDate,
+                    )
                 } else if let track {
                     albumById[albumId] = AlbumSummary(
                         id: albumId,
                         title: track.albumTitle.isEmpty ? "Album" : track.albumTitle,
                         artist: track.artist,
-                        artworkURL: track.artworkURL,
+                        artworkURL: localArt ?? track.artworkURL,
                         trackCount: nil,
                         libraryAddedDate: track.libraryAddedDate,
                         genres: track.genres,
@@ -701,19 +802,122 @@ final class OfflineDownloadManager: ObservableObject {
     func localArtworkURL(forTrackId trackId: String) -> URL? {
         guard let root = try? Self.downloadsFolder() else { return nil }
         let payload = (try? Self.loadManifest()) ?? OfflineManifestPayload()
-        guard let rel = payload.records[trackId]?.artworkRelativePath else { return nil }
-        let url = root.appendingPathComponent(rel)
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        if let rel = payload.records[trackId]?.artworkRelativePath,
+           let url = Self.localFileArtworkURL(relative: rel, root: root) {
+            return url
+        }
+        if let track = payload.records[trackId]?.track {
+            if let rel = Self.existingArtworkRelativePath(for: track, downloadsRoot: root) {
+                return root.appendingPathComponent(rel)
+            }
+            return localArtworkURL(forAlbumId: track.albumId)
+        }
+        return nil
     }
 
     func localArtworkURL(forAlbumId albumId: String) -> URL? {
+        guard !albumId.isEmpty, let root = try? Self.downloadsFolder() else { return nil }
         let payload = (try? Self.loadManifest()) ?? OfflineManifestPayload()
-        guard let rec = payload.records.values.first(where: { $0.track.albumId == albumId }),
-              let rel = rec.artworkRelativePath
-        else { return nil }
-        guard let root = try? Self.downloadsFolder() else { return nil }
-        let url = root.appendingPathComponent(rel)
+
+        for record in payload.records.values where record.track.albumId == albumId {
+            if let rel = record.artworkRelativePath,
+               let url = Self.localFileArtworkURL(relative: rel, root: root) {
+                return url
+            }
+        }
+
+        if let track = payload.records.values.first(where: { $0.track.albumId == albumId })?.track,
+           let rel = Self.existingArtworkRelativePath(for: track, downloadsRoot: root) {
+            return root.appendingPathComponent(rel)
+        }
+
+        let rel = Self.standardArtworkRelativePath(forAlbumId: albumId)
+        return Self.localFileArtworkURL(relative: rel, root: root)
+    }
+
+    private static func localFileArtworkURL(relative: String, root: URL) -> URL? {
+        let url = root.appendingPathComponent(relative)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    private static func standardArtworkRelativePath(forAlbumId albumId: String) -> String {
+        ".artwork/albums/\(sanitizedFilenameFragment(albumId)).jpg"
+    }
+
+    /// Links on-disk cover art into manifest records and refreshes embedded local artwork URLs.
+    func enrichCachedArtworkIfNeeded() async {
+        guard let root = try? Self.downloadsFolder() else { return }
+        var payload = (try? Self.loadManifest()) ?? OfflineManifestPayload()
+        guard !payload.tracks.isEmpty else { return }
+
+        var dirty = false
+        let headers = libraryProvider?()?.httpHeadersForMediaRequests() ?? [:]
+        let online = networkPolicy().online
+
+        for (trackId, record) in payload.records {
+            guard payload.tracks[trackId] != nil else { continue }
+            let track = record.track
+
+            if let rel = record.artworkRelativePath,
+               Self.localFileArtworkURL(relative: rel, root: root) != nil {
+                continue
+            }
+
+            if let rel = Self.existingArtworkRelativePath(for: track, downloadsRoot: root) {
+                Self.applyArtworkManifest(
+                    relativePath: rel,
+                    albumId: track.albumId,
+                    downloadsRoot: root,
+                    payload: &payload,
+                )
+                dirty = true
+                continue
+            }
+
+            guard online else { continue }
+            if let rel = await cacheArtwork(for: track, headers: headers, downloadsRoot: root) {
+                Self.applyArtworkManifest(
+                    relativePath: rel,
+                    albumId: track.albumId,
+                    downloadsRoot: root,
+                    payload: &payload,
+                )
+                dirty = true
+            }
+        }
+
+        if dirty {
+            try? Self.saveManifest(payload)
+        }
+    }
+
+    private static func applyArtworkManifest(
+        relativePath: String,
+        albumId: String,
+        downloadsRoot: URL,
+        payload: inout OfflineManifestPayload,
+    ) {
+        let localURL = downloadsRoot.appendingPathComponent(relativePath)
+        guard FileManager.default.fileExists(atPath: localURL.path) else { return }
+
+        for trackId in payload.records.keys {
+            guard var record = payload.records[trackId] else { continue }
+            guard record.track.albumId == albumId else { continue }
+            record.artworkRelativePath = relativePath
+            record.track = trackWithLocalArtwork(record.track, localURL: localURL)
+            let t = record.track
+            record.album = AlbumSummary(
+                id: t.albumId,
+                title: t.albumTitle.isEmpty ? "Album" : t.albumTitle,
+                artist: t.artist,
+                artworkURL: localURL,
+                trackCount: record.album?.trackCount,
+                libraryAddedDate: t.libraryAddedDate,
+                genres: t.genres,
+                releaseYear: t.releaseYear,
+            )
+            payload.records[trackId] = record
+        }
     }
 
     private static func trackWithLocalArtwork(_ track: Track, localURL: URL) -> Track {
@@ -738,15 +942,25 @@ final class OfflineDownloadManager: ObservableObject {
         )
     }
 
-    private static func cacheArtwork(
+    private func cacheArtwork(
         for track: Track,
         headers: [String: String],
         downloadsRoot: URL,
     ) async -> String? {
-        guard let remote = track.artworkURL, remote.isFileURL == false else { return nil }
+        if let existing = Self.existingArtworkRelativePath(for: track, downloadsRoot: downloadsRoot) {
+            return existing
+        }
+
+        let remote = artworkURLForTrack?(track) ?? track.artworkURL
+        guard let remote, !remote.isFileURL else { return nil }
+
         var req = URLRequest(url: remote)
-        headers.forEach { req.setValue($1, forHTTPHeaderField: $0) }
-        guard let (data, res) = try? await URLSession.shared.data(for: req),
+        let registryHeaders = await MediaAuthHeaderRegistry.shared.headers(for: remote)
+        var merged = registryHeaders
+        headers.forEach { merged[$0] = $1 }
+        merged.forEach { req.setValue($1, forHTTPHeaderField: $0) }
+
+        guard let (data, res) = try? await URLSession.lyra.data(for: req),
               let http = res as? HTTPURLResponse,
               http.statusCode == 200,
               !data.isEmpty
@@ -754,11 +968,11 @@ final class OfflineDownloadManager: ObservableObject {
 
         let artDir = downloadsRoot.appendingPathComponent(".artwork/albums", isDirectory: true)
         try? FileManager.default.createDirectory(at: artDir, withIntermediateDirectories: true)
-        let safeAlbumId = sanitizedFilenameFragment(track.albumId)
+        let safeAlbumId = Self.sanitizedFilenameFragment(track.albumId)
         guard !safeAlbumId.isEmpty else { return nil }
-        let rel = ".artwork/albums/\(safeAlbumId).jpg"
+        let rel = Self.standardArtworkRelativePath(forAlbumId: track.albumId)
         let dest = downloadsRoot.appendingPathComponent(rel)
-        guard (try? containmentCheck(dest: dest, root: downloadsRoot)) != nil else { return nil }
+        guard (try? Self.containmentCheck(dest: dest, root: downloadsRoot)) != nil else { return nil }
         do {
             try data.write(to: dest, options: .atomic)
             return rel
@@ -825,7 +1039,7 @@ final class OfflineDownloadManager: ObservableObject {
     }
 
     private static func existingArtworkRelativePath(for track: Track, downloadsRoot: URL) -> String? {
-        let rel = ".artwork/albums/\(sanitizedFilenameFragment(track.albumId)).jpg"
+        let rel = standardArtworkRelativePath(forAlbumId: track.albumId)
         let url = downloadsRoot.appendingPathComponent(rel)
         return FileManager.default.fileExists(atPath: url.path) ? rel : nil
     }
@@ -875,7 +1089,11 @@ final class OfflineDownloadManager: ObservableObject {
         )
     }
 
-    private static func placeholderTrack(trackId: String, relativePath: String) -> Track {
+    func resetDownloadedTrackIds() {
+        downloadedTrackIds = []
+    }
+
+    static func placeholderTrack(trackId: String, relativePath: String) -> Track {
         let name = ((relativePath as NSString).lastPathComponent as NSString).deletingPathExtension
         return Track(
             id: trackId,
@@ -928,8 +1146,77 @@ final class OfflineDownloadManager: ObservableObject {
     }
 
     func remove(trackId: String) throws {
+        var payload = try Self.loadManifest()
+        for key in payload.cachedItems.keys {
+            payload.cachedItems[key]?.trackIds.removeAll { $0 == trackId }
+        }
+        payload.cachedItems = payload.cachedItems.filter { !$0.value.trackIds.isEmpty }
+        try Self.saveManifest(payload)
         try removeExistingDownload(for: trackId)
         downloadedTrackIds.remove(trackId)
+        recalculateCacheBytes()
+    }
+
+    /// Rewrites manifest keys when a server rescan changes track ids but the on-disk file is unchanged.
+    func remapDownloadedTrackId(from oldId: String, to newTrack: Track) throws {
+        guard localFile(for: oldId) != nil else { return }
+        var payload = try Self.loadManifest()
+        guard payload.tracks[oldId] != nil else { return }
+
+        if let rel = payload.tracks.removeValue(forKey: oldId) {
+            payload.tracks[newTrack.id] = rel
+        }
+        if var record = payload.records.removeValue(forKey: oldId) {
+            record.track = newTrack
+            payload.records[newTrack.id] = record
+        }
+        for key in payload.cachedItems.keys {
+            guard var item = payload.cachedItems[key] else { continue }
+            if let idx = item.trackIds.firstIndex(of: oldId) {
+                item.trackIds[idx] = newTrack.id
+                payload.cachedItems[key] = item
+            }
+        }
+        try Self.saveManifest(payload)
+        downloadedTrackIds.remove(oldId)
+        downloadedTrackIds.insert(newTrack.id)
+    }
+
+    /// Removes a cached album / playlist / favorites grouping; deletes track files only when unreferenced.
+    func removeCachedItem(itemId: String) throws {
+        var payload = try Self.loadManifest()
+        guard let item = payload.cachedItems.removeValue(forKey: itemId) else { return }
+        try Self.saveManifest(payload)
+        for trackId in item.trackIds {
+            if referenceCount(for: trackId, payload: payload) == 0 {
+                try removeExistingDownload(for: trackId)
+                downloadedTrackIds.remove(trackId)
+            }
+        }
+        recalculateCacheBytes()
+    }
+
+    func cachedItems() -> [(id: String, record: OfflineCachedItemRecord)] {
+        let payload = (try? Self.loadManifest()) ?? OfflineManifestPayload()
+        return payload.cachedItems
+            .sorted { $0.value.name.localizedCaseInsensitiveCompare($1.value.name) == .orderedAscending }
+            .map { ($0.key, $0.value) }
+    }
+
+    func cachedItem(for itemId: String) -> OfflineCachedItemRecord? {
+        let payload = (try? Self.loadManifest()) ?? OfflineManifestPayload()
+        return payload.cachedItems[itemId]
+    }
+
+    func referenceCount(for trackId: String) -> Int {
+        let payload = (try? Self.loadManifest()) ?? OfflineManifestPayload()
+        return referenceCount(for: trackId, payload: payload)
+    }
+
+    private func referenceCount(for trackId: String, payload: OfflineManifestPayload) -> Int {
+        payload.cachedItems.values.reduce(0) { partial, item in
+            partial + (item.trackIds.contains(trackId) ? 1 : 0)
+        }
     }
 
     private func removeExistingDownload(for forId: String) throws {

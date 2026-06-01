@@ -84,6 +84,10 @@ struct HomeView: View {
                             )
                         }
 
+                        if !app.homeMixes.isEmpty {
+                            tunedInShelf(title: "Tuned In", mixes: app.homeMixes)
+                        }
+
                         if !madeForYouPlaylists.isEmpty {
                             playlistShelf(
                                 title: "Your Playlists",
@@ -288,6 +292,26 @@ struct HomeView: View {
         }
     }
 
+    private func tunedInShelf(title: String, mixes: [HomeMix]) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionHeader(title: title)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 14) {
+                    ForEach(mixes) { mix in
+                        Button {
+                            Task { await app.playHomeMix(mix) }
+                        } label: {
+                            mixShelfCard(mix: mix)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, inset)
+            }
+        }
+    }
+
     // MARK: - Cells
 
     private func heroCard(album: AlbumSummary) -> some View {
@@ -319,7 +343,19 @@ struct HomeView: View {
         }
     }
 
-    /// Tight title + subtitle pair used by every shelf card. The two labels sit
+    private func mixShelfCard(mix: HomeMix) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            MixCollageArtworkView(
+                urls: mix.artworkURLs,
+                fallbackSeed: "homeMix:\(mix.id)",
+                cornerRadius: MusicDesign.heroCorner
+            )
+            .frame(width: MusicDesign.shelfCardWidth, height: MusicDesign.shelfCardHeight)
+            shelfLabelBlock(title: mix.title, subtitle: mix.subtitle, width: MusicDesign.shelfCardWidth)
+        }
+    }
+
+    /// Tight title + subtitle pair used by every shelf card.
     /// directly adjacent (spacing 2), and the **combined** block reserves the
     /// 2-line title + 1-line subtitle height. When the title only takes 1 line
     /// (short album/playlist names), the leftover space falls below the

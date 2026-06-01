@@ -38,7 +38,7 @@ struct NavidromeUserMetadata: Equatable {
 }
 
 final class NavidromeClient: MusicLibraryProviding {
-    private let baseURL: URL
+    private(set) var baseURL: URL
     private(set) var token: String?
     private var username: String = ""
     private var password: String = ""
@@ -53,13 +53,21 @@ final class NavidromeClient: MusicLibraryProviding {
 
     /// Subsonic `maxBitRate` for streaming (`0` = original / unlimited).
     var streamingMaxBitRate: Int = 0
-    /// `maxBitRate` when saving offline MP3 transcodes.
+    /// Subsonic stream format preset.
+    var streamingFormat: StreamFormatOption = .raw
+    /// `maxBitRate` when saving offline transcodes.
     var offlineMaxBitRate: Int = 0
+    /// Offline download format preset.
+    var offlineFormat: DownloadFormatOption = .mp3
 
     var displayName: String { "Navidrome" }
 
     init(baseURL: URL) {
         self.baseURL = baseURL
+    }
+
+    func updateBaseURL(_ url: URL) {
+        baseURL = url
     }
 
     func applyRestoredSession(token: String, username: String, password: String) {
@@ -191,6 +199,26 @@ final class NavidromeClient: MusicLibraryProviding {
         return nil
     }
 
+    private func navidromeBool(_ value: Any?) -> Bool {
+        if let b = value as? Bool { return b }
+        if let n = value as? NSNumber { return n.boolValue }
+        if let s = value as? String {
+            let t = s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return t == "true" || t == "1" || t == "yes"
+        }
+        return false
+    }
+
+    private func navidromeOptionalDate(_ value: Any?) -> Date? {
+        if let date = navidromeCreatedDate(value) { return date }
+        if let s = value as? String {
+            if let d = Self.navidromeReleaseISOFrac.date(from: s) { return d }
+            if let d = Self.navidromeReleaseISOInternet.date(from: s) { return d }
+            if let d = Self.navidromeReleaseISODay.date(from: s) { return d }
+        }
+        return nil
+    }
+
     private func navidromeCreatedDate(_ value: Any?) -> Date? {
         if let n = value as? NSNumber {
             let ms = n.doubleValue
@@ -288,10 +316,23 @@ final class NavidromeClient: MusicLibraryProviding {
         let albumsList = try await albums(limit: albumBudget)
         var out: [Track] = []
         out.reserveCapacity(min(cap, 6_000))
-        for album in albumsList {
-            let ts = try await tracks(forAlbumId: album.id)
-            out.append(contentsOf: ts)
-            if out.count >= cap { break }
+        let chunkSize = 8
+        var index = 0
+        while index < albumsList.count, out.count < cap {
+            let end = min(index + chunkSize, albumsList.count)
+            let chunk = Array(albumsList[index ..< end])
+            await withTaskGroup(of: [Track].self) { group in
+                for album in chunk {
+                    group.addTask {
+                        (try? await self.tracks(forAlbumId: album.id)) ?? []
+                    }
+                }
+                for await batch in group {
+                    out.append(contentsOf: batch)
+                    if out.count >= cap { break }
+                }
+            }
+            index = end
         }
         return Array(out.prefix(cap))
     }
@@ -459,61 +500,103 @@ final class NavidromeClient: MusicLibraryProviding {
     }
 
     func streamURL(for track: Track) throws -> URL {
-        try buildMediaURL(path: "stream", query: ["id": track.id, "maxBitRate": "\(streamingMaxBitRate)"])
+        try buildStreamURL(trackId: track.id, format: streamingFormat, maxBitRate: streamingMaxBitRate)
     }
 
     func fallbackStreamURLs(for track: Track) -> [URL] {
+        var formats: [StreamFormatOption] = []
+        if streamingFormat != .mp3 { formats.append(.mp3) }
+        if streamingFormat != .aac { formats.append(.aac) }
+        if streamingFormat != .raw { formats.append(.raw) }
         var urls: [URL] = []
-        if let mp3 = try? buildMediaURL(
-            path: "stream",
-            query: ["id": track.id, "format": "mp3", "maxBitRate": "\(streamingMaxBitRate)"],
-        ) {
-            urls.append(mp3)
-        }
-        if let aac = try? buildMediaURL(
-            path: "stream",
-            query: ["id": track.id, "format": "aac", "maxBitRate": "\(streamingMaxBitRate)"],
-        ) {
-            urls.append(aac)
+        var seen = Set<String>()
+        for format in formats {
+            let rate = StreamBitRateOption.kbps320.navidromeMaxBitRate(for: format)
+            if let url = try? buildStreamURL(trackId: track.id, format: format, maxBitRate: rate),
+               !seen.contains(url.absoluteString) {
+                seen.insert(url.absoluteString)
+                urls.append(url)
+            }
         }
         return urls
     }
 
     func offlineDownloadURL(for track: Track) throws -> URL {
-        // Request MP3 explicitly so the saved file is always AVPlayer-compatible,
-        // regardless of the source format (OGG, Opus, etc.).
-        try buildMediaURL(path: "stream", query: ["id": track.id, "format": "mp3", "maxBitRate": "\(offlineMaxBitRate)"])
+        try buildStreamURL(trackId: track.id, format: offlineFormat.asStreamFormat, maxBitRate: offlineMaxBitRate)
     }
 
-    /// Approximate totals by fetching up to 50k rows per category (large libraries may plateau at the cap).
+    func reportNowPlaying(trackId: String) async throws {
+        let ms = Int64(Date().timeIntervalSince1970 * 1000)
+        _ = try await subsonicRequest(path: "scrobble", query: [
+            "id": trackId,
+            "time": "\(ms)",
+            "submission": "false",
+        ])
+    }
+
+    func submitScrobble(trackId: String, timestamp: Date) async throws {
+        let ms = Int64(timestamp.timeIntervalSince1970 * 1000)
+        _ = try await subsonicRequest(path: "scrobble", query: [
+            "id": trackId,
+            "time": "\(ms)",
+            "submission": "true",
+        ])
+    }
+
+    private func buildStreamURL(trackId: String, format: StreamFormatOption, maxBitRate: Int) throws -> URL {
+        var query: [String: String] = ["id": trackId]
+        if let formatParam = format.navidromeFormatParam {
+            query["format"] = formatParam
+        }
+        if maxBitRate > 0, !format.isLossless {
+            query["maxBitRate"] = "\(maxBitRate)"
+        }
+        return try buildMediaURL(path: "stream", query: query)
+    }
+
+    /// Approximate totals via ``getArtists`` + ``getAlbumList2`` (song count sums album ``trackCount`` — no full-track fetch).
     func fetchApproximateLibraryStatistics() async throws -> LibraryStatistics {
         let cap = 50_000
-        async let artists = countArtistsInLibraryIndex()
+        async let artistCount = countArtistsInLibraryIndex()
         async let albumRows = albums(limit: cap)
-        async let trackRows = allTracks(limit: cap)
-        let (artistCount, albumsList, tracksList) = try await (artists, albumRows, trackRows)
+        let (artists, albumsList) = try await (artistCount, albumRows)
+        let summedTracks = albumsList.reduce(0) { partial, album in
+            partial + max(0, album.trackCount ?? 0)
+        }
         return LibraryStatistics(
-            artistCount: artistCount,
+            artistCount: artists,
             albumCount: albumsList.count,
-            songCount: tracksList.count,
+            songCount: summedTracks > 0 ? summedTracks : nil,
             playlistCount: nil,
         )
     }
 
     func lyrics(for track: Track) async throws -> [LyricLine] {
+        var candidates: [[LyricLine]] = []
         if let structured = try? await fetchStructuredLyrics(trackId: track.id), !structured.isEmpty {
-            return structured
+            candidates.append(structured)
         }
+        if let plain = try? await fetchPlainLyricsText(track: track) {
+            let parsed = NavidromeLyricsParser.parse(plain: plain)
+            if !parsed.isEmpty {
+                candidates.append(parsed)
+            }
+        }
+        return candidates.max(by: { Self.structuredLyricsScore($0) < Self.structuredLyricsScore($1) }) ?? []
+    }
+
+    private func fetchPlainLyricsText(track: Track) async throws -> String? {
         let items = try await subsonicRequest(path: "getLyrics", query: [
             "artist": track.artist,
             "title": track.title,
         ])
         guard let lyrics = items["lyrics"] as? [String: Any],
-              let text = lyrics["value"] as? String
+              let text = lyrics["value"] as? String,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
-            return []
+            return nil
         }
-        return NavidromeLyricsParser.parse(plain: text)
+        return text
     }
 
     /// OpenSubsonic ``getLyricsBySongId`` — synced lines carry millisecond ``start`` values.
@@ -526,22 +609,92 @@ final class NavidromeClient: MusicLibraryProviding {
 
     private static func parseStructuredLyricsBlocks(_ blocks: [[String: Any]]) -> [LyricLine] {
         guard !blocks.isEmpty else { return [] }
-        let preferred = blocks.first { ($0["synced"] as? Bool) == true }
-            ?? blocks.first { ($0["kind"] as? String) == "main" }
-            ?? blocks[0]
-        let offsetMs = (preferred["offset"] as? NSNumber)?.doubleValue ?? 0
-        let offsetSec = offsetMs / 1000.0
-        let rows = dictArray(preferred["line"])
-        let lines: [LyricLine] = rows.compactMap { row in
+        let candidates = blocks.compactMap { parseStructuredLyricsBlock($0) }
+        guard !candidates.isEmpty else { return [] }
+        return candidates.max(by: { structuredLyricsScore($0) < structuredLyricsScore($1) }) ?? []
+    }
+
+    private static func structuredLyricsScore(_ lines: [LyricLine]) -> Int {
+        var score = lines.count
+        if lines.lyricsAppearSynced { score += 100_000 }
+        score += Int((lines.map(\.start).max() ?? 0) * 10)
+        return score
+    }
+
+    private static func parseStructuredLyricsBlock(_ block: [String: Any]) -> [LyricLine] {
+        let isSyncedBlock = (block["synced"] as? Bool) == true
+        let offsetMs = (block["offset"] as? NSNumber)?.doubleValue ?? 0
+        let rows = dictArray(block["line"])
+        let rawStarts = rows.compactMap { ($0["start"] as? NSNumber)?.doubleValue }
+        let startUnit = structuredStartUnitScale(
+            maxRawStart: rawStarts.max() ?? 0,
+            isSyncedBlock: isSyncedBlock,
+            lineCount: rows.count
+        )
+
+        var lines: [LyricLine] = rows.compactMap { row in
             guard let text = row["value"] as? String else { return nil }
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return nil }
+
             if let startMs = (row["start"] as? NSNumber)?.doubleValue {
-                return LyricLine(start: offsetSec + startMs / 1000.0, text: trimmed)
+                let start = NavidromeLyricsParser.structuredLineStart(
+                    lineStartMs: startMs * startUnit,
+                    offsetMs: offsetMs
+                )
+                let display = NavidromeLyricsParser.displayText(trimmed)
+                guard !display.isEmpty else { return nil }
+                return LyricLine(start: start, text: display)
             }
-            return LyricLine(start: offsetSec, text: trimmed)
+            if let parsed = NavidromeLyricsParser.parseTimedLine(trimmed) {
+                let start = NavidromeLyricsParser.structuredLineStart(
+                    lineStartMs: parsed.start * 1000,
+                    offsetMs: offsetMs
+                )
+                return LyricLine(start: start, text: parsed.text)
+            }
+            guard !isSyncedBlock else { return nil }
+            let display = NavidromeLyricsParser.displayText(trimmed)
+            guard !display.isEmpty else { return nil }
+            return LyricLine(
+                start: NavidromeLyricsParser.structuredLineStart(lineStartMs: 0, offsetMs: offsetMs),
+                text: display
+            )
         }
+
+        if !lines.lyricsAppearSynced {
+            let reparsed = reparsedLRCFromRowValues(rows, offsetMs: offsetMs)
+            if reparsed.lyricsAppearSynced {
+                lines = reparsed
+            }
+        }
+
         return lines.sorted { $0.start < $1.start }
+    }
+
+    /// Navidrome stores LRC ``start`` in ms, but some sources use seconds when under ~10 min.
+    private static func structuredStartUnitScale(maxRawStart: Double, isSyncedBlock: Bool, lineCount: Int) -> Double {
+        guard isSyncedBlock, maxRawStart > 0, lineCount >= 2, maxRawStart <= 600 else { return 1 }
+        return 1000
+    }
+
+    /// Reconstruct embedded LRC timestamps when the server only returned plain ``value`` rows.
+    private static func reparsedLRCFromRowValues(_ rows: [[String: Any]], offsetMs: Double) -> [LyricLine] {
+        let text = rows.compactMap { $0["value"] as? String }.joined(separator: "\n")
+        guard !text.isEmpty else { return [] }
+        let parsed = NavidromeLyricsParser.parse(plain: text)
+        guard parsed.lyricsAppearSynced else { return parsed }
+        let applyBlockOffset = offsetMs != 0 && !text.localizedCaseInsensitiveContains("[offset:")
+        guard applyBlockOffset else { return parsed }
+        return parsed.map { line in
+            LyricLine(
+                start: NavidromeLyricsParser.structuredLineStart(
+                    lineStartMs: line.start * 1000,
+                    offsetMs: offsetMs
+                ),
+                text: line.text
+            )
+        }
     }
 
     private static func dictArray(_ value: Any?) -> [[String: Any]] {
@@ -567,19 +720,24 @@ final class NavidromeClient: MusicLibraryProviding {
         var out: [Track] = []
         out.reserveCapacity(min(songRows.count + albumRows.count * 12, cap))
 
+        var pendingSongIds: [String] = []
         for d in songRows {
-            guard out.count < cap else { break }
-            let track: Track?
+            guard out.count + pendingSongIds.count < cap else { break }
             if let t = parseSongFromChildDict(d) {
-                track = t
-            } else if let sid = navidromeCoerceString(d["id"]) {
-                track = try await fetchTrackViaGetSong(id: sid)
-            } else {
-                track = nil
+                if seen.insert(t.id).inserted {
+                    out.append(t)
+                }
+            } else if let sid = navidromeCoerceString(d["id"]), seen.insert(sid).inserted {
+                pendingSongIds.append(sid)
             }
-            guard let track else { continue }
-            if seen.insert(track.id).inserted {
-                out.append(track)
+        }
+        if !pendingSongIds.isEmpty {
+            let fetched = try await fetchTracksViaGetSongParallel(ids: pendingSongIds)
+            for track in fetched {
+                guard out.count < cap else { break }
+                if seen.insert(track.id).inserted {
+                    out.append(track)
+                }
             }
         }
 
@@ -690,6 +848,27 @@ final class NavidromeClient: MusicLibraryProviding {
         return parseSongFromChildDict(song)
     }
 
+    /// Batches `getSong` lookups so playlist/favorites loading doesn't devolve into one
+    /// sequential round-trip per track when Subsonic returns minimal child payloads.
+    private func fetchTracksViaGetSongParallel(ids: [String], concurrency: Int = 16) async throws -> [Track] {
+        guard !ids.isEmpty else { return [] }
+        let limit = max(1, min(concurrency, 24))
+        var tracks: [Track] = []
+        tracks.reserveCapacity(ids.count)
+        for chunkStart in stride(from: 0, to: ids.count, by: limit) {
+            let chunk = Array(ids[chunkStart ..< min(chunkStart + limit, ids.count)])
+            try await withThrowingTaskGroup(of: Track?.self) { group in
+                for id in chunk {
+                    group.addTask { try await self.fetchTrackViaGetSong(id: id) }
+                }
+                for try await track in group {
+                    if let track { tracks.append(track) }
+                }
+            }
+        }
+        return tracks
+    }
+
     /// Parses a Subsonic ``Child`` / song JSON object into a ``Track`` (library & starred responses).
     private func parseSongFromChildDict(
         _ dict: [String: Any],
@@ -711,6 +890,7 @@ final class NavidromeClient: MusicLibraryProviding {
 
         let albumId =
             navidromeCoerceString(dict["albumId"])
+            ?? navidromeCoerceString(dict["album_id"])
             ?? navidromeCoerceString(dict["parent"])
             ?? fallbackAlbumId.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
         guard let albumIdFinal = albumId, !albumIdFinal.isEmpty else { return nil }
@@ -722,6 +902,7 @@ final class NavidromeClient: MusicLibraryProviding {
 
         let artist =
             navidromeCoerceString(dict["artist"])
+            ?? navidromeCoerceString(dict["albumArtist"])
             ?? navidromeCoerceString(dict["displayArtist"])
             ?? navidromeCoerceString(dict["displayAlbumArtist"])
             ?? fallbackAlbumArtist.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
@@ -732,8 +913,8 @@ final class NavidromeClient: MusicLibraryProviding {
             if let s = dict["duration"] as? String { return Double(s) ?? 0 }
             return 0
         }()
-        let disc = intFromNavidrome(dict["discNumber"]) ?? 1
-        let index = intFromNavidrome(dict["track"]) ?? 0
+        let disc = intFromNavidrome(dict["discNumber"]) ?? intFromNavidrome(dict["disc_number"]) ?? 1
+        let index = intFromNavidrome(dict["track"]) ?? intFromNavidrome(dict["trackNumber"]) ?? 0
         let coverId =
             navidromeCoerceString(dict["coverArt"])
             ?? albumCoverArtId.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
@@ -819,7 +1000,7 @@ final class NavidromeClient: MusicLibraryProviding {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let body: [String: String] = ["username": username, "password": password]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.lyra.data(for: request)
         guard let http = response as? HTTPURLResponse, (200 ..< 300).contains(http.statusCode) else {
             throw URLError(.userAuthenticationRequired)
         }
@@ -872,7 +1053,7 @@ final class NavidromeClient: MusicLibraryProviding {
         body.append("\(crlf)--\(boundary)--\(crlf)".data(using: .utf8)!)
         request.httpBody = body
 
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (_, response) = try await URLSession.lyra.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         if http.statusCode == 401 { throw URLError(.userAuthenticationRequired) }
         if http.statusCode == 403 {
@@ -900,7 +1081,7 @@ final class NavidromeClient: MusicLibraryProviding {
         let url = baseURL.appendingPathComponent(path)
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "X-ND-Authorization")
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.lyra.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         if http.statusCode == 401 || http.statusCode == 403 {
             throw URLError(.userAuthenticationRequired)
@@ -923,25 +1104,65 @@ final class NavidromeClient: MusicLibraryProviding {
     }
 
     func fetchPlaylistRows(playlistId: String) async throws -> [PlaylistRowItem] {
+        if let native = try? await fetchPlaylistRowsViaNativeAPI(playlistId: playlistId), !native.isEmpty {
+            return native
+        }
         let items = try await subsonicRequest(path: "getPlaylist", query: ["id": playlistId])
         guard let pl = navidromeDict(items["playlist"]) else { return [] }
         let entries = childDictArray(from: pl, key: "entry")
-        var out: [PlaylistRowItem] = []
-        out.reserveCapacity(entries.count)
+        let playlistCoverId = navidromeCoerceString(pl["coverArt"])
+        let playlistArtist = navidromeCoerceString(pl["owner"])
+        var resolved: [(idx: Int, track: Track)] = []
+        resolved.reserveCapacity(entries.count)
+        var pending: [(idx: Int, id: String)] = []
         for (idx, dict) in entries.enumerated() {
-            let track: Track?
-            if let t = parseSongFromChildDict(dict) {
-                track = t
+            if let track = parseSongFromChildDict(
+                dict,
+                albumCoverArtId: playlistCoverId,
+                fallbackAlbumArtist: playlistArtist,
+            ) {
+                resolved.append((idx, track))
             } else if let sid = navidromeCoerceString(dict["id"]) {
-                track = try await fetchTrackViaGetSong(id: sid)
-            } else {
-                track = nil
+                pending.append((idx, sid))
             }
-            guard let track else { continue }
-            let rowId = "\(playlistId)-\(idx)-\(track.id)"
+        }
+        if !pending.isEmpty {
+            let fetched = try await fetchTracksViaGetSongParallel(ids: pending.map(\.id))
+            let byId = Dictionary(fetched.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            for (idx, sid) in pending {
+                if let track = byId[sid] {
+                    resolved.append((idx, track))
+                }
+            }
+        }
+        return resolved.sorted { $0.idx < $1.idx }.map { pair in
+            PlaylistRowItem(
+                rowId: "\(playlistId)-\(pair.idx)-\(pair.track.id)",
+                track: pair.track,
+                jellyfinEntryId: nil,
+                navidromeIndex: pair.idx,
+            )
+        }
+    }
+
+    /// Navidrome's native `/api/playlist/{id}/tracks` returns full ``MediaFile`` rows in
+    /// one round-trip — avoids Subsonic minimal child payloads that force N× ``getSong``.
+    private func fetchPlaylistRowsViaNativeAPI(playlistId: String) async throws -> [PlaylistRowItem] {
+        let rows: [[String: Any]]
+        do {
+            rows = try await fetchNativePlaylistTrackDicts(playlistId: playlistId)
+        } catch let urlError as URLError where urlError.code == .userAuthenticationRequired {
+            nativeAuthToken = nil
+            rows = try await fetchNativePlaylistTrackDicts(playlistId: playlistId)
+        }
+        guard !rows.isEmpty else { return [] }
+        var out: [PlaylistRowItem] = []
+        out.reserveCapacity(rows.count)
+        for (idx, dict) in rows.enumerated() {
+            guard let track = parseNativePlaylistTrackDict(dict) else { continue }
             out.append(
                 PlaylistRowItem(
-                    rowId: rowId,
+                    rowId: "\(playlistId)-\(idx)-\(track.id)",
                     track: track,
                     jellyfinEntryId: nil,
                     navidromeIndex: idx,
@@ -949,6 +1170,57 @@ final class NavidromeClient: MusicLibraryProviding {
             )
         }
         return out
+    }
+
+    private func fetchNativePlaylistTrackDicts(playlistId: String) async throws -> [[String: Any]] {
+        let pageSize = 2_000
+        var start = 0
+        var all: [[String: Any]] = []
+        while true {
+            let path = "api/playlist/\(playlistId)/tracks?_start=\(start)&_end=\(start + pageSize)&_sort=id&_order=ASC"
+            let batch = try await fetchNativeJSONArray(path: path)
+            guard !batch.isEmpty else { break }
+            all.append(contentsOf: batch)
+            if batch.count < pageSize { break }
+            start += batch.count
+        }
+        return all
+    }
+
+    private func fetchNativeJSONArray(path: String) async throws -> [[String: Any]] {
+        let token = try await nativeAuthenticate()
+        let trimmed = path.hasPrefix("/") ? String(path.dropFirst()) : path
+        guard let url = URL(string: trimmed, relativeTo: baseURL)?.absoluteURL else {
+            throw URLError(.badURL)
+        }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "X-ND-Authorization")
+        let (data, response) = try await URLSession.lyra.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        if http.statusCode == 401 || http.statusCode == 403 { throw URLError(.userAuthenticationRequired) }
+        guard (200 ..< 300).contains(http.statusCode) else { throw URLError(.badServerResponse) }
+        let json = try JSONSerialization.jsonObject(with: data)
+        if let arr = json as? [[String: Any]] { return arr }
+        if let arr = json as? [Any] {
+            return arr.compactMap { $0 as? [String: Any] }
+        }
+        return []
+    }
+
+    /// Parses a native playlist-track or media-file JSON object into a ``Track``.
+    private func parseNativePlaylistTrackDict(_ dict: [String: Any]) -> Track? {
+        if let nested = navidromeDict(dict["mediaFile"]) {
+            var merged = nested
+            if let mediaFileId = navidromeCoerceString(dict["mediaFileId"]), !mediaFileId.isEmpty {
+                merged["id"] = mediaFileId
+            }
+            return parseSongFromChildDict(merged)
+        }
+        var normalized = dict
+        if let mediaFileId = navidromeCoerceString(dict["mediaFileId"]), !mediaFileId.isEmpty {
+            normalized["id"] = mediaFileId
+        }
+        return parseSongFromChildDict(normalized)
     }
 
     func createPlaylist(name: String, trackIds: [String], isPublic: Bool = false) async throws -> PlaylistSummary {
@@ -1062,6 +1334,91 @@ final class NavidromeClient: MusicLibraryProviding {
     /// the new track via `searchCatalog` instead.
     func triggerLibraryScan() async throws {
         _ = try await subsonicRequest(path: "startScan")
+    }
+
+    func fetchScanStatus() async throws -> NavidromeScanStatus {
+        let items = try await subsonicRequest(path: "getScanStatus")
+        guard let status = navidromeDict(items["scanStatus"]) else {
+            return NavidromeScanStatus(scanning: false, count: 0, total: 0)
+        }
+        let scanning = navidromeBool(status["scanning"])
+        let count = navidromeInt(status["count"]) ?? 0
+        let total = navidromeInt(status["total"]) ?? 0
+        return NavidromeScanStatus(scanning: scanning, count: count, total: total)
+    }
+
+    func similarTracks(to track: Track, limit: Int) async throws -> [Track] {
+        let cap = max(1, min(limit, 500))
+        let items = try await subsonicRequest(path: "getSimilarSongs", query: [
+            "id": track.id,
+            "count": "\(cap)",
+        ])
+        guard let root = navidromeDict(items["similarSongs"]) else { return [] }
+        let songs = childDictArray(from: root, key: "song")
+        return songs.compactMap { parseSongFromChildDict($0) }.filter { $0.id != track.id }
+    }
+
+    func randomTracks(limit: Int, genre: String?) async throws -> [Track] {
+        try await fetchRandomSongs(limit: limit, genre: genre)
+    }
+
+    func fetchShares() async throws -> [NavidromeShareEntry] {
+        let items = try await subsonicRequest(path: "getShares")
+        guard let root = navidromeDict(items["shares"]) else { return [] }
+        let rows = childDictArray(from: root, key: "share")
+        return rows.compactMap { parseShareEntry($0) }
+    }
+
+    func createShare(forItemId id: String, description: String?) async throws -> NavidromeShareEntry {
+        var query: [String: String] = ["id": id]
+        if let description, !description.isEmpty {
+            query["description"] = description
+        }
+        let items = try await subsonicRequest(path: "createShare", query: query)
+        guard let root = navidromeDict(items["shares"]) else {
+            throw URLError(.cannotParseResponse)
+        }
+        let rows = childDictArray(from: root, key: "share")
+        guard let entry = rows.compactMap({ parseShareEntry($0) }).first else {
+            throw URLError(.cannotParseResponse)
+        }
+        return entry
+    }
+
+    func deleteShare(id: String) async throws {
+        _ = try await subsonicRequest(path: "deleteShare", query: ["id": id])
+    }
+
+    private func parseShareEntry(_ dict: [String: Any]) -> NavidromeShareEntry? {
+        guard let id = navidromeCoerceString(dict["id"]) else { return nil }
+        let urlRaw = navidromeCoerceString(dict["url"]) ?? navidromeCoerceString(dict["shareUrl"])
+        guard let urlRaw, let url = URL(string: urlRaw) else { return nil }
+        let description = navidromeCoerceString(dict["description"])
+        let created = navidromeOptionalDate(dict["created"])
+        let expires = navidromeOptionalDate(dict["expires"])
+        let visitCount = navidromeInt(dict["visitCount"]) ?? 0
+        let maxVisits = navidromeInt(dict["maxVisits"])
+        let entryDict = navidromeDict(dict["entry"])
+        let entry: NavidromeShareTarget? = entryDict.flatMap { child in
+            guard let entryId = navidromeCoerceString(child["id"]) else { return nil }
+            return NavidromeShareTarget(
+                id: entryId,
+                title: navidromeCoerceString(child["title"]),
+                artist: navidromeCoerceString(child["artist"]),
+                album: navidromeCoerceString(child["album"]),
+                kind: navidromeCoerceString(child["isDir"]).map { $0 == "true" ? "folder" : "song" },
+            )
+        }
+        return NavidromeShareEntry(
+            id: id,
+            url: url,
+            description: description,
+            created: created,
+            expires: expires,
+            visitCount: visitCount,
+            maxVisits: maxVisits,
+            entry: entry,
+        )
     }
 
     func searchCatalog(query: String, limit: Int) async throws -> CatalogSearchResults {
@@ -1325,7 +1682,7 @@ final class NavidromeClient: MusicLibraryProviding {
 
     private func subsonicRequest(path: String, query: [String: String] = [:], repeatedQuery: [(String, String)] = []) async throws -> [String: Any] {
         let url = try buildURL(path: path, query: query, repeatedQuery: repeatedQuery)
-        let (data, res) = try await URLSession.shared.data(from: url)
+        let (data, res) = try await URLSession.lyra.data(from: url)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
@@ -1417,28 +1774,41 @@ enum NavidromeLyricsParser {
     }
 
     static func parseDetailed(plain: String) -> ParseResult {
+        var globalOffset: TimeInterval = 0
         var synced: [LyricLine] = []
         var unsynced: [String] = []
 
         for row in plain.split(separator: "\n", omittingEmptySubsequences: false) {
             let s = String(row).trimmingCharacters(in: .whitespacesAndNewlines)
             if s.isEmpty { continue }
+            if let offset = parseOffsetLine(s) {
+                globalOffset += offset
+                continue
+            }
             if isMetadataOnlyLine(s) { continue }
 
             if let (start, text) = parseSyncedLine(s), !text.isEmpty {
-                synced.append(LyricLine(start: start, text: text))
+                synced.append(LyricLine(start: start + globalOffset, text: text))
             } else if !s.hasPrefix("[") {
                 unsynced.append(s)
             }
         }
 
-        if !synced.isEmpty {
+        if synced.lyricsAppearSynced {
             return ParseResult(lines: synced.sorted { $0.start < $1.start }, syncedLineCount: synced.count)
         }
 
-        // Plain unsynced lyrics — do not invent 5s timestamps (that desyncs from playback).
+        // Plain unsynced lyrics — do not invent timestamps (that desyncs from playback).
         let lines = unsynced.map { LyricLine(start: 0, text: $0) }
         return ParseResult(lines: lines, syncedLineCount: 0)
+    }
+
+    /// `[offset:500]` / `[offset:-500]` — global shift in milliseconds.
+    private static func parseOffsetLine(_ line: String) -> TimeInterval? {
+        guard line.lowercased().hasPrefix("[offset:"), line.hasSuffix("]") else { return nil }
+        let inner = line.dropFirst(8).dropLast()
+        guard let ms = Int(inner.trimmingCharacters(in: .whitespaces)) else { return nil }
+        return TimeInterval(ms) / 1000.0
     }
 
     /// `[ti:Title]`, `[ar:Artist]`, `[offset:500]`, etc.
@@ -1454,21 +1824,75 @@ enum NavidromeLyricsParser {
     /// Supports `[mm:ss]`, `[mm:ss.xx]`, `[mm:ss.xxx]`, `[h:mm:ss(.xx)]`, and repeated leading tags.
     private static func parseSyncedLine(_ line: String) -> (TimeInterval, String)? {
         var work = line
-        var start: TimeInterval?
+        var firstStart: TimeInterval?
         while work.hasPrefix("[") {
             guard let end = work.firstIndex(of: "]") else { break }
             let tag = String(work[work.index(after: work.startIndex)..<end])
             work = String(work[work.index(after: end)...]).trimmingCharacters(in: .whitespaces)
             if let t = parseTimeTag(tag) {
-                start = t
+                if firstStart == nil { firstStart = t }
             }
         }
-        guard let start, !work.isEmpty else { return nil }
-        return (start, work)
+        guard let start = firstStart else { return nil }
+        let cleaned = cleanInlineTimeTags(work)
+        guard !cleaned.isEmpty else { return nil }
+        return (start, cleaned)
+    }
+
+    /// Navidrome copies LRC ``[offset:±ms]`` verbatim — apply LRC semantics (add offset to line start).
+    static func structuredLineStart(lineStartMs: Double, offsetMs: Double) -> TimeInterval {
+        max(0, (lineStartMs + offsetMs) / 1000.0)
+    }
+
+    /// Parse a single LRC line that may carry leading or inline timestamps.
+    static func parseTimedLine(_ line: String) -> LyricLine? {
+        if let (start, text) = parseSyncedLine(line), !text.isEmpty {
+            return LyricLine(start: start, text: text)
+        }
+        if let inline = firstTimestamp(in: line) {
+            let display = displayText(line)
+            guard !display.isEmpty else { return nil }
+            return LyricLine(start: inline, text: display)
+        }
+        return nil
+    }
+
+    /// Display-safe lyric text with inline LRC timestamps removed.
+    static func displayText(_ text: String) -> String {
+        cleanInlineTimeTags(text)
+    }
+
+    /// Earliest `[mm:ss]` / `[h:mm:ss]` timestamp embedded anywhere in a line.
+    static func firstTimestamp(in text: String) -> TimeInterval? {
+        guard let regex = try? NSRegularExpression(pattern: inlineTimeTagPattern) else { return nil }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        var earliest: TimeInterval?
+        regex.enumerateMatches(in: text, range: range) { match, _, _ in
+            guard let match, match.numberOfRanges > 1,
+                  let tagRange = Range(match.range(at: 1), in: text) else { return }
+            guard let t = parseTimeTag(String(text[tagRange])) else { return }
+            if earliest == nil || t < earliest! { earliest = t }
+        }
+        return earliest
+    }
+
+    private static let inlineTimeTagPattern = #"\[((?:\d{1,2}:)?\d{1,2}:\d{2}(?:\.\d{1,3})?)\]"#
+
+    /// Strip enhanced-LRC inline timestamps embedded in the lyric text.
+    private static func cleanInlineTimeTags(_ text: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: inlineTimeTagPattern) else {
+            return text.trimmingCharacters(in: .whitespaces)
+        }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        let stripped = regex.stringByReplacingMatches(in: text, range: range, withTemplate: "")
+        return stripped
+            .replacingOccurrences(of: "  ", with: " ")
+            .trimmingCharacters(in: .whitespaces)
     }
 
     private static func parseTimeTag(_ tag: String) -> TimeInterval? {
-        let parts = tag.split(separator: ":", omittingEmptySubsequences: false)
+        let normalized = tag.replacingOccurrences(of: ",", with: ".")
+        let parts = normalized.split(separator: ":", omittingEmptySubsequences: false)
         guard parts.count == 2 || parts.count == 3 else { return nil }
 
         func secondsComponent(_ raw: Substring) -> TimeInterval? {

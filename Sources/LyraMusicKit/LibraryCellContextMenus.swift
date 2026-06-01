@@ -93,6 +93,11 @@ struct LibraryAlbumContextMenuContent: View {
                 Label("Share Album", systemImage: "square.and.arrow.up")
             }
         }
+
+        NavidromeShareMenuSection(
+            itemId: album.id,
+            description: "\(album.title) — \(album.artist)"
+        )
     }
 
     private func loadTracks() async throws -> [Track] {
@@ -225,6 +230,8 @@ struct LibraryPlaylistContextMenuContent: View {
                 Label("Share Playlist", systemImage: "square.and.arrow.up")
             }
         }
+
+        NavidromeShareMenuSection(itemId: playlist.id, description: playlist.name)
     }
 
     private func loadTracks() async throws -> [Track] {
@@ -324,6 +331,34 @@ extension View {
                     Label("Unpin", systemImage: "pin.slash")
                 }
             }
+        }
+    }
+
+    /// Long-press: dynamic home mixes get Play/Shuffle only; server playlists use the full menu.
+    @ViewBuilder
+    func homeMixOrPlaylistContextMenu(_ playlist: PlaylistSummary, app: AppModel) -> some View {
+        if let mix = app.homeMix(forLibraryPlaylistId: playlist.id) {
+            contextMenu {
+                Button {
+                    Task { await app.playHomeMix(mix, shuffle: false) }
+                } label: {
+                    Label("Play", systemImage: "play")
+                }
+                Button {
+                    Task { await app.playHomeMix(mix, shuffle: true) }
+                } label: {
+                    Label("Shuffle", systemImage: "shuffle")
+                }
+            } preview: {
+                MixCollageArtworkView(
+                    urls: mix.artworkURLs,
+                    fallbackSeed: "homeMix:\(mix.id)",
+                    cornerRadius: 16
+                )
+                .frame(width: libraryCellLiftSize, height: libraryCellLiftSize)
+            }
+        } else {
+            libraryPlaylistContextMenu(playlist)
         }
     }
 

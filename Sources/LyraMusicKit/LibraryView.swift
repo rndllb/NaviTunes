@@ -615,10 +615,15 @@ struct LibraryPlaylistsView: View {
             server = app.libraryPlaylists.filter { playlistIdsWithDownloads.contains($0.id) }
         }
         let sorted = sortPlaylists(server)
+        var result: [PlaylistSummary] = []
         if let favoriteSongsEntry {
-            return [favoriteSongsEntry] + sorted
+            result.append(favoriteSongsEntry)
         }
-        return sorted
+        if filter == .all, app.showHomeMixesInPlaylists {
+            result += app.homeMixes.map { $0.asPlaylistSummary() }
+        }
+        result += sorted
+        return result
     }
 
     private var searchFilteredPlaylists: [PlaylistSummary] {
@@ -685,6 +690,8 @@ struct LibraryPlaylistsView: View {
     private func destination(for playlist: PlaylistSummary) -> some View {
         if playlist.id == favoriteSongsId {
             FavoritePlaylistView(downloadsOnly: filter == .downloads)
+        } else if let mixId = HomeMix.mixId(fromLibraryPlaylistId: playlist.id) {
+            ServerPlaylistDetailView(homeMixId: mixId)
         } else {
             ServerPlaylistDetailView(playlist: playlist)
         }
@@ -695,11 +702,17 @@ struct LibraryPlaylistsView: View {
             VStack(spacing: 0) {
                 if displayedPlaylists.isEmpty {
                     ContentUnavailableView(
-                        filter == .favorites ? "No Favorited Playlists" : "No Downloaded Playlists",
-                        systemImage: filter == .favorites ? "star" : "arrow.down.circle",
-                        description: Text(filter == .favorites
-                            ? "Long-press a playlist to add it to Favorites."
-                            : "Download songs from a playlist to see it here.")
+                        filter == .favorites ? "No Favorited Playlists"
+                            : filter == .downloads ? "No Downloaded Playlists"
+                            : "No Playlists",
+                        systemImage: filter == .favorites ? "star" : filter == .downloads ? "arrow.down.circle" : "music.note.list",
+                        description: Text(
+                            filter == .favorites
+                                ? "Long-press a playlist to add it to Favorites."
+                                : filter == .downloads
+                                    ? "Download songs from a playlist to see it here."
+                                    : "Create a playlist with the + button, or keep listening to build personalized mixes."
+                        )
                     )
                     .padding(.top, 40)
                 } else if searchFilteredPlaylists.isEmpty {
@@ -712,7 +725,7 @@ struct LibraryPlaylistsView: View {
                                 gridCell(playlist)
                             }
                             .buttonStyle(.plain)
-                            .libraryPlaylistContextMenu(playlist)
+                            .homeMixOrPlaylistContextMenu(playlist, app: app)
                         }
                     }
                     .padding(.horizontal, 20)
@@ -724,7 +737,7 @@ struct LibraryPlaylistsView: View {
                             listRow(playlist)
                         }
                         .buttonStyle(.plain)
-                        .libraryPlaylistContextMenu(playlist)
+                        .homeMixOrPlaylistContextMenu(playlist, app: app)
                         .musicChevronRowDivider(.playlistArtwork, shows: index < searchFilteredPlaylists.count - 1)
                     }
                 }
@@ -803,7 +816,10 @@ struct LibraryPlaylistsView: View {
             }
         }
         .task { await app.refreshLibraryPlaylists() }
-        .refreshable { await app.refreshLibraryPlaylists() }
+        .refreshable {
+            await app.refreshLibraryPlaylists()
+            app.refreshHomeMixes()
+        }
     }
 
     private func refreshPlaylistDownloadIndexIfNeeded() async {
@@ -848,6 +864,13 @@ struct LibraryPlaylistsView: View {
     private func playlistArtworkFixed(_ playlist: PlaylistSummary, size: CGFloat, cornerRadius: CGFloat) -> some View {
         if playlist.id == favoriteSongsId {
             FavoriteSongsPlaylistArtwork(cornerRadius: cornerRadius, size: size)
+        } else if let mix = app.homeMix(forLibraryPlaylistId: playlist.id) {
+            MixCollageArtworkView(
+                urls: mix.artworkURLs,
+                fallbackSeed: "homeMix:\(mix.id)",
+                cornerRadius: cornerRadius
+            )
+            .frame(width: size, height: size)
         } else {
             AlbumArtworkView(url: playlist.artworkURL, cornerRadius: cornerRadius)
                 .frame(width: size, height: size)
@@ -858,6 +881,12 @@ struct LibraryPlaylistsView: View {
     private func playlistArtworkFill(_ playlist: PlaylistSummary, cornerRadius: CGFloat) -> some View {
         if playlist.id == favoriteSongsId {
             FavoriteSongsPlaylistArtwork(cornerRadius: cornerRadius)
+        } else if let mix = app.homeMix(forLibraryPlaylistId: playlist.id) {
+            MixCollageArtworkView(
+                urls: mix.artworkURLs,
+                fallbackSeed: "homeMix:\(mix.id)",
+                cornerRadius: cornerRadius
+            )
         } else {
             AlbumArtworkView(url: playlist.artworkURL, cornerRadius: cornerRadius)
         }
@@ -878,6 +907,9 @@ struct LibraryPlaylistsView: View {
     }
 
     private func subtitleText(_ playlist: PlaylistSummary) -> String {
+        if let mix = app.homeMix(forLibraryPlaylistId: playlist.id) {
+            return mix.libraryDetailSubtitle
+        }
         if let n = playlist.songCount { return n == 1 ? "1 song" : "\(n) songs" }
         return "Playlist"
     }
@@ -1289,15 +1321,7 @@ struct FavoritePlaylistView: View {
     }
 
     private func cacheOffline(track: Track) async {
-        guard let lib = app.activeLibrary else { return }
-        do {
-            let url = try lib.offlineDownloadURL(for: track)
-            try await app.offline.cache(track: track, remote: url, headers: lib.httpHeadersForMediaRequests())
-        } catch is CancellationError {
-            return
-        } catch {
-            app.errorMessage = error.localizedDescription
-        }
+        app.enqueueOfflineTrack(track)
     }
 
     private func scopedTracks(_ loaded: [Track]) -> [Track] {
@@ -1324,26 +1348,22 @@ struct FavoritePlaylistView: View {
     }
 
     private func removeAllFavoritesOfflineDownloads() {
-        app.removeOfflineDownloads(trackIds: tracks.map(\.id))
+        app.removeOfflineCachedItem(itemId: OfflineDownloadQueueItem.favoritesItemId)
     }
 
     private func removeAllFavoritesFromLibraryAndOffline() async {
-        app.removeOfflineDownloads(trackIds: tracks.map(\.id))
+        app.removeOfflineCachedItem(itemId: OfflineDownloadQueueItem.favoritesItemId)
         for track in tracks where app.isSongInLibrary(track.id) {
             await app.removeSongFromLibrary(track)
         }
     }
 
     private func downloadAllTracks() async {
-        guard let lib = app.activeLibrary, !filtered.isEmpty else { return }
+        guard app.activeLibrary != nil, !filtered.isEmpty else { return }
         isDownloadingAll = true
         defer { isDownloadingAll = false }
-        for track in filtered where !app.offline.downloadedTrackIds.contains(track.id) {
-            do {
-                let url = try lib.offlineDownloadURL(for: track)
-                try await app.offline.cache(track: track, remote: url, headers: lib.httpHeadersForMediaRequests())
-            } catch {}
-        }
+        app.enqueueOfflineFavorites(tracks: filtered)
+        app.showTransientToast("Added to download queue")
     }
 
     private func playAll() async {
@@ -1645,6 +1665,7 @@ struct LibraryDownloadedView: View {
             let known = ids.compactMap { app.discoveryTrackById[$0] }
             app.offline.backfillRecordsIfMissing(knownTracks: known)
             app.offline.reloadDownloadedTrackIdsFromManifest()
+            await app.offline.enrichCachedArtworkIfNeeded()
         }
         recentlyDownloadedAlbums = offline.recentlyDownloadedAlbums(limit: 60)
     }
