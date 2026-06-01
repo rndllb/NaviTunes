@@ -24,6 +24,13 @@ struct NowPlayingView: View {
     @Binding var isPresented: Bool
     @State private var showLyrics = false
     @State private var showQueue = false
+    /// Handoff flag for the queue's now-playing artwork. While `false` (during the
+    /// open/close morph) the floating ``sharedHeader`` artwork is the visible one
+    /// and morphs big↔small reliably. Once the open animation settles it flips
+    /// `true`, fading the morph artwork out and the real *in-list* row artwork in —
+    /// at identical coordinates, so the swap is seamless and the now-playing row
+    /// then scrolls with the rest of the queue / history.
+    @State private var queueArtworkInList = false
     @State private var libraryPath: [NowPlayingLibraryRoute] = []
     /// Which of the three paged queue sections is currently snapped. Drives the
     /// inter-section haptic so each swipe-and-snap fires its own impact, and
@@ -178,6 +185,11 @@ struct NowPlayingView: View {
                     // the same depth, not between branches buried inside per-mode
                     // subtrees.
                     sharedHeader(track: track)
+                        // Draw the morphing artwork above the queue list so it can
+                        // float over the list's reserved (clear) first-row slot
+                        // during the open/close morph, then hand off to the in-list
+                        // artwork once settled.
+                        .zIndex(1)
 
                     // Each mode lives inside a `Group` that's permanently in the
                     // ZStack — only the inner conditional changes. That keeps
@@ -263,6 +275,7 @@ struct NowPlayingView: View {
             if player.activeTrack.map(isLiveRadio) == true {
                 showLyrics = false
                 showQueue = false
+                queueArtworkInList = false
             }
         }
         .onAppear {
@@ -410,6 +423,43 @@ struct NowPlayingView: View {
         return title.isEmpty ? nil : title
     }
 
+    /// Inline now-playing row pinned as the first row of the queue list — title,
+    /// artist menu, star and ellipsis live here and scroll with the list. The
+    /// artwork slot is *reserved* (a clear 56×56 placeholder keeps the title from
+    /// shifting); the real artwork only appears once ``queueArtworkInList`` flips
+    /// true. Until then the floating ``sharedHeader`` artwork occupies the slot
+    /// mid-morph and hands off here at identical coordinates.
+    private func queueNowPlayingModuleRow(track: Track) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            ZStack {
+                Color.clear.frame(width: 56, height: 56)
+                artworkView(for: track, cornerRadius: 6)
+                    .frame(width: 56, height: 56)
+                    .shadow(
+                        color: .black.opacity(backdropPalette.prefersDarkHeroChrome ? 0.22 : 0.45),
+                        radius: 6,
+                        y: 4,
+                    )
+                    .opacity(queueArtworkInList ? 1 : 0)
+                    .animation(.easeInOut(duration: 0.18), value: queueArtworkInList)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(track.title)
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(fgPrimary)
+                    .lineLimit(1)
+                compactArtistMenu(track: track)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            compactHeaderActionButtons(track: track)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 14)
+        .padding(.bottom, 6)
+    }
+
     private var queueListClearButton: some View {
         Button {
             player.clearUserQueue()
@@ -487,6 +537,15 @@ struct NowPlayingView: View {
         let hasUserQueue = !userQueue.isEmpty
         let hasContinue = !continuePlaying.isEmpty
         return List {
+            Section {
+                queueNowPlayingModuleRow(track: track)
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .moveDisabled(true)
+                    .deleteDisabled(true)
+            }
+
             if hasUserQueue {
                 Section {
                     ForEach(userQueue, id: \.id) { t in
@@ -1082,6 +1141,10 @@ struct NowPlayingView: View {
     /// the compact morph and desync the artwork.
     private func sharedHeader(track: Track) -> some View {
         let compact = showLyrics || showQueue
+        // Queue mode reserves zero header height (the now-playing module lives
+        // inline as the first list row) and hides the compact title block — only
+        // the artwork morph is shared. Lyrics keeps the pinned compact header.
+        let inQueue = showQueue
         let bigSize = albumArtPlayingSide
         let smallSize: CGFloat = 56
         let artworkSize: CGFloat = compact ? smallSize : bigSize
@@ -1096,9 +1159,14 @@ struct NowPlayingView: View {
         let topPad: CGFloat = 14
         let bottomPad: CGFloat = compact ? 12 : 24
         let standardOverscaleHeight = bigSize * albumArtPlayOverscale
-        let containerHeight: CGFloat = compact
-            ? (smallSize + topPad + bottomPad)
-            : (standardOverscaleHeight + topPad + bottomPad)
+        let containerHeight: CGFloat = {
+            if !compact { return standardOverscaleHeight + topPad + bottomPad }
+            // Collapse to nothing in queue mode so the list rises to the top and
+            // the morph artwork floats over its reserved first-row slot. The
+            // artwork still positions at `topPad + size/2`, matching the in-list
+            // row, so the handoff is seamless.
+            return inQueue ? 0 : (smallSize + topPad + bottomPad)
+        }()
 
         return GeometryReader { geo in
             let centerX = geo.size.width / 2
@@ -1119,8 +1187,12 @@ struct NowPlayingView: View {
                         y: compact ? 4 : 12,
                     )
                     .position(x: xCenter, y: yCenter)
+                    // Handoff: once the queue is fully open this fades out and the
+                    // real in-list row artwork fades in at the same coordinates.
+                    .opacity(inQueue && queueArtworkInList ? 0 : 1)
+                    .animation(.easeInOut(duration: 0.18), value: queueArtworkInList)
 
-                if compact {
+                if compact && !inQueue {
                     HStack(alignment: .center, spacing: 12) {
                         Color.clear.frame(width: smallSize, height: smallSize)
                         VStack(alignment: .leading, spacing: 2) {
@@ -1150,7 +1222,7 @@ struct NowPlayingView: View {
         }
         .frame(height: containerHeight)
         .overlay(alignment: .bottom) {
-            if compact {
+            if compact && !inQueue {
                 Rectangle().fill(fgDivider).frame(height: 0.5)
             }
         }
@@ -1507,6 +1579,7 @@ struct NowPlayingView: View {
                 isEnabled: !liveRadio,
                 iconFont: .system(size: 20, weight: .semibold),
             ) {
+                queueArtworkInList = false
                 withAnimation(.spring(duration: 0.46, bounce: 0.16)) {
                     showLyrics.toggle()
                     if showLyrics { showQueue = false }
@@ -1545,9 +1618,22 @@ struct NowPlayingView: View {
                 isEnabled: !liveRadio,
                 iconFont: .system(size: 20, weight: .semibold),
             ) {
-                withAnimation(.spring(duration: 0.46, bounce: 0.16)) {
-                    showQueue.toggle()
-                    if showQueue { showLyrics = false }
+                if showQueue {
+                    // Closing: drop the in-list artwork first so the floating
+                    // header artwork takes over the slot and morphs back to big.
+                    queueArtworkInList = false
+                    withAnimation(.spring(duration: 0.46, bounce: 0.16)) {
+                        showQueue = false
+                    }
+                } else {
+                    withAnimation(.spring(duration: 0.46, bounce: 0.16)) {
+                        showQueue = true
+                        showLyrics = false
+                    } completion: {
+                        // Hand the artwork off to the scrolling in-list row only
+                        // once the open morph has fully settled.
+                        if showQueue { queueArtworkInList = true }
+                    }
                 }
             }
         }
