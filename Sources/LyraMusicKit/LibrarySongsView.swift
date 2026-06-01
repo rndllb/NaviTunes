@@ -348,15 +348,7 @@ struct LibrarySongsView: View {
     }
 
     private func cacheOffline(track: Track) async {
-        guard let lib = app.activeLibrary else { return }
-        do {
-            let url = try lib.offlineDownloadURL(for: track)
-            try await app.offline.cache(track: track, remote: url, headers: lib.httpHeadersForMediaRequests())
-        } catch is CancellationError {
-            return
-        } catch {
-            app.errorMessage = error.localizedDescription
-        }
+        app.enqueueOfflineTrack(track)
     }
 
     private func albumSummary(for track: Track) -> AlbumSummary {
@@ -821,10 +813,10 @@ struct LibrarySongRow: View, Equatable {
                         .tint(Color.primary)
                     }
 
-                    Section {
-                        Button {} label: { Label("Suggest Less", systemImage: "hand.thumbsdown") }
-                    }
-                    .tint(Color.primary)
+                    NavidromeShareMenuSection(
+                        itemId: track.id,
+                        description: "\(track.title) — \(track.artist)"
+                    )
 
                     if isOfflineCached, let onRemoveDownload {
                         Section {

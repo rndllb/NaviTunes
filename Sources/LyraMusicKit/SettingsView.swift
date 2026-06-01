@@ -2,13 +2,17 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var app: AppModel
+    @State private var imageCacheCount: Int?
+    @State private var metadataCacheCount: Int?
 
     var body: some View {
         Form {
             accountNavigationSection
             librarySection
             syncSection
-            mediaQualitySection
+            offlineSection
+            downloadsSection
+            playbackSection
             appearanceSection
             pluginsSection
             aboutSection
@@ -24,8 +28,26 @@ struct SettingsView: View {
             // Statistics are pulled on appear rather than during bootstrap so the
             // first-launch sync doesn't pay for counts the user can't yet see.
             Task { await app.refreshLibraryStatistics() }
+            app.offline.recalculateCacheBytes()
+            Task {
+                let summary = await app.localCacheUsageSummaryAsync()
+                imageCacheCount = summary.imageCacheCount
+                metadataCacheCount = summary.metadataEntryCount
+            }
         }
     }
+
+    private static let decimalFormatter: NumberFormatter = {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        return f
+    }()
+
+    private static let byteFormatter: ByteCountFormatter = {
+        let f = ByteCountFormatter()
+        f.countStyle = .file
+        return f
+    }()
 
     // MARK: - Account
 
@@ -84,9 +106,7 @@ struct SettingsView: View {
     }
 
     private static func decimalString(_ n: Int) -> String {
-        let f = NumberFormatter()
-        f.numberStyle = .decimal
-        return f.string(from: NSNumber(value: n)) ?? "\(n)"
+        decimalFormatter.string(from: NSNumber(value: n)) ?? "\(n)"
     }
 
     // MARK: - Sync
@@ -123,46 +143,173 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Media quality
+    // MARK: - Offline
 
-    private var mediaQualitySection: some View {
+    private var offlineSection: some View {
         Section {
-            networkQualityHint
-            Picker("Wi‑Fi streaming", selection: $app.wifiStreamQuality) {
-                ForEach(StreamQualityTier.allCases) { tier in
-                    Text(tier.title).tag(tier)
+            Toggle("Offline mode", isOn: $app.offlineMode)
+                .tint(MusicDesign.accent)
+            Toggle("Auto offline", isOn: $app.autoOfflineEnabled)
+                .tint(MusicDesign.accent)
+            if app.autoOfflineEnabled {
+                Picker("Auto offline when", selection: $app.autoOfflineMode) {
+                    ForEach(AutoOfflineMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .tint(MusicDesign.accent)
+                if app.autoOfflineMode == .homeWifi {
+                    if app.homeWifiSSIDs.isEmpty {
+                        Text("Add your home Wi‑Fi network name (SSID) below. Location permission may be required on device.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(app.homeWifiSSIDs, id: \.self) { ssid in
+                        HStack {
+                            Text(ssid)
+                            Spacer()
+                            Button("Remove", role: .destructive) {
+                                app.removeHomeWifiSSID(ssid)
+                            }
+                            .font(.caption)
+                        }
+                    }
+                    HomeWifiSSIDField(onAdd: { app.addHomeWifiSSID($0) })
                 }
             }
-            .tint(MusicDesign.accent)
-            Picker("Cellular streaming", selection: $app.cellularStreamQuality) {
-                ForEach(StreamQualityTier.allCases) { tier in
-                    Text(tier.title).tag(tier)
-                }
+            if app.effectiveOfflineMode {
+                Label("Browsing downloaded content only", systemImage: "wifi.slash")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .tint(MusicDesign.accent)
-            Picker("Downloads", selection: $app.downloadQualityTier) {
-                ForEach(DownloadQualityTier.allCases) { tier in
-                    Text(tier.title).tag(tier)
-                }
-            }
-            .tint(MusicDesign.accent)
         } header: {
-            Text("Media quality")
+            Text("Offline")
         } footer: {
-            Text("Streaming tier follows the active network (Wi‑Fi vs cellular). Downloads use the tier you pick here.")
+            Text("Offline mode limits Discovery search and server catalog browsing to downloaded content.")
         }
     }
 
-    @ViewBuilder
-    private var networkQualityHint: some View {
-        if app.prefersCellularStreamingQuality {
-            Label("Using cellular streaming tier", systemImage: "antenna.radiowaves.left.and.right")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        } else {
-            Label("Using Wi‑Fi streaming tier", systemImage: "wifi")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+    // MARK: - Downloads
+
+    private var downloadsSection: some View {
+        Section {
+            LabeledContent("Downloaded files") {
+                Text(Self.formatBytes(app.offline.totalCacheBytes))
+                    .foregroundStyle(.secondary)
+            }
+            LabeledContent("Tracks on disk") {
+                Text("\(app.offline.downloadedTrackIds.count)")
+                    .foregroundStyle(.secondary)
+            }
+            Picker("Storage limit", selection: $app.offlineStorageLimitMode) {
+                ForEach(OfflineStorageLimitMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .tint(MusicDesign.accent)
+            if app.offlineStorageLimitMode == .fixed {
+                Stepper(value: $app.maxCacheSizeGB, in: 1...512, step: 1) {
+                    Text("Cap: \(Int(app.maxCacheSizeGB)) GB")
+                }
+            }
+            Picker("Concurrent downloads", selection: $app.maxConcurrentDownloads) {
+                ForEach(OfflineMaxConcurrentDownloads.allCases) { value in
+                    Text(value.title).tag(value)
+                }
+            }
+            .tint(MusicDesign.accent)
+            Toggle("Wi‑Fi only downloads", isOn: $app.wifiOnlyDownloads)
+                .tint(MusicDesign.accent)
+            Toggle("Auto-download favorites", isOn: $app.favoritesAutoDownload)
+                .tint(MusicDesign.accent)
+            NavigationLink {
+                DownloadQueueView()
+                    .environmentObject(app)
+                    .environmentObject(app.offline)
+            } label: {
+                HStack {
+                    Text("Download queue")
+                    Spacer()
+                    if activeDownloadCount > 0 {
+                        Text("\(activeDownloadCount)")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            NavigationLink {
+                DownloadedTracksBrowserView()
+                    .environmentObject(app.offline)
+            } label: {
+                Text("Browse downloaded music")
+            }
+            NavigationLink {
+                ImageCacheBrowserView()
+                    .environmentObject(app.offline)
+            } label: {
+                HStack {
+                    Text("Browse image cache")
+                    Spacer()
+                    Text(cacheCountLabel(imageCacheCount))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            NavigationLink {
+                MetadataCacheBrowserView()
+            } label: {
+                HStack {
+                    Text("Browse metadata cache")
+                    Spacer()
+                    Text(cacheCountLabel(metadataCacheCount))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            NavigationLink {
+                OfflineCacheBrowserView()
+                    .environmentObject(app.offline)
+            } label: {
+                Text("Manage downloaded groups")
+            }
+            DangerousStorageActionsSection()
+                .environmentObject(app)
+        } header: {
+            Text("Downloads")
+        } footer: {
+            if app.offline.isStorageFull {
+                Text("Storage limit reached — free space or raise the cap to resume downloads.")
+            } else if let budget = app.offline.availableBudgetBytes() {
+                Text("\(Self.formatBytes(budget)) remaining under your cap.")
+            }
+        }
+    }
+
+    private var activeDownloadCount: Int {
+        app.offline.downloadQueue.reduce(0) { count, item in
+            count + (item.isTerminal ? 0 : 1)
+        }
+    }
+
+    private func cacheCountLabel(_ count: Int?) -> String {
+        count.map(String.init) ?? "—"
+    }
+
+    private static func formatBytes(_ bytes: Int64) -> String {
+        byteFormatter.string(fromByteCount: bytes)
+    }
+
+    // MARK: - Sound & playback
+
+    private var playbackSection: some View {
+        Section {
+            NavigationLink {
+                SettingsPlaybackView()
+            } label: {
+                Label("Sound & Playback", systemImage: "speaker.wave.2")
+            }
+            NavigationLink {
+                SettingsLibraryDataView()
+            } label: {
+                Label("Library & Data", systemImage: "externaldrive")
+            }
         }
     }
 

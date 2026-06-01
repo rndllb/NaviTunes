@@ -87,8 +87,6 @@ struct SongOverflowPanel: View {
             }
             listDivider
             goToAlbumRow
-            listDivider
-            listPlaceholderRow(icon: "hand.thumbsdown", title: "Suggest Less")
             if showsRemoveDownloadRow {
                 listDivider
                 listActionRow(icon: "arrow.down.circle.dotted", title: "Remove Download") {
@@ -287,8 +285,6 @@ struct DowntifySongOverflowPanel: View {
             }
             listDivider
             albumRow
-            listDivider
-            listPlaceholderRow(icon: "hand.thumbsdown", title: "Suggest Less")
         }
         .frame(width: panelWidth)
         .panelChrome(cornerRadius: panelCorner)

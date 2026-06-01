@@ -19,6 +19,11 @@ public enum BackendKind: String, CaseIterable, Identifiable {
     }
 }
 
+enum ActiveServerURLRole: String, Equatable {
+    case primary
+    case secondary
+}
+
 enum NewTabBrowseBackend: Equatable {
     case none
     case musicBrainz
@@ -63,6 +68,12 @@ public final class AppModel: ObservableObject {
 
     @Published var backendKind: BackendKind = .jellyfin
     @Published var baseURLString: String = ""
+    @Published var secondaryURLString: String = ""
+    @Published var serverFailoverMode: ServerFailoverMode = .disabled {
+        didSet { UserDefaults.standard.set(serverFailoverMode.rawValue, forKey: Self.serverFailoverModeKey) }
+    }
+    /// Which configured server URL is currently wired into the active client.
+    @Published var activeServerURLRole: ActiveServerURLRole = .primary
     @Published var username: String = ""
     @Published var password: String = ""
     @Published var isSignedIn: Bool = false
@@ -122,6 +133,8 @@ public final class AppModel: ObservableObject {
 
     /// Live merge of the local play log and the server's recently-played albums.
     @Published private(set) var homeRecentlyPlayed: [RecentPlayedItem] = []
+    /// On-device personalized mixes for the Home → Tuned In shelf.
+    @Published private(set) var homeMixes: [HomeMix] = []
     @Published private(set) var libraryAlbumsLoadError: String?
 
     /// Normalized track titles → normalized artist strings (for Downtify vs library matching).
@@ -245,15 +258,37 @@ public final class AppModel: ObservableObject {
     private static let wifiStreamQualityKey = "lyraWifiStreamQuality"
     private static let cellularStreamQualityKey = "lyraCellularStreamQuality"
     private static let downloadQualityKey = "lyraDownloadQuality"
+    private static let wifiStreamBitRateKey = "lyraWifiStreamBitRate"
+    private static let cellularStreamBitRateKey = "lyraCellularStreamBitRate"
+    private static let wifiStreamFormatKey = "lyraWifiStreamFormat"
+    private static let cellularStreamFormatKey = "lyraCellularStreamFormat"
+    private static let downloadFormatKey = "lyraDownloadFormat"
+    private static let skipBackwardIntervalKey = "lyraSkipBackwardInterval"
+    private static let skipForwardIntervalKey = "lyraSkipForwardInterval"
+    private static let showSkipIntervalButtonsKey = "lyraShowSkipIntervalButtons"
+    private static let showSleepTimerButtonKey = "lyraShowSleepTimerButton"
+    private static let remoteControlModeKey = "lyraRemoteControlMode"
+    private static let playbackRateKey = "lyraPlaybackRate"
+    private static let artistPlayModeKey = "lyraArtistPlayMode"
+    private static let showHomeMixesInPlaylistsKey = "lyraShowHomeMixesInPlaylists"
+    private static let metadataRefreshThresholdKey = "lyraMetadataRefreshThreshold"
+    private static let serverFailoverModeKey = "lyraServerFailoverMode"
+    private static let playbackSettingsMigratedV2Key = "lyraPlaybackSettingsMigratedV2"
     private static let songListItemSizeKey = "lyraSongListItemSize"
     private static let lastLibrarySyncAtKey = "lyraLastLibrarySyncAt"
     private static let volumeNormalizationKey = "lyraVolumeNormalization"
-    private static let eqMasterEnabledKey = "lyraEQMasterEnabled"
-    private static let eqBandGainsKey = "lyraEQBandGainsDb"
-    private static let eqPresetsKey = "lyraEQPresets"
     private static let albumBackdropEnabledKey = "lyraAlbumBackdropEnabled"
     private static let playlistBackdropEnabledKey = "lyraPlaylistBackdropEnabled"
     private static let playerBackdropEnabledKey = "lyraPlayerBackdropEnabled"
+    private static let offlineModeKey = "lyraOfflineMode"
+    private static let autoOfflineEnabledKey = "lyraAutoOfflineEnabled"
+    private static let autoOfflineModeKey = "lyraAutoOfflineMode"
+    private static let homeWifiSSIDsKey = "lyraHomeWifiSSIDs"
+    private static let wifiOnlyDownloadsKey = "lyraWifiOnlyDownloads"
+    private static let maxConcurrentDownloadsKey = "lyraMaxConcurrentDownloads"
+    private static let storageLimitModeKey = "lyraStorageLimitMode"
+    private static let maxCacheSizeGBKey = "lyraMaxCacheSizeGB"
+    private static let favoritesAutoDownloadKey = "lyraFavoritesAutoDownload"
 
     @Published var themePreference: AppThemePreference = .system {
         didSet {
@@ -275,12 +310,179 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    @Published var downloadQualityTier: DownloadQualityTier = .original {
+    @Published var downloadQualityTier: DownloadQualityTier = .kbps320 {
         didSet {
             UserDefaults.standard.set(downloadQualityTier.rawValue, forKey: Self.downloadQualityKey)
             pushQualitySettingsToClients()
         }
     }
+
+    @Published var wifiStreamBitRate: StreamBitRateOption = .none {
+        didSet {
+            UserDefaults.standard.set(wifiStreamBitRate.rawValue, forKey: Self.wifiStreamBitRateKey)
+            pushQualitySettingsToClients()
+        }
+    }
+
+    @Published var cellularStreamBitRate: StreamBitRateOption = .kbps320 {
+        didSet {
+            UserDefaults.standard.set(cellularStreamBitRate.rawValue, forKey: Self.cellularStreamBitRateKey)
+            pushQualitySettingsToClients()
+        }
+    }
+
+    @Published var wifiStreamFormat: StreamFormatOption = .raw {
+        didSet {
+            UserDefaults.standard.set(wifiStreamFormat.rawValue, forKey: Self.wifiStreamFormatKey)
+            pushQualitySettingsToClients()
+        }
+    }
+
+    @Published var cellularStreamFormat: StreamFormatOption = .raw {
+        didSet {
+            UserDefaults.standard.set(cellularStreamFormat.rawValue, forKey: Self.cellularStreamFormatKey)
+            pushQualitySettingsToClients()
+        }
+    }
+
+    @Published var downloadFormat: DownloadFormatOption = .mp3 {
+        didSet {
+            UserDefaults.standard.set(downloadFormat.rawValue, forKey: Self.downloadFormatKey)
+            pushQualitySettingsToClients()
+        }
+    }
+
+    @Published var skipBackwardInterval: SkipIntervalOption = .s15 {
+        didSet {
+            UserDefaults.standard.set(skipBackwardInterval.rawValue, forKey: Self.skipBackwardIntervalKey)
+            syncPlaybackPreferencesToEngine()
+        }
+    }
+
+    @Published var skipForwardInterval: SkipIntervalOption = .s30 {
+        didSet {
+            UserDefaults.standard.set(skipForwardInterval.rawValue, forKey: Self.skipForwardIntervalKey)
+            syncPlaybackPreferencesToEngine()
+        }
+    }
+
+    @Published var showSkipIntervalButtons = false {
+        didSet {
+            UserDefaults.standard.set(showSkipIntervalButtons, forKey: Self.showSkipIntervalButtonsKey)
+            syncPlaybackPreferencesToEngine()
+        }
+    }
+
+    @Published var showSleepTimerButton = false {
+        didSet {
+            UserDefaults.standard.set(showSleepTimerButton, forKey: Self.showSleepTimerButtonKey)
+            syncPlaybackPreferencesToEngine()
+        }
+    }
+
+    @Published var remoteControlMode: RemoteControlMode = .skipTrack {
+        didSet {
+            UserDefaults.standard.set(remoteControlMode.rawValue, forKey: Self.remoteControlModeKey)
+            syncPlaybackPreferencesToEngine()
+        }
+    }
+
+    @Published var defaultPlaybackRate: PlaybackRateOption = .normal {
+        didSet {
+            UserDefaults.standard.set(defaultPlaybackRate.rawValue, forKey: Self.playbackRateKey)
+            player.playbackRate = defaultPlaybackRate.rawValue
+        }
+    }
+
+    @Published var artistPlayMode: ArtistPlayMode = .topSongs {
+        didSet {
+            UserDefaults.standard.set(artistPlayMode.rawValue, forKey: Self.artistPlayModeKey)
+        }
+    }
+
+    /// When on, personalized Tuned In mixes also appear in Library → Playlists (All).
+    @Published var showHomeMixesInPlaylists = true {
+        didSet {
+            UserDefaults.standard.set(showHomeMixesInPlaylists, forKey: Self.showHomeMixesInPlaylistsKey)
+        }
+    }
+
+    @Published var metadataRefreshThreshold: MetadataRefreshThreshold = .oneWeek {
+        didSet {
+            UserDefaults.standard.set(metadataRefreshThreshold.rawValue, forKey: Self.metadataRefreshThresholdKey)
+        }
+    }
+
+    /// Cached album track lists for proactive metadata refresh before playback.
+    private(set) var albumTracksCache: [String: CachedAlbumTracks] = [:]
+
+    let scrobbleService = ScrobbleService()
+
+    @Published var offlineMode = false {
+        didSet {
+            UserDefaults.standard.set(offlineMode, forKey: Self.offlineModeKey)
+            applyEffectiveOfflinePresentation()
+        }
+    }
+
+    @Published var autoOfflineEnabled = false {
+        didSet {
+            UserDefaults.standard.set(autoOfflineEnabled, forKey: Self.autoOfflineEnabledKey)
+            Task { await evaluateAutoOfflineMode() }
+        }
+    }
+
+    @Published var autoOfflineMode: AutoOfflineMode = .wifiOnly {
+        didSet {
+            UserDefaults.standard.set(autoOfflineMode.rawValue, forKey: Self.autoOfflineModeKey)
+            Task { await evaluateAutoOfflineMode() }
+        }
+    }
+
+    @Published private(set) var homeWifiSSIDs: [String] = []
+
+    @Published var wifiOnlyDownloads = false {
+        didSet {
+            UserDefaults.standard.set(wifiOnlyDownloads, forKey: Self.wifiOnlyDownloadsKey)
+            offline.wifiOnlyDownloads = wifiOnlyDownloads
+            offline.kickQueueWorker()
+        }
+    }
+
+    @Published var maxConcurrentDownloads: OfflineMaxConcurrentDownloads = .three {
+        didSet {
+            UserDefaults.standard.set(maxConcurrentDownloads.rawValue, forKey: Self.maxConcurrentDownloadsKey)
+            offline.maxConcurrentDownloads = maxConcurrentDownloads
+            offline.kickQueueWorker()
+        }
+    }
+
+    @Published var offlineStorageLimitMode: OfflineStorageLimitMode = .none {
+        didSet {
+            UserDefaults.standard.set(offlineStorageLimitMode.rawValue, forKey: Self.storageLimitModeKey)
+            offline.storageLimitMode = offlineStorageLimitMode
+            offline.recalculateCacheBytes()
+        }
+    }
+
+    @Published var maxCacheSizeGB: Double = 10 {
+        didSet {
+            UserDefaults.standard.set(maxCacheSizeGB, forKey: Self.maxCacheSizeGBKey)
+            offline.maxCacheSizeGB = maxCacheSizeGB
+            offline.recalculateCacheBytes()
+        }
+    }
+
+    @Published var favoritesAutoDownload = false {
+        didSet {
+            UserDefaults.standard.set(favoritesAutoDownload, forKey: Self.favoritesAutoDownloadKey)
+        }
+    }
+
+    /// Manual offline toggle or auto-offline policy (Wi‑Fi / home SSID).
+    var effectiveOfflineMode: Bool { offlineMode || autoOfflineActive }
+    private var autoOfflineActive = false
+    private var prefersWifiLikePath = true
 
     @Published var songListItemSize: SongListItemSize = .medium {
         didSet {
@@ -300,28 +502,6 @@ public final class AppModel: ObservableObject {
     @Published var volumeNormalizationEnabled: Bool = false {
         didSet {
             UserDefaults.standard.set(volumeNormalizationEnabled, forKey: Self.volumeNormalizationKey)
-        }
-    }
-
-    @Published var eqMasterEnabled: Bool = false {
-        didSet {
-            UserDefaults.standard.set(eqMasterEnabled, forKey: Self.eqMasterEnabledKey)
-        }
-    }
-
-    /// Six EQ band gains in dB (see ``PlaybackEQBandHz``). Reserved for a future equalizer.
-    @Published var eqBandGainsDb: [Float] = [0, 0, 0, 0, 0, 0] {
-        didSet {
-            if eqBandGainsDb.count != 6 {
-                eqBandGainsDb = Array((eqBandGainsDb + Array(repeating: 0, count: 6)).prefix(6))
-            }
-            Self.persistEQGains(eqBandGainsDb)
-        }
-    }
-
-    @Published var eqPresets: [EQPreset] = [] {
-        didSet {
-            Self.persistEQPresets(eqPresets)
         }
     }
 
@@ -450,11 +630,15 @@ public final class AppModel: ObservableObject {
         offline.$downloadedTrackIds
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        offline.$downloadQueue
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
         downtify.onJobFinished = { [weak self] job in
             guard let self else { return }
             Task { await self.handleDowntifyJobFinished(job) }
         }
         loadPersistedSettings()
+        wireOfflineDownloadManager()
         startNetworkMonitor()
         loadKeychain()
         loadFavoriteTrackIdsFromDefaults()
@@ -463,14 +647,25 @@ public final class AppModel: ObservableObject {
         loadPlaylistLastPlayedDatesFromDefaults()
         killModeEnabledPlaylistIds = KillModeStore.loadEnabled()
         killModePendingRemovals = KillModeStore.loadPending()
+        scrobbleService.bind(app: self)
+        player.refreshTrackBeforePlay = { [weak self] track in
+            await self?.refreshAlbumTracksIfNeeded(for: track) ?? track
+        }
+        player.recoverStaleTrackOnFailure = { [weak self] track in
+            await self?.recoverStaleSongIDs(for: track)
+        }
+        syncPlaybackPreferencesToEngine()
+        pushQualitySettingsToClients()
         player.onTrackScrobbled = { [weak self] track, source in
             Task { @MainActor in
                 self?.recordRecentPlay(track: track, source: source)
+                self?.scrobbleService.recordCompletedScrobble(track: track, source: source)
             }
         }
         player.onTrackStarted = { [weak self] track in
             Task { @MainActor in
                 self?.recordRecentTrackPlay(track)
+                self?.scrobbleService.sendNowPlaying(track: track, source: self?.player.playbackSource)
             }
         }
         player.onTrackSkipped = { [weak self] track, source in
@@ -532,6 +727,7 @@ public final class AppModel: ObservableObject {
             errorMessage = "Invalid server URL"
             return
         }
+        let secondary = normalizedServerURL(from: secondaryURLString)
         isAuthenticating = true
         defer { isAuthenticating = false }
         let priorSessionKey = mediaSessionKey
@@ -544,6 +740,7 @@ public final class AppModel: ObservableObject {
                 navidrome = nil
                 try KeychainStore.saveJellyfin(
                     base: base,
+                    secondaryBase: secondary,
                     user: username,
                     password: password,
                     accessToken: client.sessionAccessToken,
@@ -557,6 +754,7 @@ public final class AppModel: ObservableObject {
                 navidromeUserMetadata = client.currentUserMetadata
                 try KeychainStore.saveNavidrome(
                     base: base,
+                    secondaryBase: secondary,
                     user: username,
                     password: password,
                     subsonicToken: client.sessionToken,
@@ -571,6 +769,7 @@ public final class AppModel: ObservableObject {
             }
             // Enter the app immediately after auth — library refresh can take a long time on large servers.
             isSignedIn = true
+            activeServerURLRole = .primary
             updateDeleteCapability()
             prefetchAccountAvatar()
             pushQualitySettingsToClients()
@@ -621,6 +820,7 @@ public final class AppModel: ObservableObject {
             serverConnectionHealth = .connected
         } catch {
             serverConnectionHealth = connectionHealth(for: error)
+            _ = await attemptAutomaticFailoverIfNeeded()
         }
     }
 
@@ -656,6 +856,7 @@ public final class AppModel: ObservableObject {
         recentlyAddedAlbums = []
         homeRecentlyPlayedServerAlbums = []
         homeGenreShelves = []
+        homeMixes = []
         homeSelectedGenres = nil
         recentlyPlayedEntries = []
         UserDefaults.standard.removeObject(forKey: Self.recentlyPlayedEntriesKey)
@@ -699,7 +900,13 @@ public final class AppModel: ObservableObject {
 
     /// Prefer on-disk artwork, then per-track URL, then cached album art, then server cover lookup.
     func resolvedArtworkURL(for track: Track) -> URL? {
+        guard !track.isInternetRadioStream else { return nil }
         if let local = offline.localArtworkURL(forTrackId: track.id) { return local }
+        if let localAlbum = offline.localArtworkURL(forAlbumId: track.albumId) { return localAlbum }
+        if let file = track.artworkURL, file.isFileURL,
+           FileManager.default.fileExists(atPath: file.path) {
+            return file
+        }
         switch backendKind {
         case .navidrome:
             return navidromeFreshCoverArtURL(
@@ -724,6 +931,10 @@ public final class AppModel: ObservableObject {
 
     func resolvedArtworkURL(for album: AlbumSummary) -> URL? {
         if let local = offline.localArtworkURL(forAlbumId: album.id) { return local }
+        if let file = album.artworkURL, file.isFileURL,
+           FileManager.default.fileExists(atPath: file.path) {
+            return file
+        }
         switch backendKind {
         case .navidrome:
             return navidromeFreshCoverArtURL(
@@ -829,6 +1040,7 @@ public final class AppModel: ObservableObject {
         recentlyAddedAlbums = []
         homeRecentlyPlayedServerAlbums = []
         homeGenreShelves = []
+        homeMixes = []
         homeSelectedGenres = nil
         discoveryLibraryTracks = []
         libraryPlaylists = []
@@ -1014,6 +1226,58 @@ public final class AppModel: ObservableObject {
             return rows
         }
         homeGenreShelves = indexed.sorted { $0.0 < $1.0 }.map { $0.1 }
+        rebuildHomeMixes()
+    }
+
+    func playHomeMix(_ mix: HomeMix, shuffle: Bool = true) async {
+        guard let lib = activeLibrary else { return }
+        let tracks = mix.tracks
+        guard !tracks.isEmpty else { return }
+        player.shuffleMode = shuffle ? .on : .off
+        do {
+            try await player.playAlbum(library: lib, tracks: shuffle ? tracks.shuffled() : tracks, startIndex: 0)
+            showTransientToast(shuffle ? "Shuffling \(mix.title)" : "Playing \(mix.title)")
+        } catch {
+            showTransientToast("Couldn't start mix")
+        }
+    }
+
+    func refreshHomeMixes() {
+        rebuildHomeMixes()
+    }
+
+    func homeMix(forLibraryPlaylistId id: String) -> HomeMix? {
+        guard let mixId = HomeMix.mixId(fromLibraryPlaylistId: id) else { return nil }
+        return homeMixes.first { $0.id == mixId }
+    }
+
+    private func rebuildHomeMixes() {
+        let personalAlbumIds = Set(libraryAlbumEntries.map(\.id))
+        let recentlyAddedPersonal = libraryAlbumEntries
+            .sorted { $0.added > $1.added }
+            .map(\.id)
+        let context = HomeMixBuilder.Context(
+            completedScrobbles: scrobbleService.store.completed,
+            trackLookup: { [weak self] id in self?.cachedLibraryTrack(id: id) },
+            artworkURL: { [weak self] track in
+                guard let self else { return nil }
+                return self.resolvedArtworkURL(for: track)
+            },
+            favoriteTrackIds: favoriteTrackIds,
+            libraryAlbumIds: personalAlbumIds,
+            recentlyAddedPersonalAlbumIds: recentlyAddedPersonal,
+            indexedTracks: discoveryLibraryTracks
+        )
+        homeMixes = HomeMixBuilder.buildMixes(context)
+    }
+
+    func cachedLibraryTrack(id: String) -> Track? {
+        if let track = discoveryTrackById[id] { return track }
+        if let track = recentlyPlayedTracks.first(where: { $0.id == id }) { return track }
+        for cached in albumTracksCache.values {
+            if let track = cached.tracks.first(where: { $0.id == id }) { return track }
+        }
+        return nil
     }
 
     /// Single cold-start / sign-in library refresh (deduped).
@@ -1096,9 +1360,15 @@ public final class AppModel: ObservableObject {
                 applyMagicPlaylistFetch(playlistId: resolvedId, fetch: fetch)
             }
         } catch {
-            // Don't surface this as a global error — library still functions without it,
-            // just without the user-curated overlay. Try again on the next bootstrap.
-            libraryMagicPlaylistId = nil
+            // Keep cached membership and playlist id — clearing breaks add/remove until
+            // the next successful refresh while UI still shows stale snapshot data.
+            if libraryMagicPlaylistId == nil,
+               let identity = libraryMagicPlaylistIdentity,
+               let cached = LibraryMembership.cachedPlaylistId(
+                   backend: backendKind, host: identity.host, userKey: identity.userKey
+               ) {
+                libraryMagicPlaylistId = cached
+            }
         }
     }
 
@@ -1299,8 +1569,7 @@ public final class AppModel: ObservableObject {
                 try await navidrome?.setPlaylistComment(playlistId: playlistId, comment: payload.encoded())
             }
         } catch {
-            // Best-effort: a write failure leaves the in-memory state out of sync with the
-            // server. Next ``refreshLibraryMembership`` will reconcile.
+            showTransientToast("Couldn't sync library to server")
         }
     }
 
@@ -1339,6 +1608,91 @@ public final class AppModel: ObservableObject {
         for id in trackIds {
             try? offline.remove(trackId: id)
         }
+    }
+
+    func removeOfflineCachedItem(itemId: String) {
+        try? offline.removeCachedItem(itemId: itemId)
+    }
+
+    func enqueueOfflineAlbum(_ album: AlbumSummary, tracks: [Track]) {
+        offline.enqueueAlbum(album, tracks: tracks)
+    }
+
+    func enqueueOfflinePlaylist(_ playlist: PlaylistSummary, tracks: [Track]) {
+        offline.enqueuePlaylist(playlist, tracks: tracks)
+    }
+
+    func enqueueOfflineFavorites(tracks: [Track]) {
+        offline.enqueueFavorites(tracks: tracks)
+    }
+
+    func enqueueOfflineTrack(_ track: Track) {
+        offline.enqueueTrack(trackWithResolvedArtwork(track))
+    }
+
+    public func handleAppBecameActive() {
+        offline.handleAppBecameActive()
+        Task { await evaluateAutoOfflineMode() }
+    }
+
+    func addHomeWifiSSID(_ ssid: String) {
+        let trimmed = ssid.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !homeWifiSSIDs.contains(trimmed) else { return }
+        homeWifiSSIDs.append(trimmed)
+        UserDefaults.standard.set(homeWifiSSIDs, forKey: Self.homeWifiSSIDsKey)
+        Task { await evaluateAutoOfflineMode() }
+    }
+
+    func removeHomeWifiSSID(_ ssid: String) {
+        homeWifiSSIDs.removeAll { $0 == ssid }
+        UserDefaults.standard.set(homeWifiSSIDs, forKey: Self.homeWifiSSIDsKey)
+        Task { await evaluateAutoOfflineMode() }
+    }
+
+    func searchOfflineCatalog(query: String, limit: Int = 30) -> CatalogSearchResults {
+        offline.searchCachedCatalog(query: query, limit: limit)
+    }
+
+    func localCacheUsageSummary() -> LocalCacheUsageSummary {
+        let remoteArt = ArtworkURLCache.listDiskEntries()
+        let offlineArt = offline.listOfflineArtworkEntries()
+        return offline.cacheUsageSummary(
+            imageCacheBytes: remoteArt.reduce(0) { $0 + $1.fileBytes } + offlineArt.reduce(0) { $0 + $1.fileBytes },
+            imageCacheCount: remoteArt.count + offlineArt.count,
+        )
+    }
+
+    /// Off-main disk + snapshot scan for Settings rows — avoids decoding the library snapshot during scroll.
+    func localCacheUsageSummaryAsync() async -> LocalCacheUsageSummary {
+        let trackCount = offline.downloadedTrackIds.count
+        return await Task.detached(priority: .utility) {
+            OfflineDiskCacheMetrics.computeLocalCacheUsageSummary(downloadedTrackCount: trackCount)
+        }.value
+    }
+
+    func clearImageCaches() async {
+        await clearMediaArtworkCaches()
+        offline.clearOfflineArtworkCache()
+        AccountAvatarCache.clearAll()
+    }
+
+    func clearDownloadedMusic() {
+        offline.clearAllDownloads()
+    }
+
+    func clearMetadataCache() {
+        LibrarySnapshotStore.clear()
+        clearInMemoryPlaylistRowsCache()
+    }
+
+    func clearAllLocalCaches() async {
+        clearDownloadedMusic()
+        clearMetadataCache()
+        await clearImageCaches()
+    }
+
+    func clearInMemoryPlaylistRowsCache() {
+        playlistRowsCache.removeAll()
     }
 
     /// Tracks to show under Library → Downloaded: manifest records first, then library catalog matches.
@@ -2025,17 +2379,22 @@ public final class AppModel: ObservableObject {
     }
 
     private func refreshFavoritesFromServer() async {
+        let previous = favoriteTrackIds
         switch backendKind {
         case .jellyfin:
             guard let client = jellyfin else { return }
             do {
                 favoriteTrackIds = try await client.fetchFavoriteTrackIds(limit: 20_000)
-            } catch {}
+            } catch {
+                favoriteTrackIds = previous
+            }
         case .navidrome:
             guard let client = navidrome else { return }
             do {
                 favoriteTrackIds = try await client.fetchFavoriteTrackIds(limit: 20_000)
-            } catch {}
+            } catch {
+                favoriteTrackIds = previous
+            }
         }
     }
 
@@ -2084,35 +2443,26 @@ public final class AppModel: ObservableObject {
                 try await lib.allTracks(limit: limit)
             }
             PerfLog.event("refreshLibraryTrackMatchIndex.fetched", details: "tracks=\(tracks.count)")
-            // Artwork resolution reads main-actor state (album dict, offline cache),
-            // so it stays on the main actor. The heavy index builds (normalize +
-            // regex over every track) are pushed to a background priority task and
-            // their finished results are slotted in on the main actor in one shot.
-            let resolved = PerfLog.measure(
-                "refreshLibraryTrackMatchIndex.resolveArtwork",
-                details: "tracks=\(tracks.count)"
-            ) {
-                tracks.map { trackWithResolvedArtwork($0) }
-            }
+            // Title/chart indices don't need fresh cover URLs — resolve artwork lazily in UI.
             let computed = await PerfLog.measureAsync(
                 "refreshLibraryTrackMatchIndex.buildIndices",
                 context: .background,
-                details: "tracks=\(resolved.count)"
+                details: "tracks=\(tracks.count)"
             ) {
                 await Task.detached(priority: .userInitiated) {
                     () -> (byId: [String: Track], titles: [String: Set<String>], chart: LibraryChartTrackIndex) in
-                    let byId = Dictionary(uniqueKeysWithValues: resolved.map { ($0.id, $0) })
-                    let titles = LibraryTrackMatcher.titleIndex(from: resolved)
-                    let chart = LibraryChartTrackIndex(tracks: resolved)
+                    let byId = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
+                    let titles = LibraryTrackMatcher.titleIndex(from: tracks)
+                    let chart = LibraryChartTrackIndex(tracks: tracks)
                     return (byId, titles, chart)
                 }.value
             }
             PerfLog.measure(
                 "refreshLibraryTrackMatchIndex.assign",
-                details: "tracks=\(resolved.count) titleKeys=\(computed.titles.count)"
+                details: "tracks=\(tracks.count) titleKeys=\(computed.titles.count)"
             ) {
                 skipDiscoveryIndexRebuild = true
-                discoveryLibraryTracks = resolved
+                discoveryLibraryTracks = tracks
                 skipDiscoveryIndexRebuild = false
                 discoveryTrackById = computed.byId
                 libraryTrackTitleIndex = computed.titles
@@ -2121,6 +2471,7 @@ public final class AppModel: ObservableObject {
             offline.backfillRecordsIfMissing(knownTracks: tracks)
             mergeOfflineCatalog()
             persistLibrarySnapshot()
+            rebuildHomeMixes()
         } catch {
             libraryTrackIndexLoadError = error.localizedDescription
             offline.backfillRecordsIfMissing(knownTracks: discoveryLibraryTracks)
@@ -2274,6 +2625,12 @@ public final class AppModel: ObservableObject {
     /// Updates ``favoriteTrackIds`` immediately (stars, menus, rows); Jellyfin / Navidrome persist in the background with revert on failure.
     func toggleFavoriteTrack(id: String) {
         let targetFavorite = !favoriteTrackIds.contains(id)
+
+        if targetFavorite, favoritesAutoDownload {
+            if let track = discoveryTrackById[id] ?? offline.cachedTrack(id: id) {
+                offline.enqueueTrack(track)
+            }
+        }
 
         if backendKind == .jellyfin, let client = jellyfin {
             let snapshot = favoriteTrackIds
@@ -2504,6 +2861,66 @@ public final class AppModel: ObservableObject {
            let v = DownloadQualityTier(rawValue: raw) {
             downloadQualityTier = v
         }
+        migrateLegacyStreamQualityIfNeeded()
+        if let v = StreamBitRateOption(rawValue: UserDefaults.standard.integer(forKey: Self.wifiStreamBitRateKey)),
+           UserDefaults.standard.object(forKey: Self.wifiStreamBitRateKey) != nil {
+            wifiStreamBitRate = v
+        }
+        if let v = StreamBitRateOption(rawValue: UserDefaults.standard.integer(forKey: Self.cellularStreamBitRateKey)),
+           UserDefaults.standard.object(forKey: Self.cellularStreamBitRateKey) != nil {
+            cellularStreamBitRate = v
+        }
+        if let raw = UserDefaults.standard.string(forKey: Self.wifiStreamFormatKey),
+           let v = StreamFormatOption(rawValue: raw) {
+            wifiStreamFormat = v
+        }
+        if let raw = UserDefaults.standard.string(forKey: Self.cellularStreamFormatKey),
+           let v = StreamFormatOption(rawValue: raw) {
+            cellularStreamFormat = v
+        }
+        if let raw = UserDefaults.standard.string(forKey: Self.downloadFormatKey),
+           let v = DownloadFormatOption(rawValue: raw) {
+            downloadFormat = v
+        }
+        if let v = SkipIntervalOption(rawValue: UserDefaults.standard.integer(forKey: Self.skipBackwardIntervalKey)),
+           UserDefaults.standard.object(forKey: Self.skipBackwardIntervalKey) != nil {
+            skipBackwardInterval = v
+        }
+        if let v = SkipIntervalOption(rawValue: UserDefaults.standard.integer(forKey: Self.skipForwardIntervalKey)),
+           UserDefaults.standard.object(forKey: Self.skipForwardIntervalKey) != nil {
+            skipForwardInterval = v
+        }
+        if UserDefaults.standard.object(forKey: Self.showSkipIntervalButtonsKey) != nil {
+            showSkipIntervalButtons = UserDefaults.standard.bool(forKey: Self.showSkipIntervalButtonsKey)
+        }
+        if UserDefaults.standard.object(forKey: Self.showSleepTimerButtonKey) != nil {
+            showSleepTimerButton = UserDefaults.standard.bool(forKey: Self.showSleepTimerButtonKey)
+        }
+        if let raw = UserDefaults.standard.string(forKey: Self.remoteControlModeKey),
+           let v = RemoteControlMode(rawValue: raw) {
+            remoteControlMode = v
+        }
+        if UserDefaults.standard.object(forKey: Self.playbackRateKey) != nil {
+            let rate = UserDefaults.standard.float(forKey: Self.playbackRateKey)
+            if let match = PlaybackRateOption(rawValue: rate) {
+                defaultPlaybackRate = match
+            }
+        }
+        if let raw = UserDefaults.standard.string(forKey: Self.artistPlayModeKey),
+           let mode = ArtistPlayMode(rawValue: raw) {
+            artistPlayMode = mode
+        }
+        if UserDefaults.standard.object(forKey: Self.showHomeMixesInPlaylistsKey) != nil {
+            showHomeMixesInPlaylists = UserDefaults.standard.bool(forKey: Self.showHomeMixesInPlaylistsKey)
+        }
+        if let raw = UserDefaults.standard.string(forKey: Self.metadataRefreshThresholdKey),
+           let v = MetadataRefreshThreshold(rawValue: raw) {
+            metadataRefreshThreshold = v
+        }
+        if let raw = UserDefaults.standard.string(forKey: Self.serverFailoverModeKey),
+           let mode = ServerFailoverMode(rawValue: raw) {
+            serverFailoverMode = mode
+        }
         if let raw = UserDefaults.standard.string(forKey: Self.songListItemSizeKey),
            let v = SongListItemSize(rawValue: raw) {
             songListItemSize = v
@@ -2515,13 +2932,6 @@ public final class AppModel: ObservableObject {
         if UserDefaults.standard.object(forKey: Self.volumeNormalizationKey) != nil {
             volumeNormalizationEnabled = UserDefaults.standard.bool(forKey: Self.volumeNormalizationKey)
         }
-        if UserDefaults.standard.object(forKey: Self.eqMasterEnabledKey) != nil {
-            eqMasterEnabled = UserDefaults.standard.bool(forKey: Self.eqMasterEnabledKey)
-        }
-        if let arr = UserDefaults.standard.array(forKey: Self.eqBandGainsKey) as? [Double], arr.count == 6 {
-            eqBandGainsDb = arr.map { Float($0) }
-        }
-        eqPresets = Self.loadEQPresetsFromDefaults()
         if UserDefaults.standard.object(forKey: Self.albumBackdropEnabledKey) != nil {
             albumBackdropEnabled = UserDefaults.standard.bool(forKey: Self.albumBackdropEnabledKey)
         }
@@ -2531,20 +2941,83 @@ public final class AppModel: ObservableObject {
         if UserDefaults.standard.object(forKey: Self.playerBackdropEnabledKey) != nil {
             playerBackdropEnabled = UserDefaults.standard.bool(forKey: Self.playerBackdropEnabledKey)
         }
+        if UserDefaults.standard.object(forKey: Self.offlineModeKey) != nil {
+            offlineMode = UserDefaults.standard.bool(forKey: Self.offlineModeKey)
+        }
+        if UserDefaults.standard.object(forKey: Self.autoOfflineEnabledKey) != nil {
+            autoOfflineEnabled = UserDefaults.standard.bool(forKey: Self.autoOfflineEnabledKey)
+        }
+        if let raw = UserDefaults.standard.string(forKey: Self.autoOfflineModeKey),
+           let mode = AutoOfflineMode(rawValue: raw) {
+            autoOfflineMode = mode
+        }
+        homeWifiSSIDs = UserDefaults.standard.stringArray(forKey: Self.homeWifiSSIDsKey) ?? []
+        if UserDefaults.standard.object(forKey: Self.wifiOnlyDownloadsKey) != nil {
+            wifiOnlyDownloads = UserDefaults.standard.bool(forKey: Self.wifiOnlyDownloadsKey)
+        }
+        if let raw = UserDefaults.standard.object(forKey: Self.maxConcurrentDownloadsKey) as? Int,
+           let value = OfflineMaxConcurrentDownloads(rawValue: raw) {
+            maxConcurrentDownloads = value
+        }
+        if let raw = UserDefaults.standard.string(forKey: Self.storageLimitModeKey),
+           let mode = OfflineStorageLimitMode(rawValue: raw) {
+            offlineStorageLimitMode = mode
+        }
+        if UserDefaults.standard.object(forKey: Self.maxCacheSizeGBKey) != nil {
+            maxCacheSizeGB = UserDefaults.standard.double(forKey: Self.maxCacheSizeGBKey)
+        }
+        if UserDefaults.standard.object(forKey: Self.favoritesAutoDownloadKey) != nil {
+            favoritesAutoDownload = UserDefaults.standard.bool(forKey: Self.favoritesAutoDownloadKey)
+        }
     }
 
-    private static func loadEQPresetsFromDefaults() -> [EQPreset] {
-        guard let data = UserDefaults.standard.data(forKey: eqPresetsKey) else { return [] }
-        return (try? JSONDecoder().decode([EQPreset].self, from: data)) ?? []
+    private func wireOfflineDownloadManager() {
+        offline.wifiOnlyDownloads = wifiOnlyDownloads
+        offline.maxConcurrentDownloads = maxConcurrentDownloads
+        offline.storageLimitMode = offlineStorageLimitMode
+        offline.maxCacheSizeGB = maxCacheSizeGB
+        offline.artworkURLForTrack = { [weak self] track in
+            self?.resolvedArtworkURL(for: track)
+        }
+        offline.configure(
+            libraryProvider: { [weak self] in self?.activeLibrary },
+            networkPolicy: { [weak self] in
+                guard let self else { return (online: true, wifiLike: true) }
+                return (online: self.hasInternetPath, wifiLike: self.prefersWifiLikePath)
+            },
+        )
+        offline.recalculateCacheBytes()
+        applyEffectiveOfflinePresentation()
     }
 
-    fileprivate static func persistEQGains(_ gains: [Float]) {
-        UserDefaults.standard.set(gains.map { Double($0) }, forKey: eqBandGainsKey)
+    private func applyEffectiveOfflinePresentation() {
+        // Offline mode filters what Lyra shows — it is not the same as losing connectivity.
+        if hasInternetPath, isSignedIn {
+            Task { await refreshServerConnectionHealth() }
+        }
     }
 
-    fileprivate static func persistEQPresets(_ presets: [EQPreset]) {
-        guard let data = try? JSONEncoder().encode(presets) else { return }
-        UserDefaults.standard.set(data, forKey: eqPresetsKey)
+    private func evaluateAutoOfflineMode() async {
+        guard autoOfflineEnabled else {
+            autoOfflineActive = false
+            applyEffectiveOfflinePresentation()
+            return
+        }
+        switch autoOfflineMode {
+        case .wifiOnly:
+            autoOfflineActive = !prefersWifiLikePath || !hasInternetPath
+        case .homeWifi:
+            if !prefersWifiLikePath || !hasInternetPath {
+                autoOfflineActive = true
+            } else if homeWifiSSIDs.isEmpty {
+                autoOfflineActive = false
+            } else if let ssid = await AutoOfflineHelper.fetchCurrentSSID() {
+                autoOfflineActive = !homeWifiSSIDs.contains(ssid)
+            } else {
+                autoOfflineActive = false
+            }
+        }
+        applyEffectiveOfflinePresentation()
     }
 
     private func startNetworkMonitor() {
@@ -2554,18 +3027,27 @@ public final class AppModel: ObservableObject {
                 let online = path.status == .satisfied
                 let wasOnline = self.hasInternetPath
                 self.hasInternetPath = online
+                let wifiLike = path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet)
+                self.prefersWifiLikePath = wifiLike
                 if !online {
                     self.serverConnectionHealth = .noNetwork
                 } else if !wasOnline, self.isSignedIn {
                     self.prefetchAccountAvatar()
                     Task { await self.refreshServerConnectionHealth() }
                 }
-                guard online else { return }
-                let wifiLike = path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet)
+                guard online else {
+                    await self.evaluateAutoOfflineMode()
+                    return
+                }
                 let cellularNow = !wifiLike
                 if cellularNow != self.prefersCellularStreamingQuality {
                     self.prefersCellularStreamingQuality = cellularNow
                     self.pushQualitySettingsToClients()
+                }
+                self.offline.kickQueueWorker()
+                await self.evaluateAutoOfflineMode()
+                if online {
+                    self.scrobbleService.onNetworkRestored()
                 }
             }
         }
@@ -2573,11 +3055,358 @@ public final class AppModel: ObservableObject {
     }
 
     func pushQualitySettingsToClients() {
-        let streamTier = prefersCellularStreamingQuality ? cellularStreamQuality : wifiStreamQuality
-        jellyfin?.streamingBitrateCapBps = streamTier.jellyfinAudioBitRate
+        let bitRate = prefersCellularStreamingQuality ? cellularStreamBitRate : wifiStreamBitRate
+        let format = prefersCellularStreamingQuality ? cellularStreamFormat : wifiStreamFormat
+        jellyfin?.streamingBitrateCapBps = bitRate.jellyfinAudioBitRate
         jellyfin?.offlineBitrateCapBps = downloadQualityTier.jellyfinAudioBitRate
-        navidrome?.streamingMaxBitRate = streamTier.navidromeMaxBitRate
+        jellyfin?.streamingFormat = format
+        jellyfin?.offlineFormat = downloadFormat
+        navidrome?.streamingMaxBitRate = bitRate.navidromeMaxBitRate(for: format)
+        navidrome?.streamingFormat = format
         navidrome?.offlineMaxBitRate = downloadQualityTier.navidromeMaxBitRate
+        navidrome?.offlineFormat = downloadFormat
+    }
+
+    func syncPlaybackPreferencesToEngine() {
+        player.skipBackwardInterval = skipBackwardInterval.seconds
+        player.skipForwardInterval = skipForwardInterval.seconds
+        player.showSkipIntervalButtons = showSkipIntervalButtons
+        player.showSleepTimerButton = showSleepTimerButton
+        player.remoteControlMode = remoteControlMode
+        player.playbackRate = defaultPlaybackRate.rawValue
+        player.updateRemoteCommands()
+    }
+
+    func resetPlaybackSettingsToDefaults() {
+        wifiStreamBitRate = .none
+        cellularStreamBitRate = .kbps320
+        wifiStreamFormat = .raw
+        cellularStreamFormat = .raw
+        downloadQualityTier = .kbps320
+        downloadFormat = .mp3
+        skipBackwardInterval = .s15
+        skipForwardInterval = .s30
+        showSkipIntervalButtons = false
+        showSleepTimerButton = false
+        remoteControlMode = .skipTrack
+        defaultPlaybackRate = .normal
+        artistPlayMode = .topSongs
+        metadataRefreshThreshold = .oneWeek
+        pushQualitySettingsToClients()
+        syncPlaybackPreferencesToEngine()
+    }
+
+    /// Active stream format options for the connected backend.
+    var availableStreamFormats: [StreamFormatOption] {
+        backendKind == .jellyfin ? StreamFormatOption.jellyfinCases : StreamFormatOption.allCases
+    }
+
+    /// Refreshes album track metadata before playback when the cache is stale.
+    func refreshAlbumTracksIfNeeded(for track: Track) async -> Track {
+        guard !offlineMode, !track.isInternetRadioStream else { return track }
+        guard !track.albumId.isEmpty else { return track }
+        let albumId = track.albumId
+        guard metadataRefreshThreshold != .never else { return track }
+        if let cached = albumTracksCache[albumId],
+           !metadataRefreshThreshold.isStale(retrievedAt: cached.retrievedAt) {
+            return reconcileTrack(track, with: cached.tracks) ?? track
+        }
+        guard let lib = activeLibrary else { return track }
+        do {
+            let fresh = try await lib.tracks(forAlbumId: albumId)
+            albumTracksCache[albumId] = CachedAlbumTracks(tracks: fresh, retrievedAt: Date())
+            return reconcileTrack(track, with: fresh) ?? track
+        } catch {
+            return track
+        }
+    }
+
+    private func reconcileTrack(_ track: Track, with albumTracks: [Track]) -> Track? {
+        if albumTracks.contains(where: { $0.id == track.id }) { return track }
+        if let match = albumTracks.first(where: {
+            $0.discNumber == track.discNumber
+                && $0.indexNumber == track.indexNumber
+                && $0.title.caseInsensitiveCompare(track.title) == .orderedSame
+        }) {
+            return match
+        }
+        if let match = albumTracks.first(where: { $0.title.caseInsensitiveCompare(track.title) == .orderedSame }) {
+            return match
+        }
+        return nil
+    }
+
+    func normalizedServerURL(from string: String) -> URL? {
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return URL(string: trimmed)
+    }
+
+    var activeServerURLString: String {
+        switch activeServerURLRole {
+        case .primary:
+            return baseURLString
+        case .secondary:
+            let secondary = secondaryURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+            return secondary.isEmpty ? baseURLString : secondary
+        }
+    }
+
+    func trustCurrentServerCertificate() {
+        guard let host = normalizedServerURL(from: activeServerURLString)?.host else { return }
+        TrustedCertificateStore.trustHost(host)
+        showTransientToast("Trusted certificate for \(host)")
+    }
+
+    func switchActiveServerURL(to role: ActiveServerURLRole) async {
+        guard role != activeServerURLRole else { return }
+        guard let url = role == .secondary ? normalizedServerURL(from: secondaryURLString) : normalizedServerURL(from: baseURLString) else {
+            return
+        }
+        switch backendKind {
+        case .jellyfin:
+            jellyfin?.updateBaseURL(url)
+            if let client = jellyfin {
+                await Self.registerMediaAuthHeaders(host: url.host, headers: client.httpHeadersForMediaRequests())
+            }
+        case .navidrome:
+            navidrome?.updateBaseURL(url)
+        }
+        activeServerURLRole = role
+        await refreshServerConnectionHealth()
+        showTransientToast(role == .secondary ? "Using secondary server" : "Using primary server")
+    }
+
+    func attemptAutomaticFailoverIfNeeded() async -> Bool {
+        guard serverFailoverMode == .automatic,
+              activeServerURLRole == .primary,
+              normalizedServerURL(from: secondaryURLString) != nil,
+              serverConnectionHealth != .connected
+        else { return false }
+        await switchActiveServerURL(to: .secondary)
+        return serverConnectionHealth == .connected
+    }
+
+    /// Reactive stale-id recovery after stream failure — refreshes the album and remaps queue + downloads.
+    func recoverStaleSongIDs(for track: Track) async -> StaleSongRecoveryResult? {
+        guard !offlineMode, !track.isInternetRadioStream, !track.albumId.isEmpty else { return nil }
+        guard let lib = activeLibrary else { return nil }
+
+        let oldTracks: [Track]
+        if let cached = albumTracksCache[track.albumId], !cached.tracks.isEmpty {
+            oldTracks = cached.tracks
+        } else {
+            oldTracks = player.queue.filter { $0.albumId == track.albumId }
+        }
+
+        do {
+            let fresh = try await lib.tracks(forAlbumId: track.albumId)
+            albumTracksCache[track.albumId] = CachedAlbumTracks(tracks: fresh, retrievedAt: Date())
+            let swaps = StaleSongMatching.buildSwapMap(oldTracks: oldTracks, freshTracks: fresh)
+            guard swaps[track.id] != nil else { return nil }
+
+            applyTrackIDSwaps(swaps)
+            return StaleSongRecoveryResult(current: swaps[track.id]!, swaps: swaps)
+        } catch {
+            return nil
+        }
+    }
+
+    func applyTrackIDSwaps(_ swaps: [String: Track]) {
+        guard !swaps.isEmpty else { return }
+        let librarySwaps = swaps.filter { librarySongIds.contains($0.key) }
+        player.applyTrackSwaps(swaps)
+        for (oldId, newTrack) in swaps {
+            try? offline.remapDownloadedTrackId(from: oldId, to: newTrack)
+            if librarySongIds.contains(oldId) {
+                librarySongIds.remove(oldId)
+                librarySongIds.insert(newTrack.id)
+            }
+            if favoriteTrackIds.contains(oldId) {
+                favoriteTrackIds.remove(oldId)
+                favoriteTrackIds.insert(newTrack.id)
+                UserDefaults.standard.set(Array(favoriteTrackIds), forKey: Self.favoriteTrackIdsKey)
+            }
+        }
+        if !librarySwaps.isEmpty {
+            Task { await persistTrackIDSwapsToMagicPlaylist(librarySwaps) }
+        }
+    }
+
+    private func persistTrackIDSwapsToMagicPlaylist(_ swaps: [String: Track]) async {
+        guard let playlistId = libraryMagicPlaylistId else { return }
+        do {
+            try await removeTracksFromServerMagicPlaylist(playlistId: playlistId, trackIds: Set(swaps.keys))
+            try await addTracksToServerMagicPlaylist(
+                playlistId: playlistId,
+                trackIds: swaps.values.map(\.id)
+            )
+            await persistLibraryMembershipPayload()
+        } catch {}
+    }
+
+    func playMoreLikeThis(track: Track) async {
+        guard let lib = activeLibrary else { return }
+        do {
+            let similar = try await lib.similarTracks(to: track, limit: 25)
+            guard !similar.isEmpty else {
+                showTransientToast("No similar tracks found")
+                return
+            }
+            try await player.playAlbum(library: lib, tracks: similar, startIndex: 0)
+            showTransientToast("Playing similar tracks")
+        } catch {
+            showTransientToast("Couldn't load similar tracks")
+        }
+    }
+
+    func queueMoreLikeThis(track: Track) async {
+        guard let lib = activeLibrary else { return }
+        do {
+            let similar = try await lib.similarTracks(to: track, limit: 15)
+            guard !similar.isEmpty else {
+                showTransientToast("No similar tracks found")
+                return
+            }
+            for item in similar {
+                try await player.addToQueue(library: lib, track: item)
+            }
+            showTransientToast("Added similar tracks to queue")
+        } catch {
+            showTransientToast("Couldn't load similar tracks")
+        }
+    }
+
+    func playArtistMix(for track: Track) async {
+        guard let lib = activeLibrary else { return }
+        do {
+            let genre = track.genres.first
+            let random = try await lib.randomTracks(limit: 30, genre: genre)
+            let filtered = random.filter { $0.artist.caseInsensitiveCompare(track.artist) == .orderedSame || genre != nil }
+            let tracks = filtered.isEmpty ? random : filtered
+            guard !tracks.isEmpty else {
+                showTransientToast("No mix tracks found")
+                return
+            }
+            try await player.playAlbum(library: lib, tracks: tracks.shuffled(), startIndex: 0)
+            showTransientToast("Playing mix")
+        } catch {
+            showTransientToast("Couldn't load mix")
+        }
+    }
+
+    func triggerServerLibraryScan() async throws {
+        guard let lib = activeLibrary else { throw URLError(.userAuthenticationRequired) }
+        try await lib.triggerLibraryScan()
+    }
+
+    func fetchNavidromeScanStatus() async throws -> NavidromeScanStatus {
+        guard let client = navidrome else { throw URLError(.unsupportedURL) }
+        return try await client.fetchScanStatus()
+    }
+
+    func fetchNavidromeShares() async throws -> [NavidromeShareEntry] {
+        guard let client = navidrome else { throw URLError(.unsupportedURL) }
+        return try await client.fetchShares()
+    }
+
+    func createNavidromeShare(forItemId id: String, description: String?) async throws -> NavidromeShareEntry {
+        guard let client = navidrome else { throw URLError(.unsupportedURL) }
+        return try await client.createShare(forItemId: id, description: description)
+    }
+
+    /// True when signed into Navidrome and the account has share permission (or metadata not loaded yet).
+    var canCreateNavidromeShares: Bool {
+        guard backendKind == .navidrome, isSignedIn else { return false }
+        guard let meta = navidromeUserMetadata else { return true }
+        return meta.shareRole
+    }
+
+    func createNavidromeShareAndNotify(forItemId id: String, description: String) async {
+        do {
+            let entry = try await createNavidromeShare(forItemId: id, description: description)
+            #if os(iOS)
+            UIPasteboard.general.url = entry.url
+            #endif
+            showTransientToast("Share link copied")
+        } catch {
+            showTransientToast("Couldn't create share link")
+        }
+    }
+
+    func deleteNavidromeShare(id: String) async throws {
+        guard let client = navidrome else { throw URLError(.unsupportedURL) }
+        try await client.deleteShare(id: id)
+    }
+
+    func playbackSettingsSnapshot() -> LyraPlaybackSettingsSnapshot {
+        LyraPlaybackSettingsSnapshot(
+            wifiStreamBitRate: wifiStreamBitRate.rawValue.description,
+            cellularStreamBitRate: cellularStreamBitRate.rawValue.description,
+            wifiStreamFormat: wifiStreamFormat.rawValue,
+            cellularStreamFormat: cellularStreamFormat.rawValue,
+            downloadFormat: downloadFormat.rawValue,
+            downloadQualityTier: downloadQualityTier.rawValue,
+            skipBackwardInterval: String(skipBackwardInterval.rawValue),
+            skipForwardInterval: String(skipForwardInterval.rawValue),
+            remoteControlMode: remoteControlMode.rawValue,
+            showSkipIntervalButtons: showSkipIntervalButtons,
+            showSleepTimerButton: showSleepTimerButton,
+            metadataRefreshThreshold: metadataRefreshThreshold.rawValue,
+        )
+    }
+
+    func applyPlaybackSettingsSnapshot(_ snapshot: LyraPlaybackSettingsSnapshot) -> Bool {
+        if let v = StreamBitRateOption(rawValue: Int(snapshot.wifiStreamBitRate) ?? -1) {
+            wifiStreamBitRate = v
+        }
+        if let v = StreamBitRateOption(rawValue: Int(snapshot.cellularStreamBitRate) ?? -1) {
+            cellularStreamBitRate = v
+        }
+        if let v = StreamFormatOption(rawValue: snapshot.wifiStreamFormat) {
+            wifiStreamFormat = v
+        }
+        if let v = StreamFormatOption(rawValue: snapshot.cellularStreamFormat) {
+            cellularStreamFormat = v
+        }
+        if let v = DownloadFormatOption(rawValue: snapshot.downloadFormat) {
+            downloadFormat = v
+        }
+        if let v = DownloadQualityTier(rawValue: snapshot.downloadQualityTier) {
+            downloadQualityTier = v
+        }
+        if let v = SkipIntervalOption(rawValue: Int(snapshot.skipBackwardInterval) ?? -1) {
+            skipBackwardInterval = v
+        }
+        if let v = SkipIntervalOption(rawValue: Int(snapshot.skipForwardInterval) ?? -1) {
+            skipForwardInterval = v
+        }
+        if let v = RemoteControlMode(rawValue: snapshot.remoteControlMode) {
+            remoteControlMode = v
+        }
+        showSkipIntervalButtons = snapshot.showSkipIntervalButtons
+        showSleepTimerButton = snapshot.showSleepTimerButton
+        if let v = MetadataRefreshThreshold(rawValue: snapshot.metadataRefreshThreshold) {
+            metadataRefreshThreshold = v
+        }
+        syncPlaybackPreferencesToEngine()
+        pushQualitySettingsToClients()
+        return true
+    }
+
+    private func migrateLegacyStreamQualityIfNeeded() {
+        guard !UserDefaults.standard.bool(forKey: Self.playbackSettingsMigratedV2Key) else { return }
+        if UserDefaults.standard.object(forKey: Self.wifiStreamBitRateKey) == nil,
+           let raw = UserDefaults.standard.string(forKey: Self.wifiStreamQualityKey),
+           let tier = StreamQualityTier(rawValue: raw) {
+            wifiStreamBitRate = tier == .capped320 ? .kbps320 : .none
+        }
+        if UserDefaults.standard.object(forKey: Self.cellularStreamBitRateKey) == nil,
+           let raw = UserDefaults.standard.string(forKey: Self.cellularStreamQualityKey),
+           let tier = StreamQualityTier(rawValue: raw) {
+            cellularStreamBitRate = tier == .capped320 ? .kbps320 : .none
+        }
+        UserDefaults.standard.set(true, forKey: Self.playbackSettingsMigratedV2Key)
     }
 
     private func persistLastLibrarySyncDate(_ date: Date?) {
@@ -2642,34 +3471,11 @@ public final class AppModel: ObservableObject {
         recordSuccessfulLibrarySync()
     }
 
-    func saveEQPreset(name: String) {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        eqPresets.append(EQPreset(name: trimmed, gainsDb: eqBandGainsDb))
-    }
-
-    func deleteEQPreset(id: UUID) {
-        eqPresets.removeAll { $0.id == id }
-    }
-
-    func renameEQPreset(id: UUID, name: String) {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        guard let idx = eqPresets.firstIndex(where: { $0.id == id }) else { return }
-        var preset = eqPresets[idx]
-        preset.name = trimmed
-        eqPresets[idx] = preset
-    }
-
-    func applyEQPreset(_ preset: EQPreset) {
-        eqBandGainsDb = preset.gainsDb
-        eqMasterEnabled = true
-    }
-
     private func loadKeychain() {
         if let j = try? KeychainStore.loadJellyfin() {
             backendKind = .jellyfin
             baseURLString = j.base.absoluteString
+            secondaryURLString = j.secondaryBase?.absoluteString ?? ""
             username = j.user
             password = j.password
             let client = JellyfinMusicClient(baseURL: j.base)
@@ -2691,6 +3497,7 @@ public final class AppModel: ObservableObject {
         } else if let n = try? KeychainStore.loadNavidrome() {
             backendKind = .navidrome
             baseURLString = n.base.absoluteString
+            secondaryURLString = n.secondaryBase?.absoluteString ?? ""
             username = n.user
             password = n.password
             let client = NavidromeClient(baseURL: n.base)

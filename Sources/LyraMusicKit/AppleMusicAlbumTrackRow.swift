@@ -417,6 +417,10 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
     /// Drives the row chip into Add-to-Library vs Download states. Defaults to `true`
     /// so legacy call sites in library-only views keep their current behavior.
     var isInLibrary: Bool = true
+    /// `false` for MusicBrainz / off-server rows that need a Downtify request.
+    var isInServerCatalog: Bool = true
+    /// Grey title for tracks that aren't playable yet (e.g. missing from server catalog).
+    var greysTitle: Bool = false
     /// Tap stop square while downloading — cooperatively cancels ``OfflineDownloadManager.cache``.
     var onCancelOfflineDownload: (() -> Void)? = nil
     /// Tap hollow dot to start the same download as the row Download menu action.
@@ -449,13 +453,16 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
             offlineDownload: offlineDownload,
             isOfflineCached: isOfflineCached,
             isInLibrary: isInLibrary,
+            isInServerCatalog: isInServerCatalog,
         )
     }
 
     /// In library but not on device — hide cloud; download via overflow menu.
+    /// Off-server rows request via row tap (play affordance), not a trailing glyph.
     private var showsTrailingOfflineGlyph: Bool {
         guard showsOfflineIndicator else { return false }
         if isInLibrary, offlinePhase == .notCached { return false }
+        if offlinePhase == .request { return false }
         return true
     }
 
@@ -531,7 +538,11 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
                     VStack(alignment: .leading, spacing: AlbumTrackRowLayout.titleSubtitleSpacing) {
                         Text(title)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(backdropPalette.heroChromePrimary)
+                            .foregroundStyle(
+                                greysTitle
+                                    ? backdropPalette.heroChromeSecondary
+                                    : backdropPalette.heroChromePrimary
+                            )
                             .multilineTextAlignment(.leading)
                             .lineLimit(1)
                         if hasSubtitle, let subtitle {

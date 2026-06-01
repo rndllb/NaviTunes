@@ -70,4 +70,57 @@ enum LibrarySnapshotStore {
         else { return }
         try? FileManager.default.removeItem(at: url)
     }
+
+    static func entryCountAsync() async -> Int {
+        guard let snap = await loadAsync() else { return 0 }
+        return snap.albums.count + snap.playlists.count + snap.tracks.count
+    }
+
+    static func entryCount() -> Int {
+        guard let snap = load() else { return 0 }
+        return snap.albums.count + snap.playlists.count + snap.tracks.count
+    }
+
+    static func metadataEntries() -> [LibraryMetadataEntry] {
+        guard let snap = load() else { return [] }
+        var out: [LibraryMetadataEntry] = []
+        out.reserveCapacity(snap.albums.count + snap.playlists.count)
+
+        for album in snap.albums {
+            out.append(LibraryMetadataEntry(
+                id: "album:\(album.id)",
+                kind: .album,
+                title: album.title,
+                subtitle: album.artist,
+                artworkURL: album.artworkURL,
+                savedAt: snap.savedAt,
+            ))
+        }
+        for playlist in snap.playlists {
+            out.append(LibraryMetadataEntry(
+                id: "playlist:\(playlist.id)",
+                kind: .playlist,
+                title: playlist.name,
+                subtitle: playlist.songCount.map { "\($0) songs" } ?? "Playlist",
+                artworkURL: playlist.artworkURL,
+                savedAt: snap.savedAt,
+            ))
+        }
+        return out.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    static func removeMetadataEntry(id: String) {
+        guard var snap = load() else { return }
+        if id.hasPrefix("album:") {
+            let albumId = String(id.dropFirst("album:".count))
+            snap.albums.removeAll { $0.id == albumId }
+            snap.tracks.removeAll { $0.albumId == albumId }
+        } else if id.hasPrefix("playlist:") {
+            let playlistId = String(id.dropFirst("playlist:".count))
+            snap.playlists.removeAll { $0.id == playlistId }
+        } else {
+            return
+        }
+        save(snap)
+    }
 }
