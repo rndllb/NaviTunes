@@ -248,8 +248,7 @@ enum MusicDesign {
     static let albumCorner: CGFloat = 10
     static let gridAlbumCorner: CGFloat = 10
     /// Library hub / Recently Added / Recently Downloaded — keeps row mates aligned when titles wrap.
-    static let libraryHubGridTitleMinHeight: CGFloat = 38
-    static let libraryHubGridSubtitleMinHeight: CGFloat = 16
+    static let libraryHubGridLabelBlockMinHeight: CGFloat = 56
     static let libraryHubGridLabelSpacing: CGFloat = 8
     static let heroCorner: CGFloat = 12
     static let miniArtwork: CGFloat = 44
@@ -333,7 +332,10 @@ struct AlbumArtworkView: View {
 
     @ViewBuilder
     private var artworkContent: some View {
-        if let url {
+        if let meshArtworkSeed {
+            RadioStationMeshArtworkView(seedKey: meshArtworkSeed, cornerRadius: cornerRadius)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let url {
             Group {
                 if let decoded {
                     ArtworkPlatformImage.swiftUIImage(cgImage: decoded)
@@ -350,9 +352,6 @@ struct AlbumArtworkView: View {
             .task(id: url.absoluteString) {
                 await load(url: url)
             }
-        } else if let meshArtworkSeed {
-            RadioStationMeshArtworkView(seedKey: meshArtworkSeed, cornerRadius: cornerRadius)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             placeholder
         }
@@ -1201,36 +1200,48 @@ struct LibraryHubGridCell<Artwork: View>: View {
             artwork()
                 .frame(maxWidth: .infinity)
 
+            if style == .shelf {
+                shelfLabelBlock
+            } else {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(textAlignment)
+                    .frame(maxWidth: .infinity, alignment: titleFrameAlignment)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .top)
+    }
+
+    /// Title + subtitle sit directly adjacent; reserved height applies to the combined block
+    /// so short titles don't leave a gap above the artist line.
+    private var shelfLabelBlock: some View {
+        VStack(alignment: .leading, spacing: 2) {
             Text(title)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
                 .lineLimit(2)
-                .multilineTextAlignment(textAlignment)
-                .frame(
-                    maxWidth: .infinity,
-                    minHeight: MusicDesign.libraryHubGridTitleMinHeight,
-                    alignment: titleFrameAlignment
-                )
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
 
-            if style == .shelf {
-                Group {
-                    if let subtitle, !subtitle.isEmpty {
-                        Text(subtitle)
-                            .font(.caption)
-                            .foregroundStyle(MusicDesign.secondaryLabel)
-                            .lineLimit(1)
-                    } else {
-                        Color.clear
-                    }
+            Group {
+                if let subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(MusicDesign.secondaryLabel)
+                        .lineLimit(1)
+                } else {
+                    Color.clear
                 }
-                .frame(
-                    maxWidth: .infinity,
-                    minHeight: MusicDesign.libraryHubGridSubtitleMinHeight,
-                    alignment: .topLeading
-                )
             }
+            .frame(maxWidth: .infinity, minHeight: 16, alignment: .topLeading)
         }
-        .frame(maxWidth: .infinity, alignment: .top)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: MusicDesign.libraryHubGridLabelBlockMinHeight,
+            alignment: .topLeading
+        )
     }
 }
 

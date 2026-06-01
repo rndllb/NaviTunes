@@ -245,6 +245,47 @@ struct AccountView: View {
                     .keyboardType(.URL)
                     #endif
 
+                TextField("Secondary URL (optional)", text: $serverDraft.secondaryURL, prompt: Text(serverURLPlaceholder))
+                    .textContentType(.URL)
+                    .musicTextInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .keyboardType(.URL)
+                    #endif
+
+                Picker("Failover", selection: $app.serverFailoverMode) {
+                    ForEach(ServerFailoverMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .tint(MusicDesign.accent)
+
+                if app.isSignedIn,
+                   app.serverFailoverMode == .manual,
+                   !serverDraft.secondaryURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Picker("Active server", selection: $app.activeServerURLRole) {
+                        Text("Primary").tag(ActiveServerURLRole.primary)
+                        Text("Secondary").tag(ActiveServerURLRole.secondary)
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: app.activeServerURLRole) { oldValue, newValue in
+                        guard oldValue != newValue else { return }
+                        Task { await app.switchActiveServerURL(to: newValue) }
+                    }
+                } else if app.isSignedIn,
+                          !serverDraft.secondaryURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    LabeledContent("Active server") {
+                        Text(app.activeServerURLRole == .primary ? "Primary" : "Secondary")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Button {
+                    app.trustCurrentServerCertificate()
+                } label: {
+                    Label("Trust server certificate", systemImage: "lock.shield")
+                }
+
                 TextField("Username", text: $serverDraft.username)
                     .textContentType(.username)
                     .musicTextInputAutocapitalization(.never)

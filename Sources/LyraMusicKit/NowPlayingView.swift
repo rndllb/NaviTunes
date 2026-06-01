@@ -67,11 +67,15 @@ struct NowPlayingView: View {
 
     private func artworkView(for track: Track, cornerRadius: CGFloat) -> some View {
         AlbumArtworkView(
-            url: artworkURL(for: track),
+            url: isLiveRadio(track) ? nil : artworkURL(for: track),
             meshArtworkSeed: RadioStationMeshArtwork.seedKey(for: track),
             cornerRadius: cornerRadius,
             showsSubtleBorder: false,
         )
+    }
+
+    private func isLiveRadio(_ track: Track) -> Bool {
+        track.isInternetRadioStream
     }
 
     // MARK: - System fallback chrome (no active track)
@@ -173,14 +177,7 @@ struct NowPlayingView: View {
                     // matched-geometry bridges between two parallel branches at
                     // the same depth, not between branches buried inside per-mode
                     // subtrees.
-                    //
-                    // In queue mode the header is suppressed because the queue
-                    // list owns its own inline now-playing row that scrolls with
-                    // the list — see ``queueNowPlayingModuleRow``.
-                    if !showQueue {
-                        sharedHeader(track: track)
-                            .transition(.move(edge: .top).combined(with: .opacity))
-                    }
+                    sharedHeader(track: track)
 
                     // Each mode lives inside a `Group` that's permanently in the
                     // ZStack — only the inner conditional changes. That keeps
@@ -242,13 +239,30 @@ struct NowPlayingView: View {
             #if os(iOS)
             .toolbar(.hidden, for: .navigationBar)
             #endif
-            .task(id: "\(artworkURL(for: player.activeTrack)?.absoluteString ?? "")-\(app.playerBackdropEnabled)-\(colorScheme)") {
-                guard app.playerBackdropEnabled, let url = artworkURL(for: player.activeTrack) else {
+            .task(id: nowPlayingBackdropTaskKey) {
+                guard app.playerBackdropEnabled else {
                     await MainActor.run { backdropPalette = .listSurface(colorScheme: colorScheme) }
                     return
                 }
-                let p = await ArtworkDynamicGradient.analyzeBackdrop(from: url, style: .nowPlaying)
-                await MainActor.run { backdropPalette = p }
+                if let url = artworkURL(for: player.activeTrack) {
+                    let p = await ArtworkDynamicGradient.analyzeBackdrop(from: url, style: .nowPlaying)
+                    await MainActor.run { backdropPalette = p }
+                    return
+                }
+                if let track = player.activeTrack,
+                   isLiveRadio(track),
+                   let seedKey = RadioStationMeshArtwork.seedKey(for: track) {
+                    let p = await ArtworkDynamicGradient.analyzeBackdrop(fromMeshSeedKey: seedKey, style: .nowPlaying)
+                    await MainActor.run { backdropPalette = p }
+                    return
+                }
+                await MainActor.run { backdropPalette = .listSurface(colorScheme: colorScheme) }
+            }
+        }
+        .onChange(of: player.activeTrack?.id) { _, _ in
+            if player.activeTrack.map(isLiveRadio) == true {
+                showLyrics = false
+                showQueue = false
             }
         }
         .onAppear {
@@ -258,6 +272,17 @@ struct NowPlayingView: View {
         .onChange(of: libraryPath.count) { _, count in
             onLibraryNavigationDepthChanged(count)
         }
+    }
+
+    private var nowPlayingBackdropTaskKey: String {
+        guard let track = player.activeTrack else { return "none-\(colorScheme)" }
+        if let url = artworkURL(for: track) {
+            return "url-\(url.absoluteString)-\(app.playerBackdropEnabled)-\(colorScheme)"
+        }
+        if isLiveRadio(track), let seedKey = RadioStationMeshArtwork.seedKey(for: track) {
+            return "mesh-\(seedKey)-\(app.playerBackdropEnabled)-\(colorScheme)"
+        }
+        return "fallback-\(colorScheme)"
     }
 
     private var chromeBackground: some View {
@@ -364,12 +389,10 @@ struct NowPlayingView: View {
         }
     }
 
-    /// Middle page — single `List` that owns everything: the inline now-playing
-    /// module as the first row (scrolls off as the user scrolls down), then a
-    /// sticky "shuffle / repeat" header above the upcoming tracks ("Queue" +
-    /// "Continue Playing"). Both reorderable sections still have 3-line drag
-    /// handles (system-drawn via active edit mode); the bottom chrome below is
-    /// untouched by the scrolling list.
+    /// Middle page — single `List` for upcoming tracks ("Queue" + "Continue
+    /// Playing"). Reorderable sections use 3-line drag handles (system-drawn
+    /// via active edit mode); the bottom chrome below is untouched by the
+    /// scrolling list. Compact artwork + title live in ``sharedHeader``.
     private func nowPlayingPage(track: Track, upNext: [Track]) -> some View {
         let userQueueTracks = upNext.filter { player.userQueuedTrackIds.contains($0.id) }
         let continuePlayingTracks = upNext.filter { !player.userQueuedTrackIds.contains($0.id) }
@@ -387,34 +410,6 @@ struct NowPlayingView: View {
         return title.isEmpty ? nil : title
     }
 
-    /// Inline now-playing row used at the top of the queue list — artwork +
-    /// title + artist menu + star + ellipsis. Scrolls off naturally as the
-    /// list scrolls down, leaving the sticky shuffle/repeat header behind.
-    private func queueNowPlayingModuleRow(track: Track) -> some View {
-        HStack(alignment: .center, spacing: 12) {
-            artworkView(for: track, cornerRadius: 6)
-                .frame(width: 56, height: 56)
-                // Matched-geometry destination: morphs from the big standard
-                // artwork into this small leading slot when the user opens the
-                // queue (and back to the big artwork when they close it).
-                .matchedGeometryEffect(id: "nowPlayingArtwork", in: artworkNamespace)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(track.title)
-                    .font(.headline.weight(.bold))
-                    .foregroundStyle(fgPrimary)
-                    .lineLimit(1)
-                compactArtistMenu(track: track)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            compactHeaderActionButtons(track: track)
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, 14)
-        .padding(.bottom, 6)
-    }
-
     private var queueListClearButton: some View {
         Button {
             player.clearUserQueue()
@@ -430,9 +425,7 @@ struct NowPlayingView: View {
     }
 
     /// Wraps the shuffle/repeat row into a section header so that it pins to the
-    /// top of the visible list once the inline now-playing module scrolls off,
-    /// matching the "compresses into just the repeat and shuffle buttons"
-    /// behavior. Optionally pairs it with a section title + trailing accessory.
+    /// top of the visible list while the user scrolls upcoming tracks.
     ///
     /// Applies `.listRowInsets(EdgeInsets())` so the backdrop spans edge-to-edge
     /// — without this, the List's default row insets leave a strip of queue
@@ -482,10 +475,10 @@ struct NowPlayingView: View {
             : (colorScheme == .dark ? Color(red: 0.11, green: 0.11, blue: 0.12) : MusicDesign.background)
     }
 
-    /// Single `List` with the inline now-playing module + reorderable Queue
-    /// / Continue Playing sections. The first section's sticky header carries
-    /// the shuffle/repeat row so it stays visible after the module scrolls
-    /// off.
+    /// Single `List` with reorderable Queue / Continue Playing sections.
+    /// The compact now-playing header lives in ``sharedHeader`` above the
+    /// scroll region (same morph as lyrics). Sticky section headers carry
+    /// shuffle/repeat once the user scrolls the list.
     private func queueAndContinuePlayingList(
         track: Track,
         userQueue: [Track],
@@ -494,15 +487,6 @@ struct NowPlayingView: View {
         let hasUserQueue = !userQueue.isEmpty
         let hasContinue = !continuePlaying.isEmpty
         return List {
-            Section {
-                queueNowPlayingModuleRow(track: track)
-                    .listRowInsets(EdgeInsets())
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-                    .moveDisabled(true)
-                    .deleteDisabled(true)
-            }
-
             if hasUserQueue {
                 Section {
                     ForEach(userQueue, id: \.id) { t in
@@ -768,20 +752,21 @@ struct NowPlayingView: View {
     /// room above (from progress) and below (to volume), and the bottom icon
     /// row gets a generous gap so it doesn't crowd the safe-area edge.
     private func pinnedBottomChrome(track: Track) -> some View {
-        VStack(spacing: 0) {
-            progressBlock(track: track)
+        let liveRadio = isLiveRadio(track)
+        return VStack(spacing: 0) {
+            progressBlock(track: track, isEnabled: !liveRadio)
                 .padding(.horizontal, 24)
                 .padding(.top, 12)
                 .padding(.bottom, 22)
 
-            transportRow
+            transportRow(for: track)
                 .padding(.horizontal, 20)
                 .padding(.bottom, 28)
 
             NowPlayingVolumeRow(backdropPalette: backdropPalette)
                 .padding(.top, 22)
 
-            nowPlayingBottomChrome
+            nowPlayingBottomChrome(track: track)
         }
     }
 
@@ -838,6 +823,12 @@ struct NowPlayingView: View {
     /// is empty (button has nothing to anchor).
     @ViewBuilder
     private func compactArtistMenu(track: Track) -> some View {
+        if isLiveRadio(track) {
+            Text("Live stream")
+                .font(.subheadline)
+                .foregroundStyle(fgSecondaryStrong)
+                .lineLimit(1)
+        } else {
         let artistKey = track.artist.trimmingCharacters(in: .whitespacesAndNewlines)
         let libraryAlbum = app.libraryAlbums.first { $0.id == track.albumId }
         let albumSubtitle: String = {
@@ -878,6 +869,7 @@ struct NowPlayingView: View {
             )
             .fixedSize(horizontal: false, vertical: true)
         }
+        }
     }
 
     /// Star + ellipsis action buttons shown trailing the inline title/artist
@@ -886,27 +878,30 @@ struct NowPlayingView: View {
     /// was hoisted.
     @ViewBuilder
     private func compactHeaderActionButtons(track: Track) -> some View {
+        let liveRadio = isLiveRadio(track)
         HStack(spacing: 10) {
             Button {
                 app.toggleFavoriteTrack(id: track.id)
             } label: {
                 Image(systemName: app.favoriteTrackIds.contains(track.id) ? "star.fill" : "star")
                     .font(.body.weight(.semibold))
-                    .foregroundStyle(fgPrimary)
+                    .foregroundStyle(liveRadio ? fgMuted : fgPrimary)
                     .frame(width: 30, height: 30)
                     .background(Circle().fill(fgCapsule))
             }
             .buttonStyle(.plain)
+            .disabled(liveRadio)
 
             Menu {
                 nowPlayingTrackMenuContent(track: track)
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.body.weight(.semibold))
-                    .foregroundStyle(fgPrimary)
+                    .foregroundStyle(liveRadio ? fgMuted : fgPrimary)
                     .frame(width: 30, height: 30)
                     .background(Circle().fill(fgCapsule))
             }
+            .disabled(liveRadio)
         }
     }
 
@@ -960,6 +955,14 @@ struct NowPlayingView: View {
             } label: {
                 Label("Add to Playlist", systemImage: "rectangle.stack.badge.plus")
             }
+            if let album = albumForNav {
+                Button {
+                    app.scrobbleService.excludeAlbum(album)
+                    app.showTransientToast("Excluded from listening history")
+                } label: {
+                    Label("Exclude from Listening History", systemImage: "eye.slash")
+                }
+            }
         }
         .tint(Color.primary)
 
@@ -975,9 +978,28 @@ struct NowPlayingView: View {
         }
 
         Section {
-            Button {} label: { Label("Suggest Less", systemImage: "hand.thumbsdown") }
+            Button {
+                Task { await app.playMoreLikeThis(track: track) }
+            } label: {
+                Label("Play more like this", systemImage: "sparkles")
+            }
+            Button {
+                Task { await app.queueMoreLikeThis(track: track) }
+            } label: {
+                Label("Add similar to queue", systemImage: "text.line.last.and.arrowtriangle.forward")
+            }
+            Button {
+                Task { await app.playArtistMix(for: track) }
+            } label: {
+                Label("Play artist mix", systemImage: "shuffle")
+            }
         }
         .tint(Color.primary)
+
+        NavidromeShareMenuSection(
+            itemId: track.id,
+            description: "\(track.title) — \(track.artist)"
+        )
 
         if isOfflineCached {
             Section {
@@ -1003,8 +1025,7 @@ struct NowPlayingView: View {
     }
 
     private func downloadNowPlayingTrack(_ track: Track, lib: MusicLibraryProviding) async throws {
-        let url = try lib.offlineDownloadURL(for: track)
-        try await app.offline.cache(track: track, remote: url, headers: lib.httpHeadersForMediaRequests())
+        app.enqueueOfflineTrack(track)
     }
 
     /// Isolated scale wrapper for the play/pause pulse. Keeping the
@@ -1060,9 +1081,7 @@ struct NowPlayingView: View {
     /// separate wrapper so its play/pause `.animation` context can't bleed into
     /// the compact morph and desync the artwork.
     private func sharedHeader(track: Track) -> some View {
-        // Queue mode renders its own inline header inside the scroll view, so
-        // only lyrics mode drives the compact morph here.
-        let compact = showLyrics
+        let compact = showLyrics || showQueue
         let bigSize = albumArtPlayingSide
         let smallSize: CGFloat = 56
         let artworkSize: CGFloat = compact ? smallSize : bigSize
@@ -1091,7 +1110,7 @@ struct NowPlayingView: View {
                 // Play-pulse scale lives in a separate wrapper so its
                 // .animation(value: isPlaying) context only sees the scale,
                 // not the morph's frame/position/shadow changes.
-                AlbumArtworkView(url: artworkURL(for: track), cornerRadius: cornerRadius, showsSubtleBorder: false)
+                artworkView(for: track, cornerRadius: cornerRadius)
                     .frame(width: artworkSize, height: artworkSize)
                     .modifier(PlayPulseScale(scale: playPulseScale, isPlaying: app.player.isPlaying))
                     .shadow(
@@ -1100,10 +1119,6 @@ struct NowPlayingView: View {
                         y: compact ? 4 : 12,
                     )
                     .position(x: xCenter, y: yCenter)
-                    // Matched-geometry source: lets the artwork morph smoothly
-                    // into the queue list's inline now-playing row (and back)
-                    // when the user toggles between standard and queue modes.
-                    .matchedGeometryEffect(id: "nowPlayingArtwork", in: artworkNamespace)
 
                 if compact {
                     HStack(alignment: .center, spacing: 12) {
@@ -1162,7 +1177,13 @@ struct NowPlayingView: View {
                     .multilineTextAlignment(.leading)
                     .lineLimit(2)
                     .minimumScaleFactor(0.8)
-                if artistKey.isEmpty {
+                if isLiveRadio(track) {
+                    Text("Live stream")
+                        .font(.title3)
+                        .foregroundStyle(fgSecondary)
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(2)
+                } else if artistKey.isEmpty {
                     Text(track.artist)
                         .font(.title3)
                         .foregroundStyle(fgSecondary)
@@ -1197,26 +1218,29 @@ struct NowPlayingView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 10) {
+                let liveRadio = isLiveRadio(track)
                 Button {
                     app.toggleFavoriteTrack(id: track.id)
                 } label: {
                     Image(systemName: app.favoriteTrackIds.contains(track.id) ? "star.fill" : "star")
                         .font(.body.weight(.semibold))
-                        .foregroundStyle(fgPrimary)
+                        .foregroundStyle(liveRadio ? fgMuted : fgPrimary)
                         .frame(width: 30, height: 30)
                         .background(Circle().fill(fgCapsule))
                 }
                 .buttonStyle(.plain)
+                .disabled(liveRadio)
 
                 Menu {
                     nowPlayingTrackMenuContent(track: track)
                 } label: {
                     Image(systemName: "ellipsis")
                         .font(.body.weight(.semibold))
-                        .foregroundStyle(fgPrimary)
+                        .foregroundStyle(liveRadio ? fgMuted : fgPrimary)
                         .frame(width: 30, height: 30)
                         .background(Circle().fill(fgCapsule))
                 }
+                .disabled(liveRadio)
             }
         }
     }
@@ -1227,11 +1251,12 @@ struct NowPlayingView: View {
     private func catalogAlbumFallback(from track: Track) -> AlbumSummary? {
         guard !track.albumId.isEmpty else { return nil }
         let title = track.albumTitle.isEmpty ? "Unknown Album" : track.albumTitle
+        let art = app.resolvedArtworkURL(for: track)
         return AlbumSummary(
             id: track.albumId,
             title: title,
             artist: track.artist,
-            artworkURL: track.artworkURL
+            artworkURL: art
         )
     }
 
@@ -1305,87 +1330,149 @@ struct NowPlayingView: View {
         app.sourcePlaylistForNowPlaying(activeTrack: track, playbackSource: player.playbackSource)
     }
 
-    private func progressBlock(track: Track) -> some View {
-        ScrubberBlock(track: track, player: player, backdropPalette: backdropPalette)
+    private func progressBlock(track: Track, isEnabled: Bool = true) -> some View {
+        ScrubberBlock(track: track, player: player, backdropPalette: backdropPalette, isEnabled: isEnabled)
     }
 
     /// Transport SF Symbols (contrast follows Light / Dark Now Playing chrome).
-    private var transportRow: some View {
-        HStack {
+    private func transportRow(for track: Track) -> some View {
+        let liveRadio = isLiveRadio(track)
+        let showSkipIntervals = player.showSkipIntervalButtons
+        return HStack {
             Spacer(minLength: 0)
-            HStack(spacing: 30) {
-                Button {
+            HStack(spacing: showSkipIntervals ? 16 : 30) {
+                if showSkipIntervals {
+                    transportButton(
+                        systemName: "gobackward.\(Int(app.skipBackwardInterval.rawValue))",
+                        fontSize: 22,
+                        frameWidth: 44,
+                        isEnabled: !liveRadio,
+                    ) {
+                        player.skipBackward()
+                    }
+                }
+
+                transportButton(
+                    systemName: "backward.fill",
+                    fontSize: 27,
+                    frameWidth: 56,
+                    isEnabled: !liveRadio,
+                ) {
                     player.skipPrevious()
-                } label: {
-                    Image(systemName: "backward.fill")
-                        .font(.system(size: 27, weight: .semibold))
-                        .foregroundStyle(fgPrimary)
-                        .frame(width: 56, height: 56)
-                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
 
-                Button {
+                transportButton(
+                    systemName: player.isPlaying ? "pause.fill" : "play.fill",
+                    fontSize: 37,
+                    frameWidth: 64,
+                    isEnabled: true,
+                ) {
                     player.togglePlayPause()
-                } label: {
-                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 37, weight: .semibold))
-                        .foregroundStyle(fgPrimary)
-                        .frame(width: 64, height: 56)
-                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
 
-                Button {
+                transportButton(
+                    systemName: "forward.fill",
+                    fontSize: 27,
+                    frameWidth: 56,
+                    isEnabled: !liveRadio,
+                ) {
                     player.skipNext()
-                } label: {
-                    Image(systemName: "forward.fill")
-                        .font(.system(size: 27, weight: .semibold))
-                        .foregroundStyle(fgPrimary)
-                        .frame(width: 56, height: 56)
-                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+
+                if showSkipIntervals {
+                    transportButton(
+                        systemName: "goforward.\(Int(app.skipForwardInterval.rawValue))",
+                        fontSize: 22,
+                        frameWidth: 44,
+                        isEnabled: !liveRadio,
+                    ) {
+                        player.skipForward()
+                    }
+                }
             }
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity)
     }
 
+    private func transportButton(
+        systemName: String,
+        fontSize: CGFloat,
+        frameWidth: CGFloat,
+        frameHeight: CGFloat = 56,
+        isEnabled: Bool,
+        action: @escaping () -> Void,
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: fontSize, weight: .semibold))
+                .foregroundStyle(isEnabled ? fgPrimary : fgMuted)
+                .frame(width: frameWidth, height: frameHeight)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+    }
+
     private var shuffleRepeatRow: some View {
-        HStack(spacing: 10) {
+        let liveRadio = player.activeTrack.map(isLiveRadio) == true
+        return HStack(spacing: 10) {
             queueModeToggle(
                 systemName: "shuffle",
                 isActive: player.isQueueOutOfNaturalOrder,
+                isEnabled: !liveRadio,
                 action: { player.toggleShuffle() },
             )
             queueModeToggle(
                 systemName: player.repeatMode == .one ? "repeat.1" : "repeat",
                 isActive: player.repeatMode != .off,
+                isEnabled: !liveRadio,
                 action: { player.cycleRepeat() },
+            )
+            queueModeToggle(
+                label: PlaybackRateOption.nearest(to: player.playbackRate).title,
+                isActive: abs(player.playbackRate - 1.0) > 0.01,
+                isEnabled: !liveRadio,
+                action: {
+                    player.cyclePlaybackRate()
+                    app.showTransientToast(PlaybackRateOption.nearest(to: player.playbackRate).title)
+                },
             )
         }
         .padding(.horizontal, 24)
         .animation(.easeInOut(duration: 0.2), value: player.shuffleMode)
         .animation(.easeInOut(duration: 0.2), value: player.repeatMode)
+        .animation(.easeInOut(duration: 0.2), value: player.playbackRate)
     }
 
     private func queueModeToggle(
-        systemName: String,
+        systemName: String? = nil,
+        label: String? = nil,
         isActive: Bool,
+        isEnabled: Bool = true,
         action: @escaping () -> Void,
     ) -> some View {
-        let chrome = queueModeToggleChrome(isActive: isActive)
+        let chrome = queueModeToggleChrome(isActive: isEnabled && isActive)
         return Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 15, weight: isActive ? .bold : .semibold))
-                .foregroundStyle(chrome.foreground)
-                .frame(maxWidth: .infinity)
-                .frame(height: 36)
-                .background(Capsule(style: .continuous).fill(chrome.background))
+            Group {
+                if let label {
+                    Text(label)
+                        .font(.system(size: 14, weight: isActive && isEnabled ? .bold : .semibold))
+                        .monospacedDigit()
+                } else if let systemName {
+                    Image(systemName: systemName)
+                        .font(.system(size: 15, weight: isActive && isEnabled ? .bold : .semibold))
+                }
+            }
+            .foregroundStyle(isEnabled ? chrome.foreground : fgMuted)
+            .frame(maxWidth: .infinity)
+            .frame(height: 36)
+            .background(Capsule(style: .continuous).fill(isEnabled ? chrome.background : fgCapsule.opacity(0.65)))
         }
         .buttonStyle(.plain)
-        .accessibilityAddTraits(isActive ? .isSelected : [])
+        .disabled(!isEnabled)
+        .accessibilityAddTraits(isActive && isEnabled ? .isSelected : [])
+        .accessibilityLabel(label.map { "Playback speed, \($0)" } ?? systemName ?? "Mode")
     }
 
     /// High-contrast on/off for queue shuffle & repeat (active reads clearly vs muted off state).
@@ -1411,11 +1498,13 @@ struct NowPlayingView: View {
         return (MusicDesign.secondaryLabel, MusicDesign.chromeCapsuleFill)
     }
 
-    private var nowPlayingBottomChrome: some View {
-        HStack(spacing: 84) {
+    private func nowPlayingBottomChrome(track: Track) -> some View {
+        let liveRadio = isLiveRadio(track)
+        return HStack(spacing: player.showSleepTimerButton ? 56 : 84) {
             bottomChromeIconButton(
                 showLyrics ? "quote.bubble.fill" : "quote.bubble",
                 isActive: showLyrics,
+                isEnabled: !liveRadio,
                 iconFont: .system(size: 20, weight: .semibold),
             ) {
                 withAnimation(.spring(duration: 0.46, bounce: 0.16)) {
@@ -1423,11 +1512,39 @@ struct NowPlayingView: View {
                     if showLyrics { showQueue = false }
                 }
             }
+            if player.showSleepTimerButton {
+                if player.sleepTimerEndDate != nil {
+                    bottomChromeIconButton(
+                        "moon.fill",
+                        isActive: true,
+                        iconFont: .system(size: 20, weight: .semibold),
+                    ) {
+                        player.cancelSleepTimer()
+                        app.showTransientToast("Sleep timer canceled")
+                    }
+                } else {
+                    Menu {
+                        sleepTimerOverflowMenuContent
+                    } label: {
+                        bottomChromeIconLabel(
+                            "moon",
+                            isActive: false,
+                            iconFont: .system(size: 20, weight: .semibold),
+                        )
+                    }
+                    .menuOrder(.fixed)
+                }
+            }
             #if os(iOS)
             AirPlayRoutePickerView(tint: fgPrimary, activeTint: fgPrimary)
                 .frame(width: 46, height: 46)
             #endif
-            bottomChromeIconButton("list.bullet", isActive: showQueue) {
+            bottomChromeIconButton(
+                "list.bullet",
+                isActive: showQueue,
+                isEnabled: !liveRadio,
+                iconFont: .system(size: 20, weight: .semibold),
+            ) {
                 withAnimation(.spring(duration: 0.46, bounce: 0.16)) {
                     showQueue.toggle()
                     if showQueue { showLyrics = false }
@@ -1437,6 +1554,27 @@ struct NowPlayingView: View {
         .frame(maxWidth: .infinity)
         .padding(.top, 28)
         .padding(.bottom, 30)
+    }
+
+    /// Native overflow menu for sleep timer durations — same `Menu` / `Section`
+    /// shape as the Now Playing track ellipsis and chart row overflow panels.
+    @ViewBuilder
+    private var sleepTimerOverflowMenuContent: some View {
+        Section {
+            ForEach([15, 30, 45, 60], id: \.self) { minutes in
+                Button {
+                    startSleepTimer(minutes: minutes)
+                } label: {
+                    Label("\(minutes) minutes", systemImage: "moon.zzz")
+                }
+            }
+        }
+        .tint(Color.primary)
+    }
+
+    private func startSleepTimer(minutes: Int) {
+        player.startSleepTimer(minutes: minutes)
+        app.showTransientToast("Sleep timer · \(minutes) min")
     }
 
     private var dragIndicator: some View {
@@ -1452,24 +1590,40 @@ struct NowPlayingView: View {
     private func bottomChromeIconButton(
         _ systemName: String,
         isActive: Bool = false,
+        isEnabled: Bool = true,
         iconFont: Font = .title2,
         action: @escaping () -> Void,
     ) -> some View {
         Button(action: action) {
-            ZStack {
-                if isActive {
-                    Circle()
-                        .fill(fgBottomGlow)
-                        .frame(width: 40, height: 40)
-                }
-                Image(systemName: systemName)
-                    .font(iconFont)
-                    .foregroundStyle(fgPrimary)
-            }
-            .frame(width: 40, height: 40)
-            .contentShape(Rectangle())
+            bottomChromeIconLabel(
+                systemName,
+                isActive: isActive && isEnabled,
+                isEnabled: isEnabled,
+                iconFont: iconFont,
+            )
         }
         .buttonStyle(.plain)
+        .disabled(!isEnabled)
+    }
+
+    private func bottomChromeIconLabel(
+        _ systemName: String,
+        isActive: Bool = false,
+        isEnabled: Bool = true,
+        iconFont: Font = .title2,
+    ) -> some View {
+        ZStack {
+            if isActive {
+                Circle()
+                    .fill(fgBottomGlow)
+                    .frame(width: 40, height: 40)
+            }
+            Image(systemName: systemName)
+                .font(iconFont)
+                .foregroundStyle(isEnabled ? fgPrimary : fgMuted)
+        }
+        .frame(width: 40, height: 40)
+        .contentShape(Rectangle())
     }
 
     private func queueRow(track: Track) -> some View {
@@ -1499,9 +1653,14 @@ private struct ScrubberBlock: View {
     let track: Track
     @ObservedObject var player: PlaybackEngine
     let backdropPalette: ArtworkDynamicGradient.BackdropPalette
+    var isEnabled: Bool = true
 
     @State private var isScrubbing = false
     @State private var scrubFraction: Double = 0
+
+    private var timeLabelColor: Color {
+        isEnabled ? backdropPalette.nowPlayingTimeLabel : backdropPalette.nowPlayingTimeLabel.opacity(0.38)
+    }
 
     private var effectiveDuration: TimeInterval {
         let d = player.playbackDuration > 0 ? player.playbackDuration : track.duration
@@ -1522,15 +1681,18 @@ private struct ScrubberBlock: View {
                 NowPlayingMatchedTrackBar(
                     fraction: CGFloat(displayFraction),
                     enlarged: isScrubbing,
-                    backdropPalette: backdropPalette
+                    backdropPalette: backdropPalette,
+                    isEnabled: isEnabled,
                 )
                     .gesture(
                         DragGesture(minimumDistance: 0)
                             .onChanged { value in
+                                guard isEnabled else { return }
                                 if !isScrubbing { isScrubbing = true }
                                 scrubFraction = min(max(value.location.x / geo.size.width, 0), 1)
                             }
                             .onEnded { value in
+                                guard isEnabled else { return }
                                 let f = min(max(value.location.x / geo.size.width, 0), 1)
                                 scrubFraction = f
                                 let targetSeconds = f * effectiveDuration
@@ -1541,6 +1703,7 @@ private struct ScrubberBlock: View {
                     )
             }
             .frame(height: NowPlayingScrubberMetrics.slotHeight)
+            .allowsHitTesting(isEnabled)
 
             HStack {
                 Text(formatTime(displayTime))
@@ -1548,7 +1711,7 @@ private struct ScrubberBlock: View {
                 Text("-" + formatTime(max(0, effectiveDuration - displayTime)))
             }
             .font(.caption.weight(.medium))
-            .foregroundStyle(backdropPalette.nowPlayingTimeLabel)
+            .foregroundStyle(timeLabelColor)
             .monospacedDigit()
             .animation(nil, value: displayTime)
         }
@@ -1566,6 +1729,7 @@ private struct NowPlayingMatchedTrackBar: View {
     let fraction: CGFloat
     var enlarged: Bool = false
     let backdropPalette: ArtworkDynamicGradient.BackdropPalette
+    var isEnabled: Bool = true
 
     var body: some View {
         let barHeight = enlarged ? NowPlayingScrubberMetrics.slotHeight : NowPlayingScrubberMetrics.barHeight
@@ -1573,6 +1737,7 @@ private struct NowPlayingMatchedTrackBar: View {
         let dimFill = backdropPalette.nowPlayingScrubberTrackFill
         let progressFill = backdropPalette.nowPlayingScrubberProgressFill
         let strokeColor = backdropPalette.nowPlayingScrubberStroke
+        let barOpacity = isEnabled ? 1.0 : 0.38
         Color.clear
             .frame(maxWidth: .infinity)
             .frame(height: NowPlayingScrubberMetrics.slotHeight)
@@ -1598,6 +1763,7 @@ private struct NowPlayingMatchedTrackBar: View {
                 }
             }
             .animation(.spring(response: 0.2), value: enlarged)
+            .opacity(barOpacity)
     }
 }
 
@@ -1945,8 +2111,7 @@ private struct LyricsFocusScrollView: View {
     /// sync, silence dots, and tap-to-seek so the view doesn't pin the
     /// highlight to a bogus row.
     private var isUnsynced: Bool {
-        guard let last = lines.last else { return true }
-        return last.start == 0
+        !lines.lyricsAppearSynced
     }
 
     /// Threshold (seconds) for inserting a silence marker between two lines.
@@ -2012,6 +2177,12 @@ private struct LyricsFocusScrollView: View {
         .onReceive(player.$currentTime) { _ in
             // `currentTime` is UI-throttled; use it only as a publisher tick
             // and sample the fresher `livePlaybackTime` for sync accuracy.
+            let t = player.livePlaybackTime
+            displayTime = t
+            syncActiveIndex(to: t)
+        }
+        .onChange(of: player.isPlaying) { _, isPlaying in
+            guard isPlaying else { return }
             let t = player.livePlaybackTime
             displayTime = t
             syncActiveIndex(to: t)
@@ -2096,9 +2267,9 @@ private struct LyricsFocusScrollView: View {
         let distance = isUnsynced ? Int.max : index - activeIndex
 
         Text(line.text)
-            .font(isUnsynced ? .title3.weight(.semibold) : font(for: distance))
+            .font(isUnsynced ? .title2.weight(.bold) : font(for: distance))
             .foregroundStyle(isUnsynced ? primaryColor : (distance == 0 ? primaryColor : secondaryColor))
-            .opacity(isUnsynced ? 0.85 : opacity(for: distance))
+            .opacity(isUnsynced ? 0.92 : opacity(for: distance))
             .blur(radius: isUnsynced ? 0 : blur(for: distance))
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -2184,7 +2355,7 @@ private struct LyricsFocusScrollView: View {
     private func font(for distance: Int) -> Font {
         switch distance {
         case ..<0:
-            return .body.weight(.medium)
+            return .title3.weight(.medium)
         case 0:
             return .largeTitle.weight(.bold)
         case 1:
@@ -2192,7 +2363,7 @@ private struct LyricsFocusScrollView: View {
         case 2:
             return .title3.weight(.medium)
         default:
-            return .body
+            return .title3
         }
     }
 

@@ -330,6 +330,15 @@ struct LyricLine: Identifiable, Hashable {
     let text: String
 }
 
+extension Array where Element == LyricLine {
+    /// True when lines carry distinct timestamps (not plain text stubbed to `start == 0`).
+    var lyricsAppearSynced: Bool {
+        guard count >= 2 else { return false }
+        let roundedMs = map { Int(($0.start * 1000).rounded()) }
+        return Set(roundedMs).count >= 2
+    }
+}
+
 /// Artist folder / performer entry for Library → Artists (server-backed id).
 struct LibraryArtistSummary: Identifiable, Hashable {
     let id: String
@@ -402,6 +411,18 @@ protocol MusicLibraryProviding: AnyObject {
     /// surface in the catalog. Best-effort and fire-and-forget: failure is fine —
     /// the catalog will pick up the new file on its next scheduled scan anyway.
     func triggerLibraryScan() async throws
+
+    /// Ephemeral "now playing" notification to the server (Subsonic `setNowPlaying`).
+    func reportNowPlaying(trackId: String) async throws
+
+    /// Completed-playback scrobble (Subsonic `scrobble` with submission=true).
+    func submitScrobble(trackId: String, timestamp: Date) async throws
+
+    /// Tracks similar to the given item (`getSimilarSongs` on Subsonic; artist search fallback on Jellyfin).
+    func similarTracks(to track: Track, limit: Int) async throws -> [Track]
+
+    /// Random library tracks (`getRandomSongs` on Subsonic).
+    func randomTracks(limit: Int, genre: String?) async throws -> [Track]
 }
 
 extension MusicLibraryProviding {
@@ -414,6 +435,17 @@ extension MusicLibraryProviding {
 
     /// Default no-op so backends without a scan endpoint still satisfy the protocol.
     func triggerLibraryScan() async throws {}
+
+    func reportNowPlaying(trackId: String) async throws {}
+
+    func submitScrobble(trackId: String, timestamp: Date) async throws {}
+
+    func similarTracks(to track: Track, limit: Int) async throws -> [Track] { [] }
+
+    func randomTracks(limit: Int, genre: String?) async throws -> [Track] {
+        _ = genre
+        return []
+    }
 
     func fallbackStreamURLs(for track: Track) -> [URL] { [] }
     func offlineDownloadURL(for track: Track) throws -> URL { try streamURL(for: track) }

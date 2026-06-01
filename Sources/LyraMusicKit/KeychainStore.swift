@@ -6,6 +6,7 @@ enum KeychainStore {
 
     struct JellyfinCreds: Codable {
         var base: URL
+        var secondaryBase: URL?
         var user: String
         var password: String
         var accessToken: String?
@@ -14,6 +15,7 @@ enum KeychainStore {
 
     struct NavidromeCreds: Codable {
         var base: URL
+        var secondaryBase: URL?
         var user: String
         var password: String
         var subsonicToken: String?
@@ -21,25 +23,40 @@ enum KeychainStore {
 
     static func saveJellyfin(
         base: URL,
+        secondaryBase: URL? = nil,
         user: String,
         password: String,
         accessToken: String? = nil,
         userId: String? = nil,
     ) throws {
         let data = try JSONEncoder().encode(
-            JellyfinCreds(base: base, user: user, password: password, accessToken: accessToken, userId: userId),
+            JellyfinCreds(
+                base: base,
+                secondaryBase: secondaryBase,
+                user: user,
+                password: password,
+                accessToken: accessToken,
+                userId: userId,
+            ),
         )
         try save(key: "jellyfin", data: data)
     }
 
     static func saveNavidrome(
         base: URL,
+        secondaryBase: URL? = nil,
         user: String,
         password: String,
         subsonicToken: String? = nil,
     ) throws {
         let data = try JSONEncoder().encode(
-            NavidromeCreds(base: base, user: user, password: password, subsonicToken: subsonicToken),
+            NavidromeCreds(
+                base: base,
+                secondaryBase: secondaryBase,
+                user: user,
+                password: password,
+                subsonicToken: subsonicToken,
+            ),
         )
         try save(key: "navidrome", data: data)
     }

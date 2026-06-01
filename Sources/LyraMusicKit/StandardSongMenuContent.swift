@@ -109,10 +109,10 @@ struct StandardSongMenuContent: View {
             .tint(Color.primary)
         }
 
-        Section {
-            Button {} label: { Label("Suggest Less", systemImage: "hand.thumbsdown") }
-        }
-        .tint(Color.primary)
+        NavidromeShareMenuSection(
+            itemId: track.id,
+            description: "\(track.title) — \(track.artist)"
+        )
 
         if isOfflineCached, let onRemoveDownload {
             Section {
