@@ -28,6 +28,21 @@ struct AddToPlaylistSheet: View {
     @State private var newPlaylistName = ""
     @State private var isPublic = false
     @State private var isWorking = false
+    @State private var searchText = ""
+
+    private var filteredPlaylists: [PlaylistSummary] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return app.libraryPlaylists }
+        return app.libraryPlaylists.filter { $0.name.lowercased().contains(query) }
+    }
+
+    /// True when every track being added is already in the playlist (per cached
+    /// rows). Drives the "already added" checkmark — best-effort, no network.
+    private func alreadyContainsAll(_ playlistId: String) -> Bool {
+        guard let rows = app.cachedPlaylistRows(playlistId: playlistId) else { return false }
+        let ids = Set(rows.map(\.track.id))
+        return tracks.allSatisfy { ids.contains($0.id) }
+    }
 
     var body: some View {
         NavigationStack {
@@ -53,18 +68,35 @@ struct AddToPlaylistSheet: View {
                         Text("No playlists yet. Create one above.")
                             .font(.subheadline)
                             .foregroundStyle(MusicDesign.secondaryLabel)
+                    } else if filteredPlaylists.isEmpty {
+                        Text("No playlists match \u{201C}\(searchText)\u{201D}.")
+                            .font(.subheadline)
+                            .foregroundStyle(MusicDesign.secondaryLabel)
                     } else {
-                        ForEach(app.libraryPlaylists) { pl in
-                            Button(pl.name) {
-                                Task { await addToExisting(pl.id) }
+                        ForEach(filteredPlaylists) { pl in
+                            Button {
+                                Task { await addToExisting(pl) }
+                            } label: {
+                                HStack {
+                                    Text(pl.name)
+                                        .foregroundStyle(.primary)
+                                    Spacer()
+                                    if alreadyContainsAll(pl.id) {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundStyle(MusicDesign.accent)
+                                            .accessibilityLabel("Already added")
+                                    }
+                                }
+                                .contentShape(Rectangle())
                             }
-                            .foregroundStyle(.primary)
+                            .disabled(isWorking)
                         }
                     }
                 }
             }
             .scrollContentBackground(.hidden)
             .background(MusicDesign.background)
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Find a playlist")
             .navigationTitle("Add to playlist")
             .musicNavigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -95,18 +127,20 @@ struct AddToPlaylistSheet: View {
             )
             app.dismissPlaylistPicker()
             dismiss()
+            app.showTransientToast("Added to \(name)")
         } catch {
             app.errorMessage = error.localizedDescription
         }
     }
 
-    private func addToExisting(_ playlistId: String) async {
+    private func addToExisting(_ playlist: PlaylistSummary) async {
         isWorking = true
         defer { isWorking = false }
         do {
-            try await app.addTracksToPlaylist(playlistId: playlistId, tracks: tracks)
+            let added = try await app.addTracksToPlaylist(playlistId: playlist.id, tracks: tracks)
             app.dismissPlaylistPicker()
             dismiss()
+            app.showTransientToast(added > 0 ? "Added to \(playlist.name)" : "Already in \(playlist.name)")
         } catch {
             app.errorMessage = error.localizedDescription
         }
@@ -1856,6 +1890,13 @@ private struct DetailNavigationChrome: ViewModifier {
     }
 }
 
+/// Identifiable wrapper so a freshly-picked cover image can drive a `.sheet(item:)`
+/// crop step before it's stashed/uploaded.
+private struct CoverCropSubject: Identifiable {
+    let id = UUID()
+    let imageData: Data
+}
+
 private struct PlaylistEditSheet: View {
     enum Mode {
         case create
@@ -1877,6 +1918,7 @@ private struct PlaylistEditSheet: View {
     @State private var coverPickerItem: PhotosPickerItem?
     @State private var isUploadingCover = false
     @State private var pendingCoverData: Data?
+    @State private var coverCropSubject: CoverCropSubject?
     private let draftArtworkSeed: String
 
     private var isCreate: Bool {
@@ -2067,18 +2109,51 @@ private struct PlaylistEditSheet: View {
             guard let newItem else { return }
             Task { await handleCoverPickerSelection(newItem) }
         }
+        .sheet(item: $coverCropSubject) { subject in
+            cropSheet(for: subject)
+        }
     }
 
-    private func handleCoverPickerSelection(_ item: PhotosPickerItem) async {
-        isUploadingCover = true
-        defer {
-            isUploadingCover = false
-            coverPickerItem = nil
+    @ViewBuilder
+    private func cropSheet(for subject: CoverCropSubject) -> some View {
+        #if canImport(UIKit)
+        if let uiImage = UIImage(data: subject.imageData) {
+            SquareImageCropView(
+                image: uiImage,
+                onCancel: { coverCropSubject = nil },
+                onCrop: { cropped in
+                    coverCropSubject = nil
+                    Task { await applyCoverImage(cropped) }
+                },
+            )
+        } else {
+            Color.clear.onAppear {
+                coverCropSubject = nil
+                Task { await applyCoverImage(subject.imageData) }
+            }
         }
+        #else
+        Color.clear.onAppear {
+            coverCropSubject = nil
+            Task { await applyCoverImage(subject.imageData) }
+        }
+        #endif
+    }
+
+    /// Picking only loads the image now — the user frames it in ``SquareImageCropView``
+    /// before it's stashed (create) or uploaded (edit) via ``applyCoverImage``.
+    private func handleCoverPickerSelection(_ item: PhotosPickerItem) async {
+        defer { coverPickerItem = nil }
         guard let data = try? await item.loadTransferable(type: Data.self), !data.isEmpty else {
             app.errorMessage = "Could not read the selected image."
             return
         }
+        coverCropSubject = CoverCropSubject(imageData: data)
+    }
+
+    private func applyCoverImage(_ data: Data) async {
+        isUploadingCover = true
+        defer { isUploadingCover = false }
         if isCreate {
             pendingCoverData = data
             artworkURL = nil

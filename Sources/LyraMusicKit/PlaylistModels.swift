@@ -37,7 +37,7 @@ struct PlaylistSummary: Identifiable, Hashable, Codable {
 }
 
 /// One row in a playlist detail view (supports duplicate tracks + backend-specific removal keys).
-struct PlaylistRowItem: Identifiable, Hashable {
+struct PlaylistRowItem: Identifiable, Hashable, Codable {
     /// Stable within the current loaded snapshot (used by SwiftUI `ForEach`).
     let rowId: String
     let track: Track
