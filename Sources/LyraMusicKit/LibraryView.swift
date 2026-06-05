@@ -686,6 +686,22 @@ struct LibraryPlaylistsView: View {
         return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
     }
 
+    /// Warm the row cache for the handful of playlists most likely to be tapped
+    /// (the top of the current sort/filter) so opening one is instant instead of
+    /// paying a cold `fetchPlaylistRows` round-trip on tap. Bounded so the
+    /// Playlists screen appearing doesn't fan out a request per playlist;
+    /// ``prefetchPlaylistRows`` no-ops for already-cached playlists.
+    private func warmTopPlaylistRows() async {
+        let ids = searchFilteredPlaylists.prefix(8).map(\.id)
+            .filter { $0 != favoriteSongsId && HomeMix.mixId(fromLibraryPlaylistId: $0) == nil }
+        guard !ids.isEmpty else { return }
+        await withTaskGroup(of: Void.self) { group in
+            for id in ids {
+                group.addTask { await app.prefetchPlaylistRows(playlistId: id) }
+            }
+        }
+    }
+
     @ViewBuilder
     private func destination(for playlist: PlaylistSummary) -> some View {
         if playlist.id == favoriteSongsId {
@@ -744,6 +760,9 @@ struct LibraryPlaylistsView: View {
             }
         }
         .scrollIndicators(.hidden)
+        .task(id: searchFilteredPlaylists.map(\.id)) {
+            await warmTopPlaylistRows()
+        }
         .background(MusicDesign.background)
         .musicLibrarySectionScreen(title: "Playlists")
         .toolbar {

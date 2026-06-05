@@ -11,6 +11,18 @@ private enum NowPlayingScrubberMetrics {
     static let barHeight: CGFloat = MusicDesign.nowPlayingSliderTrackHeight
 }
 
+/// Apple Music-style press feedback for transport buttons: the icon springs down
+/// on touch and snaps back on release, with a slight dim while held. Shared by the
+/// Now Playing transport row and the mini player.
+struct TransportPressButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.82 : 1.0)
+            .opacity(configuration.isPressed ? 0.6 : 1.0)
+            .animation(.spring(response: 0.28, dampingFraction: 0.58), value: configuration.isPressed)
+    }
+}
+
 private enum NowPlayingLibraryRoute: Hashable {
     case album(AlbumSummary)
     case artist(String)
@@ -24,13 +36,13 @@ struct NowPlayingView: View {
     @Binding var isPresented: Bool
     @State private var showLyrics = false
     @State private var showQueue = false
-    /// Handoff flag for the queue's now-playing artwork. While `false` (during the
-    /// open/close morph) the floating ``sharedHeader`` artwork is the visible one
-    /// and morphs big↔small reliably. Once the open animation settles it flips
-    /// `true`, fading the morph artwork out and the real *in-list* row artwork in —
-    /// at identical coordinates, so the swap is seamless and the now-playing row
-    /// then scrolls with the rest of the queue / history.
-    @State private var queueArtworkInList = false
+    /// The queue's now-playing module is *always* a real first list row (so it
+    /// scrolls natively with the queue and never fights the history paging gesture).
+    /// During the open morph the floating ``sharedHeader`` artwork travels into the
+    /// row's slot; this flag flips `true` once it lands — instantly hiding the
+    /// floating copy and showing the row's own artwork at the same coordinates.
+    /// Set on the open animation's completion, or earlier if the user scrolls.
+    @State private var queueArtworkHandedOff = false
     @State private var libraryPath: [NowPlayingLibraryRoute] = []
     /// Which of the three paged queue sections is currently snapped. Drives the
     /// inter-section haptic so each swipe-and-snap fires its own impact, and
@@ -185,10 +197,9 @@ struct NowPlayingView: View {
                     // the same depth, not between branches buried inside per-mode
                     // subtrees.
                     sharedHeader(track: track)
-                        // Draw the morphing artwork above the queue list so it can
-                        // float over the list's reserved (clear) first-row slot
-                        // during the open/close morph, then hand off to the in-list
-                        // artwork once settled.
+                        // Keep the morphing artwork above the queue list so it can
+                        // travel over the list's first-row slot during the open
+                        // morph, then hand off to the row's own artwork.
                         .zIndex(1)
 
                     // Each mode lives inside a `Group` that's permanently in the
@@ -275,7 +286,7 @@ struct NowPlayingView: View {
             if player.activeTrack.map(isLiveRadio) == true {
                 showLyrics = false
                 showQueue = false
-                queueArtworkInList = false
+                queueArtworkHandedOff = false
             }
         }
         .onAppear {
@@ -423,12 +434,12 @@ struct NowPlayingView: View {
         return title.isEmpty ? nil : title
     }
 
-    /// Inline now-playing row pinned as the first row of the queue list — title,
-    /// artist menu, star and ellipsis live here and scroll with the list. The
-    /// artwork slot is *reserved* (a clear 56×56 placeholder keeps the title from
-    /// shifting); the real artwork only appears once ``queueArtworkInList`` flips
-    /// true. Until then the floating ``sharedHeader`` artwork occupies the slot
-    /// mid-morph and hands off here at identical coordinates.
+    /// Inline now-playing row — always the first row of the queue list, so it
+    /// scrolls natively with the queue. Title, artist menu, star and ellipsis live
+    /// here. The artwork slot is reserved (clear) and the real artwork only shows
+    /// once ``queueArtworkHandedOff`` is set — until then the floating
+    /// ``sharedHeader`` artwork occupies the slot mid-morph, at identical
+    /// coordinates, so the swap to this row's artwork is invisible.
     private func queueNowPlayingModuleRow(track: Track) -> some View {
         HStack(alignment: .center, spacing: 12) {
             ZStack {
@@ -440,8 +451,7 @@ struct NowPlayingView: View {
                         radius: 6,
                         y: 4,
                     )
-                    .opacity(queueArtworkInList ? 1 : 0)
-                    .animation(.easeInOut(duration: 0.18), value: queueArtworkInList)
+                    .opacity(queueArtworkHandedOff ? 1 : 0)
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -596,6 +606,13 @@ struct NowPlayingView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        // If the user scrolls before the open morph finishes, hand the artwork off
+        // immediately so the row's own artwork is there as it scrolls (no empty
+        // slot, no late fade). This is a passive *observer* — unlike a gesture it
+        // doesn't compete with the list scroll or the history paging swipe.
+        .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, offset in
+            if offset > 0.5 && !queueArtworkHandedOff { queueArtworkHandedOff = true }
+        }
         #if os(iOS)
         .environment(\.editMode, .constant(.active))
         .tint(fgPrimary)
@@ -1141,9 +1158,9 @@ struct NowPlayingView: View {
     /// the compact morph and desync the artwork.
     private func sharedHeader(track: Track) -> some View {
         let compact = showLyrics || showQueue
-        // Queue mode reserves zero header height (the now-playing module lives
-        // inline as the first list row) and hides the compact title block — only
-        // the artwork morph is shared. Lyrics keeps the pinned compact header.
+        // Queue reserves zero header height — its now-playing module is always the
+        // first row of the list below. The header here only hosts the artwork while
+        // it morphs into that row's slot (at the same coordinates), then hides.
         let inQueue = showQueue
         let bigSize = albumArtPlayingSide
         let smallSize: CGFloat = 56
@@ -1161,10 +1178,8 @@ struct NowPlayingView: View {
         let standardOverscaleHeight = bigSize * albumArtPlayOverscale
         let containerHeight: CGFloat = {
             if !compact { return standardOverscaleHeight + topPad + bottomPad }
-            // Collapse to nothing in queue mode so the list rises to the top and
-            // the morph artwork floats over its reserved first-row slot. The
-            // artwork still positions at `topPad + size/2`, matching the in-list
-            // row, so the handoff is seamless.
+            // Lyrics reserves the full compact header; queue collapses to zero so
+            // the list — carrying its own now-playing first row — rises to the top.
             return inQueue ? 0 : (smallSize + topPad + bottomPad)
         }()
 
@@ -1187,10 +1202,9 @@ struct NowPlayingView: View {
                         y: compact ? 4 : 12,
                     )
                     .position(x: xCenter, y: yCenter)
-                    // Handoff: once the queue is fully open this fades out and the
-                    // real in-list row artwork fades in at the same coordinates.
-                    .opacity(inQueue && queueArtworkInList ? 0 : 1)
-                    .animation(.easeInOut(duration: 0.18), value: queueArtworkInList)
+                    // Hidden the instant the morph lands and the in-list row's own
+                    // artwork takes over (same coordinates). Instant, no crossfade.
+                    .opacity(inQueue && queueArtworkHandedOff ? 0 : 1)
 
                 if compact && !inQueue {
                     HStack(alignment: .center, spacing: 12) {
@@ -1438,6 +1452,7 @@ struct NowPlayingView: View {
                     fontSize: 37,
                     frameWidth: 64,
                     isEnabled: true,
+                    symbolReplace: true,
                 ) {
                     player.togglePlayPause()
                 }
@@ -1473,16 +1488,20 @@ struct NowPlayingView: View {
         frameWidth: CGFloat,
         frameHeight: CGFloat = 56,
         isEnabled: Bool,
+        symbolReplace: Bool = false,
         action: @escaping () -> Void,
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: fontSize, weight: .semibold))
                 .foregroundStyle(isEnabled ? fgPrimary : fgMuted)
+                // Smoothly morph play.fill ↔ pause.fill instead of hard-swapping.
+                .contentTransition(symbolReplace ? .symbolEffect(.replace) : .identity)
+                .animation(symbolReplace ? .smooth(duration: 0.22) : nil, value: systemName)
                 .frame(width: frameWidth, height: frameHeight)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TransportPressButtonStyle())
         .disabled(!isEnabled)
     }
 
@@ -1579,7 +1598,7 @@ struct NowPlayingView: View {
                 isEnabled: !liveRadio,
                 iconFont: .system(size: 20, weight: .semibold),
             ) {
-                queueArtworkInList = false
+                queueArtworkHandedOff = false
                 withAnimation(.spring(duration: 0.46, bounce: 0.16)) {
                     showLyrics.toggle()
                     if showLyrics { showQueue = false }
@@ -1619,20 +1638,20 @@ struct NowPlayingView: View {
                 iconFont: .system(size: 20, weight: .semibold),
             ) {
                 if showQueue {
-                    // Closing: drop the in-list artwork first so the floating
-                    // header artwork takes over the slot and morphs back to big.
-                    queueArtworkInList = false
+                    // Closing: hide the row's artwork so the floating header artwork
+                    // takes the slot back and morphs to big.
+                    queueArtworkHandedOff = false
                     withAnimation(.spring(duration: 0.46, bounce: 0.16)) {
                         showQueue = false
                     }
                 } else {
+                    queueArtworkHandedOff = false
                     withAnimation(.spring(duration: 0.46, bounce: 0.16)) {
                         showQueue = true
                         showLyrics = false
                     } completion: {
-                        // Hand the artwork off to the scrolling in-list row only
-                        // once the open morph has fully settled.
-                        if showQueue { queueArtworkInList = true }
+                        // Morph landed: hand off to the row's own artwork (instant).
+                        if showQueue { queueArtworkHandedOff = true }
                     }
                 }
             }

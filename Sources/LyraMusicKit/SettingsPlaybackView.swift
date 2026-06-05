@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsPlaybackView: View {
     @EnvironmentObject private var app: AppModel
     @State private var showResetConfirm = false
+    @AppStorage("streamingDiskCacheEnabled") private var streamingDiskCacheEnabled = false
 
     private var isDefault: Bool {
         app.wifiStreamBitRate == .none
@@ -24,6 +25,7 @@ struct SettingsPlaybackView: View {
         List {
             streamingSection
             downloadingSection
+            streamCacheSection
             playerControlsSection
             skipIntervalsSection
             remoteControlsSection
@@ -115,6 +117,17 @@ struct SettingsPlaybackView: View {
             Text("Downloading")
         } footer: {
             Text("Download format is separate from streaming. Exotic formats may fail on some servers.")
+        }
+    }
+
+    private var streamCacheSection: some View {
+        Section {
+            Toggle("Cache streamed songs", isOn: $streamingDiskCacheEnabled)
+                .tint(MusicDesign.accent)
+        } header: {
+            Text("Stream Cache")
+        } footer: {
+            Text("Keeps a copy of songs you stream so replaying a recent track is instant, with no extra data use. Experimental — turn off if you notice playback issues.")
         }
     }
 

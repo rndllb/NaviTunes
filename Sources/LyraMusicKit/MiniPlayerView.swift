@@ -116,10 +116,12 @@ struct MiniPlayerView: View {
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(.primary)
+                    .contentTransition(.symbolEffect(.replace))
+                    .animation(.smooth(duration: 0.22), value: player.isPlaying)
                     .frame(width: 28, height: 30)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(TransportPressButtonStyle())
             .padding(.leading, 2)
 
             Spacer(minLength: 6)
@@ -175,10 +177,12 @@ struct MiniPlayerView: View {
                     Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                         .font(.system(size: isTabAccessory ? 14 : 17, weight: .semibold))
                         .foregroundStyle(.primary)
+                        .contentTransition(.symbolEffect(.replace))
+                        .animation(.smooth(duration: 0.22), value: player.isPlaying)
                         .frame(width: isTabAccessory ? 28 : 32, height: isTabAccessory ? 28 : 32)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(TransportPressButtonStyle())
 
                 if showsSkip {
                     Button {
@@ -190,7 +194,7 @@ struct MiniPlayerView: View {
                             .frame(width: isTabAccessory ? 28 : 32, height: isTabAccessory ? 28 : 32)
                             .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(TransportPressButtonStyle())
                     .disabled(liveRadio)
                 }
             }

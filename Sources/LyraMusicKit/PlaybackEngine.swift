@@ -91,6 +91,20 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private var player: AVPlayer?
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
+    /// A single pre-warmed `AVURLAsset` for the track that will play next, keyed by
+    /// its stream URL. Created (and its `.isPlayable` key loaded) while the current
+    /// track is playing so a skip reuses a warm asset instead of doing the DNS /
+    /// TLS / HTTP-header handshake cold on tap. ``makePlaybackAsset`` consumes it.
+    private var prewarmedAssets: [String: AVURLAsset] = [:]
+    /// Retains the resource-loader delegate for the current streaming item (assets
+    /// hold their loader delegate weakly). Replaced per item, torn down on detach.
+    private var activeResourceLoaderDelegate: CachingResourceLoaderDelegate?
+    /// Transparent on-disk stream cache for instant replays. Off by default — it
+    /// routes playback through a custom `AVAssetResourceLoaderDelegate`, so it is
+    /// opt-in (Settings → Sound & Playback) until validated against a live server.
+    private var streamingDiskCacheEnabled: Bool {
+        UserDefaults.standard.bool(forKey: "streamingDiskCacheEnabled")
+    }
     /// KVO on `AVPlayer.timeControlStatus` — the system-set property reflecting
     /// what playback is actually doing. Catches every external pause cause
     /// (headphone unplug, Control Center, network stall, audio session steal)
@@ -417,8 +431,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         shuffleMode = .off
         lastEmittedUIProgress = -10_000
         playbackHead = 0
-        try await loadLyrics()
-        guard isPlaybackEpochCurrent(epoch) else { return }
+        scheduleLyricsLoad()
         activateAudioSession()
         try await startCurrentItem(epoch: epoch, autoPlay: true)
         guard isPlaybackEpochCurrent(epoch), let player else { return }
@@ -427,6 +440,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         scrobbledForCurrentTrack = false
         configureRemoteCommandsIfNeeded()
         revealMiniPlayerChrome()
+        schedulePrewarmNextTrack()
         if let started = activeTrack { onTrackStarted?(started) }
     }
 
@@ -999,7 +1013,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         // Capture before teardown — new AVPlayer starts `.paused` and KVO must not clear intent.
         let shouldAutoPlay = shouldAutoPlayAfterAdvance || isPlaying || (player?.rate ?? 0) > 0.01
         shouldAutoPlayAfterAdvance = false
-        if var track = currentTrack, let refresh = refreshTrackBeforePlay {
+        if let track = currentTrack, let refresh = refreshTrackBeforePlay {
             let refreshed = await refresh(track)
             if refreshed.id != track.id, queue.indices.contains(currentIndex) {
                 queue[currentIndex] = refreshed
@@ -1009,10 +1023,12 @@ final class PlaybackEngine: NSObject, ObservableObject {
         isAdvancingToNextItem = true
         defer { isAdvancingToNextItem = false }
         teardownPlayer()
-        try await loadLyrics()
+        scheduleLyricsLoad()
         guard isPlaybackEpochCurrent(epoch) else { return }
         activateAudioSession()
-        try await startCurrentItem(epoch: epoch, autoPlay: shouldAutoPlay)
+        // We already ran `refreshTrackBeforePlay` above — don't pay for it a
+        // second time inside startCurrentItem.
+        try await startCurrentItem(epoch: epoch, autoPlay: shouldAutoPlay, skipTrackRefresh: true)
         guard isPlaybackEpochCurrent(epoch), let player else {
             isPlaying = false
             refreshNowPlaying()
@@ -1027,6 +1043,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         }
         scrobbledForCurrentTrack = false
         revealMiniPlayerChrome()
+        schedulePrewarmNextTrack()
         if let started = activeTrack {
             userQueuedTrackIds.remove(started.id)
             onTrackStarted?(started)
@@ -1080,6 +1097,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
         timeControlStatusObservation = nil
         stopPlayer(player)
         player = nil
+        activeResourceLoaderDelegate?.invalidate()
+        activeResourceLoaderDelegate = nil
     }
 
     private func teardownPlayer() {
@@ -1099,10 +1118,115 @@ final class PlaybackEngine: NSObject, ObservableObject {
         if url.isFileURL {
             return AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
         }
+        // Reuse a pre-warmed asset for this exact URL if we staged one for the
+        // upcoming track — its network handshake is already in flight or done.
+        if let warm = prewarmedAssets.removeValue(forKey: url.absoluteString) {
+            return warm
+        }
+        // Route progressive streams through the disk cache when enabled so a full
+        // play-through is cached for instant replay (zero extra bytes).
+        if streamingDiskCacheEnabled,
+           CachingResourceLoaderDelegate.isCacheable(url),
+           let customURL = CachingResourceLoaderDelegate.customSchemeURL(from: url) {
+            let delegate = CachingResourceLoaderDelegate(originalURL: url, headers: headers)
+            let asset = AVURLAsset(url: customURL)
+            asset.resourceLoader.setDelegate(delegate, queue: delegate.accessQueue)
+            activeResourceLoaderDelegate?.invalidate()
+            activeResourceLoaderDelegate = delegate
+            return asset
+        }
         if headers.isEmpty {
             return AVURLAsset(url: url)
         }
         return AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+    }
+
+    /// The queue index that will play when the current track ends, mirroring the
+    /// branch logic in ``handleEnded`` (repeat-one stays put; repeat-all wraps;
+    /// repeat-off stops at the end).
+    /// Up to `limit` queue indices that will play after the current track, in
+    /// order, mirroring ``handleEnded``'s branch logic (repeat-one stays put;
+    /// repeat-all wraps; repeat-off stops at the end). De-duplicated so short
+    /// queues don't stage the same track twice.
+    private func upcomingQueueIndices(limit: Int) -> [Int] {
+        guard !queue.isEmpty, limit > 0 else { return [] }
+        switch repeatMode {
+        case .one:
+            return [currentIndex]
+        case .all:
+            var result: [Int] = []
+            var seen: Set<Int> = [currentIndex]
+            var step = 1
+            while result.count < limit, step <= queue.count {
+                let idx = (currentIndex + step) % queue.count
+                if seen.insert(idx).inserted { result.append(idx) }
+                step += 1
+            }
+            return result
+        case .off:
+            var result: [Int] = []
+            var idx = currentIndex + 1
+            while idx < queue.count, result.count < limit {
+                result.append(idx)
+                idx += 1
+            }
+            return result
+        }
+    }
+
+    /// The primary remote stream candidate for a track — the first URL
+    /// ``startCurrentItem`` would try after any offline copy. Used for pre-warming.
+    private func primaryRemoteCandidate(for track: Track) -> (url: URL, headers: [String: String])? {
+        if let direct = track.streamOverrideURL { return (direct, [:]) }
+        guard let library else { return nil }
+        let headers = library.httpHeadersForMediaRequests()
+        if let jellyfin = library as? JellyfinMusicClient {
+            guard let url = jellyfin.allStreamingURLs(for: track).first else { return nil }
+            return (url, headers)
+        }
+        guard let url = try? library.streamURL(for: track) else { return nil }
+        return (url, headers)
+    }
+
+    /// How many upcoming tracks to pre-warm. Kept small on purpose: warming opens
+    /// a connection + loads playability per track, so more than a couple wastes
+    /// bandwidth/connections on songs the user may skip past (Apple's own guidance
+    /// for queue prefetch is to stay within a few items).
+    private static let prewarmDepth = 2
+
+    /// Stage the next couple of tracks' assets while the current one plays so a
+    /// skip (or two) is near-instant. No-op for locally downloaded next tracks
+    /// (already instant) and internet-radio streams (live; nothing to pre-roll).
+    /// Reuses any already-warmed asset and drops ones no longer upcoming.
+    private func schedulePrewarmNextTrack() {
+        let indices = upcomingQueueIndices(limit: Self.prewarmDepth)
+        guard !indices.isEmpty else {
+            prewarmedAssets.removeAll()
+            return
+        }
+        var staged: [String: AVURLAsset] = [:]
+        for idx in indices {
+            guard queue.indices.contains(idx) else { continue }
+            let track = queue[idx]
+            if track.isInternetRadioStream { continue }
+            if offline?.localFile(for: track.id) != nil { continue }
+            guard let candidate = primaryRemoteCandidate(for: track) else { continue }
+            let key = candidate.url.absoluteString
+            if staged[key] != nil { continue }
+            // Reuse an already-warmed asset instead of restarting its handshake.
+            if let existing = prewarmedAssets[key] {
+                staged[key] = existing
+                continue
+            }
+            let asset = candidate.headers.isEmpty
+                ? AVURLAsset(url: candidate.url)
+                : AVURLAsset(url: candidate.url, options: ["AVURLAssetHTTPHeaderFieldsKey": candidate.headers])
+            staged[key] = asset
+            Task.detached(priority: .utility) {
+                _ = try? await asset.load(.isPlayable)
+            }
+        }
+        prewarmedAssets = staged
     }
 
     private func awaitPlayerSeek(
@@ -1125,8 +1249,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
             switch item.status {
             case .readyToPlay: return
             case .failed: throw item.error ?? URLError(.badServerResponse)
-            case .unknown: try await Task.sleep(for: .milliseconds(110))
-            @unknown default: try await Task.sleep(for: .milliseconds(110))
+            // Poll tightly so we resume within ~20ms of the item flipping ready,
+            // instead of eating up to a tenth of a second of dead time per play.
+            case .unknown: try await Task.sleep(for: .milliseconds(20))
+            @unknown default: try await Task.sleep(for: .milliseconds(20))
             }
         }
         throw URLError(.timedOut)
@@ -1179,11 +1305,11 @@ final class PlaybackEngine: NSObject, ObservableObject {
         userQueuedTrackIds = nextUserQueued
     }
 
-    private func startCurrentItem(epoch: UInt, startSeconds: TimeInterval = 0, autoPlay: Bool = false, allowStaleRecovery: Bool = true) async throws {
+    private func startCurrentItem(epoch: UInt, startSeconds: TimeInterval = 0, autoPlay: Bool = false, allowStaleRecovery: Bool = true, skipTrackRefresh: Bool = false) async throws {
         guard isPlaybackEpochCurrent(epoch) else { return }
         guard let track = currentTrack else { throw PlaybackEngineError.missingTrack }
 
-        if let refresh = refreshTrackBeforePlay {
+        if !skipTrackRefresh, let refresh = refreshTrackBeforePlay {
             let refreshed = await refresh(track)
             if refreshed.id != track.id, queue.indices.contains(currentIndex) {
                 queue[currentIndex] = refreshed
@@ -1196,7 +1322,15 @@ final class PlaybackEngine: NSObject, ObservableObject {
             candidates.append((saved, [:]))
         }
         var seen = Set(candidates.map { $0.url.absoluteString })
+        let cacheEnabled = streamingDiskCacheEnabled
         func appendUnique(_ u: URL, _ h: [String: String]) {
+            // Prefer a fully-cached local copy of this exact stream over the network.
+            if cacheEnabled, CachingResourceLoaderDelegate.isCacheable(u),
+               let cached = StreamingMediaDiskCache.shared.cachedFileURL(forKey: StreamingMediaDiskCache.key(for: u)),
+               !seen.contains(cached.absoluteString) {
+                seen.insert(cached.absoluteString)
+                candidates.append((cached, [:]))
+            }
             let key = u.absoluteString
             guard !seen.contains(key) else { return }
             seen.insert(key)
@@ -1280,6 +1414,11 @@ final class PlaybackEngine: NSObject, ObservableObject {
         let p = AVPlayer(playerItem: item)
         if candidate.url.isFileURL {
             p.automaticallyWaitsToMinimizeStalling = false
+        } else {
+            // Start playing as soon as ~2s is buffered instead of letting the
+            // system pre-buffer several seconds first. Reset to system-managed
+            // (0) once playback is confirmed so steady-state buffering is normal.
+            item.preferredForwardBufferDuration = 2
         }
         try await waitForPlayerItemReady(item, timeout: candidate.url.isFileURL ? .seconds(12) : .seconds(22))
         guard isPlaybackEpochCurrent(epoch) else {
@@ -1326,6 +1465,11 @@ final class PlaybackEngine: NSObject, ObservableObject {
         guard isPlaybackEpochCurrent(epoch) else {
             detachPlayerKeepingQueueState()
             return false
+        }
+        // Playback is confirmed — hand buffering back to the system so it can
+        // read further ahead than the lowered startup target.
+        if !candidate.url.isFileURL {
+            item.preferredForwardBufferDuration = 0
         }
         if resolvedDuration > 0 {
             duration = resolvedDuration
@@ -1495,6 +1639,17 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private var currentTrack: Track? {
         guard queue.indices.contains(currentIndex) else { return nil }
         return queue[currentIndex]
+    }
+
+    /// Lyrics are not on the audio critical path. Loading them inline (a full
+    /// `lyrics(for:)` round-trip) used to gate time-to-first-audio on every track
+    /// start. Fire-and-forget instead: clear immediately so the previous track's
+    /// lyrics don't linger, then fetch in the background. ``loadLyrics`` re-checks
+    /// the playback epoch + track id before publishing, so a stale result for a
+    /// track the user already skipped past is dropped.
+    private func scheduleLyricsLoad() {
+        lyrics = []
+        Task { [weak self] in try? await self?.loadLyrics() }
     }
 
     private func loadLyrics() async throws {
