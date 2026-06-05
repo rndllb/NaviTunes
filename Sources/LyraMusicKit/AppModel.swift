@@ -892,6 +892,8 @@ public final class AppModel: ObservableObject {
         lastLibrarySyncAt = nil
         UserDefaults.standard.removeObject(forKey: Self.lastLibrarySyncAtKey)
         LibrarySnapshotStore.clear()
+        PlaylistRowsCacheStore.clear()
+        StreamingMediaDiskCache.shared.clear()
         PlaybackQueueStore.clear()
         clearMediaArtworkCachesSync()
         hasInternetPath = true
@@ -1053,6 +1055,7 @@ public final class AppModel: ObservableObject {
         lastLibrarySyncAt = nil
         playlistRowsCache.removeAll()
         LibrarySnapshotStore.clear()
+        PlaylistRowsCacheStore.clear()
     }
 
     func persistLibrarySnapshot() {
@@ -1082,7 +1085,23 @@ public final class AppModel: ObservableObject {
             guard let self else { return }
             let snap = await LibrarySnapshotStore.loadAsync()
             self.applyRestoredSnapshot(snap)
+            let rowsCache = await PlaylistRowsCacheStore.loadAsync()
+            self.applyRestoredPlaylistRowsCache(rowsCache)
         }
+    }
+
+    /// Seed the in-memory playlist-row cache from disk on cold launch so the first
+    /// open of a previously-viewed playlist renders instantly. Never clobbers an
+    /// entry already fetched fresh this session, and skips empties.
+    private func applyRestoredPlaylistRowsCache(_ cache: PlaylistRowsCache?) {
+        guard let cache, !cache.rowsByPlaylistId.isEmpty else { return }
+        for (id, rows) in cache.rowsByPlaylistId where playlistRowsCache[id] == nil && !rows.isEmpty {
+            playlistRowsCache[id] = rows
+        }
+    }
+
+    private func persistPlaylistRowsCache() {
+        PlaylistRowsCacheStore.saveAsync(playlistRowsCache)
     }
 
     private func applyRestoredSnapshot(_ snap: LibrarySnapshot?) {
@@ -1683,6 +1702,8 @@ public final class AppModel: ObservableObject {
 
     func clearMetadataCache() {
         LibrarySnapshotStore.clear()
+        PlaylistRowsCacheStore.clear()
+        StreamingMediaDiskCache.shared.clear()
         clearInMemoryPlaylistRowsCache()
     }
 
@@ -2155,6 +2176,7 @@ public final class AppModel: ObservableObject {
             rows = try await client.fetchPlaylistRows(playlistId: playlistId)
         }
         playlistRowsCache[playlistId] = rows
+        persistPlaylistRowsCache()
         return rows
     }
 
@@ -2182,9 +2204,18 @@ public final class AppModel: ObservableObject {
         return summary
     }
 
-    func addTracksToPlaylist(playlistId: String, tracks: [Track]) async throws {
-        let ids = tracks.map(\.id)
-        guard !ids.isEmpty else { return }
+    /// Adds tracks to a playlist, skipping any already present (per the cached
+    /// rows, when known) so a double-tap or re-add doesn't create duplicates.
+    /// Returns the number of tracks actually sent to the server (0 = all dupes).
+    @discardableResult
+    func addTracksToPlaylist(playlistId: String, tracks: [Track]) async throws -> Int {
+        var pending = tracks
+        if let existing = cachedPlaylistRows(playlistId: playlistId) {
+            let existingIds = Set(existing.map(\.track.id))
+            pending = tracks.filter { !existingIds.contains($0.id) }
+        }
+        let ids = pending.map(\.id)
+        guard !ids.isEmpty else { return 0 }
         switch backendKind {
         case .jellyfin:
             guard let client = jellyfin else {
@@ -2197,7 +2228,10 @@ public final class AppModel: ObservableObject {
             }
             try await client.addTracksToPlaylist(playlistId: playlistId, trackIds: ids)
         }
+        // Rows changed — drop the stale cached copy so the next open refetches.
+        invalidatePlaylistRowsCache(playlistId: playlistId)
         await refreshLibraryPlaylists()
+        return ids.count
     }
 
     func removePlaylistRow(playlistId: String, row: PlaylistRowItem) async throws {
@@ -2227,6 +2261,7 @@ public final class AppModel: ObservableObject {
             try await client.removeTracksFromPlaylist(playlistId: playlistId, indexes: indexes)
         }
         stripKillModePending(playlistId: playlistId, trackIds: Set(rows.map(\.track.id)))
+        invalidatePlaylistRowsCache(playlistId: playlistId)
         await refreshLibraryPlaylists()
     }
 
