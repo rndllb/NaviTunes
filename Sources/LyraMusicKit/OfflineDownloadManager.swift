@@ -1155,7 +1155,8 @@ final class OfflineDownloadManager: ObservableObject {
 
         let artist = parts[0]
         let albumTitle = parts[parts.count - 2]
-        let filename = (parts.last! as NSString).deletingPathExtension
+        guard let lastComponent = parts.last, !lastComponent.isEmpty else { return nil }
+        let filename = (lastComponent as NSString).deletingPathExtension
         let albumId = "offline-\(sanitizedFilenameFragment(albumTitle))"
 
         var discNumber = 1
