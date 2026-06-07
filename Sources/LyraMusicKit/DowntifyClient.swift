@@ -304,7 +304,9 @@ enum DowntifyClient {
     // MARK: - Private
 
     static func search(base: String, query: String) async throws -> [DowntifySong] {
-        var comps = URLComponents(string: baseURL(base, path: "/api/songs/search"))!
+        guard var comps = URLComponents(string: baseURL(base, path: "/api/songs/search")) else {
+            throw DowntifyError("Invalid Downtify URL in Settings.")
+        }
         comps.queryItems = [URLQueryItem(name: "query", value: query)]
         guard let url = comps.url else { throw DowntifyError("Invalid URL.") }
         let (data, resp) = try await URLSession.shared.data(from: url)
@@ -316,7 +318,9 @@ enum DowntifyClient {
 
     @discardableResult
     private static func triggerDownload(base: String, youtubeURL: String) async throws -> String {
-        var comps = URLComponents(string: baseURL(base, path: "/api/download/url"))!
+        guard var comps = URLComponents(string: baseURL(base, path: "/api/download/url")) else {
+            throw DowntifyError("Invalid Downtify URL in Settings.")
+        }
         comps.queryItems = [
             URLQueryItem(name: "url", value: youtubeURL),
             URLQueryItem(name: "client_id", value: UUID().uuidString.lowercased()),
