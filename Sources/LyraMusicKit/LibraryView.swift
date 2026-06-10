@@ -528,16 +528,27 @@ private enum LibraryPlaylistDownloadIndexCache {
         }
 
         var matching = Set<String>()
+        // Bounded fan-out: this can mean one rows fetch per playlist, and slamming
+        // the server with 60 concurrent requests stalls everything else (artwork,
+        // playback handshakes) on slow links.
         await withTaskGroup(of: String?.self) { group in
-            for playlist in playlists {
+            let maxConcurrent = 4
+            var iterator = playlists.makeIterator()
+            @discardableResult
+            func addNext() -> Bool {
+                guard let playlist = iterator.next() else { return false }
                 let playlistId = playlist.id
                 group.addTask {
                     guard let rows = try? await fetchRows(playlistId) else { return nil }
                     return rows.contains(where: { downloadedTrackIds.contains($0.track.id) }) ? playlistId : nil
                 }
+                return true
             }
+            var started = 0
+            while started < maxConcurrent, addNext() { started += 1 }
             for await playlistId in group {
                 if let playlistId { matching.insert(playlistId) }
+                addNext()
             }
         }
         cachedDownloadIds = downloadedTrackIds
@@ -849,7 +860,11 @@ struct LibraryPlaylistsView: View {
         let matching = await LibraryPlaylistDownloadIndexCache.matchingPlaylistIds(
             downloadedTrackIds: offline.downloadedTrackIds,
             playlists: app.libraryPlaylists,
-            fetchRows: { try await app.fetchPlaylistRows(playlistId: $0) }
+            fetchRows: { id in
+                // Session/disk cache first — only unopened playlists pay a network fetch.
+                if let cached = await app.cachedPlaylistRows(playlistId: id) { return cached }
+                return try await app.fetchPlaylistRows(playlistId: id)
+            }
         )
         await MainActor.run { playlistIdsWithDownloads = matching }
     }

@@ -113,13 +113,21 @@ struct MiniPlayerView: View {
             Button {
                 player.togglePlayPause()
             } label: {
-                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .contentTransition(.symbolEffect(.replace))
-                    .animation(.smooth(duration: 0.22), value: player.isPlaying)
-                    .frame(width: 28, height: 30)
-                    .contentShape(Rectangle())
+                Group {
+                    if player.isBuffering {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(.primary)
+                    } else {
+                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .contentTransition(.symbolEffect(.replace))
+                            .animation(.smooth(duration: 0.22), value: player.isPlaying)
+                    }
+                }
+                .frame(width: 28, height: 30)
+                .contentShape(Rectangle())
             }
             .buttonStyle(TransportPressButtonStyle())
             .padding(.leading, 2)
@@ -174,13 +182,21 @@ struct MiniPlayerView: View {
                 Button {
                     player.togglePlayPause()
                 } label: {
-                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: isTabAccessory ? 14 : 17, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .contentTransition(.symbolEffect(.replace))
-                        .animation(.smooth(duration: 0.22), value: player.isPlaying)
-                        .frame(width: isTabAccessory ? 28 : 32, height: isTabAccessory ? 28 : 32)
-                        .contentShape(Rectangle())
+                    Group {
+                        if player.isBuffering {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(.primary)
+                        } else {
+                            Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                                .font(.system(size: isTabAccessory ? 14 : 17, weight: .semibold))
+                                .foregroundStyle(.primary)
+                                .contentTransition(.symbolEffect(.replace))
+                                .animation(.smooth(duration: 0.22), value: player.isPlaying)
+                        }
+                    }
+                    .frame(width: isTabAccessory ? 28 : 32, height: isTabAccessory ? 28 : 32)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(TransportPressButtonStyle())
 

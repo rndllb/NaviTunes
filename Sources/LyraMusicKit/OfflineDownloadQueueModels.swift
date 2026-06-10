@@ -35,9 +35,16 @@ struct OfflineDownloadQueueItem: Codable, Identifiable, Equatable {
     var completedTrackIds: Set<String>
     var addedAt: Date
     var errorMessage: String?
+    /// Tracks that errored this run. Optional so queues persisted by older builds
+    /// still decode. A failed track no longer aborts the rest of the item — the
+    /// worker skips it and keeps downloading; Retry re-attempts just these.
+    var failedTrackIds: Set<String>?
+
+    var failedIds: Set<String> { failedTrackIds ?? [] }
 
     var pendingTracks: [Track] {
-        tracks.filter { !completedTrackIds.contains($0.id) }
+        let failed = failedIds
+        return tracks.filter { !completedTrackIds.contains($0.id) && !failed.contains($0.id) }
     }
 
     var progressFraction: Double {
