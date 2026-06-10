@@ -514,6 +514,7 @@ struct DiscoverySearchView: View {
                             navigationPath.append(SearchNavTarget.album(album))
                         } label: {
                             shelfAlbumCard(album)
+                                .coverZoomSource(id: album.id)
                         }
                         .buttonStyle(.plain)
                         .libraryAlbumContextMenu(album)
@@ -556,6 +557,7 @@ struct DiscoverySearchView: View {
                             tapRecent(item)
                         } label: {
                             recentEntityRow(item)
+                                .coverZoomSource(id: recentZoomId(item))
                         }
                         .buttonStyle(.plain)
                         .listRowBackground(discoverRowBackground)
@@ -728,6 +730,7 @@ struct DiscoverySearchView: View {
             }
             .padding(.vertical, entityVerticalPadding)
             .contentShape(Rectangle())
+            .coverZoomSource(id: album.id)
         }
         .buttonStyle(.plain)
         .listRowBackground(discoverRowBackground)
@@ -774,6 +777,7 @@ struct DiscoverySearchView: View {
                 Spacer(minLength: 0)
                 navChevron
             }
+            .coverZoomSource(id: track.albumId)
             .padding(.vertical, songVerticalPadding)
             .contentShape(Rectangle())
         }
@@ -1037,6 +1041,7 @@ struct DiscoverySearchView: View {
                             tapRecent(item)
                         } label: {
                             recentEntityRow(item)
+                                .coverZoomSource(id: recentZoomId(item))
                         }
                         .buttonStyle(.plain)
                         .listRowBackground(libraryRowBackground)
@@ -1079,6 +1084,7 @@ struct DiscoverySearchView: View {
                                     navChevron
                                 }
                                 .contentShape(Rectangle())
+                                .coverZoomSource(id: track.albumId)
                             }
                             .buttonStyle(.plain)
                             .listRowBackground(libraryRowBackground)
@@ -1106,6 +1112,7 @@ struct DiscoverySearchView: View {
                                     navChevron
                                 }
                                 .contentShape(Rectangle())
+                                .coverZoomSource(id: album.id)
                             }
                             .buttonStyle(.plain)
                             .listRowBackground(libraryRowBackground)
@@ -1133,6 +1140,7 @@ struct DiscoverySearchView: View {
                                     navChevron
                                 }
                                 .contentShape(Rectangle())
+                                .coverZoomSource(id: playlist.id)
                             }
                             .buttonStyle(.plain)
                             .listRowBackground(libraryRowBackground)
@@ -1285,6 +1293,17 @@ struct DiscoverySearchView: View {
         }
         .padding(.vertical, entityVerticalPadding)
         .contentShape(Rectangle())
+    }
+
+    /// Zoom key mirroring ``tapRecent(_:)`` — songs route to their album
+    /// detail, so they zoom on the album id; artist rows never match a
+    /// detail destination, so their key is inert.
+    private func recentZoomId(_ entity: RecentSearchEntity) -> String {
+        switch entity.kind {
+        case .song: return entity.secondaryId ?? ""
+        case .album, .playlist: return entity.primaryId
+        case .artist: return "recent-artist-no-zoom"
+        }
     }
 
     /// Routes a Recently-Searched tap to the right navigation destination.

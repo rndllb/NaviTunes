@@ -289,13 +289,20 @@ struct LibrarySongsView: View {
     }
 
     private func songRow(_ track: Track, showsBottomDivider: Bool) -> some View {
+        TrackDownloadProgressReader(progress: offline.progressModel, trackId: track.id) { downloadState in
+            songRowContent(track, downloadState: downloadState, showsBottomDivider: showsBottomDivider)
+        }
+        .librarySongListRowStyle()
+    }
+
+    private func songRowContent(_ track: Track, downloadState: OfflineDownloadUIState?, showsBottomDivider: Bool) -> some View {
         LibrarySongRow(
             track: track,
             artworkURL: app.resolvedArtworkURL(for: track),
             itemSize: app.songListItemSize,
             isFavorite: app.favoriteTrackIds.contains(track.id),
             isNowPlaying: app.nowPlayingTrackId == track.id,
-            offlineDownload: offline.activeDownloads[track.id],
+            offlineDownload: downloadState,
             isOfflineCached: app.offline.downloadedTrackIds.contains(track.id),
             onPlay: { Task { await play(track: track) } },
             onDownload: { Task { await cacheOffline(track: track) } },
@@ -330,7 +337,6 @@ struct LibrarySongsView: View {
             }
         )
         .equatable()
-        .librarySongListRowStyle()
     }
 
     private func cacheOffline(track: Track) async {
@@ -393,6 +399,21 @@ struct LibrarySongsView: View {
     private func play(track: Track) async {
         guard let idx = displayed.firstIndex(where: { $0.id == track.id }) else { return }
         try? await app.player.playAlbum(library: app.activeLibrary, tracks: displayed, startIndex: idx)
+    }
+}
+
+/// Subscribes to download progress at the row level so a progress tick re-renders
+/// only the affected row, never the hosting list body. Required because
+/// ``OfflineDownloadManager`` no longer publishes ``activeDownloads`` through its
+/// own `objectWillChange` (see ``OfflineDownloadProgressModel``) — reading
+/// `offline.activeDownloads` from a list body would render stale progress.
+struct TrackDownloadProgressReader<Content: View>: View {
+    @ObservedObject var progress: OfflineDownloadProgressModel
+    let trackId: String
+    @ViewBuilder let content: (OfflineDownloadUIState?) -> Content
+
+    var body: some View {
+        content(progress.activeDownloads[trackId])
     }
 }
 
@@ -786,10 +807,18 @@ struct LibrarySongRow: View, Equatable {
                         description: "\(track.title) — \(track.artist)"
                     )
 
-                    if isOfflineCached, let onRemoveDownload {
+                    if isOfflineCached {
                         Section {
-                            Button(action: onRemoveDownload) {
-                                Label("Remove Download", systemImage: "arrow.down.circle.dotted")
+                            // Informational "this song is on device" row — disabled so it
+                            // reads as a status indicator, not an action.
+                            Button {} label: {
+                                Label("Downloaded", systemImage: "checkmark.circle.fill")
+                            }
+                            .disabled(true)
+                            if let onRemoveDownload {
+                                Button(action: onRemoveDownload) {
+                                    Label("Remove Download", systemImage: "arrow.down.circle.dotted")
+                                }
                             }
                         }
                         .tint(Color.primary)

@@ -1391,10 +1391,16 @@ struct NowPlayingView: View {
         let targetTab = app.selectedTab
         isPresented = false
         guard let nav else { return }
-        Task { @MainActor in
-            if case .playlist(let playlist, _) = nav {
+        if case .playlist(let playlist, _) = nav {
+            // Warm the rows cache concurrently with the dismiss animation. Never
+            // serialize the push behind the network — if the fetch hasn't landed
+            // by presentation time, the detail view shows its own loading state
+            // and shares this in-flight request via fetchPlaylistRows dedup.
+            Task { @MainActor in
                 await app.prefetchPlaylistRows(playlistId: playlist.id)
             }
+        }
+        Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(450))
             app.deepLinkTab = targetTab
             app.presentedDeepLink = nav
@@ -1417,7 +1423,7 @@ struct NowPlayingView: View {
     }
 
     private func progressBlock(track: Track, isEnabled: Bool = true) -> some View {
-        ScrubberBlock(track: track, player: player, backdropPalette: backdropPalette, isEnabled: isEnabled)
+        ScrubberBlock(track: track, player: player, time: player.time, backdropPalette: backdropPalette, isEnabled: isEnabled)
     }
 
     /// Transport SF Symbols (contrast follows Light / Dark Now Playing chrome).
@@ -1773,6 +1779,9 @@ struct NowPlayingView: View {
 private struct ScrubberBlock: View {
     let track: Track
     @ObservedObject var player: PlaybackEngine
+    /// Per-tick clock — the engine itself no longer publishes time updates, so
+    /// the scrubber subscribes to the dedicated time model for live progress.
+    @ObservedObject var time: PlaybackTimeModel
     let backdropPalette: ArtworkDynamicGradient.BackdropPalette
     var isEnabled: Bool = true
 
@@ -2295,7 +2304,7 @@ private struct LyricsFocusScrollView: View {
             displayItems = Self.buildDisplayItems(from: lines)
             syncActiveIndex(to: player.livePlaybackTime)
         }
-        .onReceive(player.$currentTime) { _ in
+        .onReceive(player.time.$currentTime) { _ in
             // `currentTime` is UI-throttled; use it only as a publisher tick
             // and sample the fresher `livePlaybackTime` for sync accuracy.
             let t = player.livePlaybackTime

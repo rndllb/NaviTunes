@@ -77,6 +77,18 @@ struct OfflineManifestPayload: Codable {
     var cachedItems: [String: OfflineCachedItemRecord] = [:]
 }
 
+/// High-frequency per-track download progress, isolated from
+/// ``OfflineDownloadManager``'s `objectWillChange`. Progress KVO ticks (2% steps
+/// per in-flight track) fire many times per second during a large playlist
+/// download; publishing them through the manager invalidated every view holding
+/// it as an `@EnvironmentObject`. Views that render a progress ring observe this
+/// object instead (see ``TrackDownloadProgressReader``) so a tick re-renders only
+/// the affected rows.
+@MainActor
+final class OfflineDownloadProgressModel: ObservableObject {
+    @Published fileprivate(set) var activeDownloads: [String: OfflineDownloadUIState] = [:]
+}
+
 @MainActor
 final class OfflineDownloadManager: ObservableObject {
     /// Separate from `URLSession.shared` so large offline audio downloads don't starve artwork fetches.
@@ -87,7 +99,13 @@ final class OfflineDownloadManager: ObservableObject {
         return URLSession(configuration: config)
     }()
     @Published private(set) var downloadedTrackIds: Set<String> = []
-    @Published private(set) var activeDownloads: [String: OfflineDownloadUIState] = [:]
+    /// Per-track in-flight progress — published via ``progressModel`` (not this
+    /// object) so high-frequency ticks don't invalidate the whole view tree.
+    let progressModel = OfflineDownloadProgressModel()
+    var activeDownloads: [String: OfflineDownloadUIState] {
+        get { progressModel.activeDownloads }
+        set { progressModel.activeDownloads = newValue }
+    }
     @Published var downloadQueue: [OfflineDownloadQueueItem] = []
     @Published var totalCacheBytes: Int64 = 0
     @Published var isStorageFull = false
@@ -532,6 +550,7 @@ final class OfflineDownloadManager: ObservableObject {
     private final class DownloadProgressGate: @unchecked Sendable {
         private let lock = NSLock()
         private var last = -1.0
+        private var lastAdmitNanos: UInt64 = 0
 
         func admit(_ fraction: Double) -> Bool {
             lock.lock()
@@ -541,8 +560,12 @@ final class OfflineDownloadManager: ObservableObject {
                 last = fraction
                 return true
             }
-            if last < 0 || fraction - last >= 0.02 {
+            // Fast local servers can step 2% in well under a frame — also require
+            // a minimum wall-clock spacing so the main actor sees a bounded rate.
+            let nowNanos = DispatchTime.now().uptimeNanoseconds
+            if last < 0 || (fraction - last >= 0.02 && nowNanos &- lastAdmitNanos >= 120_000_000) {
                 last = fraction
+                lastAdmitNanos = nowNanos
                 return true
             }
             return false

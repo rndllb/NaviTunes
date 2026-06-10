@@ -15,6 +15,9 @@ public struct RootView: View {
         .animation(.easeInOut, value: app.isSignedIn)
         .preferredColorScheme(app.themePreference.colorScheme)
         .tint(MusicDesign.accent)
+#if DEBUG
+        .onAppear { DebugUIRemote.install(app: app) }
+#endif
     }
 }
 
@@ -74,6 +77,12 @@ struct DeepLinkPushModifier: ViewModifier {
                 app.presentedDeepLink = nil
                 app.deepLinkTab = nil
             }
+#if DEBUG
+            .onChange(of: app.debugPopRequests) { _, _ in
+                guard app.selectedTab == tab, !path.isEmpty else { return }
+                path.removeLast()
+            }
+#endif
     }
 }
 

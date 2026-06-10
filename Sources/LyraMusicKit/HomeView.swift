@@ -146,6 +146,7 @@ struct HomeView: View {
             }
             .deepLinkPush(tab: .home, path: $navigationPath)
         }
+        .coverZoomContext()
         .tint(MusicDesign.accent)
     }
 
@@ -170,6 +171,7 @@ struct HomeView: View {
                             ServerPlaylistDetailView(album: album)
                         } label: {
                             heroCard(album: album)
+                                .coverZoomSource(id: album.id)
                         }
                         .buttonStyle(.plain)
                         .libraryAlbumContextMenu(album)
@@ -192,6 +194,7 @@ struct HomeView: View {
                             ServerPlaylistDetailView(album: album)
                         } label: {
                             shelfCard(album: album)
+                                .coverZoomSource(id: album.id)
                         }
                         .buttonStyle(.plain)
                         .libraryAlbumContextMenu(album)
@@ -217,6 +220,7 @@ struct HomeView: View {
                                 ServerPlaylistDetailView(album: album)
                             } label: {
                                 shelfCard(album: album)
+                                    .coverZoomSource(id: album.id)
                             }
                             .buttonStyle(.plain)
                             .libraryAlbumContextMenu(album)
@@ -225,6 +229,7 @@ struct HomeView: View {
                                 ServerPlaylistDetailView(playlist: playlist)
                             } label: {
                                 playlistShelfCard(playlist: playlist)
+                                    .coverZoomSource(id: playlist.id)
                             }
                             .buttonStyle(.plain)
                             .libraryPlaylistContextMenu(playlist)
@@ -282,6 +287,7 @@ struct HomeView: View {
                             ServerPlaylistDetailView(playlist: playlist)
                         } label: {
                             playlistShelfCard(playlist: playlist)
+                                .coverZoomSource(id: playlist.id)
                         }
                         .buttonStyle(.plain)
                         .libraryPlaylistContextMenu(playlist)

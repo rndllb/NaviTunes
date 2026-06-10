@@ -686,9 +686,27 @@ private struct ArtistDiscographyCard: View {
                 )
             }
             .frame(width: layout.cardSide, alignment: .leading)
+            .coverZoomSource(id: coverZoomId)
         }
         .buttonStyle(.plain)
         .libraryAlbumContextMenu(libraryAlbumForContextMenu)
+    }
+
+    private var browseSource: BrowseAlbumDetailSource? {
+        guard case .musicBrainz(let release) = item.source else { return nil }
+        return .chartBrowse(
+            artistName: release.artistCredit.isEmpty ? item.artist : release.artistCredit,
+            title: release.title,
+            imageURL: release.coverArtURL,
+            kind: bucketLabel
+        )
+    }
+
+    private var coverZoomId: String {
+        switch item.source {
+        case .libraryAlbum(let album): return album.id
+        case .musicBrainz: return browseSource?.coverZoomId ?? item.id
+        }
     }
 
     @ViewBuilder
@@ -696,13 +714,10 @@ private struct ArtistDiscographyCard: View {
         switch item.source {
         case .libraryAlbum(let album):
             ServerPlaylistDetailView(album: album, librarySource: true)
-        case .musicBrainz(let release):
-            BrowseAlbumDetailView(source: .chartBrowse(
-                artistName: release.artistCredit.isEmpty ? item.artist : release.artistCredit,
-                title: release.title,
-                imageURL: release.coverArtURL,
-                kind: bucketLabel
-            ))
+        case .musicBrainz:
+            if let browseSource {
+                BrowseAlbumDetailView(source: browseSource)
+            }
         }
     }
 
