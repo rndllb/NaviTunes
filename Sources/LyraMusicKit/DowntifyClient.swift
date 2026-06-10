@@ -161,8 +161,11 @@ struct DowntifySong: Decodable, Identifiable, Hashable {
         albumName = (try? c.decode(String.self, forKey: .albumName)) ?? ""
         url = try c.decode(String.self, forKey: .url)
         // cover_url may be absent, null, or an empty string
-        if let raw = try? c.decodeIfPresent(String.self, forKey: .coverURL), !raw.isEmpty {
-            coverURL = URL(string: raw)
+        if let raw = try? c.decodeIfPresent(String.self, forKey: .coverURL), !raw.isEmpty,
+           let parsed = URL(string: raw),
+           let scheme = parsed.scheme?.lowercased(),
+           scheme == "http" || scheme == "https" {
+            coverURL = parsed
         } else {
             coverURL = nil
         }
