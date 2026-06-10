@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		U10000000000000000000003 /* RapidDismissTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = U10000000000000000000002 /* RapidDismissTests.swift */; };
 		02E1B2612FB8DE7B006F4370 /* LyraMusicKit in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000014 /* LyraMusicKit */; };
 		A00000000000000000000011 /* LyraMusicHostApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000006 /* LyraMusicHostApp.swift */; };
 		IC0000000000000000000020 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000010 /* AppIcon.icon */; };
@@ -22,6 +23,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		U10000000000000000000001 /* LyraUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LyraUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		U10000000000000000000002 /* RapidDismissTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RapidDismissTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000002 /* LyraMusicHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LyraMusicHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00000000000000000000006 /* LyraMusicHostApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyraMusicHostApp.swift; sourceTree = "<group>"; };
 		A00000000000000000000007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -38,6 +41,13 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		U10000000000000000000006 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A00000000000000000000009 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -63,6 +73,7 @@
 			isa = PBXGroup;
 			children = (
 				A00000000000000000000002 /* LyraMusicHost.app */,
+				U10000000000000000000001 /* LyraUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -71,6 +82,7 @@
 			isa = PBXGroup;
 			children = (
 				A00000000000000000000003 /* LyraMusicHost */,
+				U10000000000000000000004 /* LyraUITests */,
 				AA9E8B822FBCB48C006C70DB /* Frameworks */,
 				A00000000000000000000004 /* Products */,
 			);
@@ -100,6 +112,14 @@
 			path = AppIcons;
 			sourceTree = "<group>";
 		};
+		U10000000000000000000004 /* LyraUITests */ = {
+			isa = PBXGroup;
+			children = (
+				U10000000000000000000002 /* RapidDismissTests.swift */,
+			);
+			path = LyraUITests;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -123,6 +143,23 @@
 			productReference = A00000000000000000000002 /* LyraMusicHost.app */;
 			productType = "com.apple.product-type.application";
 		};
+		U10000000000000000000007 /* LyraUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = U10000000000000000000012 /* Build configuration list for PBXNativeTarget "LyraUITests" */;
+			buildPhases = (
+				U10000000000000000000005 /* Sources */,
+				U10000000000000000000006 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				U10000000000000000000009 /* PBXTargetDependency */,
+			);
+			name = LyraUITests;
+			productName = LyraUITests;
+			productReference = U10000000000000000000001 /* LyraUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -135,6 +172,10 @@
 				TargetAttributes = {
 					A00000000000000000000010 = {
 						CreatedOnToolsVersion = 16.0;
+					};
+					U10000000000000000000007 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = A00000000000000000000010;
 					};
 				};
 			};
@@ -155,9 +196,28 @@
 			projectRoot = "";
 			targets = (
 				A00000000000000000000010 /* LyraMusicHost */,
+				U10000000000000000000007 /* LyraUITests */,
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXContainerItemProxy section */
+		U10000000000000000000008 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A00000000000000000000010;
+			remoteInfo = LyraMusicHost;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXTargetDependency section */
+		U10000000000000000000009 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A00000000000000000000010 /* LyraMusicHost */;
+			targetProxy = U10000000000000000000008 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXResourcesBuildPhase section */
 		IC0000000000000000000002 /* Resources */ = {
@@ -185,6 +245,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				A00000000000000000000011 /* LyraMusicHostApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		U10000000000000000000005 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				U10000000000000000000003 /* RapidDismissTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -279,6 +347,42 @@
 			};
 			name = Release;
 		};
+		U10000000000000000000010 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.randll.lyra.LyraUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = LyraMusicHost;
+			};
+			name = Debug;
+		};
+		U10000000000000000000011 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.randll.lyra.LyraUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = LyraMusicHost;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -296,6 +400,15 @@
 			buildConfigurations = (
 				A00000000000000000000100 /* Debug */,
 				A00000000000000000000101 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		U10000000000000000000012 /* Build configuration list for PBXNativeTarget "LyraUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				U10000000000000000000010 /* Debug */,
+				U10000000000000000000011 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

@@ -17,6 +17,16 @@ enum DebugUIRemote {
     private static weak var app: AppModel?
     private static var installed = false
 
+    /// Timeline markers the UI tests may post — the Darwin notify center has
+    /// no wildcard observation (nil name is unsupported), so every observable
+    /// name must be registered up front.
+    private static let markLabels = [
+        "tap-pin", "edge-swipe-begin", "edge-swipe-end",
+        "scroll-1", "scroll-2", "scroll-done", "test-end",
+        "variant-1", "variant-2", "variant-3", "variant-4", "variant-5",
+        "variant-found", "variant-none",
+    ]
+
     static func install(app model: AppModel) {
         app = model
         guard !installed else { return }
@@ -26,6 +36,9 @@ enum DebugUIRemote {
         observe("com.lyra.debug.libraryTab")
         observe("com.lyra.debug.ping")
         observe("com.lyra.debug.hangwatch")
+        for label in markLabels {
+            observe("com.lyra.debug.mark." + label)
+        }
     }
 
     private static func observe(_ name: String) {
@@ -71,7 +84,25 @@ enum DebugUIRemote {
                 nil, nil, true
             )
         default:
-            break
+            if name.hasPrefix("com.lyra.debug.mark.") {
+                log("MARK " + name.dropFirst("com.lyra.debug.mark.".count))
+            }
+        }
+    }
+
+    /// Appends a timestamped line to the shared verification log — same file
+    /// the hang watcher writes, so external markers, app events, and stalls
+    /// form one timeline.
+    static func log(_ message: String) {
+        let line = String(format: "%.3f %@\n", CFAbsoluteTimeGetCurrent(), message)
+        guard let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("lyra-hangwatch.log") else { return }
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            handle.write(Data(line.utf8))
+            try? handle.close()
+        } else {
+            try? line.write(to: url, atomically: true, encoding: .utf8)
         }
     }
 
@@ -98,16 +129,7 @@ enum DebugUIRemote {
         let gap = now - lastBeat
         lastBeat = now
         guard gap > 0.12 else { return }
-        let line = String(format: "%.3f gap=%.0fms\n", now, gap * 1000)
-        guard let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("lyra-hangwatch.log") else { return }
-        if let handle = try? FileHandle(forWritingTo: url) {
-            handle.seekToEndOfFile()
-            handle.write(Data(line.utf8))
-            try? handle.close()
-        } else {
-            try? line.write(to: url, atomically: true, encoding: .utf8)
-        }
+        log(String(format: "HANG gap=%.0fms (ended now, started %.3f)", gap * 1000, now - gap))
     }
 }
 #endif
