@@ -2212,6 +2212,16 @@ public final class AppModel: ObservableObject {
             return try await inFlight.value
         }
         let task = Task { [backendKind, jellyfin, navidrome] () throws -> [PlaylistRowItem] in
+#if DEBUG
+            // Verification hook: lets UI tests stretch the fetch so it lands
+            // inside a dismissal gesture deterministically (on-device the
+            // gesture is instant and the network slow; on the simulator the
+            // synthesized gesture is slow and the network fast).
+            if let ms = ProcessInfo.processInfo.environment["LYRA_DEBUG_SLOW_ROWS_MS"],
+               let delay = UInt64(ms) {
+                try? await Task.sleep(nanoseconds: delay * 1_000_000)
+            }
+#endif
             switch backendKind {
             case .jellyfin:
                 guard let client = jellyfin else {
