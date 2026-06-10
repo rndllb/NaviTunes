@@ -16,16 +16,18 @@ extension OfflineDownloadManager {
         return payload.items
     }
 
+    private static let queueDiskWriter = CoalescingDiskWriter(label: "LyraMusic.offline.queue-write")
+
+    /// Queue items embed full `Track` arrays, so encoding the whole queue per
+    /// mutation is O(playlist size) — done on a utility queue (coalesced) so
+    /// per-track completion updates don't stack JSON encodes on the main thread.
     func saveQueue() {
         let payload = OfflineQueuePayload(items: downloadQueue)
-        guard let data = try? JSONEncoder().encode(payload) else { return }
         guard let url = try? Self.queueURL() else { return }
-        let tmp = url.appendingPathExtension("tmp")
-        try? data.write(to: tmp, options: .atomic)
-        if FileManager.default.fileExists(atPath: url.path) {
-            try? FileManager.default.removeItem(at: url)
+        Self.queueDiskWriter.schedule {
+            guard let data = try? JSONEncoder().encode(payload) else { return }
+            CoalescingDiskWriter.writeAtomically(data, to: url)
         }
-        try? FileManager.default.moveItem(at: tmp, to: url)
     }
 }
 
@@ -188,6 +190,8 @@ extension OfflineDownloadManager {
             guard let idx = items.firstIndex(where: { $0.id == id }) else { return }
             items[idx].status = .queued
             items[idx].errorMessage = nil
+            // Give previously failed tracks another chance.
+            items[idx].failedTrackIds = nil
         }
         kickQueueWorker()
     }
@@ -266,6 +270,10 @@ extension OfflineDownloadManager {
             }
         }
 
+        // One full reconciliation when the queue drains — per-track completions
+        // only bump the byte total incrementally (see `cache`).
+        recalculateCacheBytes()
+
         if downloadQueue.contains(where: { $0.status == .queued || $0.status == .downloading }) {
             kickQueueWorker()
         }
@@ -278,6 +286,7 @@ extension OfflineDownloadManager {
             for track in item.tracks {
                 guard slots.count < limit else { return slots }
                 guard !item.completedTrackIds.contains(track.id) else { continue }
+                guard !item.failedIds.contains(track.id) else { continue }
                 guard !reserved.contains(track.id) else { continue }
                 if downloadedTrackIds.contains(track.id), localFile(for: track.id) != nil {
                     markTrackCompleteInQueue(queueItemId: item.id, trackId: track.id)
@@ -325,11 +334,16 @@ extension OfflineDownloadManager {
                 headers: lib.httpHeadersForMediaRequests(),
             )
             markTrackCompleteInQueue(queueItemId: queueItemId, trackId: track.id)
-            recalculateCacheBytes()
         } catch is CancellationError {
             return
         } catch {
-            markQueueItemError(queueItemId: queueItemId, message: error.localizedDescription)
+            // One bad track must not abort the rest of the playlist/album — record
+            // it and keep the item going; Retry re-attempts just the failures.
+            markTrackFailedInQueue(
+                queueItemId: queueItemId,
+                trackId: track.id,
+                message: error.localizedDescription,
+            )
         }
     }
 
@@ -346,18 +360,42 @@ extension OfflineDownloadManager {
         persistQueueMutation { items in
             guard let idx = items.firstIndex(where: { $0.id == queueItemId }) else { return }
             items[idx].completedTrackIds.insert(trackId)
-            if items[idx].pendingTracks.isEmpty {
-                items[idx].status = .complete
-                items[idx].errorMessage = nil
-            }
+            Self.finalizeQueueItemIfDrained(&items[idx])
+        }
+    }
+
+    private func markTrackFailedInQueue(queueItemId: String, trackId: String, message: String) {
+        persistQueueMutation { items in
+            guard let idx = items.firstIndex(where: { $0.id == queueItemId }) else { return }
+            var failed = items[idx].failedIds
+            failed.insert(trackId)
+            items[idx].failedTrackIds = failed
+            items[idx].errorMessage = message
+            Self.finalizeQueueItemIfDrained(&items[idx])
         }
     }
 
     private func markQueueItemComplete(queueItemId: String) {
         persistQueueMutation { items in
             guard let idx = items.firstIndex(where: { $0.id == queueItemId }) else { return }
-            items[idx].status = .complete
-            items[idx].errorMessage = nil
+            Self.finalizeQueueItemIfDrained(&items[idx])
+        }
+    }
+
+    /// All tracks accounted for (completed or failed) → settle the item's terminal
+    /// state. Clean run = `.complete`; any failures = `.error` with a count so the
+    /// queue UI's Retry can re-attempt just the failed tracks.
+    private static func finalizeQueueItemIfDrained(_ item: inout OfflineDownloadQueueItem) {
+        guard item.pendingTracks.isEmpty else { return }
+        let failedCount = item.failedIds.count
+        if failedCount == 0 {
+            item.status = .complete
+            item.errorMessage = nil
+        } else {
+            item.status = .error
+            item.errorMessage = failedCount == 1
+                ? "1 track failed to download."
+                : "\(failedCount) tracks failed to download."
         }
     }
 

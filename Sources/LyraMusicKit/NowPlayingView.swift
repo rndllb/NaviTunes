@@ -1447,14 +1447,30 @@ struct NowPlayingView: View {
                     player.skipPrevious()
                 }
 
-                transportButton(
-                    systemName: player.isPlaying ? "pause.fill" : "play.fill",
-                    fontSize: 37,
-                    frameWidth: 64,
-                    isEnabled: true,
-                    symbolReplace: true,
-                ) {
-                    player.togglePlayPause()
+                if player.isBuffering {
+                    // Audio isn't progressing — show the buffering spinner instead
+                    // of a pause glyph that implies sound is playing. Still tappable
+                    // so the user can cancel the pending play.
+                    Button {
+                        player.togglePlayPause()
+                    } label: {
+                        ProgressView()
+                            .controlSize(.regular)
+                            .tint(fgPrimary)
+                            .frame(width: 64, height: 56)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(TransportPressButtonStyle())
+                } else {
+                    transportButton(
+                        systemName: player.isPlaying ? "pause.fill" : "play.fill",
+                        fontSize: 37,
+                        frameWidth: 64,
+                        isEnabled: true,
+                        symbolReplace: true,
+                    ) {
+                        player.togglePlayPause()
+                    }
                 }
 
                 transportButton(

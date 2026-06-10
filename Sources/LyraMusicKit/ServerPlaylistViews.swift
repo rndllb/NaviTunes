@@ -982,8 +982,9 @@ struct ServerPlaylistDetailView: View {
     }
 
     private var allTracksCached: Bool {
-        let tracks = allOrderedTracks
-        return !tracks.isEmpty && tracks.allSatisfy { app.offline.downloadedTrackIds.contains($0.id) }
+        // Order-independent check — don't pay `allOrderedTracks`' map + sort on
+        // every body evaluation of a large playlist.
+        !rows.isEmpty && rows.allSatisfy { app.offline.downloadedTrackIds.contains($0.track.id) }
     }
 
     private var showsDownloadedCheckmark: Bool {
