@@ -235,6 +235,21 @@ private enum PlaylistTrackSortOrder: String, CaseIterable, Identifiable {
 /// Tagged source for ``ServerPlaylistDetailView``. The detail view renders both album
 /// and playlist contents through one List-based layout; the source enum drives the
 /// branch points (hero subtitle, track-row type, overflow menu, etc.).
+#if DEBUG
+/// A/B switch for on-simulator verification: launching with
+/// `LYRA_DEBUG_DISABLE_DISMISS_FIXES=1` restores the pre-fix behavior
+/// (hydrate mid-dismiss, zoom gesture recognizers active) so the same binary
+/// can reproduce the bug and prove the fix. Always false in Release.
+let lyraDismissFixesDisabledForAB =
+    ProcessInfo.processInfo.environment["LYRA_DEBUG_DISABLE_DISMISS_FIXES"] != nil
+@MainActor
+private func detailDebugLog(_ message: String) { DebugUIRemote.log(message) }
+#else
+let lyraDismissFixesDisabledForAB = false
+@MainActor
+private func detailDebugLog(_ message: String) {}
+#endif
+
 /// Flags a pushed detail view the moment its pop begins. Extracted as a
 /// modifier (not an inline `.onChange`) to keep the detail view's modifier
 /// chain type-checkable.
@@ -244,7 +259,10 @@ private struct DetailDismissTracker: ViewModifier {
 
     func body(content: Content) -> some View {
         content.onChange(of: isPresented) { _, presented in
-            if !presented { isBeingDismissed = true }
+            if !presented {
+                detailDebugLog("POP-START isPresented->false")
+                if !lyraDismissFixesDisabledForAB { isBeingDismissed = true }
+            }
         }
     }
 }
@@ -397,6 +415,12 @@ struct ServerPlaylistDetailView: View {
     /// because environment reads are stale inside the `.task` closure's captured
     /// copy of the view.
     @State private var isBeingDismissed = false
+    /// UIKit-driven dismissal lifecycle (see ``CoverZoomDismissalObserver``).
+    /// Unlike ``isBeingDismissed`` this turns `.dismissing` the instant the
+    /// swipe-back *gesture* starts — before any SwiftUI-visible state changes —
+    /// which is the window where a landing tracklist hydration would cancel
+    /// the user's interactive dismissal and hold the gesture system captive.
+    @State private var dismissalPhase: CoverZoomDismissalPhase = .idle
     @State private var rows: [PlaylistRowItem] = []
     @State private var previewTracks: [BrowseAlbumPreviewTrack] = []
     /// Album mode only: held true while the MusicBrainz tracklist is in flight so the
@@ -511,10 +535,32 @@ struct ServerPlaylistDetailView: View {
         return out
     }
 
+    /// Parks an in-flight hydration while a dismissal gesture or pop animation
+    /// runs — mutating the view mid-transition cancels the user's swipe-back
+    /// and keeps the gesture system captive until everything re-settles
+    /// (verified on-simulator: a tracklist landing 250ms into an edge swipe
+    /// snapped the half-dismissed view back open and ate 2.4s of input).
+    /// Returns false when the pop committed and the result must be dropped.
+    private func waitOutDismissalGesture() async -> Bool {
+        guard !lyraDismissFixesDisabledForAB else { return true }
+        var deferLogged = false
+        while dismissalPhase == .dismissing {
+            if !deferLogged {
+                detailDebugLog("HYDRATION-DEFERRED (transition in flight)")
+                deferLogged = true
+            }
+            try? await Task.sleep(for: .milliseconds(80))
+        }
+        return !isBeingDismissed
+    }
+
     private func recomputeDisplayedRows() {
         // A view that's animating out must not hydrate: the re-render lands
         // mid-pop, stalls the main thread, and swallows the next taps.
-        guard !isBeingDismissed else { return }
+        guard !isBeingDismissed, lyraDismissFixesDisabledForAB || dismissalPhase == .idle else {
+            detailDebugLog("DISPLAY-RECOMPUTE-DROPPED")
+            return
+        }
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let base: [PlaylistRowItem]
         if q.isEmpty {
@@ -532,6 +578,7 @@ struct ServerPlaylistDetailView: View {
         // main-thread cost on large playlists (load() recomputes unconditionally
         // after its background refresh, usually with identical rows).
         guard next.map(\.rowId) != displayedRows.map(\.rowId) else { return }
+        detailDebugLog("DISPLAY-APPLY rows=\(next.count) window=\(rowRenderLimit)")
         displayedRows = next
     }
 
@@ -568,7 +615,7 @@ struct ServerPlaylistDetailView: View {
 
     var body: some View {
         detailScrollContainer
-            .coverZoomDestination(id: coverZoomId)
+            .coverZoomDestination(id: coverZoomId, dismissalPhase: $dismissalPhase)
             .playlistTrackSearchable(enabled: !isAlbumStyleDetail, text: $searchText)
             .navigationTitle("")
             .musicNavigationBarTitleDisplayMode(.inline)
@@ -1638,10 +1685,14 @@ struct ServerPlaylistDetailView: View {
             switch source {
             case .playlist(let p):
                 let fresh = try await app.fetchPlaylistRows(playlistId: p.id)
-                // Dropped on the floor when the user already popped the view —
-                // the rows stay cached in AppModel for the next open.
-                guard !isBeingDismissed else { return }
+                // Park while a dismissal gesture is in flight, drop when the
+                // pop committed — the rows stay cached in AppModel either way.
+                guard await waitOutDismissalGesture() else {
+                    detailDebugLog("HYDRATION-DROPPED rows=\(fresh.count)")
+                    return
+                }
                 if rows.isEmpty || fresh.map(\.track.id) != rows.map(\.track.id) {
+                    detailDebugLog("HYDRATION-APPLY rows=\(fresh.count)")
                     rows = fresh
                 }
             case .album(let album, _):
@@ -1653,7 +1704,10 @@ struct ServerPlaylistDetailView: View {
                     }
                 } else if let lib = app.activeLibrary {
                     let tracks = try await lib.tracks(forAlbumId: album.id)
-                    guard !isBeingDismissed else { return }
+                    guard await waitOutDismissalGesture() else {
+                        detailDebugLog("HYDRATION-DROPPED rows=\(tracks.count)")
+                        return
+                    }
                     rows = tracks.enumerated().map { idx, track in
                         PlaylistRowItem(rowId: "album-\(album.id)-\(idx)-\(track.id)", track: track)
                     }

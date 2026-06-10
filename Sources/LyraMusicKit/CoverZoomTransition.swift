@@ -48,8 +48,25 @@ private struct CoverZoomSource: ViewModifier {
     }
 }
 
+/// Where a pushed detail sits in its dismissal lifecycle. Driven by UIKit
+/// appearance callbacks, which — unlike SwiftUI's `isPresented` — fire at the
+/// *start* of an interactive pop gesture and again when it cancels.
+enum CoverZoomDismissalPhase {
+    /// Fully presented or fully covered — safe to mutate.
+    case idle
+    /// A disappearance transition is running: the user is mid-swipe-back, a
+    /// pop animation is settling, or a forward push is animating over this
+    /// view. Mutating the view now cancels/derails an interactive transition
+    /// and holds the gesture system captive — park async results until the
+    /// transition resolves. (Whether to then drop them is decided by the
+    /// `isPresented`-based commit tracker, since SwiftUI's NavigationStack
+    /// never sets `isMovingFromParent` on popped hosting controllers.)
+    case dismissing
+}
+
 private struct CoverZoomDestination: ViewModifier {
     let id: String
+    var dismissalPhase: Binding<CoverZoomDismissalPhase>?
     @Environment(\.coverZoomNamespace) private var namespace
 
     func body(content: Content) -> some View {
@@ -57,7 +74,11 @@ private struct CoverZoomDestination: ViewModifier {
             content
                 .navigationTransition(.zoom(sourceID: id, in: namespace))
 #if os(iOS)
-                .background(ZoomDismissGestureTuner())
+                .background {
+                    if let dismissalPhase {
+                        CoverZoomDismissalObserver(phase: dismissalPhase)
+                    }
+                }
 #endif
         } else {
             content
@@ -66,49 +87,54 @@ private struct CoverZoomDestination: ViewModifier {
 }
 
 #if os(iOS)
-/// The zoom transition's *gesture* dismissals (edge pan, swipe down, pinch)
-/// run an interruptible settle that monopolizes the gesture system — after a
-/// swipe-back, the revealed list ignores scrolls until the spring fully lands,
-/// while the back button's non-interactive zoom pop delivers touches
-/// immediately. There's no SwiftUI API for this, so this helper introspects
-/// the navigation controller, disables the zoom-specific dismiss recognizers
-/// (identified by class name; unknown names are left untouched, so an OS
-/// rename simply restores stock behavior), and revives the classic interactive
-/// swipe-back. Net effect: push and back-button pop keep the zoom morph,
-/// swipe-back becomes the standard slide pop that scrolls responsively.
-private struct ZoomDismissGestureTuner: UIViewControllerRepresentable {
-    func makeUIViewController(context: Context) -> Helper { Helper() }
-    func updateUIViewController(_ controller: Helper, context: Context) {}
+/// Reports the host detail view's dismissal lifecycle through UIKit's
+/// appearance callbacks. As a child view controller of the SwiftUI hosting
+/// controller it receives the same callbacks, and they fire at interactive-pop
+/// *gesture start* (`viewWillDisappear`), at commit (`viewDidDisappear`), and
+/// on gesture cancel (`viewDidAppear` again) — none of which SwiftUI exposes.
+/// Forward navigation (pushing deeper, presenting the player) also reports
+/// `.dismissing` while its transition runs; that's deliberate — mutating mid
+/// transition is never safe — and it resolves to `.idle` at `didDisappear`.
+private struct CoverZoomDismissalObserver: UIViewControllerRepresentable {
+    @Binding var phase: CoverZoomDismissalPhase
 
-    final class Helper: UIViewController, UIGestureRecognizerDelegate {
+    func makeUIViewController(context: Context) -> Helper {
+        let helper = Helper()
+        helper.report = { phase = $0 }
+        return helper
+    }
+
+    func updateUIViewController(_ controller: Helper, context: Context) {
+        controller.report = { phase = $0 }
+    }
+
+    final class Helper: UIViewController {
+        var report: (CoverZoomDismissalPhase) -> Void = { _ in }
+
+        override func viewWillDisappear(_ animated: Bool) {
+            super.viewWillDisappear(animated)
+#if DEBUG
+            DebugUIRemote.log("PHASE willDisappear")
+#endif
+            report(.dismissing)
+        }
+
+        override func viewDidDisappear(_ animated: Bool) {
+            super.viewDidDisappear(animated)
+#if DEBUG
+            DebugUIRemote.log("PHASE didDisappear")
+#endif
+            report(.idle)
+        }
+
         override func viewDidAppear(_ animated: Bool) {
             super.viewDidAppear(animated)
-            guard let nav = navigationControllerInChain else { return }
-            for recognizer in nav.view.gestureRecognizers ?? [] {
-                let name = String(describing: type(of: recognizer))
-                if name.contains("Parallex") || name.contains("SwipeDown") || name.contains("TransformGesture") {
-                    recognizer.isEnabled = false
-                }
-            }
-            if let pop = nav.interactivePopGestureRecognizer {
-                pop.isEnabled = true
-                pop.delegate = self
-            }
-        }
-
-        /// Only allow swipe-back when there's something to pop — the
-        /// delegate-replacement trick otherwise freezes the stack root.
-        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            (navigationControllerInChain?.viewControllers.count ?? 0) > 1
-        }
-
-        private var navigationControllerInChain: UINavigationController? {
-            var current: UIViewController? = parent
-            while let vc = current {
-                if let nav = vc.navigationController { return nav }
-                current = vc.parent
-            }
-            return nil
+            // Fully presented again — first appearance or a canceled
+            // interactive dismissal.
+#if DEBUG
+            DebugUIRemote.log("PHASE didAppear")
+#endif
+            report(.idle)
         }
     }
 }
@@ -129,7 +155,13 @@ extension View {
     }
 
     /// Applies the zoom transition on a pushed album/playlist detail root.
-    func coverZoomDestination(id: String) -> some View {
-        modifier(CoverZoomDestination(id: id))
+    /// Pass `dismissalPhase` when the detail mutates state from async work —
+    /// hydrating while `.dismissing` cancels the user's swipe-to-go-back and
+    /// holds the gesture system captive, so such work must wait the phase out.
+    func coverZoomDestination(
+        id: String,
+        dismissalPhase: Binding<CoverZoomDismissalPhase>? = nil
+    ) -> some View {
+        modifier(CoverZoomDestination(id: id, dismissalPhase: dismissalPhase))
     }
 }
