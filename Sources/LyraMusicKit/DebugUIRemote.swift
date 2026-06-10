@@ -24,6 +24,8 @@ enum DebugUIRemote {
         observe("com.lyra.debug.openPlaylist")
         observe("com.lyra.debug.pop")
         observe("com.lyra.debug.libraryTab")
+        observe("com.lyra.debug.ping")
+        observe("com.lyra.debug.hangwatch")
     }
 
     private static func observe(_ name: String) {
@@ -57,8 +59,54 @@ enum DebugUIRemote {
             app.debugPopRequests += 1
         case "com.lyra.debug.libraryTab":
             app.selectedTab = .library
+        case "com.lyra.debug.hangwatch":
+            startHangWatch()
+        case "com.lyra.debug.ping":
+            // Main-thread responsiveness probe: handle() already hops to the
+            // main actor, so the pong's latency ≈ how long the main thread was
+            // busy. Pair with `notifyutil -1 com.lyra.debug.pong` host-side.
+            CFNotificationCenterPostNotification(
+                CFNotificationCenterGetDarwinNotifyCenter(),
+                CFNotificationName("com.lyra.debug.pong" as CFString),
+                nil, nil, true
+            )
         default:
             break
+        }
+    }
+
+    // MARK: - Main-thread hang watcher
+
+    private static var hangTimer: Timer?
+    private static var lastBeat: CFAbsoluteTime = 0
+
+    /// 30ms heartbeat on the main run loop; any gap > 120ms is a main-thread
+    /// stall and gets appended to Documents/lyra-hangwatch.log, readable from
+    /// the host via the app's data container.
+    private static func startHangWatch() {
+        guard hangTimer == nil else { return }
+        lastBeat = CFAbsoluteTimeGetCurrent()
+        let timer = Timer(timeInterval: 0.03, repeats: true) { _ in
+            MainActor.assumeIsolated { beat() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        hangTimer = timer
+    }
+
+    private static func beat() {
+        let now = CFAbsoluteTimeGetCurrent()
+        let gap = now - lastBeat
+        lastBeat = now
+        guard gap > 0.12 else { return }
+        let line = String(format: "%.3f gap=%.0fms\n", now, gap * 1000)
+        guard let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("lyra-hangwatch.log") else { return }
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            handle.write(Data(line.utf8))
+            try? handle.close()
+        } else {
+            try? line.write(to: url, atomically: true, encoding: .utf8)
         }
     }
 }

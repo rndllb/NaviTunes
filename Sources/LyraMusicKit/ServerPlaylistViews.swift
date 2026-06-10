@@ -235,6 +235,20 @@ private enum PlaylistTrackSortOrder: String, CaseIterable, Identifiable {
 /// Tagged source for ``ServerPlaylistDetailView``. The detail view renders both album
 /// and playlist contents through one List-based layout; the source enum drives the
 /// branch points (hero subtitle, track-row type, overflow menu, etc.).
+/// Flags a pushed detail view the moment its pop begins. Extracted as a
+/// modifier (not an inline `.onChange`) to keep the detail view's modifier
+/// chain type-checkable.
+private struct DetailDismissTracker: ViewModifier {
+    @Environment(\.isPresented) private var isPresented
+    @Binding var isBeingDismissed: Bool
+
+    func body(content: Content) -> some View {
+        content.onChange(of: isPresented) { _, presented in
+            if !presented { isBeingDismissed = true }
+        }
+    }
+}
+
 enum LibraryDetailSource {
     case playlist(PlaylistSummary)
     case album(AlbumSummary, librarySource: Bool)
@@ -374,6 +388,15 @@ struct ServerPlaylistDetailView: View {
     @EnvironmentObject private var downtify: DowntifyDownloadManager
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
+    /// Set the instant a pop begins (see ``DetailDismissTracker``): `isPresented`
+    /// flips false at pop-*start*, while the zoom transition keeps this view
+    /// alive until it finishes. The load pipeline checks it so a tracklist that
+    /// arrives mid-dismiss doesn't hydrate and re-render a view that's animating
+    /// away — that render stalled the main thread and ate the user's taps right
+    /// after a quick open + close. `@State` (not a direct `@Environment` read)
+    /// because environment reads are stale inside the `.task` closure's captured
+    /// copy of the view.
+    @State private var isBeingDismissed = false
     @State private var rows: [PlaylistRowItem] = []
     @State private var previewTracks: [BrowseAlbumPreviewTrack] = []
     /// Album mode only: held true while the MusicBrainz tracklist is in flight so the
@@ -407,7 +430,12 @@ struct ServerPlaylistDetailView: View {
     /// ForEach). Invisible to the user: no spinners, no pagination UI, and
     /// playback/search always operate on the full ``displayedRows``.
     @State private var rowRenderLimit = ServerPlaylistDetailView.rowRenderChunk
-    private static let rowRenderChunk = 150
+    /// ~4 screenfuls. Measured on a 1733-song playlist (Debug, simulator): a
+    /// 150-row initial window stalled the main thread 633ms on first hydration,
+    /// which swallowed taps from users who open + close quickly; 60 brings the
+    /// stall under the system hang threshold while still rendering far past the
+    /// fold. The window grows ahead of scroll, so the cap is invisible.
+    private static let rowRenderChunk = 60
 
     /// Album-mode unified row: a real library track, or a MusicBrainz-only track the
     /// user can request via Downtify.
@@ -484,6 +512,9 @@ struct ServerPlaylistDetailView: View {
     }
 
     private func recomputeDisplayedRows() {
+        // A view that's animating out must not hydrate: the re-render lands
+        // mid-pop, stalls the main thread, and swallows the next taps.
+        guard !isBeingDismissed else { return }
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let base: [PlaylistRowItem]
         if q.isEmpty {
@@ -518,6 +549,7 @@ struct ServerPlaylistDetailView: View {
         let tracks = await MusicBrainzTracklistClient.tracksForReleaseGroup(rgId)
         guard !tracks.isEmpty else { return }
         await MainActor.run {
+            guard !isBeingDismissed else { return }
             self.previewTracks = tracks
             recomputeDisplayedRows()
         }
@@ -556,6 +588,7 @@ struct ServerPlaylistDetailView: View {
             .task(id: detailBackdropTaskID) {
                 await refreshDetailBackdropPalette()
             }
+            .modifier(DetailDismissTracker(isBeingDismissed: $isBeingDismissed))
             .onChange(of: app.libraryCatalogEpoch) { _, _ in
                 Task { await load() }
             }
@@ -1605,6 +1638,9 @@ struct ServerPlaylistDetailView: View {
             switch source {
             case .playlist(let p):
                 let fresh = try await app.fetchPlaylistRows(playlistId: p.id)
+                // Dropped on the floor when the user already popped the view —
+                // the rows stay cached in AppModel for the next open.
+                guard !isBeingDismissed else { return }
                 if rows.isEmpty || fresh.map(\.track.id) != rows.map(\.track.id) {
                     rows = fresh
                 }
@@ -1617,6 +1653,7 @@ struct ServerPlaylistDetailView: View {
                     }
                 } else if let lib = app.activeLibrary {
                     let tracks = try await lib.tracks(forAlbumId: album.id)
+                    guard !isBeingDismissed else { return }
                     rows = tracks.enumerated().map { idx, track in
                         PlaylistRowItem(rowId: "album-\(album.id)-\(idx)-\(track.id)", track: track)
                     }
