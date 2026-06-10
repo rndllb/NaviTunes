@@ -201,6 +201,7 @@ struct LibraryView: View {
             }
             .deepLinkPush(tab: .library, path: $navigationPath)
         }
+        .coverZoomContext()
         .tint(MusicDesign.accent)
         .onAppear {
             LibraryPinStore.migrateLegacyPlaylistPinsIfNeeded(storage: &pinnedStorage)
@@ -257,6 +258,7 @@ struct LibraryView: View {
                             pinnedItemDestination(item)
                         } label: {
                             pinnedItemCell(item)
+                                .coverZoomSource(id: pinnedItemZoomId(item))
                         }
                         .buttonStyle(.plain)
                         .libraryPinnedItemContextMenu(item, pinnedStorage: $pinnedStorage)
@@ -407,11 +409,11 @@ struct LibraryView: View {
     private func recentItemLink(_ item: RecentLibraryItem) -> some View {
         switch item {
         case .album(let album):
-            NavigationLink { ServerPlaylistDetailView(album: album, librarySource: true) } label: { recentCell(item) }
+            NavigationLink { ServerPlaylistDetailView(album: album, librarySource: true) } label: { recentCell(item).coverZoomSource(id: album.id) }
                 .buttonStyle(.plain)
                 .libraryAlbumContextMenu(album)
         case .playlist(let playlist):
-            NavigationLink { ServerPlaylistDetailView(playlist: playlist) } label: { recentCell(item) }
+            NavigationLink { ServerPlaylistDetailView(playlist: playlist) } label: { recentCell(item).coverZoomSource(id: playlist.id) }
                 .buttonStyle(.plain)
                 .libraryPlaylistContextMenu(playlist)
         }
@@ -449,6 +451,16 @@ struct LibraryView: View {
                 librarySource: app.isAlbumInLibrary(track.albumId),
                 scrollToTrackId: track.id
             )
+        }
+    }
+
+    /// Zoom key mirroring ``pinnedItemDestination(_:)`` — track pins open their
+    /// owning album, so they zoom on the album id.
+    private func pinnedItemZoomId(_ item: LibraryPinnedItem) -> String {
+        switch item {
+        case .album(let album): return album.id
+        case .playlist(let playlist): return playlist.id
+        case .track(let track): return app.albumSummary(for: track).id
         }
     }
 
@@ -750,6 +762,7 @@ struct LibraryPlaylistsView: View {
                         ForEach(searchFilteredPlaylists) { playlist in
                             NavigationLink { destination(for: playlist) } label: {
                                 gridCell(playlist)
+                                    .coverZoomSource(id: playlist.id)
                             }
                             .buttonStyle(.plain)
                             .homeMixOrPlaylistContextMenu(playlist, app: app)
@@ -762,6 +775,7 @@ struct LibraryPlaylistsView: View {
                     ForEach(Array(searchFilteredPlaylists.enumerated()), id: \.element.id) { index, playlist in
                         NavigationLink { destination(for: playlist) } label: {
                             listRow(playlist)
+                                .coverZoomSource(id: playlist.id)
                         }
                         .buttonStyle(.plain)
                         .homeMixOrPlaylistContextMenu(playlist, app: app)
@@ -1093,6 +1107,7 @@ struct FavoritePlaylistView: View {
             .scrollContentBackground(.hidden)
             .background(Color.clear)
         }
+        .coverZoomDestination(id: "__favorite_songs__")
         .navigationTitle("")
         .musicNavigationBarTitleDisplayMode(.inline)
         .musicFavoriteSongsNavigationChrome()
@@ -1309,13 +1324,19 @@ struct FavoritePlaylistView: View {
     }
 
     private func songRow(_ track: Track, showsBottomDivider: Bool) -> some View {
+        TrackDownloadProgressReader(progress: offline.progressModel, trackId: track.id) { downloadState in
+            songRowContent(track, downloadState: downloadState, showsBottomDivider: showsBottomDivider)
+        }
+    }
+
+    private func songRowContent(_ track: Track, downloadState: OfflineDownloadUIState?, showsBottomDivider: Bool) -> some View {
         LibrarySongRow(
             track: track,
             artworkURL: app.resolvedArtworkURL(for: track),
             itemSize: app.songListItemSize,
             isFavorite: app.favoriteTrackIds.contains(track.id),
             isNowPlaying: app.nowPlayingTrackId == track.id,
-            offlineDownload: offline.activeDownloads[track.id],
+            offlineDownload: downloadState,
             isOfflineCached: app.offline.downloadedTrackIds.contains(track.id),
             onPlay: { Task { await play(track: track) } },
             onDownload: { Task { await cacheOffline(track: track) } },
@@ -1643,6 +1664,7 @@ struct LibraryDownloadedView: View {
                         ServerPlaylistDetailView(album: album, librarySource: true)
                     } label: {
                         recentlyDownloadedCell(album)
+                            .coverZoomSource(id: album.id)
                     }
                     .buttonStyle(.plain)
                     .libraryAlbumContextMenu(album)
@@ -2040,6 +2062,7 @@ struct AlbumsGridView: View {
                     ServerPlaylistDetailView(album: album, librarySource: true)
                 } label: {
                     AlbumGridCell(album: album)
+                        .coverZoomSource(id: album.id)
                 }
                 .buttonStyle(.plain)
                 .libraryAlbumContextMenu(album)
@@ -2257,6 +2280,7 @@ struct ArtistAlbumsView: View {
                             ServerPlaylistDetailView(album: album, librarySource: true)
                         } label: {
                             AlbumGridCell(album: album)
+                                .coverZoomSource(id: album.id)
                         }
                         .buttonStyle(.plain)
                         .libraryAlbumContextMenu(album)

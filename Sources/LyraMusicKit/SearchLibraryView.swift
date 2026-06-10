@@ -21,6 +21,7 @@ struct SearchLibraryView: View {
             }
             .deepLinkPush(tab: .search, path: $navigationPath)
         }
+        .coverZoomContext()
         .overlay(alignment: .top) {
             if navigationPath.isEmpty {
                 DiscoverLibraryScopeBar(scope: $scope)

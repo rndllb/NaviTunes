@@ -45,10 +45,18 @@ enum PlaylistRowsCacheStore {
         await Task.detached(priority: .userInitiated) { load() }.value
     }
 
-    /// Off-main JSON encode + atomic write. Callers hand off a value snapshot
-    /// captured on the main actor; the encode happens at background priority.
+    private static let writeQueue = DispatchQueue(label: "LyraMusic.playlist-rows-write", qos: .utility)
+    private static let writeLock = NSLock()
+    private static var pendingWrite: DispatchWorkItem?
+
+    /// Off-main JSON encode + atomic write, debounced to the trailing edge —
+    /// every save encodes the *whole* cache (megabytes once the sync-ahead
+    /// warm-up has populated it), and the warm-up saves after each fetched
+    /// playlist, so back-to-back saves must collapse into one final write.
+    /// Worst case on force-quit is losing a few seconds of cache freshness;
+    /// the next fetch simply re-fills it.
     static func saveAsync(_ rowsByPlaylistId: [String: [PlaylistRowItem]]) {
-        Task.detached(priority: .utility) {
+        let work = DispatchWorkItem {
             guard let url = try? fileURL() else { return }
             var trimmed = rowsByPlaylistId
             if trimmed.count > maxPlaylists {
@@ -66,6 +74,11 @@ enum PlaylistRowsCacheStore {
             guard let data = try? JSONEncoder().encode(cache) else { return }
             try? data.write(to: url, options: .atomic)
         }
+        writeLock.lock()
+        pendingWrite?.cancel()
+        pendingWrite = work
+        writeLock.unlock()
+        writeQueue.asyncAfter(deadline: .now() + 2.0, execute: work)
     }
 
     static func clear() {

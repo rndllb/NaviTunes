@@ -201,6 +201,7 @@ struct BrowseAlbumDetailView: View {
             .environment(\.defaultMinListRowHeight, 0)
             .padding(.bottom, 36)
         }
+        .coverZoomDestination(id: source.coverZoomId)
         .navigationTitle("")
         .musicNavigationBarTitleDisplayMode(.inline)
         .musicNavigationBarVisibleWhenPushed()
@@ -474,12 +475,18 @@ struct BrowseAlbumDetailView: View {
     }
 
     private func browseLibraryTrackRow(track: Track, displayIndex: Int, showsBottomDivider: Bool) -> some View {
+        TrackDownloadProgressReader(progress: offline.progressModel, trackId: track.id) { downloadState in
+            browseLibraryTrackRowContent(track: track, downloadState: downloadState, displayIndex: displayIndex, showsBottomDivider: showsBottomDivider)
+        }
+    }
+
+    private func browseLibraryTrackRowContent(track: Track, downloadState: OfflineDownloadUIState?, displayIndex: Int, showsBottomDivider: Bool) -> some View {
         AppleMusicAlbumTrackRow(
             index: displayIndex,
             title: track.title,
             subtitle: nil,
             isFavorite: app.favoriteTrackIds.contains(track.id),
-            offlineDownload: offline.activeDownloads[track.id],
+            offlineDownload: downloadState,
             isOfflineCached: app.offline.downloadedTrackIds.contains(track.id),
             isInLibrary: app.isSongInLibrary(track.id),
             onCancelOfflineDownload: {

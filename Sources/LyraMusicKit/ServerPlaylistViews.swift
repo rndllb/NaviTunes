@@ -400,6 +400,14 @@ struct ServerPlaylistDetailView: View {
     @State private var activeScrollTrackId: String? = nil
     @State private var scrollHighlightTask: Task<Void, Never>?
     @State private var displayedRows: [PlaylistRowItem] = []
+    /// How many rows the List renders right now. Hydrating a very large playlist
+    /// (1000+ songs) in full while the push/pop animation runs makes the
+    /// transition stutter — so the first render is one comfortable screenful and
+    /// the window grows ahead of the scroll position (sentinel row in the
+    /// ForEach). Invisible to the user: no spinners, no pagination UI, and
+    /// playback/search always operate on the full ``displayedRows``.
+    @State private var rowRenderLimit = ServerPlaylistDetailView.rowRenderChunk
+    private static let rowRenderChunk = 150
 
     /// Album-mode unified row: a real library track, or a MusicBrainz-only track the
     /// user can request via Downtify.
@@ -487,7 +495,13 @@ struct ServerPlaylistDetailView: View {
                     || $0.track.albumTitle.lowercased().contains(q)
             }
         }
-        displayedRows = sortedRows(base)
+        let next = sortedRows(base)
+        // Skip the reassignment when content is unchanged — a new array value
+        // forces SwiftUI to re-diff the entire tracklist, which is the dominant
+        // main-thread cost on large playlists (load() recomputes unconditionally
+        // after its background refresh, usually with identical rows).
+        guard next.map(\.rowId) != displayedRows.map(\.rowId) else { return }
+        displayedRows = next
     }
 
     /// Album mode only: fetch the full MusicBrainz tracklist so missing tracks can be
@@ -509,8 +523,20 @@ struct ServerPlaylistDetailView: View {
         }
     }
 
+    /// Zoom-transition key — must match the id cover cells mark with
+    /// `coverZoomSource(id:)`. Home mixes key on their synthetic playlist id
+    /// because that's what the Library playlist rows render.
+    private var coverZoomId: String {
+        switch source {
+        case .album(let album, _): return album.id
+        case .playlist(let playlist): return playlist.id
+        case .homeMix(let mixId): return HomeMix.libraryPlaylistIdPrefix + mixId
+        }
+    }
+
     var body: some View {
         detailScrollContainer
+            .coverZoomDestination(id: coverZoomId)
             .playlistTrackSearchable(enabled: !isAlbumStyleDetail, text: $searchText)
             .navigationTitle("")
             .musicNavigationBarTitleDisplayMode(.inline)
@@ -709,7 +735,7 @@ struct ServerPlaylistDetailView: View {
         .scrollContentBackground(.hidden)
         .background(Color.clear)
         .environment(\.defaultMinListRowHeight, isAlbumStyleDetail ? 0 : 44)
-        .onChange(of: rows.map(\.track.id), initial: true) { _, _ in
+        .onChange(of: rowsContentToken, initial: true) { _, _ in
             scrollToFocusedTrackIfNeeded(proxy: scrollProxy)
         }
         .modifier(DetailScrollSignalObserver(
@@ -721,6 +747,13 @@ struct ServerPlaylistDetailView: View {
                 scrollToFocusedTrackIfNeeded(proxy: scrollProxy)
             }
         ))
+    }
+
+    /// O(1) change token for "the tracklist content landed / changed" — the previous
+    /// `rows.map(\.track.id)` built and compared an N-element array on every body
+    /// evaluation, which scales badly on 1000+ song playlists.
+    private var rowsContentToken: String {
+        "\(rows.count)|\(rows.first?.rowId ?? "")|\(rows.last?.rowId ?? "")"
     }
 
     /// Branched rows for the List: empty / loading states + the track ForEach +
@@ -774,15 +807,21 @@ struct ServerPlaylistDetailView: View {
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets())
         } else {
-            ForEach(Array(visible.enumerated()), id: \.element.rowId) { index, row in
+            let windowed = visible.prefix(rowRenderLimit)
+            ForEach(Array(windowed.enumerated()), id: \.element.rowId) { index, row in
                 let showsBottomDivider = index < visible.count - 1
                 let highlightOpacity: Double = row.rowId == highlightedRowId ? 0.28 : 0
-                if isAlbumStyleDetail {
-                    songRow(row, displayIndex: index + 1, showsBottomDivider: showsBottomDivider)
-                        .albumTrackListRowStyle(highlightOpacity: highlightOpacity)
-                } else {
-                    songRow(row, displayIndex: index + 1, showsBottomDivider: showsBottomDivider)
-                        .heroBackdropSongListRowStyle(highlightOpacity: highlightOpacity)
+                Group {
+                    if isAlbumStyleDetail {
+                        songRow(row, displayIndex: index + 1, showsBottomDivider: showsBottomDivider)
+                            .albumTrackListRowStyle(highlightOpacity: highlightOpacity)
+                    } else {
+                        songRow(row, displayIndex: index + 1, showsBottomDivider: showsBottomDivider)
+                            .heroBackdropSongListRowStyle(highlightOpacity: highlightOpacity)
+                    }
+                }
+                .onAppear {
+                    extendRowRenderWindow(afterRealizing: index, totalRows: visible.count)
                 }
             }
             if isAlbum {
@@ -1470,6 +1509,12 @@ struct ServerPlaylistDetailView: View {
         // 3-dot menu options). The only branch is `onRemoveFromPlaylist` — albums don't
         // belong to a playlist that the user can remove tracks from, so the swipe
         // action collapses to "Delete File from Server" (admin) or nothing.
+        return TrackDownloadProgressReader(progress: offline.progressModel, trackId: row.track.id) { downloadState in
+            songRowContent(row, downloadState: downloadState, displayIndex: displayIndex, showsBottomDivider: showsBottomDivider)
+        }
+    }
+
+    private func songRowContent(_ row: PlaylistRowItem, downloadState: OfflineDownloadUIState?, displayIndex: Int, showsBottomDivider: Bool) -> some View {
         let removeFromPlaylist: (() -> Void)? = isAlbumStyleDetail ? nil : { rowPendingRemoval = row }
         return LibrarySongRow(
             track: row.track,
@@ -1477,7 +1522,7 @@ struct ServerPlaylistDetailView: View {
             itemSize: app.songListItemSize,
             isFavorite: app.favoriteTrackIds.contains(row.track.id),
             isNowPlaying: app.player.activeTrack?.id == row.track.id,
-            offlineDownload: offline.activeDownloads[row.track.id],
+            offlineDownload: downloadState,
             isOfflineCached: app.offline.downloadedTrackIds.contains(row.track.id),
             onPlay: { Task { await play(row: row) } },
             onDownload: { Task { await cacheOffline(track: row.track) } },
@@ -1804,6 +1849,14 @@ struct ServerPlaylistDetailView: View {
         return "\(n) songs, \(totalMin) minutes"
     }
 
+    /// Grows the render window when the user nears its end. Realized rows call
+    /// this from `onAppear`; growing in chunks well ahead of the visible edge
+    /// keeps scrolling seamless (the user never sees the boundary).
+    private func extendRowRenderWindow(afterRealizing index: Int, totalRows: Int) {
+        guard rowRenderLimit < totalRows, index >= rowRenderLimit - 40 else { return }
+        rowRenderLimit += Self.rowRenderChunk
+    }
+
     private func scrollToFocusedTrackIfNeeded(proxy: ScrollViewProxy) {
         // Initial-mount focus uses ``scrollToTrackId`` (Now Playing → Go to ... pushes a fresh
         // detail view) — jump straight to the row, no scroll animation. The already-visible path
@@ -1817,6 +1870,12 @@ struct ServerPlaylistDetailView: View {
         else { return }
         didScrollToFocusTrack = true
         let targetRowId = matchingRow.rowId
+        // The focus row may sit beyond the windowed first render — expand to the
+        // full tracklist before scrolling so the target row exists in the List.
+        if let targetIndex = displayedRows.firstIndex(where: { $0.rowId == targetRowId }),
+           targetIndex >= rowRenderLimit {
+            rowRenderLimit = max(displayedRows.count, rowRenderLimit)
+        }
         scrollHighlightTask?.cancel()
         scrollHighlightTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(50))

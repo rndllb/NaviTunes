@@ -95,6 +95,7 @@ struct MusicNewTabView: View {
             }
             .deepLinkPush(tab: .new, path: $navigationPath)
         }
+        .coverZoomContext()
         .overlay(alignment: .bottom) {
             if let downtifyToast {
                 Text(downtifyToast)
@@ -242,18 +243,21 @@ struct MusicNewTabView: View {
                         navigateLibraryTrack = lib
                     } label: {
                         heroCarouselArtworkCard(track: track, imageHeight: imageHeight, showOverflow: false, badgeText: browseHeroBadge)
+                            .coverZoomSource(id: lib.albumId)
                     }
                     .buttonStyle(.plain)
                 } else {
+                    let source = BrowseAlbumDetailSource.chartBrowse(
+                        artistName: track.artistName,
+                        title: track.name,
+                        imageURL: track.imageURL,
+                        kind: track.browseKind
+                    )
                     NavigationLink {
-                        BrowseAlbumDetailView(source: .chartBrowse(
-                            artistName: track.artistName,
-                            title: track.name,
-                            imageURL: track.imageURL,
-                            kind: track.browseKind
-                        ))
+                        BrowseAlbumDetailView(source: source)
                     } label: {
                         heroCarouselArtworkCard(track: track, imageHeight: imageHeight, showOverflow: true, badgeText: browseHeroBadge)
+                            .coverZoomSource(id: source.coverZoomId)
                     }
                     .buttonStyle(.plain)
                 }
@@ -404,18 +408,21 @@ struct MusicNewTabView: View {
                         navigateLibraryTrack = lib
                     } label: {
                         trendingSongRowMainContent(track: track)
+                            .coverZoomSource(id: lib.albumId)
                     }
                     .buttonStyle(.plain)
                 } else {
+                    let source = BrowseAlbumDetailSource.chartBrowse(
+                        artistName: track.artistName,
+                        title: track.name,
+                        imageURL: track.imageURL,
+                        kind: track.browseKind
+                    )
                     NavigationLink {
-                        BrowseAlbumDetailView(source: .chartBrowse(
-                            artistName: track.artistName,
-                            title: track.name,
-                            imageURL: track.imageURL,
-                            kind: track.browseKind
-                        ))
+                        BrowseAlbumDetailView(source: source)
                     } label: {
                         trendingSongRowMainContent(track: track)
+                            .coverZoomSource(id: source.coverZoomId)
                     }
                     .buttonStyle(.plain)
                 }
@@ -499,18 +506,21 @@ struct MusicNewTabView: View {
                                 navigateLibraryAlbum = lib
                             } label: {
                                 albumCard(url: album.imageURL, title: album.name, subtitle: album.artistName)
+                                    .coverZoomSource(id: lib.id)
                             }
                             .buttonStyle(.plain)
                         } else {
+                            let source = BrowseAlbumDetailSource.chartBrowse(
+                                artistName: album.artistName,
+                                title: album.name,
+                                imageURL: album.imageURL,
+                                kind: "Album"
+                            )
                             NavigationLink {
-                                BrowseAlbumDetailView(source: .chartBrowse(
-                                    artistName: album.artistName,
-                                    title: album.name,
-                                    imageURL: album.imageURL,
-                                    kind: "Album"
-                                ))
+                                BrowseAlbumDetailView(source: source)
                             } label: {
                                 albumCard(url: album.imageURL, title: album.name, subtitle: album.artistName)
+                                    .coverZoomSource(id: source.coverZoomId)
                             }
                             .buttonStyle(.plain)
                         }
