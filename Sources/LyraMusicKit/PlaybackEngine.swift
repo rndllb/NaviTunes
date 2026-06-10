@@ -109,6 +109,17 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private var isAdvancingToNextItem = false
 
     private var player: AVPlayer?
+    /// Same instance as ``player`` (an `AVQueuePlayer`), typed for queue ops. The
+    /// engine keeps the *next* track enqueued so iOS performs the end-of-track
+    /// transition in its media daemon — gaplessly and, crucially, reliably while
+    /// backgrounded (an app-driven teardown/rebuild at a track boundary can't
+    /// complete in the background and silently stops playback).
+    private var queuePlayer: AVQueuePlayer? { player as? AVQueuePlayer }
+    /// The pre-enqueued next item and the queue index/track it represents, so
+    /// ``handleEnded`` can promote bookkeeping in place after the OS auto-advances.
+    private var enqueuedNextItem: AVPlayerItem?
+    private var enqueuedNextIndex: Int?
+    private var enqueuedNextTrack: Track?
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
     /// A single pre-warmed `AVURLAsset` for the track that will play next, keyed by
@@ -480,6 +491,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         queue.insert(normalized, at: insertAt)
         userQueuedTrackIds.insert(normalized.id)
         recordTrackOriginPlaylist([normalized.id], playlistId: sourcePlaylistId)
+        refreshEnqueuedNextItem()
     }
 
     func playTracksNext(library: MusicLibraryProviding?, tracks: [Track], sourcePlaylistId: String? = nil) async throws {
@@ -497,6 +509,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             userQueuedTrackIds.insert(t.id)
         }
         recordTrackOriginPlaylist(normalized.map(\.id), playlistId: sourcePlaylistId)
+        refreshEnqueuedNextItem()
     }
 
     func addToQueue(library: MusicLibraryProviding?, track: Track, sourcePlaylistId: String? = nil) async throws {
@@ -515,6 +528,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         queue.append(contentsOf: normalized)
         for t in normalized { userQueuedTrackIds.insert(t.id) }
         recordTrackOriginPlaylist(normalized.map(\.id), playlistId: sourcePlaylistId)
+        refreshEnqueuedNextItem()
     }
 
     private func tracksWithResolvedArtwork(_ tracks: [Track]) -> [Track] {
@@ -555,6 +569,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         }
         if let previousId, let idx = queue.firstIndex(where: { $0.id == previousId }) {
             currentIndex = idx
+            refreshEnqueuedNextItem()
             return
         }
         currentIndex = min(currentIndex, queue.count - 1)
@@ -994,6 +1009,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             }
             shuffleMode = .off
         }
+        refreshEnqueuedNextItem()
     }
 
     func cycleRepeat() {
@@ -1002,6 +1018,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         case .all: repeatMode = .one
         case .one: repeatMode = .off
         }
+        refreshEnqueuedNextItem()
     }
 
     func jumpToQueueItem(at index: Int) {
@@ -1018,6 +1035,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         var upNext = Array(queue[offset...])
         upNext.move(fromOffsets: source, toOffset: destination)
         queue.replaceSubrange(offset..., with: upNext)
+        refreshEnqueuedNextItem()
     }
 
     private func captureAutoPlayIntentForAdvance() {
@@ -1125,7 +1143,13 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private func stopPlayer(_ p: AVPlayer?) {
         guard let p else { return }
         p.pause()
-        p.replaceCurrentItem(with: nil)
+        // AVQueuePlayer doesn't support replaceCurrentItem(with: nil) — clear its
+        // whole queue (current + any enqueued next) instead.
+        if let queue = p as? AVQueuePlayer {
+            queue.removeAllItems()
+        } else {
+            p.replaceCurrentItem(with: nil)
+        }
     }
 
     private func detachPlayerKeepingQueueState() {
@@ -1138,6 +1162,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
         cancelStallRecovery()
         stopPlayer(player)
         player = nil
+        enqueuedNextItem = nil
+        enqueuedNextIndex = nil
+        enqueuedNextTrack = nil
         activeResourceLoaderDelegate?.invalidate()
         activeResourceLoaderDelegate = nil
     }
@@ -1534,7 +1561,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
             resolvedDuration = await LocalMediaDuration.seconds(at: candidate.url)
         }
         let item = AVPlayerItem(asset: asset)
-        let p = AVPlayer(playerItem: item)
+        let p = AVQueuePlayer(playerItem: item)
+        // Auto-advance to the enqueued next item at end of track (the OS-managed,
+        // background-safe transition). Falls back to pausing when nothing's queued.
+        p.actionAtItemEnd = .advance
         if candidate.url.isFileURL {
             p.automaticallyWaitsToMinimizeStalling = false
         } else {
@@ -1602,6 +1632,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
             persistOfflineDurationIfNeeded(resolvedDuration)
             patchActiveQueueTrackDuration(resolvedDuration)
         }
+        // Stage the next track so the OS can pre-roll and transition to it without
+        // any app work at the boundary.
+        refreshEnqueuedNextItem()
         return true
     }
 
@@ -1658,6 +1691,17 @@ final class PlaybackEngine: NSObject, ObservableObject {
             }
         }
 
+        bindItemObservers(item: item, track: track, player: p)
+        refreshNowPlaying()
+    }
+
+    /// (Re)bind the per-item observers — periodic progress + end-of-track — to a
+    /// specific item/track on `p`. Used both for a freshly-attached player and,
+    /// after an OS auto-advance, to rebind onto the now-current enqueued item
+    /// without tearing the player down. The `timeControlStatus` KVO is per-player
+    /// and set once in ``attachPlayer``, so it isn't touched here.
+    private func bindItemObservers(item: AVPlayerItem, track: Track, player p: AVPlayer) {
+        if let timeObserver { p.removeTimeObserver(timeObserver) }
         let interval = CMTime(seconds: 0.35, preferredTimescale: 600)
         timeObserver = p.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             guard let self else { return }
@@ -1671,6 +1715,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             }
         }
 
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         endObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,
             object: item,
@@ -1681,8 +1726,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
                 self.handleEnded()
             }
         }
-
-        refreshNowPlaying()
     }
 
     private func periodicTimeObserverTick(
@@ -1743,6 +1786,24 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     private func handleEnded() {
+        // Fast path: the OS queue auto-advanced to the item we pre-enqueued and the
+        // queue hasn't changed underneath it — promote bookkeeping in place. Audio
+        // never stopped, so this works reliably while backgrounded (no app-driven
+        // teardown/rebuild that the OS would suspend mid-transition).
+        if repeatMode != .one,
+           let qp = queuePlayer,
+           let nextItem = enqueuedNextItem,
+           let nextIndex = enqueuedNextIndex,
+           qp.currentItem === nextItem,
+           nextIndex == upcomingQueueIndices(limit: 1).first,
+           queue.indices.contains(nextIndex),
+           enqueuedNextTrack?.id == queue[nextIndex].id {
+            promoteToEnqueuedNext(item: nextItem, index: nextIndex, track: queue[nextIndex])
+            return
+        }
+
+        // Slow path: nothing usable pre-enqueued (repeat-one, end of queue, queue
+        // edited, or enqueue failed) — rebuild as before.
         // Shuffle is a queue-reordering action (see ``toggleShuffle``) — once shuffled,
         // advance through the queue sequentially, otherwise every track end would re-randomize.
         switch repeatMode {
@@ -1763,8 +1824,107 @@ final class PlaybackEngine: NSObject, ObservableObject {
                 scheduleAdvance()
             } else {
                 isPlaying = false
+                // AVQueuePlayer advanced past the final item, so `currentItem` is
+                // now nil and the single-player "seek to 0 and replay" path can't
+                // work. Drop to a clean pending-restore so a later play tap rebuilds
+                // the last track from the start (matching the prior behavior).
+                teardownPlayer()
+                refreshNowPlaying()
             }
         }
+    }
+
+    /// Adopt the just-auto-advanced item as the current track without tearing the
+    /// player down. The audio is already playing the new item; this only updates
+    /// bookkeeping, rebinds the per-item observers, and stages the following track.
+    private func promoteToEnqueuedNext(item: AVPlayerItem, index: Int, track: Track) {
+        enqueuedNextItem = nil
+        enqueuedNextIndex = nil
+        enqueuedNextTrack = nil
+
+        // New track is current — invalidate any in-flight load and refresh the
+        // epoch the lyrics fetch keys off of.
+        _ = beginPlaybackSession()
+
+        currentIndex = index
+        scrobbledForCurrentTrack = false
+        resetUIProgressForTrackHandoff()
+        localFileDuration = 0
+        probingLocalFileURL = nil
+
+        let fromItem = item.duration.seconds
+        duration = (fromItem.isFinite && fromItem > 0) ? fromItem : (track.duration > 0 ? track.duration : 0)
+
+        if let p = player {
+            bindItemObservers(item: item, track: track, player: p)
+        }
+
+        isPlaying = (player?.rate ?? 0) > 0.01
+        scheduleLyricsLoad()
+        refreshNowPlaying()
+        revealMiniPlayerChrome()
+
+        userQueuedTrackIds.remove(track.id)
+        onTrackStarted?(track)
+
+        // Stage the track after this one for the next boundary.
+        refreshEnqueuedNextItem()
+    }
+
+    /// Keep the next track enqueued on the queue player so the OS pre-rolls and
+    /// transitions to it at end-of-track. Rebuilds the staged item whenever the
+    /// upcoming track changes (queue edit, shuffle/repeat change, skip). Builds a
+    /// plain asset (never the resource-loader cache) so the OS owns its buffering
+    /// — in-process URLSession fetching would stall a background pre-roll.
+    private func refreshEnqueuedNextItem() {
+        guard let qp = queuePlayer else {
+            enqueuedNextItem = nil
+            enqueuedNextIndex = nil
+            enqueuedNextTrack = nil
+            return
+        }
+        // Repeat-one replays the same item (which AVQueuePlayer can't do), and
+        // end-of-queue has no successor — stage nothing in those cases.
+        let nextIndex: Int? = repeatMode == .one ? nil : upcomingQueueIndices(limit: 1).first
+
+        // Already correctly staged? Leave the in-flight pre-roll alone.
+        if let nextIndex,
+           let staged = enqueuedNextItem,
+           enqueuedNextIndex == nextIndex,
+           queue.indices.contains(nextIndex),
+           enqueuedNextTrack?.id == queue[nextIndex].id,
+           qp.items().contains(staged) {
+            return
+        }
+
+        if let staged = enqueuedNextItem, qp.items().contains(staged) {
+            qp.remove(staged)
+        }
+        enqueuedNextItem = nil
+        enqueuedNextIndex = nil
+        enqueuedNextTrack = nil
+
+        guard let nextIndex, queue.indices.contains(nextIndex) else { return }
+        let track = queue[nextIndex]
+        if track.isInternetRadioStream { return }
+
+        let item: AVPlayerItem
+        if let saved = offline?.localFile(for: track.id) {
+            item = AVPlayerItem(asset: AVURLAsset(url: saved, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true]))
+        } else if let candidate = primaryRemoteCandidate(for: track) {
+            let asset: AVURLAsset = candidate.headers.isEmpty
+                ? AVURLAsset(url: candidate.url)
+                : AVURLAsset(url: candidate.url, options: ["AVURLAssetHTTPHeaderFieldsKey": candidate.headers])
+            item = AVPlayerItem(asset: asset)
+        } else {
+            return
+        }
+
+        guard qp.canInsert(item, after: nil) else { return }
+        qp.insert(item, after: nil)
+        enqueuedNextItem = item
+        enqueuedNextIndex = nextIndex
+        enqueuedNextTrack = track
     }
 
     private var currentTrack: Track? {
