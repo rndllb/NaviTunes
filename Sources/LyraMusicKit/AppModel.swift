@@ -2205,11 +2205,28 @@ public final class AppModel: ObservableObject {
         playlistRowsCache.removeValue(forKey: playlistId)
     }
 
+    /// Awaits a shared fetch task but forwards the *caller's* cancellation into
+    /// it. `Task.value` alone is not a cancellation-responsive suspension — a
+    /// detail view whose `.task` got cancelled by an immediate swipe-back would
+    /// otherwise sit out the entire network fetch before it could bail, keeping
+    /// its dismissal cleanup hostage. Cancelling the fetch is safe: the rows
+    /// cache simply re-fills on the next open.
+    private func cancellableValue<T: Sendable>(of task: Task<T, Error>) async throws -> T {
+        try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
     func fetchPlaylistRows(playlistId: String) async throws -> [PlaylistRowItem] {
         // Concurrent callers (Go to Playlist prefetch + the pushed detail view's
-        // load) share one network request instead of issuing duplicates.
-        if let inFlight = playlistRowsFetchTasks[playlistId] {
-            return try await inFlight.value
+        // load) share one network request instead of issuing duplicates. Skip an
+        // in-flight task that's already been cancelled (a detail view that was
+        // opened and immediately swiped away) so a quick reopen starts fresh
+        // instead of inheriting the doomed fetch.
+        if let inFlight = playlistRowsFetchTasks[playlistId], !inFlight.isCancelled {
+            return try await cancellableValue(of: inFlight)
         }
         let task = Task { [backendKind, jellyfin, navidrome] () throws -> [PlaylistRowItem] in
 #if DEBUG
@@ -2237,7 +2254,7 @@ public final class AppModel: ObservableObject {
         }
         playlistRowsFetchTasks[playlistId] = task
         defer { playlistRowsFetchTasks.removeValue(forKey: playlistId) }
-        let rows = try await task.value
+        let rows = try await cancellableValue(of: task)
         // Persist only when membership/order actually changed: every save encodes
         // the *entire* multi-playlist cache, and the detail view refreshes on each
         // open — re-encoding megabytes of unchanged JSON per visit is pure churn.
