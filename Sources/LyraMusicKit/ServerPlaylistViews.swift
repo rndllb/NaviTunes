@@ -432,6 +432,7 @@ struct ServerPlaylistDetailView: View {
     @State private var navigateAlbum: AlbumSummary?
     @State private var showPlaylistEditor = false
     @State private var showDeleteConfirm = false
+    @State private var showKillModeIntro = false
     @State private var rowPendingRemoval: PlaylistRowItem?
     @State private var navigationTitleText = ""
     @State private var isDownloadingAll = false
@@ -551,9 +552,19 @@ struct ServerPlaylistDetailView: View {
                 detailDebugLog("HYDRATION-DEFERRED (transition in flight)")
                 deferLogged = true
             }
-            try? await Task.sleep(for: .milliseconds(80))
+            // Bail on `.task` cancellation — the view is gone and the result
+            // must be dropped. The old `try?` swallowed the cancellation, and
+            // an already-cancelled sleep returns immediately, so this loop
+            // degenerated into a main-actor busy-spin that starved UIKit's
+            // pop cleanup and touch delivery until the phase flipped idle.
+            do {
+                try await Task.sleep(for: .milliseconds(80))
+            } catch {
+                detailDebugLog("HYDRATION-DROPPED (task cancelled mid-park)")
+                return false
+            }
         }
-        return !isBeingDismissed
+        return !isBeingDismissed && !Task.isCancelled
     }
 
     private func recomputeDisplayedRows() {
@@ -687,6 +698,10 @@ struct ServerPlaylistDetailView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             }
+            .modifier(KillModeIntroAlert(
+                isPresented: $showKillModeIntro,
+                onEnable: { app.toggleKillMode(playlistId: playlist.id) },
+            ))
             .modifier(DownloadedAlbumActionPresentation(
                 isPresented: $showDownloadedAlbumActions,
                 itemKind: isAlbum ? .album : .playlist,
@@ -924,42 +939,60 @@ struct ServerPlaylistDetailView: View {
         }
     }
 
+    /// True from the instant a pop/swipe-back begins (UIKit `viewWillDisappear`)
+    /// and permanently once the pop commits. Drives the toolbar-button fade so
+    /// the trailing items cross-fade out instead of sliding right with the nav
+    /// bar — and so a transition that strands the chrome never shows stale
+    /// buttons floating over the list. A cancelled swipe returns the phase to
+    /// `.idle`, fading them back in.
+    private var detailChromeIsLeaving: Bool {
+        isBeingDismissed || dismissalPhase == .dismissing
+    }
+
     /// Toolbar content branches: playlist mode shows the rename/delete/sort overflow
     /// menu; album mode shows a share-artwork link plus a compact overflow with
-    /// download-all and library actions.
+    /// download-all and library actions. Items fade with ``detailChromeIsLeaving``.
     @ToolbarContentBuilder
     private var detailToolbarContent: some ToolbarContent {
         if isAlbumStyleDetail {
             ToolbarItemGroup(placement: MusicToolbar.trailingItemPlacement) {
-                if let url = resolvedDetailArtworkURL {
-                    ShareLink(item: url) {
-                        Image(systemName: "square.and.arrow.up")
-                            .font(.body.weight(.semibold))
+                Group {
+                    if let url = resolvedDetailArtworkURL {
+                        ShareLink(item: url) {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(backdropPalette.heroChromePrimary)
+                        }
+                    }
+                    Menu {
+                        if isHomeMix {
+                            homeMixOverflowMenuContent
+                        } else {
+                            albumOverflowMenuContent
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
                             .foregroundStyle(backdropPalette.heroChromePrimary)
                     }
+                    .menuOrder(.fixed)
                 }
-                Menu {
-                    if isHomeMix {
-                        homeMixOverflowMenuContent
-                    } else {
-                        albumOverflowMenuContent
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .foregroundStyle(backdropPalette.heroChromePrimary)
-                }
-                .menuOrder(.fixed)
+                .opacity(detailChromeIsLeaving ? 0 : 1)
+                .animation(.easeOut(duration: 0.15), value: detailChromeIsLeaving)
             }
         } else {
             ToolbarItemGroup(placement: .primaryAction) {
-                killModeToolbarButton
-                Menu {
-                    playlistOverflowMenuContent
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .foregroundStyle(backdropPalette.heroChromePrimary)
+                Group {
+                    killModeToolbarButton
+                    Menu {
+                        playlistOverflowMenuContent
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .foregroundStyle(backdropPalette.heroChromePrimary)
+                    }
+                    .menuOrder(.fixed)
                 }
-                .menuOrder(.fixed)
+                .opacity(detailChromeIsLeaving ? 0 : 1)
+                .animation(.easeOut(duration: 0.15), value: detailChromeIsLeaving)
             }
         }
     }
@@ -1244,7 +1277,12 @@ struct ServerPlaylistDetailView: View {
 
         Section {
             Button {
-                app.toggleKillMode(playlistId: playlist.id)
+                // Turning it on is gated behind an explainer; turning it off is immediate.
+                if app.isKillModeEnabled(playlistId: playlist.id) {
+                    app.toggleKillMode(playlistId: playlist.id)
+                } else {
+                    showKillModeIntro = true
+                }
             } label: {
                 let enabled = app.isKillModeEnabled(playlistId: playlist.id)
                 Label {
@@ -1685,9 +1723,9 @@ struct ServerPlaylistDetailView: View {
         let showSpinner = rows.isEmpty
         if showSpinner { isLoading = true }
         defer {
-            // A committed-dismissed view must not be touched at all — even
-            // clearing the spinner re-renders it mid zoom-cleanup.
-            if !isBeingDismissed {
+            // A committed-dismissed or cancelled view must not be touched at
+            // all — even clearing the spinner re-renders it mid zoom-cleanup.
+            if !isBeingDismissed && !Task.isCancelled {
                 isLoading = false
                 recomputeDisplayedRows()
             }
@@ -1738,7 +1776,16 @@ struct ServerPlaylistDetailView: View {
                     rows = []
                 }
             }
+        } catch is CancellationError {
+            // Immediate swipe-back cancelled the `.task` (and through it the
+            // shared fetch). The view is gone — no error UI, no state writes.
+            detailDebugLog("HYDRATION-CANCELLED")
+            return
         } catch {
+            if (error as? URLError)?.code == .cancelled {
+                detailDebugLog("HYDRATION-CANCELLED (URL)")
+                return
+            }
             if rows.isEmpty {
                 loadError = error.localizedDescription
                 rows = []
@@ -2057,6 +2104,23 @@ private struct DetailNavigationChrome: ViewModifier {
 private struct CoverCropSubject: Identifiable {
     let id = UUID()
     let imageData: Data
+}
+
+/// Centered explainer shown before Kill Mode is turned on, so the user knows
+/// skipping will queue songs for removal and can back out. Extracted as a
+/// modifier to keep the detail view's modifier chain type-checkable.
+private struct KillModeIntroAlert: ViewModifier {
+    @Binding var isPresented: Bool
+    let onEnable: () -> Void
+
+    func body(content: Content) -> some View {
+        content.alert("Enable Kill Mode?", isPresented: $isPresented) {
+            Button("Enable Kill Mode") { onEnable() }
+            Button("Go Back", role: .cancel) {}
+        } message: {
+            Text("With Kill Mode on, every song you skip while playing this playlist gets queued for removal — the count shows on the scissors button in the toolbar. Nothing is removed until you open that list and confirm, so skip deliberately. Turn Kill Mode off any time from this menu.")
+        }
+    }
 }
 
 private struct PlaylistEditSheet: View {
