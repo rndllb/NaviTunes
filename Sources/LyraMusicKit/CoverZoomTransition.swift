@@ -54,12 +54,65 @@ private struct CoverZoomDestination: ViewModifier {
 
     func body(content: Content) -> some View {
         if let namespace {
-            content.navigationTransition(.zoom(sourceID: id, in: namespace))
+            content
+                .navigationTransition(.zoom(sourceID: id, in: namespace))
+#if os(iOS)
+                .background(ZoomDismissGestureTuner())
+#endif
         } else {
             content
         }
     }
 }
+
+#if os(iOS)
+/// The zoom transition's *gesture* dismissals (edge pan, swipe down, pinch)
+/// run an interruptible settle that monopolizes the gesture system — after a
+/// swipe-back, the revealed list ignores scrolls until the spring fully lands,
+/// while the back button's non-interactive zoom pop delivers touches
+/// immediately. There's no SwiftUI API for this, so this helper introspects
+/// the navigation controller, disables the zoom-specific dismiss recognizers
+/// (identified by class name; unknown names are left untouched, so an OS
+/// rename simply restores stock behavior), and revives the classic interactive
+/// swipe-back. Net effect: push and back-button pop keep the zoom morph,
+/// swipe-back becomes the standard slide pop that scrolls responsively.
+private struct ZoomDismissGestureTuner: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> Helper { Helper() }
+    func updateUIViewController(_ controller: Helper, context: Context) {}
+
+    final class Helper: UIViewController, UIGestureRecognizerDelegate {
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            guard let nav = navigationControllerInChain else { return }
+            for recognizer in nav.view.gestureRecognizers ?? [] {
+                let name = String(describing: type(of: recognizer))
+                if name.contains("Parallex") || name.contains("SwipeDown") || name.contains("TransformGesture") {
+                    recognizer.isEnabled = false
+                }
+            }
+            if let pop = nav.interactivePopGestureRecognizer {
+                pop.isEnabled = true
+                pop.delegate = self
+            }
+        }
+
+        /// Only allow swipe-back when there's something to pop — the
+        /// delegate-replacement trick otherwise freezes the stack root.
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            (navigationControllerInChain?.viewControllers.count ?? 0) > 1
+        }
+
+        private var navigationControllerInChain: UINavigationController? {
+            var current: UIViewController? = parent
+            while let vc = current {
+                if let nav = vc.navigationController { return nav }
+                current = vc.parent
+            }
+            return nil
+        }
+    }
+}
+#endif
 
 extension View {
     /// Provides the zoom namespace for one `NavigationStack`. Apply to the
