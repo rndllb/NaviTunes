@@ -738,7 +738,10 @@ struct LibraryPlaylistsView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 0) {
+            // Lazy so a large playlist library only builds the rows on screen —
+            // a plain VStack here instantiated every row (artwork, context menu,
+            // NavigationLink) up front, which is what made the list lag.
+            LazyVStack(spacing: 0) {
                 if displayedPlaylists.isEmpty {
                     ContentUnavailableView(
                         filter == .favorites ? "No Favorited Playlists"
