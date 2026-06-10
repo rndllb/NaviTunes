@@ -958,7 +958,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
     func toggleShuffle() {
         if shuffleMode == .off {
-            // Turning shuffle ON: save current queue and randomize the rest
+            // Turning shuffle ON: save current queue and randomize the rest.
+            // Bail if there's no valid current track (empty/invalid queue) —
+            // remove(at:) below would otherwise crash on an out-of-range index.
+            guard queue.indices.contains(currentIndex) else { return }
             unshuffledQueue = queue
             let currentTrack = activeTrack
             var remaining = queue
