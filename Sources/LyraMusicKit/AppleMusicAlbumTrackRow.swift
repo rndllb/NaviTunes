@@ -38,10 +38,10 @@ enum TrackOfflineIndicatorPhase: Equatable {
             self = isInLibrary ? .missing : .request
             return
         }
-        if !isInLibrary {
-            self = .addToLibrary
-            return
-        }
+        // On-device state outranks library membership: a song downloaded (or
+        // downloading) via a playlist must show its downloaded/progress glyph
+        // even when it isn't in the user's personal library — the "+" chip
+        // alternative is hidden on playlist rows, leaving no indicator at all.
         if let s = offlineDownload {
             switch s {
             case .indeterminate:
@@ -51,7 +51,15 @@ enum TrackOfflineIndicatorPhase: Equatable {
             }
             return
         }
-        self = isOfflineCached ? .cached : .notCached
+        if isOfflineCached {
+            self = .cached
+            return
+        }
+        if !isInLibrary {
+            self = .addToLibrary
+            return
+        }
+        self = .notCached
     }
 
     var isDownloading: Bool {

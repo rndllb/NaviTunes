@@ -29,6 +29,16 @@ enum PlaybackSource: Equatable {
     case playlist(PlaylistSummary)
 }
 
+/// The playback clock, isolated from ``PlaybackEngine``'s `objectWillChange`.
+/// `currentTime` ticks every ~0.35s during playback; publishing it through the
+/// engine re-evaluated every observing view per tick — including the full Now
+/// Playing body (whose queue page scales with queue length) and the mini player.
+/// Only views that *display* time (scrubber, lyrics sync) observe this object.
+@MainActor
+final class PlaybackTimeModel: ObservableObject {
+    @Published fileprivate(set) var currentTime: TimeInterval = 0
+}
+
 @MainActor
 final class PlaybackEngine: NSObject, ObservableObject {
     @Published private(set) var queue: [Track] = []
@@ -42,7 +52,13 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// loading a new item or stalled waiting for the network to buffer. Drives
     /// the transport spinner so controls never claim "playing" during a stall.
     @Published private(set) var isBuffering: Bool = false
-    @Published private(set) var currentTime: TimeInterval = 0
+    /// UI-throttled playhead — published via ``time`` (see ``PlaybackTimeModel``),
+    /// not this object, so per-tick updates don't re-render every player view.
+    let time = PlaybackTimeModel()
+    private(set) var currentTime: TimeInterval {
+        get { time.currentTime }
+        set { time.currentTime = newValue }
+    }
     /// Live playhead updated every periodic observer tick. Prefer over ``currentTime`` for synced lyrics — ``currentTime`` is UI-throttled.
     var livePlaybackTime: TimeInterval { playbackHead }
     @Published private(set) var duration: TimeInterval = 0

@@ -85,6 +85,10 @@ public final class AppModel: ObservableObject {
     /// active at trigger time consumes the push (tab bar stays visible during the destination).
     @Published var presentedDeepLink: NowPlayingDeepLink? = nil
     @Published var deepLinkTab: AppTab? = nil
+#if DEBUG
+    /// Incremented by ``DebugUIRemote`` to pop the active tab's stack — see that file.
+    @Published var debugPopRequests = 0
+#endif
 
     /// Scroll signal consumed by an already-visible ``ServerPlaylistDetailView`` so "Go to Playlist"
     /// scrolls to the now-playing track even when the user is already on that playlist.
@@ -95,9 +99,12 @@ public final class AppModel: ObservableObject {
 
     /// Set by ``ServerPlaylistDetailView`` while it's mounted so Now Playing → Go to Playlist
     /// can detect "destination already visible behind player" and skip a redundant push.
-    @Published var currentlyVisiblePlaylistId: String? = nil
+    /// Deliberately NOT `@Published`: no view renders from these — they're written on every
+    /// detail push/pop, and publishing them invalidated every mounted view (including large
+    /// tracklists in the nav stack) mid-transition.
+    var currentlyVisiblePlaylistId: String? = nil
     /// Album equivalent of ``currentlyVisiblePlaylistId``.
-    @Published var currentlyVisibleAlbumId: String? = nil
+    var currentlyVisibleAlbumId: String? = nil
 
     /// Brief bottom toast (e.g. "Added to Queue"). Auto-clears after ``showTransientToast``
     /// is called; the ``MusicTransientToastChrome`` view modifier renders it.
@@ -171,6 +178,13 @@ public final class AppModel: ObservableObject {
     private var trackIndexTask: Task<Void, Never>?
     /// In-memory playlist tracklists for instant detail hydration (Go to Playlist, revisit).
     private var playlistRowsCache: [String: [PlaylistRowItem]] = [:]
+    /// In-flight playlist row fetches keyed by playlist id — see ``fetchPlaylistRows(playlistId:)``.
+    private var playlistRowsFetchTasks: [String: Task<[PlaylistRowItem], Error>] = [:]
+    /// Background sync-ahead of playlist tracklists — see ``warmPlaylistRowsCache()``.
+    private var playlistRowsWarmupTask: Task<Void, Never>?
+    /// Set once the on-disk rows cache has been merged in; warming before that
+    /// would re-fetch playlists whose rows were already persisted.
+    private var playlistRowsDiskRestoreCompleted = false
 
     private static let favoriteTrackIdsKey = "LyraMusic.favoriteTrackIds"
     @Published private(set) var favoriteTrackIds: Set<String> = []
@@ -891,6 +905,8 @@ public final class AppModel: ObservableObject {
         libraryStatistics = .empty
         lastLibrarySyncAt = nil
         UserDefaults.standard.removeObject(forKey: Self.lastLibrarySyncAtKey)
+        playlistRowsWarmupTask?.cancel()
+        clearInMemoryPlaylistRowsCache()
         LibrarySnapshotStore.clear()
         PlaylistRowsCacheStore.clear()
         StreamingMediaDiskCache.shared.clear()
@@ -1053,6 +1069,7 @@ public final class AppModel: ObservableObject {
         libraryCatalogEpoch = 0
         libraryStatistics = .empty
         lastLibrarySyncAt = nil
+        playlistRowsWarmupTask?.cancel()
         playlistRowsCache.removeAll()
         LibrarySnapshotStore.clear()
         PlaylistRowsCacheStore.clear()
@@ -1087,6 +1104,8 @@ public final class AppModel: ObservableObject {
             self.applyRestoredSnapshot(snap)
             let rowsCache = await PlaylistRowsCacheStore.loadAsync()
             self.applyRestoredPlaylistRowsCache(rowsCache)
+            self.playlistRowsDiskRestoreCompleted = true
+            self.warmPlaylistRowsCache()
         }
     }
 
@@ -2135,6 +2154,31 @@ public final class AppModel: ObservableObject {
         }
         libraryPlaylists = filterOutMagicPlaylist(fetched)
         rebuildHomeRecentlyPlayed()
+        warmPlaylistRowsCache()
+    }
+
+    /// Apple-Music-style sync-ahead: resolve and persist tracklists for the user's
+    /// playlists in the background so the *first* open of any playlist hydrates from
+    /// cache instantly. Without this, a large playlist (1000+ songs) costs a full
+    /// network fetch behind a spinner on first open. Serial, low-priority, and a
+    /// no-op for playlists already cached with a matching song count.
+    private func warmPlaylistRowsCache() {
+        guard playlistRowsDiskRestoreCompleted, isSignedIn, !effectiveOfflineMode else { return }
+        let missing = libraryPlaylists.filter { playlistRowsCache[$0.id] == nil }
+        let stale = libraryPlaylists.filter { p in
+            guard let cached = playlistRowsCache[p.id], let count = p.songCount else { return false }
+            return cached.count != count
+        }
+        let candidates = Array((missing + stale).prefix(40))
+        guard !candidates.isEmpty else { return }
+        playlistRowsWarmupTask?.cancel()
+        playlistRowsWarmupTask = Task(priority: .utility) { [weak self] in
+            for playlist in candidates {
+                guard let self, !Task.isCancelled else { return }
+                guard self.isSignedIn, !self.effectiveOfflineMode else { return }
+                _ = try? await self.fetchPlaylistRows(playlistId: playlist.id)
+            }
+        }
     }
 
     /// Strips the Lyra magic playlist from any list of server playlists. Belt-and-braces:
@@ -2162,21 +2206,36 @@ public final class AppModel: ObservableObject {
     }
 
     func fetchPlaylistRows(playlistId: String) async throws -> [PlaylistRowItem] {
-        let rows: [PlaylistRowItem]
-        switch backendKind {
-        case .jellyfin:
-            guard let client = jellyfin else {
-                throw URLError(.userAuthenticationRequired)
-            }
-            rows = try await client.fetchPlaylistRows(playlistId: playlistId)
-        case .navidrome:
-            guard let client = navidrome else {
-                throw URLError(.userAuthenticationRequired)
-            }
-            rows = try await client.fetchPlaylistRows(playlistId: playlistId)
+        // Concurrent callers (Go to Playlist prefetch + the pushed detail view's
+        // load) share one network request instead of issuing duplicates.
+        if let inFlight = playlistRowsFetchTasks[playlistId] {
+            return try await inFlight.value
         }
+        let task = Task { [backendKind, jellyfin, navidrome] () throws -> [PlaylistRowItem] in
+            switch backendKind {
+            case .jellyfin:
+                guard let client = jellyfin else {
+                    throw URLError(.userAuthenticationRequired)
+                }
+                return try await client.fetchPlaylistRows(playlistId: playlistId)
+            case .navidrome:
+                guard let client = navidrome else {
+                    throw URLError(.userAuthenticationRequired)
+                }
+                return try await client.fetchPlaylistRows(playlistId: playlistId)
+            }
+        }
+        playlistRowsFetchTasks[playlistId] = task
+        defer { playlistRowsFetchTasks.removeValue(forKey: playlistId) }
+        let rows = try await task.value
+        // Persist only when membership/order actually changed: every save encodes
+        // the *entire* multi-playlist cache, and the detail view refreshes on each
+        // open — re-encoding megabytes of unchanged JSON per visit is pure churn.
+        let unchanged = playlistRowsCache[playlistId].map { $0.map(\.rowId) == rows.map(\.rowId) } ?? false
         playlistRowsCache[playlistId] = rows
-        persistPlaylistRowsCache()
+        if !unchanged {
+            persistPlaylistRowsCache()
+        }
         return rows
     }
 
