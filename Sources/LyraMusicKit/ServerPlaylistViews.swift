@@ -420,7 +420,7 @@ struct ServerPlaylistDetailView: View {
     /// swipe-back *gesture* starts — before any SwiftUI-visible state changes —
     /// which is the window where a landing tracklist hydration would cancel
     /// the user's interactive dismissal and hold the gesture system captive.
-    @State private var dismissalPhase: CoverZoomDismissalPhase = .idle
+    @State private var dismissalPhase: CoverZoomTransitionPhase = .idle
     @State private var rows: [PlaylistRowItem] = []
     @State private var previewTracks: [BrowseAlbumPreviewTrack] = []
     /// Album mode only: held true while the MusicBrainz tracklist is in flight so the
@@ -544,7 +544,9 @@ struct ServerPlaylistDetailView: View {
     private func waitOutDismissalGesture() async -> Bool {
         guard !lyraDismissFixesDisabledForAB else { return true }
         var deferLogged = false
-        while dismissalPhase == .dismissing {
+        // Park during the push too: a swipe-back that interrupts a push
+        // mid-mutation strands the detail's nav chrome over the list.
+        while dismissalPhase != .idle {
             if !deferLogged {
                 detailDebugLog("HYDRATION-DEFERRED (transition in flight)")
                 deferLogged = true
@@ -557,7 +559,9 @@ struct ServerPlaylistDetailView: View {
     private func recomputeDisplayedRows() {
         // A view that's animating out must not hydrate: the re-render lands
         // mid-pop, stalls the main thread, and swallows the next taps.
-        guard !isBeingDismissed, lyraDismissFixesDisabledForAB || dismissalPhase == .idle else {
+        // (`.appearing` is allowed — the initial synchronous hydration *is*
+        // the first render of the pushed view.)
+        guard !isBeingDismissed, lyraDismissFixesDisabledForAB || dismissalPhase != .dismissing else {
             detailDebugLog("DISPLAY-RECOMPUTE-DROPPED")
             return
         }
@@ -595,8 +599,8 @@ struct ServerPlaylistDetailView: View {
         ) else { return }
         let tracks = await MusicBrainzTracklistClient.tracksForReleaseGroup(rgId)
         guard !tracks.isEmpty else { return }
+        guard await waitOutDismissalGesture() else { return }
         await MainActor.run {
-            guard !isBeingDismissed else { return }
             self.previewTracks = tracks
             recomputeDisplayedRows()
         }
@@ -720,6 +724,9 @@ struct ServerPlaylistDetailView: View {
             return
         }
         let palette = await ArtworkDynamicGradient.analyzeBackdrop(from: resolvedDetailArtworkURL)
+        // Same parking rules as row hydration — the palette write re-renders
+        // the whole backdrop and lands right in the rapid open→swipe window.
+        guard await waitOutDismissalGesture() else { return }
         await MainActor.run { backdropPalette = palette }
     }
 
@@ -1678,8 +1685,12 @@ struct ServerPlaylistDetailView: View {
         let showSpinner = rows.isEmpty
         if showSpinner { isLoading = true }
         defer {
-            isLoading = false
-            recomputeDisplayedRows()
+            // A committed-dismissed view must not be touched at all — even
+            // clearing the spinner re-renders it mid zoom-cleanup.
+            if !isBeingDismissed {
+                isLoading = false
+                recomputeDisplayedRows()
+            }
         }
         do {
             switch source {

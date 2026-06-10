@@ -50,8 +50,10 @@ final class RapidDismissTests: XCTestCase {
 
         // Split-second later: edge swipe to dismiss while the load is in flight.
         // Parameters proven by testSwipeBackVariants (variant 1) to engage the
-        // interactive pop.
-        Thread.sleep(forTimeInterval: 0.45)
+        // interactive pop. TEST_RUNNER_LYRA_SWIPE_DELAY_MS tunes how deep into
+        // the open the swipe lands (0 + UIAnimationDragCoefficient ≈ mid-push).
+        let delayMs = Double(ProcessInfo.processInfo.environment["LYRA_SWIPE_DELAY_MS"] ?? "450") ?? 450
+        Thread.sleep(forTimeInterval: delayMs / 1000)
         mark("edge-swipe-begin")
         let edge = coord(board, x: 0.001, y: 0.5)
         let across = coord(board, x: 0.9, y: 0.5)
