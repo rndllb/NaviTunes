@@ -371,7 +371,8 @@ final class NavidromeClient: MusicLibraryProviding {
             let art: URL?
             if let urlStr = navidromeCoerceString(dict["artistImageUrl"]),
                let u = URL(string: urlStr),
-               u.scheme != nil {
+               let scheme = u.scheme?.lowercased(),
+               scheme == "http" || scheme == "https" {
                 art = u
             } else if let cover = navidromeCoerceString(dict["coverArt"]) {
                 art = streamURLForCover(coverArt: cover)
