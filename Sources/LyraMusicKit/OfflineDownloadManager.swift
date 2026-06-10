@@ -8,6 +8,50 @@ enum OfflineDownloadError: Error {
     case storageLimitReached
 }
 
+/// Serializes JSON persistence onto a utility queue so the main actor only pays
+/// for the in-memory mutation. Bursts (per-track manifest/queue saves during a
+/// playlist download) coalesce: while a write is queued, newer payloads replace
+/// it and only the latest hits the disk.
+final class CoalescingDiskWriter: @unchecked Sendable {
+    private let queue: DispatchQueue
+    private let lock = NSLock()
+    private var pendingWrite: (() -> Void)?
+
+    init(label: String) {
+        queue = DispatchQueue(label: label, qos: .utility)
+    }
+
+    func schedule(_ write: @escaping () -> Void) {
+        lock.lock()
+        let alreadyQueued = pendingWrite != nil
+        pendingWrite = write
+        lock.unlock()
+        guard !alreadyQueued else { return }
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let work = self.pendingWrite
+            self.pendingWrite = nil
+            self.lock.unlock()
+            work?()
+        }
+    }
+
+    /// Atomic tmp-then-rename JSON write used by both the manifest and queue files.
+    static func writeAtomically(_ data: Data, to url: URL) {
+        let tmp = url.appendingPathExtension("tmp")
+        do {
+            try data.write(to: tmp, options: .atomic)
+            if FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
+            try FileManager.default.moveItem(at: tmp, to: url)
+        } catch {
+            try? FileManager.default.removeItem(at: tmp)
+        }
+    }
+}
+
 /// UI state for an in-flight library offline save (HTTP byte progress when `Content-Length` is known).
 enum OfflineDownloadUIState: Equatable {
     /// Server did not advertise a length — show an indeterminate ring only.
@@ -89,15 +133,14 @@ final class OfflineDownloadManager: ObservableObject {
     init() {
         Self.migrateLegacyApplicationSupportCachesIfNeeded()
         try? Self.reconcileManifestWithLegacyFlatFilesAtDownloadsRoot()
-        if let snap = LibrarySnapshotStore.load() {
-            backfillRecordsIfMissing(knownTracks: snap.tracks)
-        } else {
-            backfillRecordsIfMissing(knownTracks: [])
-        }
         downloadedTrackIds = (try? Self.manifestTrackIds()) ?? []
         downloadQueue = (try? Self.loadQueue()) ?? []
         recalculateCacheBytes()
         Task {
+            // Record backfill needs the library snapshot — decode it off the main
+            // thread instead of blocking app startup on a full-library JSON parse.
+            let snap = await LibrarySnapshotStore.loadAsync()
+            backfillRecordsIfMissing(knownTracks: snap?.tracks ?? [])
             await enrichCachedDurationsIfNeeded()
             await enrichCachedArtworkIfNeeded()
         }
@@ -163,19 +206,20 @@ final class OfflineDownloadManager: ObservableObject {
         return m
     }
 
+    /// The in-memory cache updates synchronously (readers on the main actor always
+    /// see the latest payload); the JSON encode + disk write happen on a utility
+    /// queue so a 50-track playlist download doesn't serialize 50 full-manifest
+    /// encodes on the main thread. Writes coalesce to the newest payload.
+    private static let manifestDiskWriter = CoalescingDiskWriter(label: "LyraMusic.offline.manifest-write")
+
     static func saveManifest(_ payload: OfflineManifestPayload) throws {
         let url = try manifestURL()
-        let enc = JSONEncoder()
-        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try enc.encode(payload)
-        let tmp = url.appendingPathExtension("tmp")
-        try data.write(to: tmp, options: .atomic)
-        if FileManager.default.fileExists(atPath: url.path) {
-            try FileManager.default.removeItem(at: url)
-        }
-        try FileManager.default.moveItem(at: tmp, to: url)
         manifestCache = payload
         legacyFlatFileByTrackId = nil
+        manifestDiskWriter.schedule {
+            guard let data = try? JSONEncoder().encode(payload) else { return }
+            CoalescingDiskWriter.writeAtomically(data, to: url)
+        }
     }
 
     static func invalidateManifestCache() {
@@ -450,9 +494,15 @@ final class OfflineDownloadManager: ObservableObject {
                 }
             }
             inflightDownloadTasks[trackId] = task
+            // KVO fires per received chunk (thousands of times per file). Gate on
+            // the observation thread so only ~2% steps marshal onto the main actor —
+            // otherwise concurrent downloads flood the main queue with tasks.
+            let gate = DownloadProgressGate()
             downloadProgressObservations[trackId] = task.progress.observe(\.fractionCompleted) { [weak self] progress, _ in
+                let fraction = progress.fractionCompleted
+                guard gate.admit(fraction) else { return }
                 Task { @MainActor in
-                    self?.applyDownloadProgress(trackId: trackId, fraction: progress.fractionCompleted)
+                    self?.applyDownloadProgress(trackId: trackId, fraction: fraction)
                 }
             }
             task.resume()
@@ -476,6 +526,27 @@ final class OfflineDownloadManager: ObservableObject {
             try? FileManager.default.removeItem(at: source)
         }
         return dest
+    }
+
+    /// Off-main-actor throttle for URLSession progress KVO (see `downloadToTemporary`).
+    private final class DownloadProgressGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var last = -1.0
+
+        func admit(_ fraction: Double) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            // Always forward state transitions (indeterminate / complete).
+            if fraction.isNaN || fraction <= 0 || fraction >= 1 {
+                last = fraction
+                return true
+            }
+            if last < 0 || fraction - last >= 0.02 {
+                last = fraction
+                return true
+            }
+            return false
+        }
     }
 
     private func applyDownloadProgress(trackId: String, fraction: Double) {
@@ -580,6 +651,14 @@ final class OfflineDownloadManager: ObservableObject {
             try FileManager.default.removeItem(at: dest)
         }
         try FileManager.default.moveItem(at: tmpURL, to: dest)
+
+        // Track the byte total incrementally (one stat) instead of re-walking the
+        // whole downloads tree per finished track; the queue worker does one full
+        // reconciliation pass when it drains.
+        if let size = (try? FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? NSNumber)?.int64Value, size > 0 {
+            totalCacheBytes += size
+            isStorageFull = isStorageLimitReached(additionalBytes: 0)
+        }
 
         let artworkRel = await cacheArtwork(for: track, headers: headers, downloadsRoot: root)
 
@@ -903,6 +982,9 @@ final class OfflineDownloadManager: ObservableObject {
         for trackId in payload.records.keys {
             guard var record = payload.records[trackId] else { continue }
             guard record.track.albumId == albumId else { continue }
+            // Already stamped by a previous track of this album — skip the
+            // Track/AlbumSummary rebuild (this runs once per downloaded track).
+            if record.artworkRelativePath == relativePath, record.track.artworkURL == localURL { continue }
             record.artworkRelativePath = relativePath
             record.track = trackWithLocalArtwork(record.track, localURL: localURL)
             let t = record.track

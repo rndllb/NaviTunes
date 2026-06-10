@@ -18,7 +18,9 @@ struct NowPlayingBarsIndicator: View {
             bar(height: h3)
         }
         .frame(width: 10, height: 11)
-        .onChange(of: player.isPlaying, initial: true) { _, playing in
+        // Buffering means no audio is flowing — freeze the bars so the row
+        // doesn't claim active playback during a stall.
+        .onChange(of: player.isPlaying && !player.isBuffering, initial: true) { _, playing in
             if playing {
                 withAnimation(.easeInOut(duration: 0.50).repeatForever(autoreverses: true)) { h1 = 11 }
                 withAnimation(.easeInOut(duration: 0.35).repeatForever(autoreverses: true)) { h2 = 5 }

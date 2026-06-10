@@ -38,6 +38,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// Now Playing → Queue → "Queue" vs "Continue Playing" split.
     @Published private(set) var userQueuedTrackIds: Set<String> = []
     @Published private(set) var isPlaying: Bool = false
+    /// True while the player intends to play but audio is not progressing —
+    /// loading a new item or stalled waiting for the network to buffer. Drives
+    /// the transport spinner so controls never claim "playing" during a stall.
+    @Published private(set) var isBuffering: Bool = false
     @Published private(set) var currentTime: TimeInterval = 0
     /// Live playhead updated every periodic observer tick. Prefer over ``currentTime`` for synced lyrics — ``currentTime`` is UI-throttled.
     var livePlaybackTime: TimeInterval { playbackHead }
@@ -110,6 +114,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// (headphone unplug, Control Center, network stall, audio session steal)
     /// in one place so ``isPlaying`` never goes stale.
     private var timeControlStatusObservation: NSKeyValueObservation?
+    /// Armed while the player sits in `.waitingToPlayAtSpecifiedRate`; if the stall
+    /// outlives its budget the engine reloads the current item at the playhead
+    /// instead of waiting forever on a dead connection.
+    private var stallRecoveryTask: Task<Void, Never>?
     /// Bumped whenever a new load/play cycle begins so in-flight `startCurrentItem` work
     /// from an earlier tap cannot attach or start another `AVPlayer`.
     private var playbackEpoch: UInt = 0
@@ -540,6 +548,18 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     func togglePlayPause() {
+        // Tapping the spinner while a track is still loading = "stop trying".
+        // Invalidate the epoch so the in-flight load can't attach, and leave the
+        // queue staged — the next tap goes through the pending-restore path.
+        if player == nil, isBuffering {
+            cancelPendingAdvanceWork()
+            _ = beginPlaybackSession()
+            shouldAutoPlayAfterAdvance = false
+            isPlaying = false
+            setBuffering(false)
+            refreshNowPlaying()
+            return
+        }
         if hasPendingRestore {
             schedulePendingRestorePlayback()
             return
@@ -1013,8 +1033,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
         // Capture before teardown — new AVPlayer starts `.paused` and KVO must not clear intent.
         let shouldAutoPlay = shouldAutoPlayAfterAdvance || isPlaying || (player?.rate ?? 0) > 0.01
         shouldAutoPlayAfterAdvance = false
-        if let track = currentTrack, let refresh = refreshTrackBeforePlay {
-            let refreshed = await refresh(track)
+        if shouldAutoPlay { setBuffering(true) }
+        if let track = currentTrack, refreshTrackBeforePlay != nil {
+            let refreshed = await refreshedTrackForPlay(track)
             if refreshed.id != track.id, queue.indices.contains(currentIndex) {
                 queue[currentIndex] = refreshed
             }
@@ -1095,10 +1116,68 @@ final class PlaybackEngine: NSObject, ObservableObject {
         endObserver = nil
         timeControlStatusObservation?.invalidate()
         timeControlStatusObservation = nil
+        cancelStallRecovery()
         stopPlayer(player)
         player = nil
         activeResourceLoaderDelegate?.invalidate()
         activeResourceLoaderDelegate = nil
+    }
+
+    private func setBuffering(_ buffering: Bool) {
+        guard isBuffering != buffering else { return }
+        isBuffering = buffering
+        // Lock screen / Control Center must drop to rate 0 while stalled so the
+        // system UI doesn't advance a phantom playhead.
+        refreshNowPlaying()
+    }
+
+    /// How long the player may sit in `.waitingToPlayAtSpecifiedRate` before the
+    /// engine assumes the connection is dead and reloads the item. Long enough
+    /// that ordinary slow-network buffering finishes first.
+    private static let stallRecoveryBudget: Duration = .seconds(15)
+
+    private func scheduleStallRecoveryIfNeeded() {
+        guard stallRecoveryTask == nil else { return }
+        stallRecoveryTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.stallRecoveryBudget)
+            guard !Task.isCancelled, let self else { return }
+            self.recoverFromPlaybackStall()
+        }
+    }
+
+    private func cancelStallRecovery() {
+        stallRecoveryTask?.cancel()
+        stallRecoveryTask = nil
+    }
+
+    /// A stall outlived its budget: tear the wedged AVPlayer down and reload the
+    /// current track at the playhead. Reuses the normal load path, so the offline
+    /// copy / cache / fallback-format candidates all get another chance and stale
+    /// recovery still applies if the stream id died mid-play.
+    private func recoverFromPlaybackStall() {
+        stallRecoveryTask = nil
+        guard let player, player.timeControlStatus == .waitingToPlayAtSpecifiedRate else { return }
+        guard let track = currentTrack, !track.isInternetRadioStream else { return }
+        let playerTime = player.currentTime().seconds
+        let resumeAt = max(playbackHead, playerTime.isFinite ? playerTime : 0)
+        let epoch = beginPlaybackSession()
+        cancelPendingAdvanceWork()
+        advanceWork = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.startCurrentItem(
+                    epoch: epoch,
+                    startSeconds: resumeAt,
+                    autoPlay: true,
+                    skipTrackRefresh: true,
+                )
+            } catch {
+                guard self.isPlaybackEpochCurrent(epoch) else { return }
+                self.isPlaying = false
+                self.setBuffering(false)
+                self.refreshNowPlaying()
+            }
+        }
     }
 
     private func teardownPlayer() {
@@ -1107,6 +1186,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         isSeeking = false
         localFileDuration = 0
         probingLocalFileURL = nil
+        setBuffering(false)
         detachPlayerKeepingQueueState()
         currentTime = 0
         playbackHead = 0
@@ -1305,12 +1385,36 @@ final class PlaybackEngine: NSObject, ObservableObject {
         userQueuedTrackIds = nextUserQueued
     }
 
+    /// Budget for the proactive metadata refresh before play. On a slow network
+    /// the refresh must never gate time-to-first-audio — past the budget the
+    /// fetch is cancelled and the existing track plays as-is (reactive stale-id
+    /// recovery still runs if every stream candidate then fails).
+    private static let trackRefreshBudget: Duration = .seconds(2)
+
+    /// Runs ``refreshTrackBeforePlay`` with a hard time budget. The refresh
+    /// closure tolerates cancellation (it returns the original track), so the
+    /// watchdog can cancel it mid-flight without breaking the play pipeline.
+    private func refreshedTrackForPlay(_ track: Track) async -> Track {
+        guard let refresh = refreshTrackBeforePlay else { return track }
+        let work = Task { await refresh(track) }
+        let watchdog = Task {
+            try? await Task.sleep(for: Self.trackRefreshBudget)
+            work.cancel()
+        }
+        let refreshed = await work.value
+        watchdog.cancel()
+        return refreshed
+    }
+
     private func startCurrentItem(epoch: UInt, startSeconds: TimeInterval = 0, autoPlay: Bool = false, allowStaleRecovery: Bool = true, skipTrackRefresh: Bool = false) async throws {
         guard isPlaybackEpochCurrent(epoch) else { return }
         guard let track = currentTrack else { throw PlaybackEngineError.missingTrack }
+        // The user expects audio — show the buffering spinner through the whole
+        // load (metadata refresh, handshake, pre-buffer), not just AVPlayer stalls.
+        if autoPlay { setBuffering(true) }
 
-        if !skipTrackRefresh, let refresh = refreshTrackBeforePlay {
-            let refreshed = await refresh(track)
+        if !skipTrackRefresh, refreshTrackBeforePlay != nil {
+            let refreshed = await refreshedTrackForPlay(track)
             if refreshed.id != track.id, queue.indices.contains(currentIndex) {
                 queue[currentIndex] = refreshed
             }
@@ -1522,8 +1626,16 @@ final class PlaybackEngine: NSObject, ObservableObject {
                     self.isPlaying = true
                     self.refreshNowPlaying()
                 }
-                // `.waitingToPlayAtSpecifiedRate` = buffering — leave the
-                // current flag alone, the user still intends to play.
+                // `.waitingToPlayAtSpecifiedRate` = buffering — the user still
+                // intends to play, so keep ``isPlaying`` but surface the stall
+                // through ``isBuffering`` and arm the stall watchdog.
+                if status == .waitingToPlayAtSpecifiedRate {
+                    self.setBuffering(player.reasonForWaitingToPlay != .noItemToPlay)
+                    self.scheduleStallRecoveryIfNeeded()
+                } else {
+                    self.cancelStallRecovery()
+                    self.setBuffering(false)
+                }
             }
         }
 
@@ -1802,7 +1914,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
             }
             now[MPMediaItemPropertyPlaybackDuration] = info.duration
             now[MPNowPlayingInfoPropertyElapsedPlaybackTime] = playbackHead
-            now[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? playbackRate : 0.0
+            // Report rate 0 while buffering — playback isn't progressing, and a
+            // non-zero rate makes the lock screen advance a phantom playhead.
+            now[MPNowPlayingInfoPropertyPlaybackRate] = (isPlaying && !isBuffering) ? playbackRate : 0.0
             now[MPNowPlayingInfoPropertyMediaType] = MPNowPlayingInfoMediaType.audio.rawValue
             if let artwork {
                 now[MPMediaItemPropertyArtwork] = artwork
