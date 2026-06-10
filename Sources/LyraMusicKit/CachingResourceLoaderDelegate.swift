@@ -62,6 +62,11 @@ final class CachingResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
         let request: AVAssetResourceLoadingRequest
         let baseOffset: Int64
         var received: Int64 = 0
+        /// Non-zero when the server ignored our `Range` header and replied with a
+        /// plain 200 from byte 0 (common for transcoded Subsonic streams): the
+        /// first `baseOffset` body bytes must be dropped or the player would
+        /// decode misaligned data after any seek.
+        var bytesToSkip: Int64 = 0
     }
 
     private var contextsByTaskId: [Int: TaskContext] = [:]
@@ -130,6 +135,31 @@ final class CachingResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
     ) {
         accessQueue.async {
             if let http = response as? HTTPURLResponse {
+                // An error status means the body is *not* media (HTML/JSON error
+                // page, expired token, …). Forwarding it via respond(with:) and
+                // finishing "successfully" hands garbage to the audio decoder —
+                // fail the loading request so the player surfaces a real error
+                // and the engine's candidate fallback chain can take over.
+                guard (200...299).contains(http.statusCode) else {
+                    if let ctx = self.contextsByTaskId.removeValue(forKey: dataTask.taskIdentifier) {
+                        self.taskByRequest.removeValue(forKey: ObjectIdentifier(ctx.request))
+                        if !ctx.request.isFinished {
+                            ctx.request.finishLoading(with: URLError(.badServerResponse))
+                        }
+                    }
+                    completionHandler(.cancel)
+                    return
+                }
+                // No Content-Range on a ranged request = the server ignored our
+                // Range header and is sending the file from byte 0. Skip the
+                // prefix so the bytes we forward line up with requestedOffset.
+                if let ctx = self.contextsByTaskId[dataTask.taskIdentifier],
+                   ctx.baseOffset > 0,
+                   http.value(forHTTPHeaderField: "Content-Range") == nil {
+                    var realigned = ctx
+                    realigned.bytesToSkip = ctx.baseOffset
+                    self.contextsByTaskId[dataTask.taskIdentifier] = realigned
+                }
                 if self.contentLength == nil {
                     self.contentLength = Self.totalLength(from: http)
                     if let len = self.contentLength, self.assembler == nil {
@@ -160,12 +190,24 @@ final class CachingResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         accessQueue.async {
             guard var ctx = self.contextsByTaskId[dataTask.taskIdentifier], !ctx.request.isFinished else { return }
+            var payload = data
+            if ctx.bytesToSkip > 0 {
+                // Server is replaying the file from byte 0 (ignored Range) — drop
+                // bytes below requestedOffset instead of feeding them to the player.
+                if Int64(payload.count) <= ctx.bytesToSkip {
+                    ctx.bytesToSkip -= Int64(payload.count)
+                    self.contextsByTaskId[dataTask.taskIdentifier] = ctx
+                    return
+                }
+                payload = Data(payload.dropFirst(Int(ctx.bytesToSkip)))
+                ctx.bytesToSkip = 0
+            }
             let absoluteOffset = ctx.baseOffset + ctx.received
-            ctx.request.dataRequest?.respond(with: data)
-            ctx.received += Int64(data.count)
+            ctx.request.dataRequest?.respond(with: payload)
+            ctx.received += Int64(payload.count)
             self.contextsByTaskId[dataTask.taskIdentifier] = ctx
 
-            self.assembler?.write(data, at: absoluteOffset)
+            self.assembler?.write(payload, at: absoluteOffset)
 
             if let dataRequest = ctx.request.dataRequest, !dataRequest.requestsAllDataToEndOfResource {
                 let requestedEnd = dataRequest.requestedOffset + Int64(dataRequest.requestedLength)
