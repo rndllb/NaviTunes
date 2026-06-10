@@ -48,12 +48,18 @@ private struct CoverZoomSource: ViewModifier {
     }
 }
 
-/// Where a pushed detail sits in its dismissal lifecycle. Driven by UIKit
+/// Where a pushed detail sits in its transition lifecycle. Driven by UIKit
 /// appearance callbacks, which — unlike SwiftUI's `isPresented` — fire at the
 /// *start* of an interactive pop gesture and again when it cancels.
-enum CoverZoomDismissalPhase {
+enum CoverZoomTransitionPhase {
     /// Fully presented or fully covered — safe to mutate.
     case idle
+    /// The push (or a return-to-this-view transition) is animating. The
+    /// initial synchronous render is fine, but *async* results must not land
+    /// now: a swipe-back that interrupts a push mid-mutation strands the
+    /// detail's navigation chrome over the list (the "stuck top buttons"
+    /// state) — park them until `.idle`.
+    case appearing
     /// A disappearance transition is running: the user is mid-swipe-back, a
     /// pop animation is settling, or a forward push is animating over this
     /// view. Mutating the view now cancels/derails an interactive transition
@@ -66,7 +72,7 @@ enum CoverZoomDismissalPhase {
 
 private struct CoverZoomDestination: ViewModifier {
     let id: String
-    var dismissalPhase: Binding<CoverZoomDismissalPhase>?
+    var dismissalPhase: Binding<CoverZoomTransitionPhase>?
     @Environment(\.coverZoomNamespace) private var namespace
 
     func body(content: Content) -> some View {
@@ -96,7 +102,7 @@ private struct CoverZoomDestination: ViewModifier {
 /// `.dismissing` while its transition runs; that's deliberate — mutating mid
 /// transition is never safe — and it resolves to `.idle` at `didDisappear`.
 private struct CoverZoomDismissalObserver: UIViewControllerRepresentable {
-    @Binding var phase: CoverZoomDismissalPhase
+    @Binding var phase: CoverZoomTransitionPhase
 
     func makeUIViewController(context: Context) -> Helper {
         let helper = Helper()
@@ -109,7 +115,18 @@ private struct CoverZoomDismissalObserver: UIViewControllerRepresentable {
     }
 
     final class Helper: UIViewController {
-        var report: (CoverZoomDismissalPhase) -> Void = { _ in }
+        var report: (CoverZoomTransitionPhase) -> Void = { _ in }
+
+        override func viewWillAppear(_ animated: Bool) {
+            super.viewWillAppear(animated)
+#if DEBUG
+            DebugUIRemote.log("PHASE willAppear animated=\(animated)")
+#endif
+            // No `animated` gate: zoom pushes report animated=false here, and
+            // for genuinely instant appearances viewDidAppear follows right
+            // behind and clears the phase anyway.
+            report(.appearing)
+        }
 
         override func viewWillDisappear(_ animated: Bool) {
             super.viewWillDisappear(animated)
@@ -160,7 +177,7 @@ extension View {
     /// holds the gesture system captive, so such work must wait the phase out.
     func coverZoomDestination(
         id: String,
-        dismissalPhase: Binding<CoverZoomDismissalPhase>? = nil
+        dismissalPhase: Binding<CoverZoomTransitionPhase>? = nil
     ) -> some View {
         modifier(CoverZoomDestination(id: id, dismissalPhase: dismissalPhase))
     }
