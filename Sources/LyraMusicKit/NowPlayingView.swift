@@ -67,12 +67,15 @@ struct NowPlayingView: View {
         case historyTop, nowPlayingHeader
     }
 
-    /// Paused — baseline artwork size. Tuned so paused is visibly smaller than
-    /// playing (~80%) without the dramatic shrink the older 256pt value caused.
-    private let albumArtPausedSide: CGFloat = 280
-    /// Playing — base artwork size before play-state overscale.
+    /// Paused artwork size. Bigger → cover shrinks LESS when paused
+    /// (296/315 ≈ 94% of playing size). Only affects the paused state.
+    private let albumArtPausedSide: CGFloat = 296
+    /// Playing — base artwork size before play-state overscale. Bigger →
+    /// cover larger in BOTH states (paused scale derives from the ratio).
     private let albumArtPlayingSide: CGFloat = 315
-    /// Scales past ``albumArtPlayingSide`` when playback resumes (Apple Music–style pulse).
+    /// Scales past ``albumArtPlayingSide`` when playback resumes (Apple
+    /// Music–style pulse). Bigger → larger playing cover AND a taller header
+    /// reservation, pushing the title + chrome column down.
     private let albumArtPlayOverscale: CGFloat = 1.14
 
     @State private var backdropPalette: ArtworkDynamicGradient.BackdropPalette = .fallback
@@ -360,10 +363,19 @@ struct NowPlayingView: View {
     /// the artwork's matched-geometry move.
     private func standardPlayerContent(track: Track) -> some View {
         VStack(spacing: 0) {
+            // SPACING NOTE — the area between artwork and bottom chrome is
+            // squeezed to its minimum height, so vertical position flows
+            // TOP-DOWN from the (fixed) artwork: a padding increase here moves
+            // this row AND everything below it (bar, transport, volume, icons)
+            // down together.
             metadataRow(track: track)
                 .padding(.horizontal, 24)
-                .padding(.top, 20)
-                .padding(.bottom, 22)
+                // Bigger → title/artist (and the whole chrome column below)
+                // sink lower beneath the artwork.
+                .padding(.top, 30)
+                // Title/artist → playback bar gap. Bigger → wider gap; the
+                // bar and everything under it shift down.
+                .padding(.bottom, 0)
 
             Spacer(minLength: 0)
         }
@@ -843,17 +855,30 @@ struct NowPlayingView: View {
     private func pinnedBottomChrome(track: Track) -> some View {
         let liveRadio = isLiveRadio(track)
         return VStack(spacing: 0) {
+            // SPACING NOTE — positions flow top-down from the playback bar
+            // (see metadataRow). The column can run past the screen's bottom
+            // edge; the volume row's top padding below is the counterweight
+            // that pulls the volume bar + icons back up.
             progressBlock(track: track, isEnabled: !liveRadio)
-                .padding(.horizontal, 24)
-                .padding(.top, 12)
-                .padding(.bottom, 22)
+                // Bigger → bar + timers pull in narrower from both edges.
+                .padding(.horizontal, 22)
+                .padding(.top, 8)
+                // Playback bar → transport gap. Bigger → play/skip/replay
+                // buttons (and volume + icons) drop lower.
+                .padding(.bottom, 34)
 
             transportRow(for: track)
                 .padding(.horizontal, 20)
+                .padding(.top, 15)
+                // Bigger → volume bar + icons drop lower (transport stays).
                 .padding(.bottom, 28)
 
             NowPlayingVolumeRow(backdropPalette: backdropPalette)
-                .padding(.top, 22)
+                // Counterweight: bigger → volume bar + icons drop lower.
+                // SHRINK this by the amount you add to a gap above when the
+                // bottom block should hold its place — otherwise it slides
+                // toward (or past) the screen edge.
+                .padding(.top, 30)
 
             nowPlayingBottomChrome(track: track)
         }
@@ -1183,11 +1208,16 @@ struct NowPlayingView: View {
             if compact { return 1 }
             return app.player.isPlaying ? albumArtPlayOverscale : (albumArtPausedSide / bigSize)
         }()
-        // Same vertical padding above the artwork in both modes — eliminates
-        // the 1–2pt y discontinuity at toggle and keeps the morph perfectly
-        // continuous.
-        let topPad: CGFloat = 14
-        let bottomPad: CGFloat = compact ? 12 : 24
+        // Bigger → cover sits lower on the screen (and the title + chrome
+        // column below it shifts down too, via containerHeight). Must stay
+        // identical in standard and compact modes or the artwork morph
+        // (player ↔ lyrics/queue) starts with a visible y jump.
+        let topPad: CGFloat = 32
+        // Reserved space UNDER the cover: bigger → title + all chrome below
+        // sink lower while the cover stays put. To move ONLY the cover,
+        // change topPad and bottomPad in opposite directions by the same
+        // amount (their sum sets where everything below starts).
+        let bottomPad: CGFloat = compact ? 12 : 14
         let standardOverscaleHeight = bigSize * albumArtPlayOverscale
         let containerHeight: CGFloat = {
             if !compact { return standardOverscaleHeight + topPad + bottomPad }
@@ -1271,7 +1301,7 @@ struct NowPlayingView: View {
         return HStack(alignment: .top, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(track.title)
-                    .font(.title2.weight(.bold))
+                    .font(.title2)
                     .foregroundStyle(fgPrimary)
                     .multilineTextAlignment(.leading)
                     .lineLimit(2)
@@ -1695,10 +1725,8 @@ struct NowPlayingView: View {
             }
         }
         .frame(maxWidth: .infinity)
-        // Apple Music: ~48pt gap up to the volume bar, ~60pt from icon centers
-        // to the screen bottom edge.
-        .padding(.top, 4)
-        .padding(.bottom, 36)
+        .padding(.top, 6)
+        .padding(.bottom, 12)
     }
 
     /// Native overflow menu for sleep timer durations — same `Menu` / `Section`
@@ -1824,7 +1852,7 @@ private struct ScrubberBlock: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 2) {
             GeometryReader { geo in
                 NowPlayingMatchedTrackBar(
                     fraction: CGFloat(displayFraction),
@@ -1858,7 +1886,7 @@ private struct ScrubberBlock: View {
                 Spacer()
                 Text("−" + formatTime(max(0, effectiveDuration - displayTime)))
             }
-            .font(.caption.weight(.medium))
+            .font(.caption.weight(.bold))
             .foregroundStyle(timeLabelColor)
             .monospacedDigit()
             .animation(nil, value: displayTime)
@@ -2105,7 +2133,7 @@ private struct VolumeScrubberBlock: View {
                 .frame(width: 20, alignment: .center)
         }
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, 24)
+        .padding(.horizontal, 22)
         .padding(.bottom, 12)
         .onAppear {
             try? AVAudioSession.sharedInstance().setActive(true)
@@ -2548,3 +2576,4 @@ private struct LyricsFocusScrollView: View {
         }
     }
 }
+
