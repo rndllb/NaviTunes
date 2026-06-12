@@ -246,13 +246,6 @@ private struct NowPlayingFullScreenCoverModifier: ViewModifier {
                 // cover carries its own copy ("1 song added", sleep timer, etc.).
                 // Never both visible at once — the cover is full-screen.
                 .musicTransientToastChrome()
-                // Add to Playlist from the Now Playing track menu presents over
-                // the player (Apple Music behavior) — the root copy of this
-                // sheet is suppressed while the cover is up.
-                .sheet(item: $app.playlistPickerPayload) { payload in
-                    AddToPlaylistSheet(tracks: payload.tracks)
-                        .environmentObject(app)
-                }
         }
         #else
         ZStack {
@@ -406,6 +399,14 @@ private struct NowPlayingGestureHost: View {
             .environmentObject(app)
             .environmentObject(app.offline)
             .environmentObject(app.acquisition)
+            // Add to Playlist from the Now Playing track menu presents over the
+            // player (Apple Music behavior). Attached *inside* the cover content —
+            // a presentation modifier on the fullScreenCover root breaks the
+            // `.navigationTransition(.zoom)` pairing with the mini player.
+            .sheet(item: $app.playlistPickerPayload) { payload in
+                AddToPlaylistSheet(tracks: payload.tracks)
+                    .environmentObject(app)
+            }
             .scaleEffect(1 - dragProgress * 0.06, anchor: .center)
             .clipShape(RoundedRectangle(cornerRadius: dragProgress * 28, style: .continuous))
             .offset(y: max(0, dragOffset))
