@@ -64,10 +64,15 @@ enum CoverZoomTransitionPhase {
     /// pop animation is settling, or a forward push is animating over this
     /// view. Mutating the view now cancels/derails an interactive transition
     /// and holds the gesture system captive — park async results until the
-    /// transition resolves. (Whether to then drop them is decided by the
-    /// `isPresented`-based commit tracker, since SwiftUI's NavigationStack
-    /// never sets `isMovingFromParent` on popped hosting controllers.)
+    /// transition resolves.
     case dismissing
+    /// Pop committed: `viewDidDisappear` fired and `isMovingFromParent` was
+    /// true — the view is no longer in the navigation stack. This is a
+    /// stronger drop signal than `.idle` from `isBeingDismissed`, which is
+    /// set via a SwiftUI `onChange` that can lag one render cycle behind
+    /// UIKit. Using `.gone` closes the narrow window where the loop exits
+    /// with `.idle` before `isBeingDismissed` has been written.
+    case gone
 }
 
 private struct CoverZoomDestination: ViewModifier {
@@ -134,24 +139,67 @@ private struct CoverZoomDismissalObserver: UIViewControllerRepresentable {
             DebugUIRemote.log("PHASE willDisappear")
 #endif
             report(.dismissing)
+            // Fade the bar-item content out in place as the dismissal/pop begins.
+            // SwiftUI toolbar items live in the navigation item's leading/trailing
+            // item *groups* (rightBarButtonItems stays empty), and UINavigationBar
+            // animates the item containers itself during a pop — alpha on the
+            // hosted customView is the one knob it leaves alone, so the buttons
+            // cross-fade where they sit instead of sweeping right with the bar.
+            // Fires for both pops and forward pushes; restored in viewDidAppear
+            // (cancelled swipe-back or return from a deeper push).
+            if !lyraDismissFixesDisabledForAB {
+                setBarItemAlpha(0, animated: true)
+            }
         }
 
         override func viewDidDisappear(_ animated: Bool) {
             super.viewDidDisappear(animated)
+            // A committed pop reports .gone so the load pipeline can drop its
+            // result without waiting for the SwiftUI onChange that sets
+            // isBeingDismissed — that onChange fires one render cycle after
+            // this UIKit callback, leaving a race window. `isMovingFromParent`
+            // alone is unreliable here: it's set on the popped *hosting
+            // controller* (this helper's parent), only propagates to child
+            // controllers for interactive pops, and by didDisappear the
+            // hosting controller is often already detached (flag reset). The
+            // detachment itself is the durable commit signal — a view merely
+            // covered by a push/present keeps its navigation-stack parent.
+            let popped = isMovingFromParent
+                || (parent?.isMovingFromParent ?? false)
+                || parent?.parent == nil
 #if DEBUG
-            DebugUIRemote.log("PHASE didDisappear")
+            DebugUIRemote.log("PHASE didDisappear popped=\(popped)")
 #endif
-            report(.idle)
+            report(popped ? .gone : .idle)
         }
 
         override func viewDidAppear(_ animated: Bool) {
             super.viewDidAppear(animated)
-            // Fully presented again — first appearance or a canceled
-            // interactive dismissal.
+            // Fully presented again — first appearance, a cancelled swipe-back,
+            // or a return from a deeper push. Restore nav-bar items hidden in
+            // viewWillDisappear.
 #if DEBUG
             DebugUIRemote.log("PHASE didAppear")
 #endif
+            setBarItemAlpha(1, animated: false)
             report(.idle)
+        }
+
+        /// Applies `alpha` to the hosted content of every leading/trailing
+        /// bar item group on the navigation stack entry's navigation item.
+        private func setBarItemAlpha(_ alpha: CGFloat, animated: Bool) {
+            guard let item = parent?.navigationItem else { return }
+            let views = (item.trailingItemGroups + item.leadingItemGroups)
+                .flatMap(\.barButtonItems)
+                .compactMap(\.customView)
+            guard !views.isEmpty else { return }
+            if animated {
+                UIView.animate(withDuration: 0.15) {
+                    views.forEach { $0.alpha = alpha }
+                }
+            } else {
+                views.forEach { $0.alpha = alpha }
+            }
         }
     }
 }
