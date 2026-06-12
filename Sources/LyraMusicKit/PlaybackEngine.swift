@@ -1334,7 +1334,29 @@ final class PlaybackEngine: NSObject, ObservableObject {
         eqCacheHandoffTask = nil
     }
 
-    private func setBuffering(_ buffering: Bool) {
+    /// Pending delayed spinner — see `setBuffering(_:debounced:)`.
+    private var bufferingDebounceTask: Task<Void, Never>?
+
+    private func setBuffering(_ buffering: Bool, debounced: Bool = false) {
+        bufferingDebounceTask?.cancel()
+        bufferingDebounceTask = nil
+        if buffering, debounced, !isBuffering {
+            // `timeControlStatus` flaps into `.waitingToPlayAtSpecifiedRate` for a
+            // frame or two around seeks, track handoff, and queue staging. Only
+            // surface the spinner when the stall actually persists — a flashing
+            // play/pause button reads as "always loading".
+            bufferingDebounceTask = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(450))
+                guard let self, !Task.isCancelled else { return }
+                self.bufferingDebounceTask = nil
+                self.applyBuffering(true)
+            }
+            return
+        }
+        applyBuffering(buffering)
+    }
+
+    private func applyBuffering(_ buffering: Bool) {
         guard isBuffering != buffering else { return }
         isBuffering = buffering
         // Lock screen / Control Center must drop to rate 0 while stalled so the
@@ -2232,7 +2254,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
                 // intends to play, so keep ``isPlaying`` but surface the stall
                 // through ``isBuffering`` and arm the stall watchdog.
                 if status == .waitingToPlayAtSpecifiedRate {
-                    self.setBuffering(player.reasonForWaitingToPlay != .noItemToPlay)
+                    self.setBuffering(player.reasonForWaitingToPlay != .noItemToPlay, debounced: true)
                     self.scheduleStallRecoveryIfNeeded()
                 } else {
                     self.cancelStallRecovery()
