@@ -10,6 +10,10 @@ struct ArtistNowPlayingMenuButton: UIViewRepresentable {
     let libraryAlbum: AlbumSummary?
     /// When set, artist line follows album hero **luminance handoff** (black/white vs backdrop).
     var heroBackdropPalette: ArtworkDynamicGradient.BackdropPalette? = nil
+    /// Fixed artist-line color that wins over the palette/system colors —
+    /// Now Playing uses the app accent here when the color backdrop is off
+    /// (Apple Music paints this line red).
+    var accentOverride: Color? = nil
     /// When the current queue came from a playlist, adds a "Go to Playlist" action.
     var sourcePlaylist: PlaylistSummary? = nil
     /// Compact mode: subheadline font + secondaryLabel tint — for the Up Next page header.
@@ -61,14 +65,17 @@ struct ArtistNowPlayingMenuButton: UIViewRepresentable {
             artist,
             hasBackdrop ? "1" : "0",
             isDarkSystem ? "1" : "0",
-            compact ? "1" : "0"
+            compact ? "1" : "0",
+            accentOverride.map { "\($0)" } ?? ""
         ].joined(separator: "\u{1F}")
 
         if coordinator.lastConfigSignature != configSig {
             coordinator.lastConfigSignature = configSig
             var cfg = UIButton.Configuration.plain()
             cfg.title = artist
-            if hasBackdrop {
+            if let accentOverride {
+                cfg.baseForegroundColor = UIColor(accentOverride)
+            } else if hasBackdrop {
                 cfg.baseForegroundColor = UIColor.white.withAlphaComponent(0.55)
             } else {
                 cfg.baseForegroundColor = isDarkSystem ? UIColor.white.withAlphaComponent(0.55) : UIColor.secondaryLabel
@@ -83,7 +90,8 @@ struct ArtistNowPlayingMenuButton: UIViewRepresentable {
             cfg.contentInsets = .zero
             cfg.titlePadding = 0
             button.configuration = cfg
-            button.tintColor = hasBackdrop ? .white : (isDarkSystem ? .white : .label)
+            button.tintColor = accentOverride.map { UIColor($0) }
+                ?? (hasBackdrop ? .white : (isDarkSystem ? .white : .label))
         }
 
         let albumLine = albumSubtitle.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -144,6 +152,7 @@ struct ArtistNowPlayingMenuButton: View {
     let albumSubtitle: String
     let libraryAlbum: AlbumSummary?
     var heroBackdropPalette: ArtworkDynamicGradient.BackdropPalette? = nil
+    var accentOverride: Color? = nil
     var sourcePlaylist: PlaylistSummary? = nil
     var compact: Bool = false
     var goToAlbumDisabled: Bool? = nil
@@ -175,7 +184,7 @@ struct ArtistNowPlayingMenuButton: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(artist)
                     .font(.title3)
-                    .foregroundStyle((heroBackdropPalette?.heroChromeSecondary) ?? MusicDesign.secondaryLabel)
+                    .foregroundStyle(accentOverride ?? (heroBackdropPalette?.heroChromeSecondary) ?? MusicDesign.secondaryLabel)
                 Text(albumSubtitle)
                     .font(.subheadline)
                     .foregroundStyle((heroBackdropPalette?.heroChromeTertiary) ?? MusicDesign.secondaryLabel.opacity(0.85))
