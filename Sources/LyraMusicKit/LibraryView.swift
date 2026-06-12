@@ -818,7 +818,7 @@ struct LibraryPlaylistsView: View {
                 .presentationDetents([.large])
 #endif
         }
-        .searchable(text: $query, placement: .automatic, prompt: Text("Playlists"))
+        .musicNativeSearchable(text: $query, prompt: Text("Playlists"))
         .task(id: filter) {
             await refreshPlaylistDownloadIndexIfNeeded()
         }
@@ -1083,7 +1083,7 @@ struct FavoritePlaylistView: View {
         .musicFavoriteSongsNavigationChrome()
         .musicNavigationBarVisibleWhenPushed()
         .musicLibraryToolbarMonochromeControls()
-        .searchable(text: $searchText, placement: .automatic, prompt: Text("Songs"))
+        .musicNativeSearchable(text: $searchText, prompt: Text("Songs"))
         .toolbar { favoriteDetailToolbar }
         .navigationDestination(item: $navigateAlbum) { album in
             ServerPlaylistDetailView(album: album, librarySource: true)
@@ -2062,7 +2062,7 @@ struct AlbumsGridView: View {
         }
         .background(MusicDesign.background)
         .musicLibrarySectionScreen(title: "Albums")
-        .searchable(text: $query, placement: .automatic, prompt: Text("Albums"))
+        .musicNativeSearchable(text: $query, prompt: Text("Albums"))
         .toolbar {
             ToolbarItemGroup(placement: MusicToolbar.trailingItemPlacement) {
                 if scope == .library {

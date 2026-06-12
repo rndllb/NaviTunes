@@ -55,6 +55,9 @@ struct ArtistPageView: View {
         .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
+                ArtistFollowButton(name: model.displayName)
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 ArtistFavoriteStarButton(name: model.displayName)
             }
         }
@@ -551,7 +554,7 @@ private struct ArtistTopSongOverflowMenu: View {
                 ChartStyleSongOverflowMenuContent(
                     shareItem: "\(row.title) — \(row.artist)",
                     onAdd: { onRequest(row) },
-                    addDisabled: !app.downtifyConfigured
+                    addDisabled: !app.acquisitionConfigured
                 )
             }
         } label: {

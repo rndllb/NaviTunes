@@ -55,10 +55,33 @@ enum RecentPlayedItem: Identifiable, Hashable {
 public final class AppModel: ObservableObject {
     /// Default album fetch size for library grid / sync (raised for large Jellyfin / Navidrome libraries).
     public static let defaultLibraryAlbumFetchLimit = 500
-    @Published var accentPresetId: String = UserDefaults.standard.string(forKey: "lyraAccentPresetId") ?? AppAccentPreset.defaultId {
+    @Published var accentPresetId: String = UserDefaults.standard.string(forKey: AppAccentPreset.accentPresetIdKey) ?? AppAccentPreset.defaultId {
         didSet {
-            UserDefaults.standard.set(accentPresetId, forKey: "lyraAccentPresetId")
-            syncHomeScreenIconForAccentIfNeeded()
+            UserDefaults.standard.set(accentPresetId, forKey: AppAccentPreset.accentPresetIdKey)
+        }
+    }
+
+    @Published var customAccentHex: String = UserDefaults.standard.string(forKey: AppAccentPreset.customAccentHexKey) ?? AppAccentPreset.defaultCustomHex {
+        didSet {
+            let normalized = AppAccentPreset.normalizedHex(customAccentHex) ?? customAccentHex
+            if normalized != customAccentHex {
+                customAccentHex = normalized
+                return
+            }
+            UserDefaults.standard.set(customAccentHex, forKey: AppAccentPreset.customAccentHexKey)
+        }
+    }
+
+    /// Home-screen icon artwork — independent from ``accentPresetId`` (custom accents have no matching icon set).
+    @Published var appIconPresetId: String = AppModel.loadAppIconPresetId() {
+        didSet {
+            let resolved = AppAccentPreset.validIconPresetId(appIconPresetId)
+            if resolved != appIconPresetId {
+                appIconPresetId = resolved
+                return
+            }
+            UserDefaults.standard.set(appIconPresetId, forKey: AppAccentPreset.appIconPresetIdKey)
+            syncHomeScreenIconIfNeeded()
         }
     }
 
@@ -162,12 +185,20 @@ public final class AppModel: ObservableObject {
 
     let player = PlaybackEngine()
     let offline = OfflineDownloadManager()
-    let downtify = DowntifyDownloadManager()
+    let acquisition = AcquisitionManager()
+
+    /// Follow-artist / discography-completeness automation (the Lidarr-style "brain"),
+    /// backed by the always-available MusicBrainz floor so it works regardless of which
+    /// acquisition/library plugins are configured. Assigned in `init`.
+    private(set) var subscriptions: MusicSubscriptionEngine!
 
     private var libraryAlbumsById: [String: AlbumSummary] = [:]
     /// O(1) "is this chart album in the user's library?" lookup. Rebuilt alongside ``libraryAlbumsById``.
     private(set) var libraryAlbumReleaseIndex: LibraryAlbumReleaseIndex = .empty
     private var libraryBootstrapTask: Task<Void, Never>?
+    /// Polls the server magic playlist so personal-library changes from other devices land here.
+    private var libraryMembershipSyncTask: Task<Void, Never>?
+    private var lastLibraryMembershipRefresh = Date.distantPast
     private var trackIndexTask: Task<Void, Never>?
     /// In-memory playlist tracklists for instant detail hydration (Go to Playlist, revisit).
     private var playlistRowsCache: [String: [PlaylistRowItem]] = [:]
@@ -249,10 +280,12 @@ public final class AppModel: ObservableObject {
     /// Incremented after destructive library edits so screens reload cached track lists.
     @Published private(set) var libraryCatalogEpoch: UInt = 0
 
-    // MARK: - Downtify (optional)
+    // MARK: - Acquisition plugins (optional)
 
-    @Published var downtifyBaseURLString: String = DowntifyClient.storedBaseURL ?? ""
-    var downtifyConfigured: Bool { DowntifyClient.isConfigured }
+    /// True when the active acquisition plugin has the credentials it needs.
+    var acquisitionConfigured: Bool { acquisition.isConfigured }
+    /// Capabilities of the active plugin, for gating request UI.
+    var acquisitionCapabilities: AcquisitionCapabilities { acquisition.capabilities }
 
     private static let themePreferenceKey = "lyraThemePreference"
     private static let wifiStreamQualityKey = "lyraWifiStreamQuality"
@@ -505,6 +538,34 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    @Published var equalizerEnabled: Bool = UserDefaults.standard.bool(forKey: EqualizerStorage.enabledKey) {
+        didSet {
+            UserDefaults.standard.set(equalizerEnabled, forKey: EqualizerStorage.enabledKey)
+            syncEqualizerToEngine()
+            Task { await player.reloadForEqualizerSettingsChange() }
+        }
+    }
+
+    @Published var equalizerBypass: Bool = UserDefaults.standard.bool(forKey: EqualizerStorage.bypassKey) {
+        didSet {
+            UserDefaults.standard.set(equalizerBypass, forKey: EqualizerStorage.bypassKey)
+            syncEqualizerToEngine()
+        }
+    }
+
+    @Published var equalizerPresetId: String = UserDefaults.standard.string(forKey: EqualizerStorage.presetIdKey) ?? EqualizerPreset.catalog[0].id {
+        didSet {
+            UserDefaults.standard.set(equalizerPresetId, forKey: EqualizerStorage.presetIdKey)
+        }
+    }
+
+    @Published var equalizerBandGains: [Float] = EqualizerStorage.loadGains() {
+        didSet {
+            EqualizerStorage.saveGains(equalizerBandGains)
+            syncEqualizerToEngine()
+        }
+    }
+
     @Published var albumBackdropEnabled: Bool = true {
         didSet { UserDefaults.standard.set(albumBackdropEnabled, forKey: Self.albumBackdropEnabledKey) }
     }
@@ -633,10 +694,30 @@ public final class AppModel: ObservableObject {
         offline.$downloadQueue
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
-        downtify.onJobFinished = { [weak self] job in
+        acquisition.onJobFinished = { [weak self] job in
             guard let self else { return }
-            Task { await self.handleDowntifyJobFinished(job) }
+            Task { await self.handleAcquisitionJobFinished(job) }
         }
+        acquisition.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        subscriptions = MusicSubscriptionEngine(env: .init(
+            serverAlbumsForArtist: { [weak self] name in
+                await self?.serverAlbums(forArtistName: name) ?? []
+            },
+            enqueue: { [weak self] request in
+                await self?.acquisition.enqueue(request) ?? .notConfigured
+            },
+            isAcquisitionConfigured: { [weak self] in
+                self?.acquisition.isConfigured ?? false
+            },
+            acquisitionGranularity: { [weak self] in
+                self?.acquisition.capabilities.granularity ?? .album
+            }
+        ))
+        subscriptions.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
         loadPersistedSettings()
         wireOfflineDownloadManager()
         startNetworkMonitor()
@@ -710,14 +791,26 @@ public final class AppModel: ObservableObject {
         player.restore(library: activeLibrary, snapshot: snap)
     }
 
-    /// Updates the home screen icon when it does not match the current accent (iOS shows its OK alert on change).
-    public func syncHomeScreenIconForAccentIfNeeded() {
+    /// Updates the home screen icon when it does not match ``appIconPresetId`` (iOS shows its OK alert on change).
+    public func syncHomeScreenIconIfNeeded() {
         #if canImport(UIKit)
         guard UIApplication.shared.supportsAlternateIcons else { return }
-        let target = AppAlternateIconSync.resolvedIconName(forAccentPresetId: accentPresetId)
+        let target = AppAlternateIconSync.resolvedIconName(forIconPresetId: appIconPresetId)
         guard UIApplication.shared.alternateIconName != target else { return }
-        AppAlternateIconSync.apply(accentPresetId: accentPresetId, completion: nil)
+        AppAlternateIconSync.apply(iconPresetId: appIconPresetId, completion: nil)
         #endif
+    }
+
+    /// Migrates legacy installs that tied icon color to accent selection.
+    private static func loadAppIconPresetId() -> String {
+        if let stored = UserDefaults.standard.string(forKey: AppAccentPreset.appIconPresetIdKey) {
+            return AppAccentPreset.validIconPresetId(stored)
+        }
+        let accent = UserDefaults.standard.string(forKey: AppAccentPreset.accentPresetIdKey) ?? AppAccentPreset.defaultId
+        if accent != AppAccentPreset.customId {
+            return AppAccentPreset.validIconPresetId(accent)
+        }
+        return AppAccentPreset.defaultId
     }
 
     public func signIn() async {
@@ -843,6 +936,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func signOut() {
+        stopLibraryMembershipAutoSync()
         if let identity = accountAvatarIdentity {
             AccountAvatarCache.remove(identity: identity)
             accountAvatarRevision &+= 1
@@ -1321,14 +1415,15 @@ public final class AppModel: ObservableObject {
             async let home: Void = refreshHome()
             async let membership: Void = refreshLibraryMembership()
             _ = await (home, membership)
+            startLibraryMembershipAutoSync()
         }
     }
 
     // MARK: - Library membership (magic playlist)
 
-    /// `host` component of the active server URL, lowercased for the membership cache key.
-    private var libraryMagicPlaylistHost: String? {
-        URL(string: baseURLString.trimmingCharacters(in: .whitespacesAndNewlines))?.host?.lowercased()
+    /// Stable server identity for the magic playlist hash (host + non-default port).
+    private var libraryMagicPlaylistServerKey: String? {
+        LibraryMembership.normalizedServerKey(from: baseURLString)
     }
 
     /// Stable per-user identifier used in the magic playlist name hash + cache key.
@@ -1346,16 +1441,16 @@ public final class AppModel: ObservableObject {
 
     /// Convenience tuple of the identifying inputs to the magic playlist + its cache.
     /// `nil` when sign-in state isn't sufficient to resolve a playlist yet.
-    private var libraryMagicPlaylistIdentity: (name: String, host: String?, userKey: String)? {
+    private var libraryMagicPlaylistIdentity: (name: String, serverKey: String?, userKey: String, baseURL: String)? {
         guard isSignedIn, let userKey = libraryMagicPlaylistUserKey else { return nil }
-        let host = libraryMagicPlaylistHost
-        let name = LibraryMembership.magicPlaylistName(backend: backendKind, host: host, userKey: userKey)
-        return (name, host, userKey)
+        let serverKey = libraryMagicPlaylistServerKey
+        let name = LibraryMembership.magicPlaylistName(backend: backendKind, serverKey: serverKey, userKey: userKey)
+        return (name, serverKey, userKey, baseURLString)
     }
 
-    /// Resolves the user's magic playlist (find by deterministic name, create when absent),
-    /// then loads its track ids and JSON membership payload into the published state.
-    /// Cheap on subsequent runs because the resolved id is cached in `UserDefaults`.
+    /// Resolves the user's magic playlist on the server (find by deterministic name,
+    /// create when absent), then loads tracks + JSON membership into published state.
+    /// Safe to call repeatedly — used on sign-in, foreground, and a background poll.
     func refreshLibraryMembership() async {
         guard let identity = libraryMagicPlaylistIdentity else {
             libraryMagicPlaylistId = nil
@@ -1369,26 +1464,63 @@ public final class AppModel: ObservableObject {
         do {
             let resolvedId = try await resolveMagicPlaylistId(identity: identity)
             let fetch = try await fetchMagicPlaylistContents(playlistId: resolvedId)
-            if fetch.name != identity.name {
+            let expectedNames = Set(
+                LibraryMembership.candidateMagicPlaylistNames(
+                    backend: backendKind,
+                    serverKey: identity.serverKey,
+                    userKey: identity.userKey,
+                    baseURLString: identity.baseURL,
+                )
+            )
+            if !expectedNames.contains(fetch.name), !LibraryMembership.isMagicPlaylistName(fetch.name) {
                 // Name drift (user renamed the magic playlist via web UI). Re-resolve from scratch.
-                LibraryMembership.clearCachedPlaylistId(backend: backendKind, host: identity.host, userKey: identity.userKey)
+                LibraryMembership.clearCachedPlaylistId(
+                    backend: backendKind, serverKey: identity.serverKey, userKey: identity.userKey,
+                )
                 let freshId = try await resolveMagicPlaylistId(identity: identity)
                 let freshFetch = try await fetchMagicPlaylistContents(playlistId: freshId)
                 applyMagicPlaylistFetch(playlistId: freshId, fetch: freshFetch)
             } else {
                 applyMagicPlaylistFetch(playlistId: resolvedId, fetch: fetch)
             }
+            lastLibraryMembershipRefresh = Date()
         } catch {
             // Keep cached membership and playlist id — clearing breaks add/remove until
             // the next successful refresh while UI still shows stale snapshot data.
             if libraryMagicPlaylistId == nil,
                let identity = libraryMagicPlaylistIdentity,
                let cached = LibraryMembership.cachedPlaylistId(
-                   backend: backendKind, host: identity.host, userKey: identity.userKey
+                   backend: backendKind, serverKey: identity.serverKey, userKey: identity.userKey
                ) {
                 libraryMagicPlaylistId = cached
             }
         }
+    }
+
+    /// Foreground / manual refresh with a short debounce so rapid scene-phase churn
+    /// doesn't spam the server.
+    func refreshLibraryMembershipIfStale(minimumInterval: TimeInterval = 8) async {
+        guard isSignedIn else { return }
+        if Date().timeIntervalSince(lastLibraryMembershipRefresh) < minimumInterval { return }
+        await refreshLibraryMembership()
+    }
+
+    /// Keeps the personal library converged with the server magic playlist while signed in.
+    func startLibraryMembershipAutoSync() {
+        guard isSignedIn, libraryMembershipSyncTask == nil else { return }
+        libraryMembershipSyncTask = Task { [weak self] in
+            defer { Task { @MainActor in self?.libraryMembershipSyncTask = nil } }
+            while !Task.isCancelled {
+                guard let self, self.isSignedIn else { return }
+                await self.refreshLibraryMembership()
+                try? await Task.sleep(for: .seconds(20))
+            }
+        }
+    }
+
+    func stopLibraryMembershipAutoSync() {
+        libraryMembershipSyncTask?.cancel()
+        libraryMembershipSyncTask = nil
     }
 
     private struct LibraryPlaylistFetchShape {
@@ -1398,29 +1530,55 @@ public final class AppModel: ObservableObject {
         let comment: String?
     }
 
-    private func resolveMagicPlaylistId(identity: (name: String, host: String?, userKey: String)) async throws -> String {
+    private func resolveMagicPlaylistId(
+        identity: (name: String, serverKey: String?, userKey: String, baseURL: String),
+    ) async throws -> String {
+        let candidateNames = LibraryMembership.candidateMagicPlaylistNames(
+            backend: backendKind,
+            serverKey: identity.serverKey,
+            userKey: identity.userKey,
+            baseURLString: identity.baseURL,
+        )
+        for name in candidateNames {
+            if let existing = try await findMagicPlaylistByName(name) {
+                LibraryMembership.cachePlaylistId(
+                    existing, backend: backendKind, serverKey: identity.serverKey, userKey: identity.userKey,
+                )
+                return existing
+            }
+        }
         if let cached = LibraryMembership.cachedPlaylistId(
-            backend: backendKind, host: identity.host, userKey: identity.userKey,
-        ) {
-            // Trust the cache without a roundtrip; if the fetch later fails, we re-resolve.
+            backend: backendKind, serverKey: identity.serverKey, userKey: identity.userKey,
+        ),
+           let fetch = try? await fetchMagicPlaylistContents(playlistId: cached),
+           LibraryMembership.isMagicPlaylistName(fetch.name) {
             return cached
         }
-        let resolved = try await findOrCreateMagicPlaylist(name: identity.name)
+        let created = try await createEmptyMagicPlaylist(name: identity.name)
         LibraryMembership.cachePlaylistId(
-            resolved, backend: backendKind, host: identity.host, userKey: identity.userKey,
+            created, backend: backendKind, serverKey: identity.serverKey, userKey: identity.userKey,
         )
-        return resolved
+        return created
     }
 
-    private func findOrCreateMagicPlaylist(name: String) async throws -> String {
+    private func findMagicPlaylistByName(_ name: String) async throws -> String? {
         switch backendKind {
         case .jellyfin:
             guard let client = jellyfin else { throw URLError(.userAuthenticationRequired) }
-            if let existing = try await client.findPlaylistByName(name) { return existing.id }
+            return try await client.findPlaylistByName(name)?.id
+        case .navidrome:
+            guard let client = navidrome else { throw URLError(.userAuthenticationRequired) }
+            return try await client.findPlaylistByName(name)?.id
+        }
+    }
+
+    private func createEmptyMagicPlaylist(name: String) async throws -> String {
+        switch backendKind {
+        case .jellyfin:
+            guard let client = jellyfin else { throw URLError(.userAuthenticationRequired) }
             return try await client.createEmptyPrivatePlaylist(name: name)
         case .navidrome:
             guard let client = navidrome else { throw URLError(.userAuthenticationRequired) }
-            if let existing = try await client.findPlaylistByName(name) { return existing.id }
             return try await client.createEmptyPrivatePlaylist(name: name)
         }
     }
@@ -1449,6 +1607,7 @@ public final class AppModel: ObservableObject {
         if backendKind == .navidrome {
             Task { await refreshMagicPlaylistAvatar(playlistId: playlistId) }
         }
+        persistLibrarySnapshot()
     }
 
     /// Asks Navidrome's native API whether the magic playlist has a user-uploaded /
@@ -1818,12 +1977,12 @@ public final class AppModel: ObservableObject {
         libraryCatalogEpoch &+= 1
     }
 
-    /// Called when a Downtify job finishes. On success, ask the backend to scan
-    /// (Subsonic `startScan` / Jellyfin `Library/Refresh`) and then keep retrying
-    /// `searchCatalog` until the new file surfaces — typically within a few
-    /// seconds of the scan, but Navidrome/Jellyfin schedules vary so we give it
-    /// up to a minute. When found, add the track to the personal library.
-    func handleDowntifyJobFinished(_ job: DowntifyJob) async {
+    /// Called when an acquisition job finishes (any plugin). On success, ask the backend
+    /// to scan (Subsonic `startScan` / Jellyfin `Library/Refresh`) and then keep retrying
+    /// `searchCatalog` until the new file surfaces — typically within a few seconds of the
+    /// scan, but Navidrome/Jellyfin schedules vary so we give it up to a minute. When
+    /// found, add the track to the personal library.
+    func handleAcquisitionJobFinished(_ job: AcquisitionJob) async {
         guard job.status == .done else {
             if job.status == .failed {
                 showTransientToast("Download failed")
@@ -1838,9 +1997,9 @@ public final class AppModel: ObservableObject {
         // Kick off the server-side scan immediately so it can race the retry loop.
         Task { try? await lib.triggerLibraryScan() }
 
-        let probe = DowntifySong(songId: job.url, name: title,
+        let probe = DowntifySong(songId: job.id, name: title,
                                  artists: artist.isEmpty ? [] : [artist],
-                                 albumName: "", url: job.url, coverURL: nil, year: nil, explicit: false)
+                                 albumName: "", url: job.id, coverURL: nil, year: nil, explicit: false)
         // ~60s total budget: 20 attempts × 3s. The early attempts catch fast scans
         // (Navidrome typically), the later ones catch slow ones (Jellyfin libraries
         // with many items). First check fires immediately in case the file was
@@ -2640,18 +2799,70 @@ public final class AppModel: ObservableObject {
         newTabRecentReleases = []
     }
 
-    // MARK: - Downtify
+    // MARK: - Playback helpers
 
-    func saveDowntifyURL() {
-        let trimmed = downtifyBaseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
-        DowntifyClient.save(baseURL: trimmed)
-        downtifyBaseURLString = trimmed
+    /// Starts playback and surfaces stream/load failures via the root toast.
+    func playAlbumOrToast(
+        library: MusicLibraryProviding? = nil,
+        tracks: [Track],
+        startIndex: Int = 0,
+        source: PlaybackSource? = nil
+    ) async {
+        guard let lib = library ?? activeLibrary else {
+            showTransientToast("Sign in to play music.")
+            return
+        }
+        guard !tracks.isEmpty else { return }
+        do {
+            try await player.playAlbum(library: lib, tracks: tracks, startIndex: startIndex, source: source)
+        } catch {
+            showTransientToast(error.musicPlaybackToastMessage)
+        }
+    }
+
+    // MARK: - Acquisition
+
+    /// Issue a request through the active acquisition plugin. Single entry point for all
+    /// request UI; surfaces a toast for the outcome.
+    @discardableResult
+    func requestAcquisition(_ request: AcquisitionRequest) async -> AcquisitionEnqueueResult {
+        let result = await acquisition.enqueue(request)
+        switch result {
+        case .started:
+            showTransientToast("Requested “\(request.displayTitle)”")
+        case .alreadyActive:
+            break
+        case .notConfigured:
+            showTransientToast("Set up a download plugin in Settings")
+        case .failed(let message):
+            showTransientToast(message)
+        }
+        return result
+    }
+
+    /// Albums on the connected server credited to `name` (normalized-artist match).
+    /// The subscription engine's "do I already have this?" check; works with any backend.
+    func serverAlbums(forArtistName name: String) async -> [AlbumSummary] {
+        guard let lib = activeLibrary else { return [] }
+        let target = LibraryTrackMatcher.normalize(name)
+        let results = (try? await lib.searchCatalog(query: name, limit: 60)) ?? .empty
+        return results.albums.filter { LibraryTrackMatcher.normalize($0.artist) == target }
+    }
+
+    /// Re-run the follow-artist completeness pass (foreground / manual "Check now").
+    func refreshSubscriptions() async {
+        await subscriptions.checkAll()
+    }
+
+    /// Persists a config field for a plugin and nudges observers (gating recomputes).
+    func setAcquisitionConfig(_ value: String, for kind: AcquisitionPluginKind, field: String) {
+        AcquisitionConfigStore.set(value, kind, field)
         objectWillChange.send()
     }
 
-    func disconnectDowntify() {
-        DowntifyClient.clear()
-        downtifyBaseURLString = ""
+    /// Clears all stored credentials for a plugin.
+    func disconnectAcquisitionPlugin(_ kind: AcquisitionPluginKind) {
+        AcquisitionConfigStore.clear(kind, fields: AcquisitionManager.capabilities(for: kind).configFields)
         objectWillChange.send()
     }
 
@@ -3168,7 +3379,31 @@ public final class AppModel: ObservableObject {
         player.showSleepTimerButton = showSleepTimerButton
         player.remoteControlMode = remoteControlMode
         player.playbackRate = defaultPlaybackRate.rawValue
+        syncEqualizerToEngine()
         player.updateRemoteCommands()
+    }
+
+    func syncEqualizerToEngine() {
+        player.equalizerEnabled = equalizerEnabled
+        player.equalizerBypass = equalizerBypass
+        player.equalizerBandGains = equalizerBandGains
+        player.applyLiveEqualizerGains()
+    }
+
+    func applyEqualizerPreset(_ preset: EqualizerPreset) {
+        equalizerPresetId = preset.id
+        equalizerBandGains = preset.gains
+    }
+
+    func setEqualizerBandGain(index: Int, gain: Float) {
+        guard index >= 0, index < EqualizerBand.count else { return }
+        var next = equalizerBandGains
+        if next.count < EqualizerBand.count {
+            next = EqualizerPreset.normalizedGains(next)
+        }
+        next[index] = min(max(gain, EqualizerBand.gainRange.lowerBound), EqualizerBand.gainRange.upperBound)
+        equalizerBandGains = next
+        equalizerPresetId = EqualizerPreset.catalog[0].id
     }
 
     func resetPlaybackSettingsToDefaults() {
@@ -3521,6 +3756,9 @@ public final class AppModel: ObservableObject {
             libraryStatistics = .empty
             return
         }
+        if libraryPlaylists.isEmpty {
+            await refreshLibraryPlaylists()
+        }
         let playlistCount = libraryPlaylists.count
         do {
             switch backendKind {
@@ -3541,6 +3779,7 @@ public final class AppModel: ObservableObject {
                     albumCount: remote.albumCount,
                     songCount: remote.songCount,
                     playlistCount: playlistCount,
+                    songsMayBeApproximate: remote.songsMayBeApproximate,
                 )
             }
         } catch {

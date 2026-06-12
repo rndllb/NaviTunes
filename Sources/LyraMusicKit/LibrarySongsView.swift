@@ -162,7 +162,7 @@ struct LibrarySongsView: View {
             }
         }
         .musicLibraryToolbarMonochromeControls()
-        .searchable(text: $searchText, placement: .automatic, prompt: Text("Songs"))
+        .musicNativeSearchable(text: $searchText, prompt: Text("Songs"))
         .navigationDestination(item: $navigateAlbum) { album in
             ServerPlaylistDetailView(album: album, librarySource: true)
         }

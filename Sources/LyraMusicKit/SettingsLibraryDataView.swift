@@ -13,7 +13,7 @@ struct SettingsLibraryDataView: View {
             navidromeSharesSection
         }
         .navigationTitle("Library & Data")
-        .navigationBarTitleDisplayMode(.inline)
+        .settingsSubpageChrome()
     }
 
     private var mixesSection: some View {

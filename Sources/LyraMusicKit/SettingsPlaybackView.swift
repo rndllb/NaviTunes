@@ -26,6 +26,7 @@ struct SettingsPlaybackView: View {
             streamingSection
             downloadingSection
             streamCacheSection
+            equalizerSection
             playerControlsSection
             skipIntervalsSection
             remoteControlsSection
@@ -39,7 +40,7 @@ struct SettingsPlaybackView: View {
             }
         }
         .navigationTitle("Sound & Playback")
-        .navigationBarTitleDisplayMode(.inline)
+        .settingsSubpageChrome()
         .confirmationDialog(
             "Reset sound and playback settings?",
             isPresented: $showResetConfirm,
@@ -127,7 +128,23 @@ struct SettingsPlaybackView: View {
         } header: {
             Text("Stream Cache")
         } footer: {
-            Text("Keeps a copy of songs you stream so replaying a recent track is instant, with no extra data use. Experimental — turn off if you notice playback issues.")
+            Text("Replays fully cached streams from disk when available. New cache entries are not written during playback on this OS version.")
+        }
+    }
+
+    private var equalizerSection: some View {
+        Section {
+            NavigationLink {
+                SettingsEqualizerView()
+                    .environmentObject(app)
+            } label: {
+                HStack {
+                    Label("Equalizer", systemImage: "slider.vertical.3")
+                    Spacer()
+                    Text(app.equalizerEnabled ? EqualizerPreset.preset(id: app.equalizerPresetId).name : "Off")
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
     }
 
