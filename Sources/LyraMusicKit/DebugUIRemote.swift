@@ -36,6 +36,8 @@ enum DebugUIRemote {
         observe("com.lyra.debug.toast")
         observe("com.lyra.debug.deleteUITestPlaylists")
         observe("com.lyra.debug.pop")
+        observe("com.lyra.debug.playFirst")
+        observe("com.lyra.debug.openPlayer")
         observe("com.lyra.debug.libraryTab")
         observe("com.lyra.debug.ping")
         observe("com.lyra.debug.hangwatch")
@@ -96,6 +98,19 @@ enum DebugUIRemote {
             }
         case "com.lyra.debug.pop":
             app.debugPopRequests += 1
+        case "com.lyra.debug.playFirst":
+            // Starts playback of any resolvable track so the Now Playing main
+            // view can be screenshot-verified (paused is fine — chrome is the
+            // subject, not audio).
+            let track = app.recentlyPlayedTracks.first
+                ?? app.libraryPlaylists.lazy
+                    .compactMap { app.cachedPlaylistRows(playlistId: $0.id)?.first?.track }
+                    .first
+            if let track {
+                Task { try? await app.player.playAlbum(library: app.activeLibrary, tracks: [track], startIndex: 0) }
+            }
+        case "com.lyra.debug.openPlayer":
+            app.debugOpenPlayerRequests += 1
         case "com.lyra.debug.libraryTab":
             app.selectedTab = .library
         case "com.lyra.debug.hangwatch":

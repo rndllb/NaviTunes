@@ -184,7 +184,13 @@ private struct MainShellView: View {
             guard phase == .active, app.isSignedIn else { return }
             Task { await app.refreshLibraryMembershipIfStale() }
         }
-        .sheet(item: $app.playlistPickerPayload) { payload in
+#if DEBUG
+        .onChange(of: app.debugOpenPlayerRequests) { _, _ in
+            guard app.player.activeTrack != nil else { return }
+            showNowPlaying = true
+        }
+#endif
+        .sheet(item: rootPlaylistPickerBinding) { payload in
             AddToPlaylistSheet(tracks: payload.tracks)
                 .environmentObject(app)
         }
@@ -195,6 +201,23 @@ private struct MainShellView: View {
             artworkNamespace: playerArtworkNamespace,
         ))
         .musicTransientToastChrome()
+    }
+
+    /// On iOS a root sheet cannot appear above the full-screen player cover —
+    /// the cover presents its own copy of the Add to Playlist sheet instead
+    /// (see ``NowPlayingFullScreenCoverModifier``). Suppress the root
+    /// presentation while the player is up so the two never fight.
+    private var rootPlaylistPickerBinding: Binding<PlaylistPickerPayload?> {
+        Binding(
+            get: {
+                #if os(iOS)
+                showNowPlaying ? nil : app.playlistPickerPayload
+                #else
+                app.playlistPickerPayload
+                #endif
+            },
+            set: { app.playlistPickerPayload = $0 }
+        )
     }
 }
 
@@ -223,6 +246,13 @@ private struct NowPlayingFullScreenCoverModifier: ViewModifier {
                 // cover carries its own copy ("1 song added", sleep timer, etc.).
                 // Never both visible at once — the cover is full-screen.
                 .musicTransientToastChrome()
+                // Add to Playlist from the Now Playing track menu presents over
+                // the player (Apple Music behavior) — the root copy of this
+                // sheet is suppressed while the cover is up.
+                .sheet(item: $app.playlistPickerPayload) { payload in
+                    AddToPlaylistSheet(tracks: payload.tracks)
+                        .environmentObject(app)
+                }
         }
         #else
         ZStack {

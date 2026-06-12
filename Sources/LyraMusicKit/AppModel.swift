@@ -120,6 +120,8 @@ public final class AppModel: ObservableObject {
 #if DEBUG
     /// Incremented by ``DebugUIRemote`` to pop the active tab's stack — see that file.
     @Published var debugPopRequests = 0
+    /// Incremented by ``DebugUIRemote`` to open the full-screen Now Playing cover.
+    @Published var debugOpenPlayerRequests = 0
 #endif
 
     /// Scroll signal consumed by an already-visible ``ServerPlaylistDetailView`` so "Go to Playlist"
