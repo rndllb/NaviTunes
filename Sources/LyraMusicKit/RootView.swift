@@ -190,7 +190,7 @@ private struct MainShellView: View {
             showNowPlaying = true
         }
 #endif
-        .sheet(item: rootPlaylistPickerBinding) { payload in
+        .sheet(item: $app.playlistPickerPayload) { payload in
             AddToPlaylistSheet(tracks: payload.tracks)
                 .environmentObject(app)
         }
@@ -201,23 +201,6 @@ private struct MainShellView: View {
             artworkNamespace: playerArtworkNamespace,
         ))
         .musicTransientToastChrome()
-    }
-
-    /// On iOS a root sheet cannot appear above the full-screen player cover —
-    /// the cover presents its own copy of the Add to Playlist sheet instead
-    /// (see ``NowPlayingFullScreenCoverModifier``). Suppress the root
-    /// presentation while the player is up so the two never fight.
-    private var rootPlaylistPickerBinding: Binding<PlaylistPickerPayload?> {
-        Binding(
-            get: {
-                #if os(iOS)
-                showNowPlaying ? nil : app.playlistPickerPayload
-                #else
-                app.playlistPickerPayload
-                #endif
-            },
-            set: { app.playlistPickerPayload = $0 }
-        )
     }
 }
 
@@ -399,14 +382,6 @@ private struct NowPlayingGestureHost: View {
             .environmentObject(app)
             .environmentObject(app.offline)
             .environmentObject(app.acquisition)
-            // Add to Playlist from the Now Playing track menu presents over the
-            // player (Apple Music behavior). Attached *inside* the cover content —
-            // a presentation modifier on the fullScreenCover root breaks the
-            // `.navigationTransition(.zoom)` pairing with the mini player.
-            .sheet(item: $app.playlistPickerPayload) { payload in
-                AddToPlaylistSheet(tracks: payload.tracks)
-                    .environmentObject(app)
-            }
             .scaleEffect(1 - dragProgress * 0.06, anchor: .center)
             .clipShape(RoundedRectangle(cornerRadius: dragProgress * 28, style: .continuous))
             .offset(y: max(0, dragOffset))
