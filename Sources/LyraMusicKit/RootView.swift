@@ -124,6 +124,7 @@ enum AppTab: Int, Hashable, CaseIterable {
 
 private struct MainShellView: View {
     @EnvironmentObject private var app: AppModel
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showNowPlaying = false
     /// Source namespace for the iOS 18+ zoom transition. The mini-player tap
     /// area marks itself as the source with ``matchedTransitionSource``; the
@@ -146,10 +147,8 @@ private struct MainShellView: View {
             Tab("Library", systemImage: AppTab.library.systemImage, value: AppTab.library) {
                 LibraryView()
             }
-            Tab(value: AppTab.search, role: .search) {
+            Tab("Search", systemImage: AppTab.search.systemImage, value: AppTab.search, role: .search) {
                 SearchLibraryView()
-            } label: {
-                Label("Search", systemImage: AppTab.search.systemImage)
             }
         }
         .tint(MusicDesign.accent)
@@ -165,9 +164,16 @@ private struct MainShellView: View {
             .environmentObject(app)
         }
         .environmentObject(app.offline)
-        .environmentObject(app.downtify)
+        .environmentObject(app.acquisition)
         .task {
             app.scheduleLibraryBootstrap()
+            if app.isSignedIn {
+                app.startLibraryMembershipAutoSync()
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active, app.isSignedIn else { return }
+            Task { await app.refreshLibraryMembershipIfStale() }
         }
         .sheet(item: $app.playlistPickerPayload) { payload in
             AddToPlaylistSheet(tracks: payload.tracks)
@@ -203,7 +209,7 @@ private struct NowPlayingFullScreenCoverModifier: ViewModifier {
                 )
                 .environmentObject(app)
                 .environmentObject(app.offline)
-                .environmentObject(app.downtify)
+                .environmentObject(app.acquisition)
         }
         #else
         ZStack {
@@ -215,7 +221,7 @@ private struct NowPlayingFullScreenCoverModifier: ViewModifier {
                     .transition(.move(edge: .bottom))
                     .environmentObject(app)
                     .environmentObject(app.offline)
-                    .environmentObject(app.downtify)
+                    .environmentObject(app.acquisition)
             }
         }
         .animation(
@@ -356,7 +362,7 @@ private struct NowPlayingGestureHost: View {
         }
             .environmentObject(app)
             .environmentObject(app.offline)
-            .environmentObject(app.downtify)
+            .environmentObject(app.acquisition)
             .scaleEffect(1 - dragProgress * 0.06, anchor: .center)
             .clipShape(RoundedRectangle(cornerRadius: dragProgress * 28, style: .continuous))
             .offset(y: max(0, dragOffset))

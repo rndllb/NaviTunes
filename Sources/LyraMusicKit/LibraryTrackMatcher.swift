@@ -104,6 +104,37 @@ enum LibraryTrackMatcher {
         return artistsOverlap(songArtists, Set([libArtist]))
     }
 
+    // MARK: - Acquisition results (backend-agnostic title + artists)
+
+    static func matchesLibrary(title: String, artists: [String], titleIndex: [String: Set<String>]) -> Bool {
+        let songArtists = Set(artists.map { normalize($0) }.filter { !$0.isEmpty })
+        guard !songArtists.isEmpty else { return false }
+        let titleKeys = normalizedTitleKeys(from: title)
+        guard !titleKeys.isEmpty else { return false }
+        for tk in titleKeys {
+            guard let libArtists = titleIndex[tk] else { continue }
+            if artistsOverlap(songArtists, libArtists) { return true }
+        }
+        return false
+    }
+
+    static func matchesLibrary(_ result: AcquisitionResult, titleIndex: [String: Set<String>]) -> Bool {
+        matchesLibrary(title: result.title, artists: result.artists, titleIndex: titleIndex)
+    }
+
+    static func firstLibraryTrack(matching result: AcquisitionResult, in tracks: [Track]) -> Track? {
+        let songArtists = Set(result.artists.map { normalize($0) }.filter { !$0.isEmpty })
+        guard !songArtists.isEmpty else { return nil }
+        let songKeys = Set(normalizedTitleKeys(from: result.title))
+        return tracks.first { track in
+            let trackKeys = Set(normalizedTitleKeys(from: track.title))
+            guard !songKeys.isDisjoint(with: trackKeys) else { return false }
+            let libArtist = normalize(track.artist)
+            guard !libArtist.isEmpty else { return false }
+            return artistsOverlap(songArtists, Set([libArtist]))
+        }
+    }
+
     // MARK: - External chart tracks
 
     /// True when this chart row matches a library track (same rules as Downtify).

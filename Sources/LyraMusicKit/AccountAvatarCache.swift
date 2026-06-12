@@ -18,7 +18,7 @@ enum AccountAvatarCache {
     static func identity(backend: BackendKind, baseURL: URL, userKey: String) -> AccountAvatarIdentity {
         AccountAvatarIdentity(
             backend: backend == .jellyfin ? "jellyfin" : "navidrome",
-            serverKey: normalizedServerKey(baseURL),
+            serverKey: LibraryMembership.normalizedServerKey(from: baseURL),
             userKey: userKey,
         )
     }
@@ -90,14 +90,6 @@ enum AccountAvatarCache {
     }
 
     // MARK: - Private
-
-    private static func normalizedServerKey(_ url: URL) -> String {
-        let host = (url.host ?? url.absoluteString).lowercased()
-        if let port = url.port, port != 80, port != 443 {
-            return "\(host):\(port)"
-        }
-        return host
-    }
 
     private static func cacheDirectory() throws -> URL {
         let base = try FileManager.default.url(

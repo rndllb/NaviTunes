@@ -13,13 +13,13 @@ struct LyraMusicHostApp: App {
             RootView()
                 .environmentObject(appModel)
                 .onAppear {
-                    appModel.syncHomeScreenIconForAccentIfNeeded()
+                    appModel.syncHomeScreenIconIfNeeded()
                 }
                 .onChange(of: scenePhase) { _, phase in
                     // `.inactive` fires when pressing Home on a physical device; `.background` alone is unreliable.
                     switch phase {
                     case .inactive, .background:
-                        appModel.syncHomeScreenIconForAccentIfNeeded()
+                        appModel.syncHomeScreenIconIfNeeded()
                         appModel.persistPlaybackQueue()
                     case .active:
                         appModel.handleAppBecameActive()

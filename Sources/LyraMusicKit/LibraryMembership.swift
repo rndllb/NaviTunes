@@ -14,18 +14,56 @@ import Foundation
 /// Membership is the single source of truth across devices; the local
 /// ``UserDefaults`` entry only caches the resolved playlist id for fast startup.
 enum LibraryMembership {
-    /// `__lyra_<sha256(host/user)[0..12]>` — deterministic per (backend, host, user).
+    /// Stable server identity for hashing — host plus non-default port so
+    /// `https://music.example.com:4533` and `https://music.example.com` match when
+    /// they point at the same Navidrome/Jellyfin instance (as long as URLs agree).
+    static func normalizedServerKey(from url: URL) -> String {
+        let host = (url.host ?? url.absoluteString).lowercased()
+        if let port = url.port, port != 80, port != 443 {
+            return "\(host):\(port)"
+        }
+        return host
+    }
+
+    static func normalizedServerKey(from baseURLString: String) -> String? {
+        let trimmed = baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let url = URL(string: trimmed) else { return nil }
+        return normalizedServerKey(from: url)
+    }
+
+    /// `__lyra_<sha256(server/user)[0..12]>` — deterministic per (backend, server, user).
     /// Same input → same name on every device, so find-or-create converges across logins.
-    static func magicPlaylistName(backend: BackendKind, host: String?, userKey: String) -> String {
-        let normalizedHost = (host ?? "").lowercased()
+    static func magicPlaylistName(backend: BackendKind, serverKey: String?, userKey: String) -> String {
+        let normalizedServer = (serverKey ?? "").lowercased()
         let normalizedUser = userKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let seed = "\(backend.rawValue)/\(normalizedHost)/\(normalizedUser)"
+        let seed = "\(backend.rawValue)/\(normalizedServer)/\(normalizedUser)"
         let digest = SHA256.hash(data: Data(seed.utf8))
         let hex = digest.compactMap { String(format: "%02x", $0) }.joined()
         return "__lyra_\(hex.prefix(12))"
     }
 
-    /// True for names produced by ``magicPlaylistName(backend:host:userKey:)``. Used to
+    /// Names to probe on the server, newest canonical first. Includes a legacy host-only
+    /// hash so devices that used an older Lyra build still find the same playlist.
+    static func candidateMagicPlaylistNames(
+        backend: BackendKind,
+        serverKey: String?,
+        userKey: String,
+        baseURLString: String,
+    ) -> [String] {
+        var names: [String] = []
+        func append(_ name: String) {
+            if !names.contains(name) { names.append(name) }
+        }
+        append(magicPlaylistName(backend: backend, serverKey: serverKey, userKey: userKey))
+        if let url = URL(string: baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)),
+           let hostOnly = url.host?.lowercased() {
+            let legacy = magicPlaylistName(backend: backend, serverKey: hostOnly, userKey: userKey)
+            append(legacy)
+        }
+        return names
+    }
+
+    /// True for names produced by ``magicPlaylistName(backend:serverKey:userKey:)``. Used to
     /// strip the magic playlist out of any user-facing playlist listing even when the
     /// cached id is stale.
     static func isMagicPlaylistName(_ name: String) -> Bool {
@@ -36,24 +74,24 @@ enum LibraryMembership {
 
     // MARK: - Cached playlist id (UserDefaults)
 
-    private static func defaultsKey(backend: BackendKind, host: String?, userKey: String) -> String {
-        let normalizedHost = (host ?? "").lowercased()
+    private static func defaultsKey(backend: BackendKind, serverKey: String?, userKey: String) -> String {
+        let normalizedServer = (serverKey ?? "").lowercased()
         let normalizedUser = userKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return "LyraMusic.libraryPlaylistId.\(backend.rawValue).\(normalizedHost).\(normalizedUser)"
+        return "LyraMusic.libraryPlaylistId.\(backend.rawValue).\(normalizedServer).\(normalizedUser)"
     }
 
-    static func cachedPlaylistId(backend: BackendKind, host: String?, userKey: String) -> String? {
-        let value = UserDefaults.standard.string(forKey: defaultsKey(backend: backend, host: host, userKey: userKey))
+    static func cachedPlaylistId(backend: BackendKind, serverKey: String?, userKey: String) -> String? {
+        let value = UserDefaults.standard.string(forKey: defaultsKey(backend: backend, serverKey: serverKey, userKey: userKey))
         guard let value, !value.isEmpty else { return nil }
         return value
     }
 
-    static func cachePlaylistId(_ id: String, backend: BackendKind, host: String?, userKey: String) {
-        UserDefaults.standard.set(id, forKey: defaultsKey(backend: backend, host: host, userKey: userKey))
+    static func cachePlaylistId(_ id: String, backend: BackendKind, serverKey: String?, userKey: String) {
+        UserDefaults.standard.set(id, forKey: defaultsKey(backend: backend, serverKey: serverKey, userKey: userKey))
     }
 
-    static func clearCachedPlaylistId(backend: BackendKind, host: String?, userKey: String) {
-        UserDefaults.standard.removeObject(forKey: defaultsKey(backend: backend, host: host, userKey: userKey))
+    static func clearCachedPlaylistId(backend: BackendKind, serverKey: String?, userKey: String) {
+        UserDefaults.standard.removeObject(forKey: defaultsKey(backend: backend, serverKey: serverKey, userKey: userKey))
     }
 }
 

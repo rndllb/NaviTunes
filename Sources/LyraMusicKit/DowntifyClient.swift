@@ -267,6 +267,17 @@ enum DowntifyClient {
         guard let base = storedBaseURL else {
             throw DowntifyError("Configure Downtify URL in Settings first.")
         }
+        return try await queue(base: base)
+    }
+
+    /// Enqueue a known song URL against an explicit base (used by the acquisition plugin).
+    @discardableResult
+    static func enqueue(base: String, url: String) async throws -> String {
+        try await triggerDownload(base: base, youtubeURL: url)
+    }
+
+    /// Queue snapshot against an explicit base (used by the acquisition plugin).
+    static func queue(base: String) async throws -> [DowntifyJob] {
         guard let url = URL(string: baseURL(base, path: "/api/queue")) else {
             throw DowntifyError("Invalid URL.")
         }

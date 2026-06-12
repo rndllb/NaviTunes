@@ -40,10 +40,35 @@ The app surfaces two distinct collections. The naming is a footgun — `AppModel
 - **Personal library (Lyra "My Library" magic playlist)** — a per-user opaquely-named playlist (`__lyra_<sha12>`) Lyra creates on the backend. Its contents are the canonical "what *I* added" set, synced across devices:
   - Playlist tracks → `AppModel.librarySongIds: Set<String>`
   - `comment` (Subsonic) / `Overview` (Jellyfin) JSON → `LibraryMembershipPayload` → `libraryAlbumEntries` + `libraryPlaylistEntries` (each entry carries a per-item `added` date so "Recently Added (yours)" is accurate).
-  - Resolved + reconciled on sign-in by `refreshLibraryMembership()`; mutated by `addAlbumToLibrary` / `removeAlbumFromLibrary` / `toggleFavoriteTrack` etc., then persisted back to the magic playlist via `persistLibraryMembershipPayload()`.
+  - Name is deterministic from `(backend, normalized server key, user id)` in `LibraryMembership` — same user + same server URL → same playlist on every device (legacy host-only names are still discovered).
+  - Resolved on sign-in by `refreshLibraryMembership()` (always find-by-name on the server, not cache-only); kept live via `startLibraryMembershipAutoSync()` (~20s poll) and `refreshLibraryMembershipIfStale()` on foreground.
+  - Mutated by `addAlbumToLibrary` / `removeAlbumFromLibrary` / `toggleFavoriteTrack` etc., then persisted back to the magic playlist via `persistLibraryMembershipPayload()`.
   - Filtered out of every user-facing playlist surface by id and by name prefix (`LibraryMembership.isMagicPlaylistName`).
 
-Rule of thumb: anything that means "things the *user* owns / has added" must read from `librarySongIds` / `libraryAlbumEntries` / `libraryPlaylistEntries`, not `libraryAlbums`. Search scopes follow the same split: the Library tab in Discovery searches **personal** state; the Downtify tab is a hybrid of **server catalog** + Downtify download candidates.
+Rule of thumb: anything that means "things the *user* owns / has added" must read from `librarySongIds` / `libraryAlbumEntries` / `libraryPlaylistEntries`, not `libraryAlbums`. Search scopes follow the same split: the Library tab in Discovery searches **personal** state; the Discover tab is a hybrid of **server catalog** + acquisition download candidates.
+
+## Acquisition plugins (requesting music)
+
+All "request missing music" flows funnel through one swappable abstraction so backends are interchangeable. **Only one plugin is active at a time** (`AcquisitionManager.activePlugin`, persisted in `UserDefaults`).
+
+- **Core** (`AcquisitionCore.swift`): `AcquisitionPluginKind` (`downtify`/`lidarr`), the unified `AcquisitionRequest` (artist/track/album + optional MBIDs + `requestKey`), `AcquisitionJob`(+`AcquisitionJobStatus`), `AcquisitionResult` (a concrete searchable item carrying its own request), `AcquisitionCapabilities` (granularity track/album, `supportsTrackSearch`, `configFields`), and the `AcquisitionProviding` protocol. `AcquisitionConfigStore` persists per-plugin credentials under distinct keys (`acquisition.<kind>.<field>`). `AcquisitionHTTP` is the shared REST helper for the network plugins.
+- **Manager** (`AcquisitionManager.swift`, `@MainActor`): `enqueue(_:)` is the single entry point; jobs keyed by `requestKey`; a shared poll loop reconciles against `provider.activeJobs()`; `onJobFinished` fires once per terminal job. `AppModel.acquisition` owns it and forwards `objectWillChange`.
+- **Plugins** (one file each, conform to `AcquisitionProviding`): `DowntifyAcquisitionPlugin` (track, wraps `DowntifyClient`), `LidarrAcquisitionPlugin` (album; MusicBrainz → add with full artist profiles → force-monitor → `AlbumSearch`, the #5012 monitor-race fix; polls `/queue` + `/command`). Legacy `DowntifyDownloadManager` was removed — all request flows use `AcquisitionManager`.
+- **Call sites**: UI never touches a concrete plugin. Build an `AcquisitionRequest` and call `AppModel.requestAcquisition(_:)` (`DiscoverySearchView`, `BrowseAlbumDetailView`, `ServerPlaylistViews`, `MusicNewTabView`). Gate affordances on `app.acquisitionCapabilities` (`supportsTrackSearch`, `granularity`). Album-level plugins request the whole release for missing-track rows.
+- **Settings**: `SettingsView` → Plugins → Downloads opens `AcquisitionPluginSettingsView` — active-plugin picker, capability-driven config fields, Test Connection (`provider.validate()`), and a unified Activity list (`acquisition.displayJobs`, includes server-side items started outside Lyra).
+- **Completion**: `AppModel.handleAcquisitionJobFinished` (backend-agnostic) triggers a server scan and retries `searchCatalog` until the new file surfaces, then adds it to the personal library.
+
+To add a backend: add a `case` to `AcquisitionPluginKind`, write one `*AcquisitionPlugin.swift`, and register it in `AcquisitionManager.makeProvider`. No feature-code changes.
+
+## Follow-artist completeness (subscriptions)
+
+The "Lidarr-style brain" — keep a followed artist's discography complete — but it **lives in the app**, so it works with *any* subset of plugins. The only hard dependency is the always-available MusicBrainz floor (`MusicBrainzArtistClient`); acquisition/library backends are optional accelerators.
+
+- **Models/store** (`MusicSubscriptionModels.swift`): `FollowedArtist` (persisted "wanted" intent; id = MBID or normalized-name fallback; tracks `requestedReleaseIds` so re-checks don't re-enqueue), `SubscriptionReleaseStatus` (`.have`/`.requested`/`.pending` UI status), and `MusicSubscriptionStore` (JSON in `Application Support/LyraMusic/subscriptions.json`, same layout as `LibrarySnapshotStore`).
+- **Engine** (`MusicSubscriptionEngine.swift`, `@MainActor`): env-injected (no `AppModel` internals) so it stays testable. `check(artistId:)` = canonical discography (MusicBrainz) → diff against the connected server (`serverAlbumsForArtist`, normalized-title match, any backend) → enqueue missing albums/EPs through the **active acquisition plugin**. Graceful degradation: with no plugin (or a track-only one that can't pull whole albums) missing releases become `.pending` (wishlist) instead of disabling the feature. `checkAll()` paces MusicBrainz at ~1 req/s.
+- **AppModel** owns `subscriptions` (built in `init`, forwards `objectWillChange`); `serverAlbums(forArtistName:)` is the "have it?" probe; `refreshSubscriptions()` runs a pass. The engine calls `acquisition.enqueue` directly (not `requestAcquisition`) to avoid per-album toasts.
+- **UI**: `ArtistFollowButton` (bell toggle in the artist-page toolbar, always shown — following without a plugin is a valid wishlist) and `SubscriptionsView` (Settings → Plugins → **Following**: per-artist status, "Check now", unfollow; banner when no download plugin is configured).
+- **Capability gating**: auto-fetch only when `acquisition.isConfigured` **and** `capabilities.granularity == .album`. Everything keys off capabilities, never a named plugin.
 
 ## Home mixes (Tuned In)
 
@@ -87,15 +112,45 @@ iOS has no stock toast/snackbar primitive. The app ships a minimal one built fro
 
 If you wire a new action that ends in a queue/library/playlist mutation and a user might want feedback, call `app.showTransientToast(...)` from the closure. The haptic is bundled — don't re-fire `UIImpactFeedbackGenerator` separately at the call site.
 
+## Settings hub
+
+`SettingsView.swift` is an iOS Settings–style **hub** (account row + `NavigationLink` sections). Detail pages live in `SettingsSections.swift` (`SettingsLibrarySectionView`, `SettingsSyncSectionView`, `SettingsOfflineSectionView`, `SettingsDownloadsSectionView`, `SettingsAppearanceView`, `SettingsPluginsView`, `SettingsAboutView`) plus existing leaf views (`SettingsPlaybackView`, `SettingsLibraryDataView`, `AcquisitionPluginSettingsView`, `SubscriptionsView`, `SettingsEqualizerView`). Subpages use `.settingsSubpageChrome()`.
+
+- **Library** (`SettingsLibrarySectionView`) — two stat groups: **Your Library** (`librarySongIds` / `libraryAlbumEntries` / `libraryPlaylistEntries`) vs **Server Catalog** (`AppModel.libraryStatistics`). Stats refresh via `.task` on appear and when the hub appears (`refreshLibraryStatistics()`).
+- **Appearance** — `accentPresetId` + `customAccentHex` tint UI chrome (`MusicDesign.accent`); `appIconPresetId` is **independent** (home-screen icon via `AppAlternateIconSync`). Login logo uses `appIconPresetId`, not accent.
+- **Plugins** — MusicBrainz toggle, Downloads (acquisition), Following (subscriptions).
+
 ## Sound & playback settings
 
 User-facing settings live under **Settings → Sound & Playback** (`SettingsPlaybackView.swift`) and **Settings → Library & Data** (`SettingsLibraryDataView.swift`). Preferences persist in `UserDefaults` on `AppModel` and push to backend clients via `pushQualitySettingsToClients()`.
 
 - **Streaming** — separate Wi‑Fi / cellular max bitrate (`StreamBitRateOption`) and format (`StreamFormatOption`). Active pair follows `prefersCellularStreamingQuality`. Navidrome sends Subsonic `format` + `maxBitRate` query params; Jellyfin maps format to progressive stream containers.
 - **Downloads** — `DownloadQualityTier` + `DownloadFormatOption` (separate from streaming).
+- **Stream cache** — `streamingDiskCacheEnabled` (`UserDefaults`). `StreamingMediaDiskCache` stores fully-fetched progressive streams under `Caches/LyraMusic/stream-cache/` (512 MB LRU). `peekCachedFileURL` for cheap candidate scans; `markAccessed` bumps LRU on actual play. `CachingResourceLoaderDelegate` can commit during AVPlayer playback when enabled (limited on current iOS — EQ prefetch is the reliable writer).
+- **Equalizer** — `EqualizerSettings.swift` + `SettingsEqualizerView`. Ten ISO bands (32 Hz–16 kHz), presets (Flat, Dance, Jazz, Bass Boost, Vocal), bypass, per-band gains in `UserDefaults`. `AppModel.equalizerEnabled` syncs to `PlaybackEngine` via `syncEqualizerToEngine()`; toggling enabled reloads the current item (`reloadForEqualizerSettingsChange()`). Live slider changes call `applyLiveEqualizerGains()` on the active EQ session only.
 - **Player** — skip interval buttons, sleep timer chrome, default playback speed, lock-screen remote mode (skip track vs skip interval). Wired through `PlaybackEngine` + `syncPlaybackPreferencesToEngine()`.
 - **Artist play mode** — top songs / shuffle album / full discography (`ArtistPlayMode` in settings + long-press override on artist page).
 - **Album cache refresh** — `metadataRefreshThreshold` triggers `refreshAlbumTracksIfNeeded(for:)` before playback to swap stale track IDs.
+
+## Equalizer playback path
+
+`AVPlayer` cannot host `AVAudioUnitEQ`. When `PlaybackEngine.equalizerEnabled` is true, eligible **local** sources route through `EqualizedAudioEnginePlayer` (`AVAudioEngine` → `AVAudioPlayerNode` → `AVAudioUnitEQ` → main mixer) — HanSJin/AVAudio-Equalizer pattern.
+
+**EQ-eligible sources** (read via `AVAudioFile`, never live HTTP decode):
+
+1. **Offline downloads** — `OfflineDownloadManager.localFile(for:)`
+2. **Committed stream-cache files** — `StreamingMediaDiskCache` under `LyraMusic/stream-cache/`
+
+**Streams without a local file:**
+
+- Playback starts immediately on `AVPlayer` (no EQ yet).
+- `prefetchInBackground` + `scheduleEqualizerHandoffWhenCached` download the progressive stream off the main actor; when complete, `swapActiveItemToEqualizerIfNeeded` reloads at the current position through the EQ engine.
+- `tryQuickEqualizerCache` (≤2.5 s off-main wait) inserts a cache candidate when the network is fast enough for EQ on first play.
+- `equalizerEnabled` also treats stream cache as enabled for candidate ordering (`streamingDiskCacheEnabled || equalizerEnabled`).
+
+**Failure handling:** EQ decode failure on a local file falls back to `AVPlayer` on the same URL. Decode/setup failures must **not** call `handleEnded()` — `onPlaybackFailed` pauses without advancing the queue. `loadPlayerItem` tries EQ first for eligible locals, then `loadAVPlayerItem`.
+
+**Files:** `EqualizerSettings.swift`, `EqualizedAudioEnginePlayer.swift`, EQ branches in `PlaybackEngine.swift` (`loadEqualizedPlayerItem`, `isEqualizerEligibleLocalFile`, handoff helpers).
 
 ## Server listening history (scrobbling)
 
@@ -122,11 +177,11 @@ Lyra submits **server** scrobbles separately from local Recently Played shelves:
 
 - **Create:** `NavidromeShareMenuSection` / `AppModel.createNavidromeShareAndNotify` — wired into album, track, and playlist context menus (Navidrome only). Copies URL to pasteboard + transient toast.
 - **Manage:** `NavidromeSharesView` under Settings lists/deletes existing server shares.
-- Chart/Downtify preview rows without a server item id omit the share action.
+- Chart/acquisition preview rows without a server item id omit the share action.
 
 ## Settings & disk I/O
 
-- **Library statistics** (`SettingsView` → Library section): fetched on appear via `AppModel.refreshLibraryStatistics()`, not during bootstrap. Jellyfin uses `TotalRecordCount` (lightweight). Navidrome uses `getArtists` + `getAlbumList2` and sums album `trackCount` for songs — **do not** call `allTracks(limit:)` for counts.
+- **Library statistics** (`SettingsLibrarySectionView`): **Your Library** counts come from personal membership state; **Server Catalog** from `AppModel.refreshLibraryStatistics()` (hub + library page). Jellyfin uses `TotalRecordCount` (lightweight). Navidrome paginates `getAlbumList2` (500/page cap) and reads `x-total-count` for album totals; artists via `libraryArtists(limit: 20_000)`; songs summed from album `trackCount` — **do not** call `allTracks(limit:)` for counts.
 - **Cache row labels** (image/metadata counts in Downloads): loaded once via `AppModel.localCacheUsageSummaryAsync()` → `OfflineDiskCacheMetrics` on a background task. Never decode `LibrarySnapshotStore` or walk download folders from a SwiftUI `body`.
 - **Download byte totals** — `OfflineDownloadManager.recalculateCacheBytes()` scans the downloads folder off the main actor; coalesces rapid calls via a generation counter.
 - **Snapshot I/O** — prefer `LibrarySnapshotStore.loadAsync()` / `saveAsync()` for startup and background work; synchronous `load()` is for small admin tools only.
@@ -141,7 +196,9 @@ Document for contributors — not an exhaustive bug list:
 | Plain unsynced lyrics | No auto-scroll by design. |
 | Jellyfin “similar tracks” | Artist search shuffle, not a similarity API. |
 | Home mixes | Minimum 3 tracks per mix; still needs enough scrobble/history signal for On Repeat / Rediscover. |
-| Navidrome Settings stats | Song totals sum album `trackCount` — may differ slightly from true track count on odd tagging; album/artist counts cap at the fetch limit on very large libraries. |
+| Navidrome Settings stats | Song totals sum album `trackCount` — may differ slightly from true track count on odd tagging. Very large libraries use paginated album/artist fetches but song sum still depends on indexed album metadata. |
+| EQ on live streams | Requires local cache or download; first uncached play is AVPlayer until background cache + handoff (or replay). |
+| Stream cache during AVPlayer | Opportunistic `CachingResourceLoaderDelegate` commits may not write on current iOS; EQ `ensureCached` / `prefetchInBackground` is the supported cache path. |
 
 ## Build / run
 

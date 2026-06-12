@@ -19,6 +19,7 @@ final class StreamingMediaDiskCache: @unchecked Sendable {
     /// Total on-disk budget. Oldest-accessed files are evicted past this.
     private let maxBytes: Int64 = 512 * 1024 * 1024
     private let lock = NSLock()
+    private var inFlightPrefetches: [String: Task<URL, Error>] = [:]
 
     private lazy var directory: URL? = {
         guard let base = try? FileManager.default.url(
@@ -44,6 +45,14 @@ final class StreamingMediaDiskCache: @unchecked Sendable {
         directory?.appendingPathComponent(key, isDirectory: false)
     }
 
+    /// Fast existence check — does not touch the file (safe during candidate scans).
+    func peekCachedFileURL(forKey key: String) -> URL? {
+        lock.lock(); defer { lock.unlock() }
+        guard let url = fileURL(forKey: key),
+              FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
+    }
+
     /// Returns the local file for a fully-cached stream, or nil. Bumps the file's
     /// modification date so it counts as recently used for LRU eviction.
     func cachedFileURL(forKey key: String) -> URL? {
@@ -52,6 +61,11 @@ final class StreamingMediaDiskCache: @unchecked Sendable {
               FileManager.default.fileExists(atPath: url.path) else { return nil }
         try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
         return url
+    }
+
+    func markAccessed(fileURL: URL) {
+        lock.lock(); defer { lock.unlock() }
+        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: fileURL.path)
     }
 
     /// A scratch URL the delegate assembles a candidate file into before committing.
@@ -82,11 +96,115 @@ final class StreamingMediaDiskCache: @unchecked Sendable {
         try? FileManager.default.removeItem(at: url)
     }
 
+    /// Downloads a progressive stream to disk when not already cached. Network and
+    /// commit work stay off the main actor; concurrent callers share one in-flight task per URL.
+    func ensureCached(url: URL, headers: [String: String] = [:], timeout: TimeInterval = 120) async throws -> URL {
+        let key = Self.key(for: url)
+        if let existing = peekCachedFileURL(forKey: key) {
+            markAccessed(fileURL: existing)
+            return existing
+        }
+        guard CachingResourceLoaderDelegate.isCacheable(url) else {
+            throw URLError(.unsupportedURL)
+        }
+
+        let task: Task<URL, Error> = lock.withLock {
+            if let existing = inFlightPrefetches[key] {
+                return existing
+            }
+            let created = Task.detached(priority: .utility) {
+                try await Self.downloadAndCommit(
+                    url: url,
+                    headers: headers,
+                    key: key,
+                    timeout: timeout,
+                    cache: self,
+                )
+            }
+            inFlightPrefetches[key] = created
+            return created
+        }
+
+        do {
+            let result = try await task.value
+            lock.withLock { inFlightPrefetches.removeValue(forKey: key) }
+            return result
+        } catch {
+            lock.withLock { inFlightPrefetches.removeValue(forKey: key) }
+            throw error
+        }
+    }
+
+    /// Fire-and-forget cache warm for EQ — must not block playback/UI.
+    func prefetchInBackground(url: URL, headers: [String: String] = [:]) {
+        let key = Self.key(for: url)
+        guard peekCachedFileURL(forKey: key) == nil,
+              CachingResourceLoaderDelegate.isCacheable(url) else { return }
+
+        let task: Task<URL, Error>? = lock.withLock {
+            if inFlightPrefetches[key] != nil { return nil }
+            let created = Task.detached(priority: .utility) {
+                try await Self.downloadAndCommit(
+                    url: url,
+                    headers: headers,
+                    key: key,
+                    timeout: 120,
+                    cache: self,
+                )
+            }
+            inFlightPrefetches[key] = created
+            return created
+        }
+        guard let task else { return }
+        Task.detached(priority: .utility) {
+            defer { self.lock.withLock { self.inFlightPrefetches.removeValue(forKey: key) } }
+            _ = try? await task.value
+        }
+    }
+
     func clear() {
         lock.lock(); defer { lock.unlock() }
+        for task in inFlightPrefetches.values { task.cancel() }
+        inFlightPrefetches.removeAll()
         guard let dir = directory else { return }
         let contents = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
         for url in contents { try? FileManager.default.removeItem(at: url) }
+    }
+
+    private static func downloadAndCommit(
+        url: URL,
+        headers: [String: String],
+        key: String,
+        timeout: TimeInterval,
+        cache: StreamingMediaDiskCache,
+    ) async throws -> URL {
+        if let existing = cache.peekCachedFileURL(forKey: key) {
+            cache.markAccessed(fileURL: existing)
+            return existing
+        }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = timeout
+        for (field, value) in headers {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
+
+        let (tempDownloadURL, response) = try await URLSession.shared.download(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            try? FileManager.default.removeItem(at: tempDownloadURL)
+            throw URLError(.badServerResponse)
+        }
+        guard (200 ... 299).contains(http.statusCode) else {
+            try? FileManager.default.removeItem(at: tempDownloadURL)
+            throw URLError(.badServerResponse)
+        }
+
+        cache.commit(temporaryFileURL: tempDownloadURL, forKey: key)
+        guard let cached = cache.peekCachedFileURL(forKey: key) else {
+            throw URLError(.cannotCreateFile)
+        }
+        cache.markAccessed(fileURL: cached)
+        return cached
     }
 
     /// Evict least-recently-modified files until under budget. Caller holds `lock`.
@@ -114,5 +232,13 @@ final class StreamingMediaDiskCache: @unchecked Sendable {
             try? FileManager.default.removeItem(at: file.url)
             total -= file.size
         }
+    }
+}
+
+private extension NSLock {
+    func withLock<T>(_ body: () throws -> T) rethrows -> T {
+        lock()
+        defer { unlock() }
+        return try body()
     }
 }
