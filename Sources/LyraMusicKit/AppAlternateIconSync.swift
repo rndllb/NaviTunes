@@ -4,33 +4,34 @@ import Foundation
 import UIKit
 #endif
 
-/// Maps Lyra accent presets to **bundled** alternate home-screen icons.
+/// Maps bundled Lyra icon presets to alternate home-screen icon sets.
 ///
-/// - **Accent (logo color):** one alternate icon set per preset (`LyraIcon-blue`, …). Switched with ``apply(accentPresetId:)``.
+/// - **Icon color:** one alternate icon set per preset (`LyraIcon-blue`, …). Switched with ``apply(iconPresetId:)``.
 /// - **Light / dark (background):** not handled here — use **Any** + **Dark** slots in each icon set in Xcode; iOS picks by system appearance.
 enum AppAlternateIconSync {
-    /// Asset catalog name for the primary icon (Settings accent `red` uses this — no alternate swap).
+    /// Asset catalog name for the primary icon (preset `red` uses this — no alternate swap).
     static let primaryIconSetName = "AppIcon"
 
-    /// Alternate set base name: `LyraIcon-{accentId}` (e.g. `LyraIcon-blue`).
-    static func alternateIconName(forAccentPresetId id: String) -> String {
+    /// Alternate set base name: `LyraIcon-{presetId}` (e.g. `LyraIcon-blue`).
+    static func alternateIconName(forIconPresetId id: String) -> String {
         "LyraIcon-\(id)"
     }
 
-    /// All accent ids that require a matching `LyraIcon-*` set in the host target asset catalog.
-    static var alternateAccentPresetIds: [String] {
+    /// All preset ids that require a matching `LyraIcon-*` set in the host target asset catalog.
+    static var alternateIconPresetIds: [String] {
         AppAccentPreset.presets.map(\.id).filter { $0 != AppAccentPreset.defaultId }
     }
 
-    /// `nil` = primary ``primaryIconSetName``; otherwise ``alternateIconName(forAccentPresetId:)``.
-    static func resolvedIconName(forAccentPresetId id: String) -> String? {
-        guard AppAccentPreset.presets.contains(where: { $0.id == id }) else {
+    /// `nil` = primary ``primaryIconSetName``; otherwise ``alternateIconName(forIconPresetId:)``.
+    static func resolvedIconName(forIconPresetId id: String) -> String? {
+        let presetId = AppAccentPreset.validIconPresetId(id)
+        guard AppAccentPreset.presets.contains(where: { $0.id == presetId }) else {
             return nil
         }
-        if id == AppAccentPreset.defaultId {
+        if presetId == AppAccentPreset.defaultId {
             return nil
         }
-        return alternateIconName(forAccentPresetId: id)
+        return alternateIconName(forIconPresetId: presetId)
     }
 
     /// Reads `CFBundleAlternateIcons` from the installed app bundle (what iOS actually sees).
@@ -44,7 +45,7 @@ enum AppAlternateIconSync {
     #if canImport(UIKit)
     @MainActor
     static func apply(
-        accentPresetId: String,
+        iconPresetId: String,
         completion: ((Bool, String?) -> Void)? = nil,
     ) {
         guard UIApplication.shared.supportsAlternateIcons else {
@@ -56,7 +57,7 @@ enum AppAlternateIconSync {
             completion?(false, message)
             return
         }
-        let target = resolvedIconName(forAccentPresetId: accentPresetId)
+        let target = resolvedIconName(forIconPresetId: iconPresetId)
         guard UIApplication.shared.alternateIconName != target else {
             completion?(true, nil)
             return

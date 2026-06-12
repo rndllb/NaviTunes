@@ -18,8 +18,12 @@ import UniformTypeIdentifiers
 /// HLS would route playlist + segment requests through here, which this byte-range
 /// proxy does not implement.
 final class CachingResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate, URLSessionDataDelegate, @unchecked Sendable {
-    private static let httpsScheme = "lyracachehttps"
-    private static let httpScheme = "lyracachehttp"
+    /// Single opaque scheme — must not embed "http"/"https" or AVFoundation's
+    /// stream stack may try to open the asset URL with URLSession directly
+    /// (unsupported URL / FigStreamPlayer errors) instead of the resource loader.
+    private static let customScheme = "lyracache"
+    /// AVFoundation option key — not always imported into Swift on all SDKs.
+    static let outOfBandMIMETypeOptionKey = "AVURLAssetOutOfBandMIMETypeKey"
 
     /// Whether a URL is safe to route through this byte-range proxy: an http(s)
     /// progressive stream, never HLS or an endpoint likely to transcode to HLS.
@@ -37,11 +41,29 @@ final class CachingResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
     static func customSchemeURL(from url: URL) -> URL? {
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
         switch url.scheme?.lowercased() {
-        case "https": components.scheme = httpsScheme
-        case "http": components.scheme = httpScheme
+        case "https", "http": components.scheme = customScheme
         default: return nil
         }
         return components.url
+    }
+
+    /// Hint content type so AVFoundation skips format sniffing on the custom-scheme
+    /// URL (which would otherwise hit URLSession with an unsupported scheme).
+    static func outOfBandMIMEType(for url: URL) -> String? {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let format = components.queryItems?
+            .first(where: { $0.name.lowercased() == "format" })?
+            .value?
+            .lowercased()
+        else { return nil }
+        switch format {
+        case "aac": return "audio/aac"
+        case "mp3": return "audio/mpeg"
+        case "flac": return "audio/flac"
+        case "opus": return "audio/ogg"
+        case "wav": return "audio/wav"
+        default: return nil
+        }
     }
 
     /// Serializes both resource-loader callbacks and all mutable state.

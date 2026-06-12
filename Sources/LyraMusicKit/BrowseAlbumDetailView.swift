@@ -4,11 +4,11 @@ import UIKit
 #endif
 
 
-/// Apple Music-style album page for New tab rows (library match → Play; otherwise Request via Downtify).
+/// Apple Music-style album page for New tab rows (library match → Play; otherwise Request via the active acquisition plugin).
 struct BrowseAlbumDetailView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var offline: OfflineDownloadManager
-    @EnvironmentObject private var downtify: DowntifyDownloadManager
+    @EnvironmentObject private var acquisition: AcquisitionManager
     @Environment(\.colorScheme) private var colorScheme
     let source: BrowseAlbumDetailSource
 
@@ -160,7 +160,7 @@ struct BrowseAlbumDetailView: View {
         isLibraryPlayback ? "arrow.down.circle" : "plus"
     }
 
-    /// Leading ⋯ control: offline cache when this release is in your library; Downtify **Request** otherwise.
+    /// Leading ⋯ control: offline cache when this release is in your library; acquisition **Request** otherwise.
     private var browseLeadingMenuAction: (() -> Void)? {
         if isLibraryPlayback {
             guard app.isSignedIn, !browseToolbarPlaylistTracks.isEmpty, app.activeLibrary != nil else { return nil }
@@ -168,7 +168,7 @@ struct BrowseAlbumDetailView: View {
                 Task { await browseDownloadLibraryTracksForOffline() }
             }
         }
-        guard app.downtifyConfigured, !isDownloading else { return nil }
+        guard app.acquisitionConfigured, !isDownloading else { return nil }
         return {
             Task { await primaryBrowseRequestAction() }
         }
@@ -277,11 +277,11 @@ struct BrowseAlbumDetailView: View {
             Section {
                 if !isLibraryPlayback, previewTracks.isEmpty {
                     Button {
-                        Task { await sendToDowntify() }
+                        Task { await requestAlbum() }
                     } label: {
-                        Label("Request via Downtify", systemImage: "arrow.down.circle.fill")
+                        Label("Request \(app.acquisitionCapabilities.displayName)", systemImage: "arrow.down.circle.fill")
                     }
-                    .disabled(!app.downtifyConfigured)
+                    .disabled(!app.acquisitionConfigured)
                 }
             }
             .tint(Color.primary)
@@ -377,7 +377,7 @@ struct BrowseAlbumDetailView: View {
                         .background(Capsule().fill(backdropPalette.heroPlayCapsuleBackground))
                     }
                     .buttonStyle(.plain)
-                    .disabled(!app.downtifyConfigured || isDownloading)
+                    .disabled(!app.acquisitionConfigured || isDownloading)
                 }
 
                 if isLibraryPlayback, let first = libraryTracks.first, let lib = app.activeLibrary {
@@ -410,19 +410,19 @@ struct BrowseAlbumDetailView: View {
                         Image(systemName: isDownloading ? "arrow.down.circle" : "plus")
                             .font(.title3.weight(.bold))
                             .foregroundStyle(
-                                app.downtifyConfigured ? backdropPalette.heroGlassIcon : backdropPalette.heroChromeTertiary.opacity(0.4)
+                                app.acquisitionConfigured ? backdropPalette.heroGlassIcon : backdropPalette.heroChromeTertiary.opacity(0.4)
                             )
                             .frame(width: 54, height: 54)
                             .background(
                                 Circle().fill(
-                                    app.downtifyConfigured
+                                    app.acquisitionConfigured
                                         ? backdropPalette.heroGlassCircleFill
                                         : backdropPalette.heroGlassCircleFillDisabled
                                 )
                             )
                     }
                     .buttonStyle(.plain)
-                    .disabled(!app.downtifyConfigured || isDownloading)
+                    .disabled(!app.acquisitionConfigured || isDownloading)
                 }
             }
             Spacer(minLength: 0)
@@ -551,9 +551,9 @@ struct BrowseAlbumDetailView: View {
             if let durationLine { parts.append(durationLine) }
             return parts.joined(separator: " · ")
         }()
-        let previewJob = downtifyJob(forPreview: preview)
+        let previewJob = acquisitionJob(forPreview: preview)
         let isRequestingPreview = previewJob.map { !$0.status.isTerminal } ?? false
-        let downtifyOfflineState: OfflineDownloadUIState? = {
+        let acquireOfflineState: OfflineDownloadUIState? = {
             guard let previewJob, !previewJob.status.isTerminal else { return nil }
             return .progress(min(1, max(0, previewJob.progress)))
         }()
@@ -562,7 +562,7 @@ struct BrowseAlbumDetailView: View {
             index: displayIndex,
             title: preview.title,
             subtitle: subtitle,
-            offlineDownload: downtifyOfflineState,
+            offlineDownload: acquireOfflineState,
             isOfflineCached: false,
             isInLibrary: false,
             isInServerCatalog: false,
@@ -571,15 +571,15 @@ struct BrowseAlbumDetailView: View {
             backdropPalette: backdropPalette,
             showsBottomDivider: showsBottomDivider,
             onRowTap: {
-                Task { await requestPreviewTrackViaDowntify(preview) }
+                Task { await requestPreviewTrack(preview) }
             },
             menuContent: {
                 ChartStyleSongOverflowMenuContent(
                     shareItem: "\(preview.title) — \(matchArtist)",
                     onAdd: {
-                        Task { await requestPreviewTrackViaDowntify(preview) }
+                        Task { await requestPreviewTrack(preview) }
                     },
-                    addDisabled: !app.downtifyConfigured || isRequestingPreview
+                    addDisabled: !app.acquisitionConfigured || isRequestingPreview
                 )
             }
         )
@@ -651,10 +651,10 @@ struct BrowseAlbumDetailView: View {
     }
 
     private var emptySongNote: String {
-        if app.downtifyConfigured {
+        if app.acquisitionConfigured {
             return "Couldn’t load a track list for this release. You can still use Request above, or try again later."
         }
-        return "Add your Downtify URL in Settings to request downloads."
+        return "Set up a download plugin in Settings to request downloads."
     }
 
     // MARK: - Footer
@@ -679,7 +679,7 @@ struct BrowseAlbumDetailView: View {
                     .foregroundStyle(backdropPalette.heroChromeSecondary)
             }
             if !previewTracks.isEmpty {
-                Text("Track list from MusicBrainz where available \u{00B7} Downtify for downloads.")
+                Text("Track list from MusicBrainz where available \u{00B7} \(app.acquisitionCapabilities.displayName) for downloads.")
                     .font(.caption)
                     .foregroundStyle(backdropPalette.heroChromeTertiary)
             }
@@ -752,25 +752,29 @@ struct BrowseAlbumDetailView: View {
 
     private func primaryBrowseRequestAction() async {
         if previewTracks.isEmpty {
-            await sendToDowntify()
+            await requestAlbum()
         } else {
             await requestAllPreviewTracksSequentially()
         }
     }
 
-    /// The manager job for a preview row, matched by normalized title (previews have no URL).
-    private func downtifyJob(forPreview preview: BrowseAlbumPreviewTrack) -> DowntifyJob? {
-        let keys = Set(LibraryTrackMatcher.normalizedTitleKeys(from: preview.title))
-        guard !keys.isEmpty else { return nil }
-        return downtify.jobs.values.first { job in
-            guard let t = job.title, !t.isEmpty else { return false }
-            return !Set(LibraryTrackMatcher.normalizedTitleKeys(from: t)).isDisjoint(with: keys)
+    /// Request for a missing preview row. Album-granularity plugins request the whole
+    /// album; track-granularity plugins request just this track.
+    private func acquisitionRequest(forPreview preview: BrowseAlbumPreviewTrack) -> AcquisitionRequest {
+        if app.acquisitionCapabilities.granularity == .album {
+            return AcquisitionRequest(artist: matchArtist, albumTitle: matchAlbumTitle, coverURL: displayArtworkURL)
         }
+        return AcquisitionRequest(artist: matchArtist, trackTitle: preview.title, albumTitle: matchAlbumTitle, coverURL: displayArtworkURL)
     }
 
-    private func requestPreviewTrackViaDowntify(_ preview: BrowseAlbumPreviewTrack) async {
-        guard app.downtifyConfigured else {
-            flashToast("Add your Downtify URL in Settings first.")
+    /// The manager job for a preview row, matched by normalized title (previews have no URL).
+    private func acquisitionJob(forPreview preview: BrowseAlbumPreviewTrack) -> AcquisitionJob? {
+        app.acquisition.job(matchingTitle: preview.title)
+    }
+
+    private func requestPreviewTrack(_ preview: BrowseAlbumPreviewTrack) async {
+        guard app.acquisitionConfigured else {
+            flashToast("Set up a download plugin in Settings first.")
             return
         }
         let song = downtifySong(forPreview: preview)
@@ -778,17 +782,21 @@ struct BrowseAlbumDetailView: View {
             flashToast("Already in your library")
             return
         }
-        await downtify.enqueue(artist: matchArtist, title: preview.title)
-        flashToast("Requested “\(preview.title)”")
+        await app.requestAcquisition(acquisitionRequest(forPreview: preview))
     }
 
     private func requestAllPreviewTracksSequentially() async {
-        guard app.downtifyConfigured else {
-            flashToast("Add your Downtify URL in Settings first.")
+        guard app.acquisitionConfigured else {
+            flashToast("Set up a download plugin in Settings first.")
             return
         }
         if previewTracks.isEmpty {
-            await sendToDowntify()
+            await requestAlbum()
+            return
+        }
+        // Album-granularity plugins request the whole release once.
+        if app.acquisitionCapabilities.granularity == .album {
+            await requestAlbum()
             return
         }
         var requested = 0
@@ -803,7 +811,7 @@ struct BrowseAlbumDetailView: View {
                 skipped += 1
                 continue
             }
-            await downtify.enqueue(artist: matchArtist, title: preview.title)
+            await app.requestAcquisition(acquisitionRequest(forPreview: preview))
             requested += 1
         }
         if requested > 0 {
@@ -816,12 +824,12 @@ struct BrowseAlbumDetailView: View {
     }
 
     private func play(startingAt track: Track?) async {
-        guard let lib = app.activeLibrary, let track else { return }
+        guard let track else { return }
         if !libraryTracks.isEmpty {
             let idx = libraryTracks.firstIndex(where: { $0.id == track.id }) ?? 0
-            try? await app.player.playAlbum(library: lib, tracks: libraryTracks, startIndex: idx)
+            await app.playAlbumOrToast(tracks: libraryTracks, startIndex: idx)
         } else {
-            try? await app.player.playAlbum(library: lib, tracks: [track], startIndex: 0)
+            await app.playAlbumOrToast(tracks: [track], startIndex: 0)
         }
     }
 
@@ -844,19 +852,15 @@ struct BrowseAlbumDetailView: View {
         app.enqueueOfflineTrack(track)
     }
 
-    private func sendToDowntify() async {
-        guard app.downtifyConfigured else {
-            flashToast("Add your Downtify URL in Settings first.")
+    private func requestAlbum() async {
+        guard app.acquisitionConfigured else {
+            flashToast("Set up a download plugin in Settings first.")
             return
         }
         isDownloading = true
         defer { isDownloading = false }
-        do {
-            let songName = try await DowntifyClient.download(artist: matchArtist, title: matchAlbumTitle)
-            flashToast("Downloading \"\(songName)\"")
-        } catch {
-            flashToast(error.musicPlaybackToastMessage)
-        }
+        let request = AcquisitionRequest(artist: matchArtist, albumTitle: matchAlbumTitle, coverURL: displayArtworkURL)
+        await app.requestAcquisition(request)
     }
 
     private func flashToast(_ msg: String) {

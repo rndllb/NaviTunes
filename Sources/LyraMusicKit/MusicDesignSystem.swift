@@ -27,23 +27,248 @@ struct AppAccentPreset: Identifiable, Equatable {
         .init(id: "lightgray", name: "Light Gray", color: Color(red: 172/255, green: 172/255, blue: 176/255)),
     ]
 
+    static let customId = "custom"
     static let defaultId = "red"
+    static let accentPresetIdKey = "lyraAccentPresetId"
+    static let appIconPresetIdKey = "lyraAppIconPresetId"
+    static let customAccentHexKey = "lyraCustomAccentHex"
+    static let defaultCustomHex = "#FA2D48"
+
+    /// Icon sets only exist for bundled presets — never ``customId``.
+    static func validIconPresetId(_ id: String) -> String {
+        presets.contains(where: { $0.id == id }) ? id : defaultId
+    }
 
     static func preset(id: String) -> AppAccentPreset {
-        presets.first { $0.id == id } ?? presets[0]
+        if id == customId {
+            let hex = UserDefaults.standard.string(forKey: customAccentHexKey) ?? defaultCustomHex
+            return .init(id: customId, name: "Custom", color: color(fromHex: hex) ?? presets[0].color)
+        }
+        return presets.first { $0.id == id } ?? presets[0]
     }
 
     static var current: AppAccentPreset {
-        preset(id: UserDefaults.standard.string(forKey: "lyraAccentPresetId") ?? defaultId)
+        preset(id: UserDefaults.standard.string(forKey: accentPresetIdKey) ?? defaultId)
+    }
+
+    static func color(fromHex hex: String) -> Color? {
+        guard let rgb = rgbComponents(fromHex: hex) else { return nil }
+        return Color(red: rgb.r, green: rgb.g, blue: rgb.b)
+    }
+
+    static func hex(from color: Color) -> String {
+        #if canImport(UIKit)
+        let ui = UIColor(color)
+        var r: CGFloat = 0
+        var g: CGFloat = 0
+        var b: CGFloat = 0
+        var a: CGFloat = 0
+        guard ui.getRed(&r, green: &g, blue: &b, alpha: &a) else { return defaultCustomHex }
+        return String(format: "#%02X%02X%02X", Int(r * 255), Int(g * 255), Int(b * 255))
+        #elseif os(macOS)
+        let ns = NSColor(color)
+        guard let rgb = ns.usingColorSpace(.sRGB) else { return defaultCustomHex }
+        return String(
+            format: "#%02X%02X%02X",
+            Int(rgb.redComponent * 255),
+            Int(rgb.greenComponent * 255),
+            Int(rgb.blueComponent * 255),
+        )
+        #else
+        return defaultCustomHex
+        #endif
+    }
+
+    static func normalizedHex(_ raw: String) -> String? {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if s.hasPrefix("#") { s.removeFirst() }
+        guard s.count == 6, s.allSatisfy(\.isHexDigit) else { return nil }
+        return "#\(s)"
+    }
+
+    private static func rgbComponents(fromHex hex: String) -> (r: Double, g: Double, b: Double)? {
+        guard let normalized = normalizedHex(hex) else { return nil }
+        let digits = normalized.dropFirst()
+        let scanner = Scanner(string: String(digits))
+        var value: UInt64 = 0
+        guard scanner.scanHexInt64(&value) else { return nil }
+        let r = Double((value >> 16) & 0xFF) / 255
+        let g = Double((value >> 8) & 0xFF) / 255
+        let b = Double(value & 0xFF) / 255
+        return (r, g, b)
     }
 }
 
-/// Accent swatch grid shared by Settings and Login (uses real Icon Composer artwork per accent).
+/// Accent swatch grid — solid color tiles per preset plus a custom eyedropper slot.
 struct AccentColorPickerGrid: View {
     @Binding var accentPresetId: String
+    @Binding var customAccentHex: String
     var showsLabels: Bool = true
     var swatchSize: CGFloat = 44
     var selectedLabelColor: Color = .white
+    var unselectedLabelColor: Color = .secondary
+
+    private var customColor: Color {
+        AppAccentPreset.color(fromHex: customAccentHex) ?? AppAccentPreset.preset(id: AppAccentPreset.defaultId).color
+    }
+
+    var body: some View {
+        LazyVGrid(
+            columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 5),
+            spacing: 14,
+        ) {
+            ForEach(AppAccentPreset.presets) { preset in
+                accentPresetButton(preset)
+            }
+            customAccentButton
+        }
+    }
+
+    private func accentPresetButton(_ preset: AppAccentPreset) -> some View {
+        Button {
+            accentPresetId = preset.id
+        } label: {
+            VStack(spacing: 6) {
+                ZStack {
+                    colorSwatch(fill: preset.color)
+                    if accentPresetId == preset.id {
+                        selectionChrome
+                    }
+                }
+                if showsLabels {
+                    Text(preset.name)
+                        .font(.caption2)
+                        .foregroundStyle(
+                            accentPresetId == preset.id ? selectedLabelColor : unselectedLabelColor,
+                        )
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func colorSwatch(fill: Color) -> some View {
+        RoundedRectangle(cornerRadius: swatchSize * 0.22, style: .continuous)
+            .fill(fill)
+            .frame(width: swatchSize, height: swatchSize)
+    }
+
+    private var customAccentButton: some View {
+        Button {
+            accentPresetId = AppAccentPreset.customId
+        } label: {
+            VStack(spacing: 6) {
+                ZStack {
+                    colorSwatch(fill: customColor)
+                        .overlay {
+                            Image(systemName: "eyedropper.halffull")
+                                .font(.system(size: swatchSize * 0.34, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.92))
+                                .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+                        }
+                    if accentPresetId == AppAccentPreset.customId {
+                        selectionChrome
+                    }
+                }
+                if showsLabels {
+                    Text("Custom")
+                        .font(.caption2)
+                        .foregroundStyle(
+                            accentPresetId == AppAccentPreset.customId ? selectedLabelColor : unselectedLabelColor,
+                        )
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var selectionChrome: some View {
+        Group {
+            RoundedRectangle(cornerRadius: swatchSize * 0.22, style: .continuous)
+                .strokeBorder(.white, lineWidth: 2.5)
+                .frame(width: swatchSize, height: swatchSize)
+            Image(systemName: "checkmark")
+                .font(.system(size: swatchSize * 0.28, weight: .bold))
+                .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
+        }
+    }
+}
+
+/// Color wheel + hex field shown when the custom accent preset is active.
+struct CustomAccentColorControls: View {
+    @Binding var accentPresetId: String
+    @Binding var customAccentHex: String
+    @State private var hexDraft = ""
+
+    private var pickerColor: Binding<Color> {
+        Binding(
+            get: {
+                AppAccentPreset.color(fromHex: customAccentHex)
+                    ?? AppAccentPreset.preset(id: AppAccentPreset.defaultId).color
+            },
+            set: { newColor in
+                customAccentHex = AppAccentPreset.hex(from: newColor)
+                accentPresetId = AppAccentPreset.customId
+                hexDraft = customAccentHex
+            },
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ColorPicker("Color", selection: pickerColor, supportsOpacity: false)
+                .tint(MusicDesign.accent)
+
+            HStack(spacing: 10) {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(pickerColor.wrappedValue)
+                    .frame(width: 36, height: 36)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5)
+                    }
+                TextField("Hex code", text: $hexDraft)
+                    .musicTextInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .keyboardType(.asciiCapable)
+                    #endif
+                    .onSubmit { commitHexDraft() }
+                    .onChange(of: hexDraft) { _, newValue in
+                        guard let normalized = AppAccentPreset.normalizedHex(newValue) else { return }
+                        customAccentHex = normalized
+                        accentPresetId = AppAccentPreset.customId
+                    }
+            }
+        }
+        .onAppear {
+            hexDraft = customAccentHex
+        }
+        .onChange(of: customAccentHex) { _, newValue in
+            if hexDraft != newValue {
+                hexDraft = newValue
+            }
+        }
+    }
+
+    private func commitHexDraft() {
+        if let normalized = AppAccentPreset.normalizedHex(hexDraft) {
+            customAccentHex = normalized
+            accentPresetId = AppAccentPreset.customId
+            hexDraft = normalized
+        } else {
+            hexDraft = customAccentHex
+        }
+    }
+}
+
+/// Home-screen icon picker — preset artwork only (no custom slot).
+struct AppIconPickerGrid: View {
+    @Binding var appIconPresetId: String
+    var showsLabels: Bool = true
+    var swatchSize: CGFloat = 44
+    var selectedLabelColor: Color = .primary
     var unselectedLabelColor: Color = .secondary
 
     var body: some View {
@@ -53,7 +278,7 @@ struct AccentColorPickerGrid: View {
         ) {
             ForEach(AppAccentPreset.presets) { preset in
                 Button {
-                    accentPresetId = preset.id
+                    appIconPresetId = preset.id
                 } label: {
                     VStack(spacing: 6) {
                         ZStack {
@@ -63,7 +288,7 @@ struct AccentColorPickerGrid: View {
                                 cornerRadius: swatchSize * 0.22,
                                 showsIconPlate: true,
                             )
-                            if accentPresetId == preset.id {
+                            if appIconPresetId == preset.id {
                                 RoundedRectangle(cornerRadius: swatchSize * 0.22, style: .continuous)
                                     .strokeBorder(.white, lineWidth: 2.5)
                                     .frame(width: swatchSize, height: swatchSize)
@@ -77,7 +302,7 @@ struct AccentColorPickerGrid: View {
                             Text(preset.name)
                                 .font(.caption2)
                                 .foregroundStyle(
-                                    accentPresetId == preset.id ? selectedLabelColor : unselectedLabelColor,
+                                    appIconPresetId == preset.id ? selectedLabelColor : unselectedLabelColor,
                                 )
                         }
                     }
@@ -617,18 +842,55 @@ extension View {
 
     /// Plain lists on the search tab.
     @ViewBuilder
-    func musicDiscoverySearchListStyle(discoverRows: Bool = false) -> some View {
-        if discoverRows {
-            listStyle(.plain)
-                .scrollContentBackground(.hidden)
-                .listSectionSeparator(.hidden)
-                .listRowSeparator(.hidden)
-        } else {
-            listStyle(.plain)
-                .scrollContentBackground(.hidden)
-                .listSectionSeparator(.hidden)
-                .listRowSeparator(.hidden)
-        }
+    func musicDiscoverySearchListStyle() -> some View {
+        listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .listSectionSeparator(.hidden)
+            .listRowSeparator(.hidden)
+            .listRowSpacing(5)
+    }
+
+    /// iOS 26+ Liquid Glass search field (bottom toolbar on iPhone). Library submenus and detail screens.
+    @ViewBuilder
+    func musicNativeSearchable(text: Binding<String>, prompt: Text) -> some View {
+        #if os(iOS)
+        searchable(text: text, placement: .automatic, prompt: prompt)
+            .searchToolbarBehavior(.automatic)
+        #else
+        searchable(text: text, prompt: prompt)
+        #endif
+    }
+
+    /// Search tab header — native ``UISearchBar`` under the top edge. Regular ``Tab`` only;
+    /// never combine with ``TabRole/search`` or ``placement: .automatic`` (those use the tab bar / bottom toolbar).
+    @ViewBuilder
+    func musicNativeSearchableTop(text: Binding<String>, prompt: Text) -> some View {
+        #if os(iOS)
+        searchable(text: text, placement: .navigationBarDrawer(displayMode: .always), prompt: prompt)
+            .searchToolbarBehavior(.automatic)
+        #else
+        searchable(text: text, prompt: prompt)
+        #endif
+    }
+
+    @ViewBuilder
+    func musicNativeSearchable(text: Binding<String>, prompt: LocalizedStringKey) -> some View {
+        musicNativeSearchable(text: text, prompt: Text(prompt))
+    }
+
+    @ViewBuilder
+    func musicNativeSearchableTop(text: Binding<String>, prompt: LocalizedStringKey) -> some View {
+        musicNativeSearchableTop(text: text, prompt: Text(prompt))
+    }
+
+    @ViewBuilder
+    func musicNativeSearchable<S: StringProtocol>(text: Binding<String>, prompt: S) -> some View {
+        musicNativeSearchable(text: text, prompt: Text(prompt))
+    }
+
+    @ViewBuilder
+    func musicNativeSearchableTop<S: StringProtocol>(text: Binding<String>, prompt: S) -> some View {
+        musicNativeSearchableTop(text: text, prompt: Text(prompt))
     }
 }
 
@@ -976,12 +1238,13 @@ extension View {
     /// Bottom hairline for chevron navigation rows; omit on the last row in a section.
     @ViewBuilder
     func musicChevronRowDivider(_ kind: MusicChevronRowDivider.Kind, shows: Bool) -> some View {
-        overlay(alignment: .bottom) {
-            if shows {
-                MusicChevronRowDivider(kind: kind)
-                    .allowsHitTesting(false)
+        listRowSeparator(.hidden)
+            .overlay(alignment: .bottom) {
+                if shows {
+                    MusicChevronRowDivider(kind: kind)
+                        .allowsHitTesting(false)
+                }
             }
-        }
     }
 }
 
