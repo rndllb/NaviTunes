@@ -1627,7 +1627,9 @@ struct NowPlayingView: View {
 
     private func nowPlayingBottomChrome(track: Track) -> some View {
         let liveRadio = isLiveRadio(track)
-        return HStack(spacing: player.showSleepTimerButton ? 56 : 84) {
+        // Spacing measured off Apple Music's plain player: outer icons sit at
+        // ~0.23 of the screen width (c2c ≈ 109pt on a 402pt screen).
+        return HStack(spacing: player.showSleepTimerButton ? 48 : 64) {
             bottomChromeIconButton(
                 showLyrics ? "quote.bubble.fill" : "quote.bubble",
                 isActive: showLyrics,
@@ -1693,8 +1695,10 @@ struct NowPlayingView: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .padding(.top, 28)
-        .padding(.bottom, 30)
+        // Apple Music: ~48pt gap up to the volume bar, ~60pt from icon centers
+        // to the screen bottom edge.
+        .padding(.top, 4)
+        .padding(.bottom, 36)
     }
 
     /// Native overflow menu for sleep timer durations — same `Menu` / `Section`
