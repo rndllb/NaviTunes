@@ -5,12 +5,6 @@ enum SearchScope: String, CaseIterable {
     case library = "Library"
 }
 
-/// Layout constants for the Search tab (`Tab(role: .search)`).
-enum DiscoverySearchLayout {
-    /// Reserved height for the pinned Discover / Library pill (`SearchLibraryView` overlay).
-    static let scopeBarClearance: CGFloat = 56
-}
-
 /// Unified navigation target so every Button-based row in Discovery search can
 /// route through one `.navigationDestination(item:)` modifier — multiple
 /// stacked modifiers conflict.
@@ -20,18 +14,7 @@ enum SearchNavTarget: Hashable {
     case playlist(PlaylistSummary)
     case artist(LibraryArtistSummary)
     case genre(LibraryGenreSummary)
-    case downtify(DowntifySong)
-}
-
-/// Reads `@Environment(\.isSearching)` (set by an ancestor `.searchable`) and
-/// hands the boolean to a builder closure. SwiftUI exposes `isSearching` only
-/// to descendants of the view that owns the `.searchable` modifier — wrapping
-/// content in this reader is the documented way to inspect the search session
-/// state from inside the modified view's body.
-private struct SearchSessionReader<Content: View>: View {
-    @Environment(\.isSearching) private var isSearching
-    @ViewBuilder var content: (_ isSearchActive: Bool) -> Content
-    var body: some View { content(isSearching) }
+    case acquire(AcquisitionResult)
 }
 
 /// Apple-Music-style genre tile used in the search idle state. Renders the
@@ -174,24 +157,26 @@ private enum HybridRow: Identifiable {
     case serverArtist(LibraryArtistSummary)
     case serverSong(Track)
     case serverAlbum(AlbumSummary)
-    case downtify(DowntifySong)
+    case acquire(AcquisitionResult)
 
     var id: String {
         switch self {
         case .serverArtist(let a): return "srv-artist-\(a.id)"
         case .serverSong(let t): return "srv-song-\(t.id)"
         case .serverAlbum(let a): return "srv-album-\(a.id)"
-        case .downtify(let s): return "dt-\(s.songId)"
+        case .acquire(let r): return "acq-\(r.id)"
         }
     }
 }
 
 struct DiscoverySearchView: View {
     @EnvironmentObject private var app: AppModel
-    @EnvironmentObject private var downtify: DowntifyDownloadManager
+    @EnvironmentObject private var acquisition: AcquisitionManager
     @Binding var searchText: String
     @Binding var scope: SearchScope
     @Binding var navigationPath: NavigationPath
+    /// True when the pinned search field is focused or has a non-empty query.
+    let isSearchSessionActive: Bool
     @State private var recentDiscover: [RecentSearchEntity] = RecentSearchEntityStore.load(for: .discover)
     @State private var recentLibrary: [RecentSearchEntity] = RecentSearchEntityStore.load(for: .library)
 
@@ -205,7 +190,7 @@ struct DiscoverySearchView: View {
 
     // Hybrid Discover-tab state.
     @State private var serverResults: CatalogSearchResults = .empty
-    @State private var downtifyResults: [DowntifySong] = []
+    @State private var acquireResults: [AcquisitionResult] = []
     @State private var isFetching = false
     @State private var searchError: String?
     @State private var hybridSearchTask: Task<Void, Never>?
@@ -245,10 +230,9 @@ struct DiscoverySearchView: View {
     private var entitySubtitleFont: Font { itemSize.subtitleFont }
     private var songTitleFont: Font { itemSize.titleFont }
     private var songSubtitleFont: Font { itemSize.subtitleFont }
-    /// Tight vertical padding so rows don't feel airy. `libraryVerticalPadding`
-    /// (10pt at medium) was visibly too generous in search lists.
-    private var entityVerticalPadding: CGFloat { 2 }
-    private var songVerticalPadding: CGFloat { 2 }
+    /// Match album-track row breathing room; scales with Settings → Song list items.
+    private var entityVerticalPadding: CGFloat { itemSize.albumVerticalPadding }
+    private var songVerticalPadding: CGFloat { itemSize.albumVerticalPadding }
     /// Discover rows sit flush on the page background (no card tint).
     private var discoverRowBackground: Color { MusicDesign.background }
     /// Library search rows keep a subtle card tint for separation.
@@ -298,15 +282,15 @@ struct DiscoverySearchView: View {
             scored.append((.serverSong(song), s, 1))
         }
 
-        for ds in downtifyResults {
-            // Suppress Downtify rows already covered by a server hit (the server
+        for result in acquireResults {
+            // Suppress acquisition rows already covered by a server hit (the server
             // row already lets the user acquire the track) or by the user's
             // personal library.
-            if LibraryTrackMatcher.firstLibraryTrack(matching: ds, in: serverTracks) != nil { continue }
-            if LibraryTrackMatcher.matchesLibrary(ds, titleIndex: app.libraryTrackTitleIndex) { continue }
-            let artist = ds.artists.joined(separator: ", ")
-            let s = Self.relevanceScore(title: ds.name, artist: artist, query: q)
-            scored.append((.downtify(ds), s, 2))
+            if LibraryTrackMatcher.firstLibraryTrack(matching: result, in: serverTracks) != nil { continue }
+            if LibraryTrackMatcher.matchesLibrary(result, titleIndex: app.libraryTrackTitleIndex) { continue }
+            let artist = result.artistLine
+            let s = Self.relevanceScore(title: result.title, artist: artist, query: q)
+            scored.append((.acquire(result), s, 2))
         }
 
         return scored
@@ -351,13 +335,6 @@ struct DiscoverySearchView: View {
         listContent
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .background(MusicDesign.background)
-            .searchable(
-                text: $searchText,
-                prompt: scope == .discover
-                    ? "Server catalog & Downtify"
-                    : "Your library",
-            )
-            .onSubmit(of: .search) { submitSearch() }
             .onChange(of: scope) { _, newScope in
             if newScope == .discover {
                 scheduleHybridSearch()
@@ -407,12 +384,12 @@ struct DiscoverySearchView: View {
     // MARK: - Discover (hybrid)
 
     private var hybridContent: some View {
-        SearchSessionReader { isSearchActive in
+        Group {
             // Three-state body matching Apple Music's search:
             //   * idle (search not focused, no query) → genre-tile grid
             //   * focused, no query → Recently Searched
             //   * has query → live hybrid results
-            if !isSearchActive && trimmedQuery.isEmpty {
+            if !isSearchSessionActive && trimmedQuery.isEmpty {
                 discoverIdleGrid
             } else if trimmedQuery.isEmpty {
                 hybridRecentlySearchedList
@@ -425,8 +402,8 @@ struct DiscoverySearchView: View {
     private var discoverIdleGrid: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                if !app.downtifyConfigured {
-                    Text("Add your Downtify server URL in Settings to enable downloads. Server search still works.")
+                if !app.acquisitionConfigured {
+                    Text("Set up a download plugin in Settings to enable requests. Server search still works.")
                         .font(.subheadline)
                         .foregroundStyle(MusicDesign.secondaryLabel)
                         .padding(.horizontal, 16)
@@ -547,7 +524,7 @@ struct DiscoverySearchView: View {
             Section {
                 recentHeader
                 if recent.isEmpty {
-                    Text("Search your server, or grab something new with Downtify.")
+                    Text("Search your server, or grab something new with your download plugin.")
                         .font(.subheadline)
                         .foregroundStyle(MusicDesign.secondaryLabel)
                         .listRowBackground(Color.clear)
@@ -561,20 +538,21 @@ struct DiscoverySearchView: View {
                         }
                         .buttonStyle(.plain)
                         .listRowBackground(discoverRowBackground)
+                        .discoverySearchListRowChrome()
                         .musicChevronRowDivider(searchArtworkDividerKind, shows: index < recent.count - 1)
                     }
                 }
             }
-            if !app.downtifyConfigured {
+            if !app.acquisitionConfigured {
                 Section {
-                    Text("Add your Downtify server URL in Settings to enable downloads. Server search still works.")
+                    Text("Set up a download plugin in Settings to enable requests. Server search still works.")
                         .font(.subheadline)
                         .foregroundStyle(MusicDesign.secondaryLabel)
                         .listRowBackground(Color.clear)
                 }
             }
         }
-        .musicDiscoverySearchListStyle(discoverRows: true)
+        .musicDiscoverySearchListStyle()
     }
 
     private var hybridResultsList: some View {
@@ -614,7 +592,7 @@ struct DiscoverySearchView: View {
                 }
             }
         }
-        .musicDiscoverySearchListStyle(discoverRows: true)
+        .musicDiscoverySearchListStyle()
     }
 
     private func loadServerGenresIfNeeded() async {
@@ -655,8 +633,8 @@ struct DiscoverySearchView: View {
             serverAlbumRow(album)
         case .serverSong(let track):
             serverSongRow(track)
-        case .downtify(let song):
-            downtifyRow(song)
+        case .acquire(let result):
+            acquireRow(result)
         }
     }
 
@@ -686,14 +664,16 @@ struct DiscoverySearchView: View {
                         .font(entitySubtitleFont)
                         .foregroundStyle(MusicDesign.secondaryLabel)
                 }
-                Spacer(minLength: 0)
-                navChevron
+                Spacer(minLength: 8)
+                MusicNavigationChevron()
             }
+            .musicChevronRowPadding()
             .padding(.vertical, entityVerticalPadding)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .listRowBackground(discoverRowBackground)
+        .discoverySearchListRowChrome()
     }
 
     // MARK: - Hybrid: server-album row (Add pill)
@@ -725,9 +705,10 @@ struct DiscoverySearchView: View {
                         .foregroundStyle(MusicDesign.secondaryLabel)
                         .lineLimit(1)
                 }
-                Spacer(minLength: 0)
-                navChevron
+                Spacer(minLength: 8)
+                MusicNavigationChevron()
             }
+            .musicChevronRowPadding()
             .padding(.vertical, entityVerticalPadding)
             .contentShape(Rectangle())
             .coverZoomSource(id: album.id)
@@ -735,14 +716,9 @@ struct DiscoverySearchView: View {
         .buttonStyle(.plain)
         .listRowBackground(discoverRowBackground)
         .libraryAlbumContextMenu(album)
+        .discoverySearchListRowChrome()
     }
 
-    /// Trailing ">" chevron used on rows that navigate to a bigger detail view.
-    private var navChevron: some View {
-        Image(systemName: "chevron.right")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(MusicDesign.secondaryLabel.opacity(0.7))
-    }
 
     // MARK: - Hybrid: server-song row (Add pill, tap = play)
 
@@ -774,15 +750,17 @@ struct DiscoverySearchView: View {
                         .foregroundStyle(MusicDesign.secondaryLabel)
                         .lineLimit(1)
                 }
-                Spacer(minLength: 0)
-                navChevron
+                Spacer(minLength: 8)
+                MusicNavigationChevron()
             }
             .coverZoomSource(id: track.albumId)
+            .musicChevronRowPadding()
             .padding(.vertical, songVerticalPadding)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .listRowBackground(discoverRowBackground)
+        .discoverySearchListRowChrome()
         .contextMenu {
             serverSongContextMenu(track)
         }
@@ -854,32 +832,33 @@ struct DiscoverySearchView: View {
         )
     }
 
-    // MARK: - Hybrid: Downtify row (Download pill + tappable detail)
+    // MARK: - Hybrid: acquisition row (Download pill + tappable detail)
 
-    private func downtifyRow(_ song: DowntifySong) -> some View {
-        // Whole-row tap → Downtify detail view. The Download pill stays as a
-        // secondary action so users can kick off a download without first
+    private func acquireRow(_ result: AcquisitionResult) -> some View {
+        // Whole-row tap → acquisition detail view. The Download pill stays as a
+        // secondary action so users can kick off a request without first
         // opening the detail.
-        HStack(spacing: 12) {
+        let job = acquisition.job(forKey: result.request.requestKey)
+        return HStack(spacing: 12) {
             Button {
                 recordRecent(.init(
                     kind: .song,
-                    primaryId: "downtify:\(song.songId)",
-                    title: song.name,
-                    subtitle: song.artists.joined(separator: ", "),
-                    artworkURL: song.coverURL,
+                    primaryId: "acquire:\(result.id)",
+                    title: result.title,
+                    subtitle: result.artistLine,
+                    artworkURL: result.coverURL,
                 ))
-                navigationPath.append(SearchNavTarget.downtify(song))
+                navigationPath.append(SearchNavTarget.acquire(result))
             } label: {
                 HStack {
-                    downtifyRowArtworkAndTitles(song)
+                    acquireRowArtworkAndTitles(result)
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
-            if let job = downtify.job(forURL: song.url), !job.status.isTerminal {
+            if let job, !job.status.isTerminal {
                 VStack(alignment: .trailing, spacing: 3) {
                     ProgressView(value: min(1, job.progress))
                         .tint(MusicDesign.accent)
@@ -889,7 +868,7 @@ struct DiscoverySearchView: View {
                         .foregroundStyle(MusicDesign.secondaryLabel)
                 }
                 .frame(width: 56, alignment: .trailing)
-            } else if let job = downtify.job(forURL: song.url), job.status == .failed {
+            } else if let job, job.status == .failed {
                 Image(systemName: "exclamationmark.circle.fill")
                     .foregroundStyle(.red)
                     .frame(width: 56, alignment: .trailing)
@@ -898,21 +877,23 @@ struct DiscoverySearchView: View {
                     label: "Download",
                     systemImage: "arrow.down",
                     busy: false,
-                    disabled: !app.downtifyConfigured || downtify.isActive(url: song.url),
+                    disabled: !app.acquisitionConfigured || acquisition.isActive(key: result.request.requestKey),
                 ) {
-                    Task { await downloadSong(song) }
+                    Task { await requestResult(result) }
                 }
             }
         }
+        .musicChevronRowPadding()
         .padding(.vertical, songVerticalPadding)
         .listRowBackground(discoverRowBackground)
+        .discoverySearchListRowChrome()
     }
 
     @ViewBuilder
-    private func downtifyRowArtworkAndTitles(_ song: DowntifySong) -> some View {
+    private func acquireRowArtworkAndTitles(_ result: AcquisitionResult) -> some View {
         HStack(spacing: 12) {
             Group {
-                if let art = song.coverURL {
+                if let art = result.coverURL {
                     RemoteArtworkScaledFill(url: art, maxPixelSize: 180) {
                         artPlaceholder
                     }
@@ -925,17 +906,17 @@ struct DiscoverySearchView: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
-                    Text(song.name)
+                    Text(result.title)
                         .font(songTitleFont)
                         .foregroundStyle(.primary)
                         .lineLimit(1)
-                    if song.explicit == true {
+                    if result.explicit {
                         Image(systemName: "e.square.fill")
                             .font(.caption2)
                             .foregroundStyle(MusicDesign.secondaryLabel)
                     }
                 }
-                Text("Song · \(song.artists.joined(separator: ", "))")
+                Text(result.subtitle ?? "Song · \(result.artistLine)")
                     .font(songSubtitleFont)
                     .foregroundStyle(MusicDesign.secondaryLabel)
                     .lineLimit(1)
@@ -985,11 +966,11 @@ struct DiscoverySearchView: View {
     // MARK: - Library (personal)
 
     private var libraryContent: some View {
-        SearchSessionReader { isSearchActive in
+        Group {
             // Apple Music's Library search tab idle shows a sparse prompt + recent
             // searches rather than category tiles; results appear once the field
             // is focused. Mirror that: skip the genre grid here.
-            if !isSearchActive && trimmedQuery.isEmpty {
+            if !isSearchSessionActive && trimmedQuery.isEmpty {
                 libraryIdleContent
             } else if trimmedQuery.isEmpty {
                 libraryRecentlySearchedList
@@ -1045,6 +1026,7 @@ struct DiscoverySearchView: View {
                         }
                         .buttonStyle(.plain)
                         .listRowBackground(libraryRowBackground)
+                        .discoverySearchListRowChrome()
                         .musicChevronRowDivider(searchArtworkDividerKind, shows: index < recent.count - 1)
                     }
                 }
@@ -1078,16 +1060,18 @@ struct DiscoverySearchView: View {
                                 ))
                                 navigationPath.append(SearchNavTarget.album(app.albumSummary(for: track)))
                             } label: {
-                                HStack {
+                                HStack(spacing: 0) {
                                     personalSongRow(track)
-                                    Spacer(minLength: 0)
-                                    navChevron
+                                    Spacer(minLength: 8)
+                                    MusicNavigationChevron()
                                 }
+                                .musicChevronRowPadding()
                                 .contentShape(Rectangle())
                                 .coverZoomSource(id: track.albumId)
                             }
                             .buttonStyle(.plain)
                             .listRowBackground(libraryRowBackground)
+                            .discoverySearchListRowChrome()
                             .contextMenu { serverSongContextMenu(track) }
                             .musicChevronRowDivider(searchArtworkDividerKind, shows: index < results.songs.count - 1)
                         }
@@ -1106,16 +1090,18 @@ struct DiscoverySearchView: View {
                                 ))
                                 navigationPath.append(SearchNavTarget.album(album))
                             } label: {
-                                HStack {
+                                HStack(spacing: 0) {
                                     albumRow(album)
-                                    Spacer(minLength: 0)
-                                    navChevron
+                                    Spacer(minLength: 8)
+                                    MusicNavigationChevron()
                                 }
+                                .musicChevronRowPadding()
                                 .contentShape(Rectangle())
                                 .coverZoomSource(id: album.id)
                             }
                             .buttonStyle(.plain)
                             .listRowBackground(libraryRowBackground)
+                            .discoverySearchListRowChrome()
                             .libraryAlbumContextMenu(album)
                             .musicChevronRowDivider(searchArtworkDividerKind, shows: index < results.albums.count - 1)
                         }
@@ -1134,16 +1120,18 @@ struct DiscoverySearchView: View {
                                 ))
                                 navigationPath.append(SearchNavTarget.playlist(playlist))
                             } label: {
-                                HStack {
+                                HStack(spacing: 0) {
                                     playlistRow(playlist)
-                                    Spacer(minLength: 0)
-                                    navChevron
+                                    Spacer(minLength: 8)
+                                    MusicNavigationChevron()
                                 }
+                                .musicChevronRowPadding()
                                 .contentShape(Rectangle())
                                 .coverZoomSource(id: playlist.id)
                             }
                             .buttonStyle(.plain)
                             .listRowBackground(libraryRowBackground)
+                            .discoverySearchListRowChrome()
                             .libraryPlaylistContextMenu(playlist)
                             .musicChevronRowDivider(searchArtworkDividerKind, shows: index < results.playlists.count - 1)
                         }
@@ -1167,14 +1155,16 @@ struct DiscoverySearchView: View {
                                     Text(artist.name)
                                         .font(entityTitleFont)
                                         .foregroundStyle(.primary)
-                                    Spacer(minLength: 0)
-                                    navChevron
+                                    Spacer(minLength: 8)
+                                    MusicNavigationChevron()
                                 }
+                                .musicChevronRowPadding()
                                 .padding(.vertical, entityVerticalPadding)
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                             .listRowBackground(libraryRowBackground)
+                            .discoverySearchListRowChrome()
                             .musicChevronRowDivider(searchArtworkDividerKind, shows: index < results.artists.count - 1)
                         }
                     }
@@ -1288,9 +1278,10 @@ struct DiscoverySearchView: View {
                     .foregroundStyle(MusicDesign.secondaryLabel)
                     .lineLimit(1)
             }
-            Spacer(minLength: 0)
-            navChevron
+            Spacer(minLength: 8)
+            MusicNavigationChevron()
         }
+        .musicChevronRowPadding()
         .padding(.vertical, entityVerticalPadding)
         .contentShape(Rectangle())
     }
@@ -1373,7 +1364,7 @@ struct DiscoverySearchView: View {
         let q = trimmedQuery
         guard !q.isEmpty else {
             serverResults = .empty
-            downtifyResults = []
+            acquireResults = []
             searchError = nil
             isFetching = false
             return
@@ -1394,13 +1385,15 @@ struct DiscoverySearchView: View {
             let offline = app.searchOfflineCatalog(query: query, limit: 30)
             if Task.isCancelled || trimmedQuery != query { return }
             serverResults = offline
-            downtifyResults = []
+            acquireResults = []
             isFetching = false
             return
         }
 
         let lib = app.activeLibrary
-        let downtifyOK = app.downtifyConfigured && !app.effectiveOfflineMode
+        let acquireOK = app.acquisitionConfigured
+            && app.acquisitionCapabilities.supportsTrackSearch
+            && !app.effectiveOfflineMode
 
         let server: CatalogSearchResults
         if let lib {
@@ -1411,14 +1404,14 @@ struct DiscoverySearchView: View {
         if Task.isCancelled || trimmedQuery != query { return }
         serverResults = server
 
-        let downtify: [DowntifySong]
-        if downtifyOK {
-            downtify = (try? await DowntifyClient.search(query: query)) ?? []
+        let acquire: [AcquisitionResult]
+        if acquireOK {
+            acquire = await acquisition.search(query: query)
         } else {
-            downtify = []
+            acquire = []
         }
         if Task.isCancelled || trimmedQuery != query { return }
-        downtifyResults = downtify
+        acquireResults = acquire
         isFetching = false
     }
 
@@ -1439,17 +1432,16 @@ struct DiscoverySearchView: View {
         flashToast("Added \"\(track.title)\" to library")
     }
 
-    private func downloadSong(_ song: DowntifySong) async {
-        guard !LibraryTrackMatcher.matchesLibrary(song, titleIndex: app.libraryTrackTitleIndex) else {
+    private func requestResult(_ result: AcquisitionResult) async {
+        guard !LibraryTrackMatcher.matchesLibrary(result, titleIndex: app.libraryTrackTitleIndex) else {
             flashToast("Already in your library")
             return
         }
-        guard app.downtifyConfigured else {
-            flashToast("Add your Downtify URL in Settings first.")
+        guard app.acquisitionConfigured else {
+            flashToast("Set up a download plugin in Settings first.")
             return
         }
-        await downtify.enqueue(song: song)
-        flashToast("Requested “\(song.name)”")
+        await app.requestAcquisition(result.request)
     }
 
     private func flashToast(_ msg: String) {
@@ -1461,11 +1453,12 @@ struct DiscoverySearchView: View {
     }
 }
 
-// MARK: - Discover / Library scope pill (pinned in `SearchLibraryView`)
+// MARK: - Discover / Library scope (login-style segmented picker)
 
-/// Floating liquid-glass Discover / Library control; overlay is outside `isSearching` layout shifts.
+/// Discover / Library scope — matches ``LoginView``'s Jellyfin / Navidrome segmented picker.
 struct DiscoverLibraryScopeBar: View {
     @Binding var scope: SearchScope
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Picker("Scope", selection: $scope) {
@@ -1474,34 +1467,30 @@ struct DiscoverLibraryScopeBar: View {
             }
         }
         .pickerStyle(.segmented)
-        .controlSize(.large)
-        .frame(maxWidth: .infinity)
-        .padding(6)
-        .musicGlassCapsuleInteractiveChrome()
-        .padding(.horizontal, 8)
-        .padding(.top, 4)
-        .padding(.bottom, 8)
+        .tint(colorScheme == .dark ? MusicDesign.accent : nil)
     }
 }
 
-// MARK: - Downtify song detail
+// MARK: - Acquisition result detail
 
-/// Pushed when a Downtify result is tapped. Apple-Music-style preview with a
-/// large artwork, song metadata, and a primary Download action. Download state
-/// comes from the shared `DowntifyDownloadManager`, so progress survives the
-/// navigation push and matches the search row.
-struct DowntifySongDetailView: View {
+/// Pushed when an acquisition search result is tapped. Apple-Music-style preview with a
+/// large artwork, metadata, and a primary Request action. Download state comes from the
+/// shared `AcquisitionManager`, so progress survives the navigation push and matches the
+/// search row.
+struct AcquireResultDetailView: View {
     @EnvironmentObject private var app: AppModel
-    @EnvironmentObject private var downtify: DowntifyDownloadManager
-    let song: DowntifySong
+    @EnvironmentObject private var acquisition: AcquisitionManager
+    let result: AcquisitionResult
 
     @State private var statusMessage: String?
 
-    private var artistsLine: String { song.artists.joined(separator: ", ") }
+    private var artistsLine: String { result.artistLine }
 
     private var alreadyInLibrary: Bool {
-        LibraryTrackMatcher.matchesLibrary(song, titleIndex: app.libraryTrackTitleIndex)
+        LibraryTrackMatcher.matchesLibrary(result, titleIndex: app.libraryTrackTitleIndex)
     }
+
+    private var job: AcquisitionJob? { acquisition.job(forKey: result.request.requestKey) }
 
     var body: some View {
         ScrollView {
@@ -1511,10 +1500,10 @@ struct DowntifySongDetailView: View {
 
                 VStack(spacing: 6) {
                     HStack(spacing: 6) {
-                        Text(song.name)
+                        Text(result.title)
                             .font(.title2.weight(.bold))
                             .multilineTextAlignment(.center)
-                        if song.explicit {
+                        if result.explicit {
                             Image(systemName: "e.square.fill")
                                 .font(.caption)
                                 .foregroundStyle(MusicDesign.secondaryLabel)
@@ -1524,7 +1513,7 @@ struct DowntifySongDetailView: View {
                         .font(.headline)
                         .foregroundStyle(MusicDesign.secondaryLabel)
                         .multilineTextAlignment(.center)
-                    if !song.albumName.isEmpty || song.year != nil {
+                    if !metadataLine.isEmpty {
                         Text(metadataLine)
                             .font(.subheadline)
                             .foregroundStyle(MusicDesign.secondaryLabel)
@@ -1548,21 +1537,22 @@ struct DowntifySongDetailView: View {
             .frame(maxWidth: .infinity)
         }
         .background(MusicDesign.background)
-        .navigationTitle(song.name)
+        .navigationTitle(result.title)
         .musicNavigationBarTitleDisplayMode(.inline)
     }
 
     private var metadataLine: String {
         var parts: [String] = []
-        if !song.albumName.isEmpty { parts.append(song.albumName) }
-        if let y = song.year { parts.append(String(y)) }
+        if let sub = result.subtitle, !sub.isEmpty { parts.append(sub) }
+        if !result.albumName.isEmpty { parts.append(result.albumName) }
+        if let y = result.year { parts.append(String(y)) }
         return parts.joined(separator: " · ")
     }
 
     @ViewBuilder
     private var artwork: some View {
         Group {
-            if let url = song.coverURL {
+            if let url = result.coverURL {
                 RemoteArtworkScaledFill(url: url, maxPixelSize: 900) {
                     artworkPlaceholder
                 }
@@ -1593,7 +1583,7 @@ struct DowntifySongDetailView: View {
                 .padding(.horizontal, 28)
                 .padding(.vertical, 12)
                 .background(Capsule().fill(MusicDesign.chromeCapsuleFill))
-        } else if let job = downtify.job(forURL: song.url), !job.status.isTerminal {
+        } else if let job, !job.status.isTerminal {
             VStack(spacing: 6) {
                 ProgressView(value: min(1, job.progress))
                     .tint(MusicDesign.accent)
@@ -1602,7 +1592,7 @@ struct DowntifySongDetailView: View {
                     .font(.subheadline.weight(.semibold).monospacedDigit())
                     .foregroundStyle(MusicDesign.secondaryLabel)
             }
-        } else if let job = downtify.job(forURL: song.url), job.status == .failed {
+        } else if let job, job.status == .failed {
             Label("Download failed", systemImage: "exclamationmark.circle.fill")
                 .font(.headline)
                 .foregroundStyle(.red)
@@ -1611,7 +1601,7 @@ struct DowntifySongDetailView: View {
                 .background(Capsule().fill(MusicDesign.chromeCapsuleFill))
         } else {
             Button {
-                Task { await runDownload() }
+                Task { await runRequest() }
             } label: {
                 Label("Download", systemImage: "arrow.down.circle.fill")
                     .font(.headline)
@@ -1621,17 +1611,24 @@ struct DowntifySongDetailView: View {
                     .foregroundStyle(.white)
             }
             .buttonStyle(.plain)
-            .disabled(!app.downtifyConfigured)
-            .opacity(app.downtifyConfigured ? 1 : 0.5)
+            .disabled(!app.acquisitionConfigured)
+            .opacity(app.acquisitionConfigured ? 1 : 0.5)
         }
     }
 
-    private func runDownload() async {
-        guard app.downtifyConfigured else {
-            statusMessage = "Add your Downtify URL in Settings first."
+    private func runRequest() async {
+        guard app.acquisitionConfigured else {
+            statusMessage = "Set up a download plugin in Settings first."
             return
         }
-        await downtify.enqueue(song: song)
-        statusMessage = "Requested “\(song.name)”"
+        await app.requestAcquisition(result.request)
+        statusMessage = "Requested “\(result.title)”"
+    }
+}
+
+private extension View {
+    /// Zero list insets so ``musicChevronRowPadding()`` + ``musicChevronRowDivider`` align with text and chevron.
+    func discoverySearchListRowChrome() -> some View {
+        listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
     }
 }

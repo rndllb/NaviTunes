@@ -9,9 +9,6 @@ struct MusicNewTabView: View {
     @State private var navigateLibraryTrack: Track?
     @State private var navigateLibraryAlbum: AlbumSummary?
     @State private var browseChartSingle: ChartTrack?
-    @State private var downtifyDownloadingIds: Set<String> = []
-    @State private var downtifyDownloadFraction: [String: Double] = [:]
-    @State private var downtifyToast: String?
     /// Shows the custom **New** + profile row; driven by vertical scroll offset via ``onScrollGeometryChange``.
     @State private var newTabShowFloatingHeader = true
 
@@ -96,19 +93,6 @@ struct MusicNewTabView: View {
             .deepLinkPush(tab: .new, path: $navigationPath)
         }
         .coverZoomContext()
-        .overlay(alignment: .bottom) {
-            if let downtifyToast {
-                Text(downtifyToast)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.primary)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(Capsule().fill(MusicDesign.chromeCapsuleFill))
-                    .padding(.bottom, 28)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        }
-        .animation(.easeInOut(duration: 0.2), value: downtifyToast)
         .tint(MusicDesign.accent)
     }
 
@@ -356,31 +340,26 @@ struct MusicNewTabView: View {
         .frame(maxHeight: .infinity, alignment: .top)
     }
 
-    /// Native ``Menu`` (UIKit `UIMenu`) for chart ⋯ — same pattern as Downtify rows in ``DiscoverySearchView``.
+    /// Native ``Menu`` (UIKit `UIMenu`) for chart ⋯ — same pattern as acquisition rows in ``DiscoverySearchView``.
     @ViewBuilder
     private func newTabChartOverflowEllipsis(track: ChartTrack) -> some View {
-        let song = DowntifySong(chartTrack: track)
+        let request = Self.acquisitionRequest(for: track)
         let resolvedTrack = resolvedLibraryTrack(for: track)
-        if downtifyDownloadingIds.contains(song.songId) {
+        if let job = app.acquisition.job(forKey: request.requestKey), !job.status.isTerminal {
             VStack(alignment: .trailing, spacing: 3) {
-                if let fr = downtifyDownloadFraction[song.songId] {
-                    ProgressView(value: min(1, fr))
-                        .tint(MusicDesign.accent)
-                        .frame(width: 52)
-                    Text("\(Int((min(1, fr) * 100).rounded()))%")
-                        .font(.caption2.weight(.medium).monospacedDigit())
-                        .foregroundStyle(MusicDesign.secondaryLabel)
-                } else {
-                    ProgressView()
-                        .tint(MusicDesign.accent)
-                }
+                ProgressView(value: min(1, job.progress))
+                    .tint(MusicDesign.accent)
+                    .frame(width: 52)
+                Text("\(Int((min(1, job.progress) * 100).rounded()))%")
+                    .font(.caption2.weight(.medium).monospacedDigit())
+                    .foregroundStyle(MusicDesign.secondaryLabel)
             }
             .frame(width: 54, alignment: .trailing)
         } else {
             NewTabChartOverflowPanel(
                 track: track,
                 onAdd: {
-                    Task { await requestDowntifyDownload(for: song) }
+                    Task { await requestAcquisition(for: track) }
                 },
                 onGoToAlbum: {
                     browseChartSingle = track
@@ -461,37 +440,26 @@ struct MusicNewTabView: View {
         }
     }
 
-    private func requestDowntifyDownload(for song: DowntifySong) async {
-        guard !downtifyDownloadingIds.contains(song.songId) else { return }
-        guard !LibraryTrackMatcher.matchesLibrary(song, titleIndex: app.libraryTrackTitleIndex) else {
-            flashDowntifyToast("Already in your library")
-            return
-        }
-        downtifyDownloadingIds.insert(song.songId)
-        downtifyDownloadFraction[song.songId] = 0
-        defer {
-            downtifyDownloadingIds.remove(song.songId)
-            downtifyDownloadFraction.removeValue(forKey: song.songId)
-        }
-        let artistLine = song.artists.joined(separator: ", ")
-        do {
-            let name = try await DowntifyClient.download(artist: artistLine, title: song.name) { p in
-                Task { @MainActor in
-                    downtifyDownloadFraction[song.songId] = p
-                }
-            }
-            flashDowntifyToast("Downloading \"\(name)\"")
-        } catch {
-            flashDowntifyToast(error.localizedDescription)
-        }
+    /// Builds the unified request for a chart row. Album rows request at album
+    /// granularity; single rows request the track. Either works for any plugin.
+    private static func acquisitionRequest(for track: ChartTrack) -> AcquisitionRequest {
+        let isAlbum = track.browseKind.caseInsensitiveCompare("Album") == .orderedSame
+        return AcquisitionRequest(
+            artist: track.artistName,
+            trackTitle: isAlbum ? nil : track.name,
+            albumTitle: isAlbum ? track.name : nil,
+            coverURL: track.imageURL
+        )
     }
 
-    private func flashDowntifyToast(_ msg: String) {
-        downtifyToast = msg
-        Task {
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            downtifyToast = nil
+    private func requestAcquisition(for track: ChartTrack) async {
+        let request = Self.acquisitionRequest(for: track)
+        if request.trackTitle != nil,
+           LibraryTrackMatcher.matchesLibrary(title: track.name, artists: [track.artistName], titleIndex: app.libraryTrackTitleIndex) {
+            app.showTransientToast("Already in your library")
+            return
         }
+        await app.requestAcquisition(request)
     }
 
     // MARK: - Album Shelves

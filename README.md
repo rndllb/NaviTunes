@@ -34,7 +34,8 @@ Built in SwiftUI for iOS 26, with an Apple Music–style layout: Home / New / Ra
 
 - **Discovery** tab — server catalog search (MusicBrainz new releases, TheAudioDB trending, iTunes artwork enrichment).
 - **Library search** — personal library only (songs in your magic playlist / indexed discovery cache).
-- **Downtify** integration — request missing tracks via companion app; optional auto-add to personal library after server scan.
+- **Acquisition plugins** — request missing music through a swappable backend (Downtify, Lidarr); optional auto-add to personal library after server scan.
+- **Artist following** — follow artists from the artist page; Settings → Plugins → Following keeps discographies complete via MusicBrainz + the active acquisition plugin (wishlist when no album-level plugin is configured).
 
 ### Playback
 
@@ -42,6 +43,8 @@ Built in SwiftUI for iOS 26, with an Apple Music–style layout: Home / New / Ra
 - Mini player, persisted queue restore, playback speed, sleep timer, skip-interval buttons.
 - Lock-screen remote: skip track vs skip interval modes.
 - **Play more like this**, play artist (configurable: top songs / shuffle album / full discography), go to artist/album/playlist.
+- **10-band graphic equalizer** — `AVAudioEngine` + `AVAudioUnitEQ` on local audio (downloads + stream cache); streams start immediately and auto-switch to EQ once cached locally.
+- **Stream disk cache** — optional replay cache for progressive streams; EQ mode also warms cache in the background.
 - **Synced lyrics** (Navidrome structured LRC / Jellyfin lyrics API) with Apple Music–style focus scroll; plain-text lyrics shown unsynced.
 - **My Listening** analytics — streaks, heatmap, top artists/tracks from completed server scrobbles.
 - Stale track ID recovery after server rescans (queue + downloads + personal library).
@@ -57,16 +60,24 @@ Built in SwiftUI for iOS 26, with an Apple Music–style layout: Home / New / Ra
 
 ### Settings
 
-- **Sound & Playback** — streaming quality, download quality, player controls, album metadata refresh threshold, artist play mode.
-- **Library & Data** — show mixes in Playlists, scrobble browser/exclusions, **My Listening**, client backup/restore (scrobbles, exclusions, prefs — not credentials or server library), Navidrome share links (create from item menus, list/delete in Settings), library scan controls.
-- **Appearance** — system/light/dark theme, accent color, 9 alternate app icons.
-- **Server health** pill, **library statistics** (Jellyfin: accurate totals; Navidrome: approximate from album index), sync status.
-- **6-band graphic EQ** with savable presets.
+iOS Settings–style **hub** (`SettingsView`) with dedicated subpages (`SettingsSections.swift`):
+
+- **Account** — profile, server connection, sign out.
+- **Library** — **Your Library** (personal magic-playlist counts) vs **Server Catalog** (full-server totals). Navidrome catalog stats use paginated `getAlbumList2` + `x-total-count` (no longer capped at 500 albums).
+- **Sync** — library membership sync status.
+- **Library & Data** — show mixes in Playlists, scrobble browser/exclusions, **My Listening**, client backup/restore (scrobbles, exclusions, prefs — not credentials or server library), Navidrome share links, library scan controls.
+- **Offline** / **Downloads** — offline mode, auto-offline, download queue and storage browser.
+- **Sound & Playback** — Wi‑Fi/cellular streaming quality, download quality, stream cache toggle, **equalizer** (presets + per-band sliders), player controls, artist play mode.
+- **Appearance** — theme, song list size, backdrop toggles, **accent color** (presets + custom hex), **app icon** (independent from accent — custom accents have no matching icon artwork).
+- **Plugins** — MusicBrainz toggle, **Downloads** (acquisition plugin picker + activity), **Following** (subscription management).
+- **About** — app info.
+- **Server health** pill on the hub; library stats refresh on Settings appear.
 
 ### Integrations
 
 - **Server scrobbling** — now playing + completed plays with pending queue and retry.
 - **CarPlay** (`CarPlayCoordinator`).
+- **Artist following** — MusicBrainz discography diff + acquisition enqueue (`MusicSubscriptionEngine`); works as a wishlist without a download plugin.
 - Transient toasts for queue/library confirmations.
 - Navidrome profile picture via magic-playlist cover upload.
 
@@ -80,9 +91,14 @@ Lyra Music IOS/
 │       ├── AppModel.swift              # App-wide state
 │       ├── JellyfinMusicClient.swift
 │       ├── NavidromeClient.swift
-│       ├── PlaybackEngine.swift
+│       ├── PlaybackEngine.swift        # AVPlayer + optional EQ engine path
+│       ├── EqualizedAudioEnginePlayer.swift
+│       ├── StreamingMediaDiskCache.swift
+│       ├── AcquisitionManager.swift    # Downtify / Lidarr plugins
+│       ├── MusicSubscriptionEngine.swift
 │       ├── HomeMixBuilder.swift        # Tuned In mixes
 │       ├── OfflineDownloadManager.swift
+│       ├── SettingsSections.swift      # Settings subpages
 │       └── …
 └── LyraMusicHost/
     ├── LyraMusicHost.xcodeproj         # iOS app target
@@ -122,9 +138,23 @@ Plain `http://` is allowed for LAN, Tailscale, and homelab setups (`NSAllowsArbi
 
 Settings → Sound & Playback: independent Wi‑Fi streaming, cellular streaming, and download quality/format pickers.
 
-### Downtify
+### Acquisition plugins (requesting music)
 
-Settings → Plugins → Downtify URL. When configured, download/search actions appear on tracks missing from your library.
+Settings → Plugins → Downloads. Requesting missing music goes through a single swappable
+**acquisition plugin** — one is active at a time:
+
+| Plugin | Granularity | Track search | Config |
+|---|---|---|---|
+| **Downtify** | Track | Yes | Server URL |
+| **Lidarr** | Album | No | Server URL + API key |
+
+Every UI request (Discovery search, browse album, missing playlist/album rows, chart rows)
+builds one `AcquisitionRequest` and calls `app.requestAcquisition(_:)`, so backends are
+interchangeable. Track-search plugins surface download candidates in Discovery; album-level
+plugins resolve the album in MusicBrainz and request the whole release. Per-plugin
+credentials persist under distinct keys, so switching back keeps your settings. The
+Downloads screen has a Test Connection button and a unified Activity list (including items
+queued outside Lyra).
 
 ### Discovery sources
 
@@ -136,7 +166,9 @@ Settings → Plugins → Downtify URL. When configured, download/search actions 
 
 - `AppModel` — active client, library snapshot, playback, offline manager, settings.
 - `MusicLibraryProviding` — cross-backend abstraction (`JellyfinMusicClient`, `NavidromeClient`).
-- `PlaybackEngine` — `AVPlayer` + Now Playing + remote commands.
+- `PlaybackEngine` — `AVPlayer` (default) or `EqualizedAudioEnginePlayer` (EQ on local files) + Now Playing + remote commands.
+- `StreamingMediaDiskCache` — LRU cache for progressive streams; `ensureCached` / background prefetch powers EQ on streams.
+- `AcquisitionManager` — swappable download/request plugins; `MusicSubscriptionEngine` — follow-artist discography completeness.
 - `OfflineDownloadManager` — downloads under `Documents/LyraMusic/Downloads/`.
 - `LibrarySnapshotStore` — persisted albums/tracks/playlists between launches.
 - Personal library — magic playlist + JSON membership payload on server.
@@ -155,7 +187,9 @@ See **CLAUDE.md** for backend capability differences, library semantics, lyrics 
 | **Auto-offline** | Restricts Discovery search to downloaded content; does not fully gate Home/Library streaming. SSID detection needs location permission on iOS. |
 | **Client backup** | Exports local scrobbles, exclusions, playback prefs — not credentials, audio files, or server magic-playlist state. |
 | **Jellyfin “similar tracks”** | Artist search shuffle, not true similarity API. |
-| **Navidrome library stats** | Settings → Library counts are approximate (album index + summed `trackCount`; large libraries may hit the fetch cap). |
+| **Navidrome library stats** | Server catalog song totals sum album `trackCount` — may differ slightly from true track count on odd tagging. Album/artist counts use paginated fetches on large libraries. |
+| **Equalizer on streams** | EQ requires a local file (`AVAudioFile`). First play of an uncached stream uses normal playback, then auto-switches to EQ once cached (or on replay). Downloads get EQ immediately. |
+| **Stream cache toggle** | Opportunistic replay cache during AVPlayer playback is limited on current iOS; EQ-driven background prefetch is the reliable cache path. |
 | **Navidrome share from charts** | Create Share Link needs a server track/album/playlist id — chart preview rows without one skip the action. |
 
 ## Security
