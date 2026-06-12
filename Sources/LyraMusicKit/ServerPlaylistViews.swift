@@ -19,25 +19,59 @@ private struct PlaylistVisibilityFields: View {
 
 // MARK: - Add to playlist (global sheet)
 
+/// Sort orders for the add-to-playlist sheet (mirrors Library → Playlists).
+/// Apple Music defaults this surface to Playlist Type.
+private enum AddToPlaylistSort: String, CaseIterable {
+    case title = "Title"
+    case dateAdded = "Date Added"
+    case lastPlayed = "Last Played"
+    case updatedDate = "Updated Date"
+    case playlistType = "Playlist Type"
+}
+
+/// Apple-Music-style picker: X / centered title / sort menu header, "Find in
+/// Playlists" search, Recents + All Playlists artwork rows, bottom-bar "+"
+/// (New Playlist / New Folder) and multi-select toggle.
 struct AddToPlaylistSheet: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.dismiss) private var dismiss
 
     let tracks: [Track]
 
-    @State private var newPlaylistName = ""
-    @State private var isPublic = false
     @State private var isWorking = false
     @State private var searchText = ""
+    @AppStorage("addToPlaylistSort") private var sortRaw: String = AddToPlaylistSort.playlistType.rawValue
+    @State private var isSelectingMultiple = false
+    @State private var selectedPlaylistIds: Set<String> = []
+    @State private var showNewPlaylistSheet = false
+    @State private var showNewFolderSheet = false
+
+    private var sort: AddToPlaylistSort {
+        AddToPlaylistSort(rawValue: sortRaw) ?? .playlistType
+    }
+
+    private var trimmedQuery: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private var sortedPlaylists: [PlaylistSummary] {
+        sortPlaylists(app.libraryPlaylists)
+    }
 
     private var filteredPlaylists: [PlaylistSummary] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !query.isEmpty else { return app.libraryPlaylists }
-        return app.libraryPlaylists.filter { $0.name.lowercased().contains(query) }
+        guard !trimmedQuery.isEmpty else { return sortedPlaylists }
+        return sortedPlaylists.filter { $0.name.lowercased().contains(trimmedQuery) }
+    }
+
+    /// Playlists recently added-to from this sheet, newest first. Hidden while searching.
+    private var recentPlaylists: [PlaylistSummary] {
+        app.recentAddToPlaylistIds.compactMap { id in
+            app.libraryPlaylists.first { $0.id == id }
+        }
     }
 
     /// True when every track being added is already in the playlist (per cached
-    /// rows). Drives the "already added" checkmark — best-effort, no network.
+    /// rows). Drives the Recents "Song already in playlist" subtitle — best-effort, no network.
     private func alreadyContainsAll(_ playlistId: String) -> Bool {
         guard let rows = app.cachedPlaylistRows(playlistId: playlistId) else { return false }
         let ids = Set(rows.map(\.track.id))
@@ -47,90 +81,259 @@ struct AddToPlaylistSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("New playlist") {
-                    TextField("Playlist name", text: $newPlaylistName)
-                        .musicTextInputAutocapitalization(.words)
-                    PlaylistVisibilityFields(isPublic: $isPublic)
-                    Button {
-                        Task { await createNewAndAdd() }
-                    } label: {
-                        if isWorking {
-                            ProgressView()
-                        } else {
-                            Text("Create and add")
+                if trimmedQuery.isEmpty, !recentPlaylists.isEmpty {
+                    Section {
+                        ForEach(recentPlaylists) { pl in
+                            playlistRow(pl, showsAlreadyAdded: true)
                         }
+                    } header: {
+                        sectionHeader("Recents")
                     }
-                    .disabled(isWorking || newPlaylistName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
 
-                Section("Your playlists") {
+                Section {
                     if app.libraryPlaylists.isEmpty {
-                        Text("No playlists yet. Create one above.")
+                        Text("No playlists yet. Tap + to create one.")
                             .font(.subheadline)
                             .foregroundStyle(MusicDesign.secondaryLabel)
+                            .listRowBackground(Color.clear)
                     } else if filteredPlaylists.isEmpty {
                         Text("No playlists match \u{201C}\(searchText)\u{201D}.")
                             .font(.subheadline)
                             .foregroundStyle(MusicDesign.secondaryLabel)
+                            .listRowBackground(Color.clear)
                     } else {
                         ForEach(filteredPlaylists) { pl in
-                            Button {
-                                Task { await addToExisting(pl) }
-                            } label: {
-                                HStack {
-                                    Text(pl.name)
-                                        .foregroundStyle(.primary)
-                                    Spacer()
-                                    if alreadyContainsAll(pl.id) {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .foregroundStyle(MusicDesign.accent)
-                                            .accessibilityLabel("Already added")
-                                    }
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .disabled(isWorking)
+                            playlistRow(pl, showsAlreadyAdded: false)
                         }
                     }
+                } header: {
+                    sectionHeader("All Playlists")
                 }
             }
+            .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .background(MusicDesign.background)
-            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Find a playlist")
-            .navigationTitle("Add to playlist")
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find in Playlists")
+            .navigationTitle("Add to Playlist")
             .musicNavigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button {
                         app.dismissPlaylistPicker()
                         dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.headline.weight(.semibold))
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Close")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    if isSelectingMultiple {
+                        Button {
+                            Task { await addToSelected() }
+                        } label: {
+                            if isWorking {
+                                ProgressView()
+                            } else {
+                                Text("Add").fontWeight(.semibold)
+                            }
+                        }
+                        .disabled(selectedPlaylistIds.isEmpty || isWorking)
+                        .accessibilityLabel("Add to selected playlists")
+                    } else {
+                        Menu {
+                            Section("Sort By") {
+                                Picker("Sort By", selection: $sortRaw) {
+                                    ForEach(AddToPlaylistSort.allCases, id: \.rawValue) { option in
+                                        Text(option.rawValue).tag(option.rawValue)
+                                    }
+                                }
+                                .labelsHidden()
+                            }
+                        } label: {
+                            Image(systemName: "arrow.up.arrow.down")
+                                .font(.headline.weight(.semibold))
+                                .foregroundStyle(Color.primary)
+                        }
+                        .menuOrder(.fixed)
+                        .accessibilityLabel("Sort playlists")
+                    }
+                }
+                ToolbarItem(placement: .bottomBar) {
+                    // Declared bottom-up: this menu anchors to the bottom bar, so the
+                    // first item lands nearest the anchor — Apple Music shows
+                    // New Folder above New Playlist.
+                    Menu {
+                        Button {
+                            showNewPlaylistSheet = true
+                        } label: {
+                            Label("New Playlist", systemImage: "text.badge.plus")
+                        }
+                        Button {
+                            showNewFolderSheet = true
+                        } label: {
+                            Label("New Folder", systemImage: "folder.badge.plus")
+                        }
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(Color.primary)
+                    }
+                    .disabled(isWorking)
+                    .accessibilityLabel("New playlist or folder")
+                }
+                ToolbarItem(placement: .bottomBar) {
+                    Spacer()
+                }
+                ToolbarItem(placement: .bottomBar) {
+                    Button {
+                        withAnimation {
+                            isSelectingMultiple.toggle()
+                            if !isSelectingMultiple { selectedPlaylistIds = [] }
+                        }
+                    } label: {
+                        Image(systemName: "checklist")
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(isSelectingMultiple ? MusicDesign.accent : Color.primary)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isWorking)
+                    .accessibilityLabel(isSelectingMultiple ? "Stop selecting playlists" : "Select multiple playlists")
                 }
             }
             .musicNavigationChrome()
+            .sheet(isPresented: $showNewPlaylistSheet) {
+                NewPlaylistNameSheet(seedTracks: tracks) { created in
+                    app.noteAddedToPlaylist(playlistId: created.id)
+                    app.dismissPlaylistPicker()
+                    dismiss()
+                    app.showTransientToast(addedToastContent(songCount: tracks.count, playlist: created))
+                }
+                .environmentObject(app)
+            }
+            .sheet(isPresented: $showNewFolderSheet) {
+                NewFolderNameSheet()
+                    .environmentObject(app)
+            }
         }
         .task {
             await app.refreshLibraryPlaylists()
         }
     }
 
-    private func createNewAndAdd() async {
-        let name = newPlaylistName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
-        isWorking = true
-        defer { isWorking = false }
-        do {
-            try await app.createPlaylist(
-                name: name,
-                initialTracks: tracks,
-                isPublic: isPublic,
-            )
-            app.dismissPlaylistPicker()
-            dismiss()
-            app.showTransientToast("Added to \(name)")
-        } catch {
-            app.errorMessage = error.localizedDescription
+    // MARK: Rows
+
+    @ViewBuilder
+    private func playlistRow(_ playlist: PlaylistSummary, showsAlreadyAdded: Bool) -> some View {
+        let isSelected = selectedPlaylistIds.contains(playlist.id)
+        Button {
+            if isSelectingMultiple {
+                if isSelected {
+                    selectedPlaylistIds.remove(playlist.id)
+                } else {
+                    selectedPlaylistIds.insert(playlist.id)
+                }
+            } else {
+                Task { await addToExisting(playlist) }
+            }
+        } label: {
+            HStack(spacing: 12) {
+                AlbumArtworkView(url: playlist.artworkURL, cornerRadius: 6)
+                    .frame(width: 48, height: 48)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(playlist.name)
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    if showsAlreadyAdded, alreadyContainsAll(playlist.id) {
+                        Text(tracks.count == 1 ? "Song already in playlist" : "Songs already in playlist")
+                            .font(.caption)
+                            .foregroundStyle(MusicDesign.secondaryLabel)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 8)
+                if isSelectingMultiple {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.title3.weight(.medium))
+                        .foregroundStyle(isSelected ? MusicDesign.accent : MusicDesign.secondaryLabel)
+                }
+            }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .disabled(isWorking)
+        .listRowBackground(Color.clear)
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.headline.weight(.semibold))
+            // `foregroundColor` (not `foregroundStyle`): plain-list headers re-apply
+            // a secondary foreground *style* over the header content.
+            .foregroundColor(.primary)
+            .textCase(nil)
+    }
+
+    // MARK: Sorting
+
+    private func sortPlaylists(_ playlists: [PlaylistSummary]) -> [PlaylistSummary] {
+        switch sort {
+        case .title:
+            return playlists.sorted { byTitle($0, $1) }
+        case .dateAdded:
+            return playlists.sorted { lhs, rhs in
+                let ld = playlistDateAdded(lhs)
+                let rd = playlistDateAdded(rhs)
+                if ld != rd { return ld > rd }
+                return byTitle(lhs, rhs)
+            }
+        case .lastPlayed:
+            return playlists.sorted { lhs, rhs in
+                let ld = app.playlistLastPlayedDate(forPlaylistId: lhs.id) ?? .distantPast
+                let rd = app.playlistLastPlayedDate(forPlaylistId: rhs.id) ?? .distantPast
+                if ld != rd { return ld > rd }
+                return byTitle(lhs, rhs)
+            }
+        case .updatedDate:
+            return playlists.sorted { lhs, rhs in
+                let ld = lhs.serverUpdatedDate ?? lhs.libraryAddedDate ?? .distantPast
+                let rd = rhs.serverUpdatedDate ?? rhs.libraryAddedDate ?? .distantPast
+                if ld != rd { return ld > rd }
+                return byTitle(lhs, rhs)
+            }
+        case .playlistType:
+            return playlists.sorted { lhs, rhs in
+                let lp = lhs.isPublic ?? false
+                let rp = rhs.isPublic ?? false
+                if lp != rp { return lp && !rp }
+                return byTitle(lhs, rhs)
+            }
+        }
+    }
+
+    private func byTitle(_ lhs: PlaylistSummary, _ rhs: PlaylistSummary) -> Bool {
+        lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+    }
+
+    /// Lyra library add date when known; otherwise server created.
+    private func playlistDateAdded(_ playlist: PlaylistSummary) -> Date {
+        if let entry = app.libraryPlaylistEntries.first(where: { $0.id == playlist.id }) {
+            return entry.added
+        }
+        return playlist.libraryAddedDate ?? .distantPast
+    }
+
+    // MARK: Actions
+
+    private func addedToastContent(songCount: Int, playlist: PlaylistSummary) -> TransientToastContent {
+        TransientToastContent(
+            title: songCount == 1 ? "1 song added" : "\(songCount) songs added",
+            subtitle: playlist.name,
+            artworkURL: playlist.artworkURL,
+        )
     }
 
     private func addToExisting(_ playlist: PlaylistSummary) async {
@@ -138,11 +341,46 @@ struct AddToPlaylistSheet: View {
         defer { isWorking = false }
         do {
             let added = try await app.addTracksToPlaylist(playlistId: playlist.id, tracks: tracks)
+            app.noteAddedToPlaylist(playlistId: playlist.id)
             app.dismissPlaylistPicker()
             dismiss()
-            app.showTransientToast(added > 0 ? "Added to \(playlist.name)" : "Already in \(playlist.name)")
+            if added > 0 {
+                app.showTransientToast(addedToastContent(songCount: added, playlist: playlist))
+            } else {
+                app.showTransientToast("Already in \(playlist.name)")
+            }
         } catch {
             app.errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Multi-select commit: adds the tracks to every selected playlist. Failures
+    /// skip individual playlists so one bad request doesn't abort the rest.
+    private func addToSelected() async {
+        let targets = sortedPlaylists.filter { selectedPlaylistIds.contains($0.id) }
+        guard !targets.isEmpty else { return }
+        isWorking = true
+        defer { isWorking = false }
+        var succeeded: [PlaylistSummary] = []
+        for playlist in targets {
+            do {
+                _ = try await app.addTracksToPlaylist(playlistId: playlist.id, tracks: tracks)
+                app.noteAddedToPlaylist(playlistId: playlist.id)
+                succeeded.append(playlist)
+            } catch {
+                app.errorMessage = error.localizedDescription
+            }
+        }
+        guard !succeeded.isEmpty else { return }
+        app.dismissPlaylistPicker()
+        dismiss()
+        if succeeded.count == 1, let only = succeeded.first {
+            app.showTransientToast(addedToastContent(songCount: tracks.count, playlist: only))
+        } else {
+            app.showTransientToast(TransientToastContent(
+                title: tracks.count == 1 ? "1 song added" : "\(tracks.count) songs added",
+                subtitle: "\(succeeded.count) playlists",
+            ))
         }
     }
 }
@@ -150,8 +388,13 @@ struct AddToPlaylistSheet: View {
 // MARK: - Create empty playlist
 
 struct NewPlaylistNameSheet: View {
+    /// Tracks the new playlist starts with (the add-to-playlist flow seeds the
+    /// pending song so creating from that sheet also adds it, like Apple Music).
+    var seedTracks: [Track] = []
+    var onCreated: ((PlaylistSummary) -> Void)? = nil
+
     var body: some View {
-        PlaylistEditSheet(mode: .create)
+        PlaylistEditSheet(mode: .create, seedTracks: seedTracks, onCreated: onCreated)
     }
 }
 
@@ -2146,6 +2389,9 @@ private struct PlaylistEditSheet: View {
     @State private var pendingCoverData: Data?
     @State private var coverCropSubject: CoverCropSubject?
     private let draftArtworkSeed: String
+    /// Create mode only: fires after the playlist (and optional cover) is saved,
+    /// before dismissal — lets the add-to-playlist flow finish its confirmation.
+    private let onCreated: ((PlaylistSummary) -> Void)?
 
     private var isCreate: Bool {
         if case .create = mode { return true }
@@ -2166,14 +2412,17 @@ private struct PlaylistEditSheet: View {
         playlist?.id ?? draftArtworkSeed
     }
 
-    init(mode: Mode) {
+    init(mode: Mode, seedTracks: [Track] = [], onCreated: ((PlaylistSummary) -> Void)? = nil) {
         self.mode = mode
+        self.onCreated = onCreated
         draftArtworkSeed = UUID().uuidString
         switch mode {
         case .create:
             _title = State(initialValue: "")
             _visibleToAll = State(initialValue: false)
-            _editableRows = State(initialValue: [])
+            _editableRows = State(initialValue: seedTracks.map {
+                PlaylistRowItem(rowId: UUID().uuidString, track: $0)
+            })
             _artworkURL = State(initialValue: nil)
         case .edit(let playlist, let rows, _):
             _title = State(initialValue: playlist.name)
@@ -2487,6 +2736,7 @@ private struct PlaylistEditSheet: View {
                 if let pendingCoverData {
                     _ = try? await app.updatePlaylistCoverImage(playlistId: created.id, imageData: pendingCoverData)
                 }
+                onCreated?(created)
                 dismiss()
             } else if let playlist {
                 try await app.renamePlaylist(

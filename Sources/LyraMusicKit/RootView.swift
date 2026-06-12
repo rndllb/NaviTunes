@@ -213,6 +213,10 @@ private struct NowPlayingFullScreenCoverModifier: ViewModifier {
                 .environmentObject(app)
                 .environmentObject(app.offline)
                 .environmentObject(app.downtify)
+                // The root toast overlay is occluded while this cover is up, so the
+                // cover carries its own copy ("1 song added", sleep timer, etc.).
+                // Never both visible at once — the cover is full-screen.
+                .musicTransientToastChrome()
         }
         #else
         ZStack {

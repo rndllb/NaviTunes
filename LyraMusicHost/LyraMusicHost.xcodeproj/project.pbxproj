@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		U10000000000000000000003 /* RapidDismissTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = U10000000000000000000002 /* RapidDismissTests.swift */; };
+		U10000000000000000000023 /* AddToPlaylistSheetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = U10000000000000000000022 /* AddToPlaylistSheetTests.swift */; };
 		02E1B2612FB8DE7B006F4370 /* LyraMusicKit in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000014 /* LyraMusicKit */; };
 		A00000000000000000000011 /* LyraMusicHostApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000006 /* LyraMusicHostApp.swift */; };
 		IC0000000000000000000020 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000010 /* AppIcon.icon */; };
@@ -25,6 +26,7 @@
 /* Begin PBXFileReference section */
 		U10000000000000000000001 /* LyraUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LyraUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		U10000000000000000000002 /* RapidDismissTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RapidDismissTests.swift; sourceTree = "<group>"; };
+		U10000000000000000000022 /* AddToPlaylistSheetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddToPlaylistSheetTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000002 /* LyraMusicHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LyraMusicHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00000000000000000000006 /* LyraMusicHostApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyraMusicHostApp.swift; sourceTree = "<group>"; };
 		A00000000000000000000007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -116,6 +118,7 @@
 			isa = PBXGroup;
 			children = (
 				U10000000000000000000002 /* RapidDismissTests.swift */,
+				U10000000000000000000022 /* AddToPlaylistSheetTests.swift */,
 			);
 			path = LyraUITests;
 			sourceTree = "<group>";
@@ -253,6 +256,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				U10000000000000000000003 /* RapidDismissTests.swift in Sources */,
+				U10000000000000000000023 /* AddToPlaylistSheetTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
