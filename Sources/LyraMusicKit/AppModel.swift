@@ -273,7 +273,7 @@ public final class AppModel: ObservableObject {
     /// Playlists the user most recently added songs to from the add-to-playlist
     /// sheet, newest first — drives its "Recents" section. Local-only.
     private static let recentAddToPlaylistIdsKey = "LyraMusic.recentAddToPlaylistIds"
-    private static let recentAddToPlaylistIdsLimit = 5
+    private static let recentAddToPlaylistIdsLimit = 3
     @Published private(set) var recentAddToPlaylistIds: [String] = []
 
     /// Jellyfin / Navidrome playlists (excludes in-app “Favorite Songs”).
@@ -3167,7 +3167,8 @@ public final class AppModel: ObservableObject {
     }
 
     private func loadRecentAddToPlaylistIdsFromDefaults() {
-        recentAddToPlaylistIds = UserDefaults.standard.stringArray(forKey: Self.recentAddToPlaylistIdsKey) ?? []
+        let stored = UserDefaults.standard.stringArray(forKey: Self.recentAddToPlaylistIdsKey) ?? []
+        recentAddToPlaylistIds = Array(stored.prefix(Self.recentAddToPlaylistIdsLimit))
     }
 
     private func savePlaylistLastPlayedDatesToDefaults() {
