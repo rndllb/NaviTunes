@@ -127,6 +127,11 @@ private struct CoverZoomDismissalObserver: UIViewControllerRepresentable {
 #if DEBUG
             DebugUIRemote.log("PHASE willAppear animated=\(animated)")
 #endif
+            // Returning from a deeper push (e.g. the Kill Mode list): restore
+            // the bar items hidden in viewWillDisappear as early as possible —
+            // waiting for didAppear leaves them invisible through the whole
+            // pop-back animation.
+            setBarItemAlpha(1, animated: false)
             // No `animated` gate: zoom pushes report animated=false here, and
             // for genuinely instant appearances viewDidAppear follows right
             // behind and clears the phase anyway.
@@ -162,8 +167,12 @@ private struct CoverZoomDismissalObserver: UIViewControllerRepresentable {
             // controller* (this helper's parent), only propagates to child
             // controllers for interactive pops, and by didDisappear the
             // hosting controller is often already detached (flag reset). The
-            // detachment itself is the durable commit signal — a view merely
-            // covered by a push/present keeps its navigation-stack parent.
+            // detachment itself is the durable commit signal. CAVEAT: a view
+            // covered by a forward push can ALSO be detached by NavigationStack
+            // (seen with the Kill Mode list push), so `.gone` may be a false
+            // positive here — every appearance hook above must fully recover
+            // (bar alpha + phase), and the SwiftUI side resets `.gone` on
+            // reappear too.
             let popped = isMovingFromParent
                 || (parent?.isMovingFromParent ?? false)
                 || parent?.parent == nil
