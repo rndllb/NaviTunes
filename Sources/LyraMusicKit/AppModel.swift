@@ -51,6 +51,15 @@ enum RecentPlayedItem: Identifiable, Hashable {
     }
 }
 
+/// Payload for the app-wide transient toast. Plain confirmations carry just a
+/// `title`; the add-to-playlist flow also sets `subtitle` (playlist name) and
+/// `artworkURL` for the Apple-Music-style "1 song added" banner.
+struct TransientToastContent: Equatable {
+    var title: String
+    var subtitle: String? = nil
+    var artworkURL: URL? = nil
+}
+
 @MainActor
 public final class AppModel: ObservableObject {
     /// Default album fetch size for library grid / sync (raised for large Jellyfin / Navidrome libraries).
@@ -108,7 +117,7 @@ public final class AppModel: ObservableObject {
 
     /// Brief bottom toast (e.g. "Added to Queue"). Auto-clears after ``showTransientToast``
     /// is called; the ``MusicTransientToastChrome`` view modifier renders it.
-    @Published var transientToast: String? = nil
+    @Published var transientToast: TransientToastContent? = nil
     private var transientToastTask: Task<Void, Never>? = nil
 
     @Published var errorMessage: String?
@@ -227,6 +236,12 @@ public final class AppModel: ObservableObject {
     /// Playlist id → last time the user meaningfully played from that playlist (scrobble threshold).
     private static let playlistLastPlayedDatesKey = "LyraMusic.playlistLastPlayedDates"
     @Published private(set) var playlistLastPlayedDates: [String: Date] = [:]
+
+    /// Playlists the user most recently added songs to from the add-to-playlist
+    /// sheet, newest first — drives its "Recents" section. Local-only.
+    private static let recentAddToPlaylistIdsKey = "LyraMusic.recentAddToPlaylistIds"
+    private static let recentAddToPlaylistIdsLimit = 5
+    @Published private(set) var recentAddToPlaylistIds: [String] = []
 
     /// Jellyfin / Navidrome playlists (excludes in-app “Favorite Songs”).
     @Published private(set) var libraryPlaylists: [PlaylistSummary] = []
@@ -659,6 +674,7 @@ public final class AppModel: ObservableObject {
         loadRecentlyPlayedEntriesFromDefaults()
         loadRecentlyPlayedTracksFromDefaults()
         loadPlaylistLastPlayedDatesFromDefaults()
+        loadRecentAddToPlaylistIdsFromDefaults()
         killModeEnabledPlaylistIds = KillModeStore.loadEnabled()
         killModePendingRemovals = KillModeStore.loadPending()
         scrobbleService.bind(app: self)
@@ -2125,13 +2141,19 @@ public final class AppModel: ObservableObject {
     /// Shows a brief bottom toast (~1.8s) and fires a soft impact haptic. Replaces any
     /// in-flight toast so rapid actions don't pile up.
     func showTransientToast(_ message: String) {
-        transientToast = message
+        showTransientToast(TransientToastContent(title: message))
+    }
+
+    /// Rich variant — artwork + subtitle, used for Apple-Music-style
+    /// "1 song added · ‹playlist›" confirmations from the add-to-playlist sheet.
+    func showTransientToast(_ content: TransientToastContent) {
+        transientToast = content
         transientToastTask?.cancel()
         transientToastTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(1800))
             guard let self, !Task.isCancelled else { return }
             await MainActor.run {
-                if self.transientToast == message { self.transientToast = nil }
+                if self.transientToast == content { self.transientToast = nil }
             }
         }
         #if os(iOS)
@@ -2921,6 +2943,18 @@ public final class AppModel: ObservableObject {
               let decoded = try? JSONDecoder().decode([String: Date].self, from: data)
         else { return }
         playlistLastPlayedDates = decoded
+    }
+
+    /// Bumps a playlist to the front of the add-to-playlist sheet's Recents.
+    func noteAddedToPlaylist(playlistId: String) {
+        var next = recentAddToPlaylistIds.filter { $0 != playlistId }
+        next.insert(playlistId, at: 0)
+        recentAddToPlaylistIds = Array(next.prefix(Self.recentAddToPlaylistIdsLimit))
+        UserDefaults.standard.set(recentAddToPlaylistIds, forKey: Self.recentAddToPlaylistIdsKey)
+    }
+
+    private func loadRecentAddToPlaylistIdsFromDefaults() {
+        recentAddToPlaylistIds = UserDefaults.standard.stringArray(forKey: Self.recentAddToPlaylistIdsKey) ?? []
     }
 
     private func savePlaylistLastPlayedDatesToDefaults() {
