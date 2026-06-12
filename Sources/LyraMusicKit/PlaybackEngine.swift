@@ -284,6 +284,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
             // transport button stops showing the pause glyph while playback
             // is silently halted.
             wasPlayingBeforeInterruption = isPlaying
+            // The EQ engine is stopped by the system but its node still claims
+            // to be playing — without an explicit pause the EQ tick flips
+            // ``isPlaying`` straight back to true mid-interruption.
+            equalizedPlayer?.pause()
             isPlaying = false
             refreshNowPlaying()
         case .ended:
@@ -293,7 +297,12 @@ final class PlaybackEngine: NSObject, ObservableObject {
             wasPlayingBeforeInterruption = false
             guard shouldResume else { return }
             activateAudioSession()
-            if let player { beginPlayback(on: player) }
+            if let equalizedPlayer {
+                // Restarts the (system-stopped) AVAudioEngine as part of play().
+                equalizedPlayer.play(rate: playbackRate)
+            } else if let player {
+                beginPlayback(on: player)
+            }
             isPlaying = true
         @unknown default:
             break
@@ -303,10 +312,16 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private func handleAudioSessionRouteChange(_ notification: Notification) {
         // Don't auto-resume — when the user unplugs headphones the system
         // pauses us on purpose (HIG: respect that intent), and the
-        // `timeControlStatus` KVO will sync ``isPlaying`` to match. Any other
-        // route change (new device available, override, etc.) likewise
-        // shouldn't force playback to keep going if the system paused us.
-        _ = notification
+        // `timeControlStatus` KVO will sync ``isPlaying`` to match for the
+        // AVPlayer path. The EQ engine gets no such system pause: stop it
+        // explicitly or audio continues (or resumes via the config-change
+        // rebuild) on the loudspeaker.
+        if let raw = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+           let reason = AVAudioSession.RouteChangeReason(rawValue: raw),
+           reason == .oldDeviceUnavailable, equalizedPlayer != nil {
+            pbLog("route lost (unplug) → pausing EQ playback")
+            pausePlayback()
+        }
         onAudioRouteChanged?()
     }
     #endif
@@ -1953,6 +1968,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
                 self.refreshNowPlaying()
             }
         }
+        session.onConfigurationChange = { [weak self] in
+            guard let self, self.equalizedEndEpoch == epoch else { return }
+            self.rebuildEqualizedSessionAfterConfigChange(epoch: epoch)
+        }
 
         try await session.load(
             asset: urlAsset,
@@ -2261,6 +2280,36 @@ final class PlaybackEngine: NSObject, ObservableObject {
             refreshNowPlaying()
         } catch {
             // Stay on whatever path the user had — handoff is best-effort.
+        }
+    }
+
+    /// The system tore the EQ engine's render graph down (route/hardware
+    /// format change). Reload the same audio at the current position. Briefly
+    /// deferred so a simultaneous route-loss pause (unplugged headphones) can
+    /// land first — then the rebuild comes back up paused instead of blaring
+    /// from the loudspeaker.
+    private func rebuildEqualizedSessionAfterConfigChange(epoch: UInt) {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(120))
+            guard let self, self.isPlaybackEpochCurrent(epoch),
+                  let equalizedPlayer = self.equalizedPlayer,
+                  let asset = self.equalizedPlaybackAsset
+            else { return }
+            let position = equalizedPlayer.currentPlaybackTime()
+            let resume = self.isPlaying
+            self.pbLog("EQ config change → rebuilding at \(position) resume=\(resume)")
+            // seek() also resumes when the NODE claims it was playing — after a
+            // system stop that state can lie, so force-sync it to our intent.
+            if !resume { equalizedPlayer.pause() }
+            try? await equalizedPlayer.seek(
+                to: position,
+                asset: asset,
+                fileURL: self.equalizedPlaybackURL?.isFileURL == true ? self.equalizedPlaybackURL : nil,
+                gains: self.equalizerBandGains,
+                bypass: self.equalizerBypass,
+                autoPlay: resume,
+                rate: self.playbackRate,
+            )
         }
     }
 

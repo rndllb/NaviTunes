@@ -29,11 +29,30 @@ final class EqualizedAudioEnginePlayer {
     var onFinished: (() -> Void)?
     /// Fires when playback stalls or decode fails after load (must not advance the queue).
     var onPlaybackFailed: (() -> Void)?
+    /// The system stopped this engine because the audio route/hardware format
+    /// changed (AirPods connected, CarPlay, …). The graph must be rebuilt —
+    /// the owner should reload at ``currentPlaybackTime()``. AVPlayer survives
+    /// these without help; AVAudioEngine does not.
+    var onConfigurationChange: (() -> Void)?
+    private var configChangeObserver: NSObjectProtocol?
 
     var isPlaying: Bool { playerNode.isPlaying }
 
     init() {
         configureBands()
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main,
+        ) { [weak self] _ in
+            Task { @MainActor in self?.onConfigurationChange?() }
+        }
+    }
+
+    deinit {
+        if let configChangeObserver {
+            NotificationCenter.default.removeObserver(configChangeObserver)
+        }
     }
 
     func applyGains(_ gains: [Float], bypass: Bool) {
