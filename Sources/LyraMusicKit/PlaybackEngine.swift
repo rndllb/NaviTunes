@@ -62,6 +62,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// Live playhead updated every periodic observer tick. Prefer over ``currentTime`` for synced lyrics — ``currentTime`` is UI-throttled.
     var livePlaybackTime: TimeInterval { playbackHead }
     @Published private(set) var duration: TimeInterval = 0
+    /// Delivered audio format for the Now Playing badge ("FLAC", "MP3 320").
+    /// Reflects the candidate that actually loaded — a transcoded stream
+    /// reports the transcode target, not the file's source codec.
+    @Published private(set) var nowPlayingFormatLabel: String?
     @Published private(set) var lyrics: [LyricLine] = []
     @Published var shuffleMode: ShuffleMode = .off
     @Published var repeatMode: RepeatMode = .off
@@ -1321,8 +1325,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
         enqueuedNextItem = nil
         enqueuedNextIndex = nil
         enqueuedNextTrack = nil
-        activeResourceLoaderDelegate?.invalidate()
-        activeResourceLoaderDelegate = nil
         equalizedPlayer?.stop()
         equalizedPlayer = nil
         equalizedPlaybackURL = nil
@@ -1395,6 +1397,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         isSeeking = false
         localFileDuration = 0
         probingLocalFileURL = nil
+        nowPlayingFormatLabel = nil
         setBuffering(false)
         detachPlayerKeepingQueueState()
         currentTime = 0
@@ -1834,6 +1837,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             persistOfflineDurationIfNeeded(resolvedDuration)
             patchActiveQueueTrackDuration(resolvedDuration)
         }
+        nowPlayingFormatLabel = deliveredFormatLabel(candidateURL: candidate.url, track: track)
         // Stage the next track so the OS can pre-roll and transition to it without
         // any app work at the boundary.
         refreshEnqueuedNextItem()
@@ -1944,7 +1948,76 @@ final class PlaybackEngine: NSObject, ObservableObject {
             persistOfflineDurationIfNeeded(resolvedDuration)
             patchActiveQueueTrackDuration(resolvedDuration)
         }
+        nowPlayingFormatLabel = deliveredFormatLabel(candidateURL: candidate.url, track: track)
         return true
+    }
+
+    // MARK: - Delivered format badge
+
+    /// Resolves the badge text for whatever candidate actually loaded.
+    /// Local downloads report their file extension; stream-cache files mirror
+    /// the primary remote stream's bytes, so they re-derive from that URL.
+    private func deliveredFormatLabel(candidateURL: URL, track: Track) -> String? {
+        if candidateURL.isFileURL {
+            let ext = candidateURL.pathExtension.lowercased()
+            if ext == "cache" {
+                guard let remote = primaryRemoteCandidate(for: track)?.url else { return nil }
+                return formatLabel(remoteURL: remote, track: track)
+            }
+            return formatLabel(codec: ext, transcodeKbps: nil, track: track)
+        }
+        return formatLabel(remoteURL: candidateURL, track: track)
+    }
+
+    private func formatLabel(remoteURL: URL, track: Track) -> String? {
+        let items = URLComponents(url: remoteURL, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        func query(_ name: String) -> String? {
+            items.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }?.value
+        }
+        // Subsonic: an explicit `format` query param means a server-side
+        // transcode ("mp3_rg" → mp3); absent/raw streams the original file.
+        if remoteURL.path.lowercased().hasSuffix("/rest/stream.view") || remoteURL.path.lowercased().hasSuffix("/rest/stream") {
+            if let format = query("format")?.lowercased(), !format.isEmpty, format != "raw" {
+                let codec = format.components(separatedBy: "_").first ?? format
+                return formatLabel(codec: codec, transcodeKbps: query("maxBitRate").flatMap(Int.init), track: track)
+            }
+            return formatLabel(codec: track.audioCodec, transcodeKbps: nil, track: track)
+        }
+        // Jellyfin progressive: /Audio/{id}/stream.<container>; Static=true or a
+        // container matching the source codec is direct play.
+        let last = remoteURL.lastPathComponent.lowercased()
+        if last.hasPrefix("stream."), let ext = last.components(separatedBy: ".").last, !ext.isEmpty {
+            let sourceCodec = track.audioCodec?.lowercased() ?? ""
+            let isDirect = query("Static")?.lowercased() == "true" || ext == sourceCodec
+            let bps = query("audioBitRate").flatMap(Int.init) ?? query("maxStreamingBitrate").flatMap(Int.init)
+            return formatLabel(
+                codec: isDirect && !sourceCodec.isEmpty ? sourceCodec : ext,
+                transcodeKbps: isDirect ? nil : bps.map { $0 / 1000 },
+                track: track,
+            )
+        }
+        // Internet radio / direct override URLs.
+        let ext = remoteURL.pathExtension.lowercased()
+        return ext.isEmpty ? nil : formatLabel(codec: ext, transcodeKbps: nil, track: track)
+    }
+
+    /// `transcodeKbps` is the server-side cap for lossy transcodes; original
+    /// (non-transcoded) lossy files fall back to the track's reported bitrate.
+    private func formatLabel(codec rawCodec: String?, transcodeKbps: Int?, track: Track) -> String? {
+        guard let raw = rawCodec?.lowercased(), !raw.isEmpty else { return nil }
+        let names: [String: String] = [
+            "mp3": "MP3", "mpeg": "MP3", "flac": "FLAC", "alac": "ALAC",
+            "aac": "AAC", "m4a": "AAC", "m4b": "AAC", "opus": "Opus",
+            "ogg": "OGG", "oga": "OGG", "vorbis": "OGG", "wav": "WAV",
+            "aif": "AIFF", "aiff": "AIFF", "wma": "WMA", "ape": "APE",
+            "dsf": "DSD", "dff": "DSD", "wv": "WavPack",
+        ]
+        guard let name = names[raw] else { return raw.uppercased() }
+        let lossless: Set<String> = ["FLAC", "ALAC", "WAV", "AIFF", "APE", "DSD", "WavPack"]
+        if lossless.contains(name) { return name }
+        let kbps = transcodeKbps ?? track.audioBitRateKbps
+        if let kbps, kbps > 0 { return "\(name) \(kbps)" }
+        return name
     }
 
     /// On-disk download from ``OfflineDownloadManager``.
