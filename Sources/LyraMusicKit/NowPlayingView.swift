@@ -14,6 +14,74 @@ private enum NowPlayingScrubberMetrics {
 /// Apple Music-style press feedback for transport buttons: the icon springs down
 /// on touch and snaps back on release, with a slight dim while held. Shared by the
 /// Now Playing transport row and the mini player.
+/// Apple Music / Lock Screen skip-button glyph. The stock `forward.fill` is
+/// replaced by two adjacent triangles; bumping `pulse` swaps both triangles'
+/// identities so asymmetric transitions play the "march": the triangle on the
+/// skip-direction side slides off shrinking while a fresh one grows in on the
+/// opposite side, with a quick squish of the whole glyph. (There is no stock
+/// symbolEffect for this — see the id-swap technique.)
+private struct SkipMarchGlyph: View {
+    /// `true` = next (marches trailing-ward), `false` = previous (mirrored).
+    let pointsForward: Bool
+    let fontSize: CGFloat
+    let color: Color
+    /// Bump to play one march cycle.
+    let pulse: Int
+
+    @State private var flipA = false
+    @State private var flipB = false
+    @State private var squish: CGFloat = 1.0
+
+    private var inEdge: Edge { pointsForward ? .leading : .trailing }
+    private var outEdge: Edge { pointsForward ? .trailing : .leading }
+
+    private var triangle: some View {
+        Image(systemName: pointsForward ? "arrowtriangle.forward.fill" : "arrowtriangle.backward.fill")
+            .font(.system(size: fontSize * 0.74, weight: .semibold))
+            .foregroundStyle(color)
+    }
+
+    /// The triangle on the entering side *grows* in from the edge; the one on
+    /// the exiting side *shrinks* off. The other two legs are plain slides.
+    private func marchTransition(growsIn: Bool, shrinksOut: Bool) -> AnyTransition {
+        var insertion: AnyTransition = .move(edge: inEdge)
+        if growsIn {
+            insertion = insertion.combined(
+                with: .scale(scale: 0.0, anchor: inEdge == .leading ? .leading : .trailing)
+            )
+        }
+        var removal: AnyTransition = .move(edge: outEdge)
+        if shrinksOut {
+            removal = removal.combined(
+                with: .scale(scale: 0.0, anchor: outEdge == .leading ? .leading : .trailing)
+            )
+        }
+        return .asymmetric(insertion: insertion, removal: removal).combined(with: .opacity)
+    }
+
+    var body: some View {
+        // Skipping forward: the new triangle enters on the leading side.
+        let leadingSideEnters = pointsForward
+        HStack(spacing: -fontSize * 0.05) {
+            triangle
+                .id("a-\(flipA)")
+                .transition(marchTransition(growsIn: leadingSideEnters, shrinksOut: !leadingSideEnters))
+            triangle
+                .id("b-\(flipB)")
+                .transition(marchTransition(growsIn: !leadingSideEnters, shrinksOut: leadingSideEnters))
+        }
+        .scaleEffect(squish)
+        .onChange(of: pulse) { _, _ in
+            withAnimation(.bouncy(duration: 0.38)) {
+                flipA.toggle()
+                flipB.toggle()
+            }
+            withAnimation(.easeInOut(duration: 0.09)) { squish = 0.9 }
+            withAnimation(.easeInOut(duration: 0.12).delay(0.09)) { squish = 1.0 }
+        }
+    }
+}
+
 struct TransportPressButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -43,6 +111,9 @@ struct NowPlayingView: View {
     /// floating copy and showing the row's own artwork at the same coordinates.
     /// Set on the open animation's completion, or earlier if the user scrolls.
     @State private var queueArtworkHandedOff = false
+    /// Tap counters driving the lock-screen-style skip-button symbol bounce.
+    @State private var prevTapPulse = 0
+    @State private var nextTapPulse = 0
     @State private var libraryPath: [NowPlayingLibraryRoute] = []
     /// Which of the three paged queue sections is currently snapped. Drives the
     /// inter-section haptic so each swipe-and-snap fires its own impact, and
@@ -1209,10 +1280,11 @@ struct NowPlayingView: View {
             return app.player.isPlaying ? albumArtPlayOverscale : (albumArtPausedSide / bigSize)
         }()
         // Bigger → cover sits lower on the screen (and the title + chrome
-        // column below it shifts down too, via containerHeight). Must stay
-        // identical in standard and compact modes or the artwork morph
-        // (player ↔ lyrics/queue) starts with a visible y jump.
-        let topPad: CGFloat = 32
+        // column below it shifts down too, via containerHeight). Standard mode
+        // carries the lowered Apple-Music position; compact (lyrics/queue)
+        // keeps the original 14 so the small artwork sits where those layouts
+        // expect — the morph animates the y difference.
+        let topPad: CGFloat = compact ? 14 : 32
         // Reserved space UNDER the cover: bigger → title + all chrome below
         // sink lower while the cover stays put. To move ONLY the cover,
         // change topPad and bottomPad in opposite directions by the same
@@ -1298,7 +1370,9 @@ struct NowPlayingView: View {
             if let title = libraryAlbum?.title, !title.isEmpty { return title }
             return "Unknown Album"
         }()
-        return HStack(alignment: .top, spacing: 14) {
+        // .center keeps the star/ellipsis buttons vertically spanning the
+        // title AND artist rows (Apple Music) instead of hugging the title.
+        return HStack(alignment: .center, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(track.title)
                     .font(.title2)
@@ -1353,9 +1427,9 @@ struct NowPlayingView: View {
                     app.toggleFavoriteTrack(id: track.id)
                 } label: {
                     Image(systemName: app.favoriteTrackIds.contains(track.id) ? "star.fill" : "star")
-                        .font(.body.weight(.semibold))
+                        .font(.title3.weight(.semibold))
                         .foregroundStyle(liveRadio ? fgMuted : fgAccentChrome)
-                        .frame(width: 30, height: 30)
+                        .frame(width: 34, height: 34)
                         .background(Circle().fill(fgCapsule))
                 }
                 .buttonStyle(.plain)
@@ -1365,9 +1439,9 @@ struct NowPlayingView: View {
                     nowPlayingTrackMenuContent(track: track)
                 } label: {
                     Image(systemName: "ellipsis")
-                        .font(.body.weight(.semibold))
+                        .font(.title3.weight(.semibold))
                         .foregroundStyle(liveRadio ? fgMuted : fgAccentChrome)
-                        .frame(width: 30, height: 30)
+                        .frame(width: 34, height: 34)
                         .background(Circle().fill(fgCapsule))
                 }
                 .disabled(liveRadio)
@@ -1493,7 +1567,10 @@ struct NowPlayingView: View {
                     fontSize: 27,
                     frameWidth: 56,
                     isEnabled: !liveRadio,
+                    bouncePulse: prevTapPulse,
+                    bouncesBackward: true,
                 ) {
+                    prevTapPulse += 1
                     player.skipPrevious()
                 }
 
@@ -1528,7 +1605,9 @@ struct NowPlayingView: View {
                     fontSize: 27,
                     frameWidth: 56,
                     isEnabled: !liveRadio,
+                    bouncePulse: nextTapPulse,
                 ) {
+                    nextTapPulse += 1
                     player.skipNext()
                 }
 
@@ -1555,17 +1634,34 @@ struct NowPlayingView: View {
         frameHeight: CGFloat = 56,
         isEnabled: Bool,
         symbolReplace: Bool = false,
+        bouncePulse: Int? = nil,
+        bouncesBackward: Bool = false,
         action: @escaping () -> Void,
     ) -> some View {
         Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: fontSize, weight: .semibold))
-                .foregroundStyle(isEnabled ? fgPrimary : fgMuted)
-                // Smoothly morph play.fill ↔ pause.fill instead of hard-swapping.
-                .contentTransition(symbolReplace ? .symbolEffect(.replace) : .identity)
-                .animation(symbolReplace ? .smooth(duration: 0.22) : nil, value: systemName)
-                .frame(width: frameWidth, height: frameHeight)
-                .contentShape(Rectangle())
+            Group {
+                if let bouncePulse {
+                    // Skip buttons render the two-triangle "march" glyph so the
+                    // tap can play the Lock Screen skip animation (one triangle
+                    // slides off in the skip direction while a new one grows in
+                    // on the other side). Not achievable as a symbolEffect.
+                    SkipMarchGlyph(
+                        pointsForward: !bouncesBackward,
+                        fontSize: fontSize,
+                        color: isEnabled ? fgPrimary : fgMuted,
+                        pulse: bouncePulse,
+                    )
+                } else {
+                    Image(systemName: systemName)
+                        .font(.system(size: fontSize, weight: .semibold))
+                        .foregroundStyle(isEnabled ? fgPrimary : fgMuted)
+                        // Smoothly morph play.fill ↔ pause.fill instead of hard-swapping.
+                        .contentTransition(symbolReplace ? .symbolEffect(.replace) : .identity)
+                        .animation(symbolReplace ? .smooth(duration: 0.22) : nil, value: systemName)
+                }
+            }
+            .frame(width: frameWidth, height: frameHeight)
+            .contentShape(Rectangle())
         }
         .buttonStyle(TransportPressButtonStyle())
         .disabled(!isEnabled)
