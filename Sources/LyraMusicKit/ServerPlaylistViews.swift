@@ -790,7 +790,7 @@ struct ServerPlaylistDetailView: View {
         var deferLogged = false
         // Park during the push too: a swipe-back that interrupts a push
         // mid-mutation strands the detail's nav chrome over the list.
-        while dismissalPhase != .idle {
+        while dismissalPhase == .appearing || dismissalPhase == .dismissing {
             if !deferLogged {
                 detailDebugLog("HYDRATION-DEFERRED (transition in flight)")
                 deferLogged = true
@@ -807,7 +807,10 @@ struct ServerPlaylistDetailView: View {
                 return false
             }
         }
-        return !isBeingDismissed && !Task.isCancelled
+        // .gone means the pop committed in viewDidDisappear — drop regardless
+        // of isBeingDismissed, which may not have been written yet (it's set
+        // via a SwiftUI onChange one render cycle after the UIKit callback).
+        return dismissalPhase != .gone && !isBeingDismissed && !Task.isCancelled
     }
 
     private func recomputeDisplayedRows() {
@@ -815,7 +818,8 @@ struct ServerPlaylistDetailView: View {
         // mid-pop, stalls the main thread, and swallows the next taps.
         // (`.appearing` is allowed — the initial synchronous hydration *is*
         // the first render of the pushed view.)
-        guard !isBeingDismissed, lyraDismissFixesDisabledForAB || dismissalPhase != .dismissing else {
+        guard !isBeingDismissed,
+              lyraDismissFixesDisabledForAB || (dismissalPhase != .dismissing && dismissalPhase != .gone) else {
             detailDebugLog("DISPLAY-RECOMPUTE-DROPPED")
             return
         }
@@ -1189,7 +1193,7 @@ struct ServerPlaylistDetailView: View {
     /// buttons floating over the list. A cancelled swipe returns the phase to
     /// `.idle`, fading them back in.
     private var detailChromeIsLeaving: Bool {
-        isBeingDismissed || dismissalPhase == .dismissing
+        isBeingDismissed || dismissalPhase == .dismissing || dismissalPhase == .gone
     }
 
     /// Toolbar content branches: playlist mode shows the rename/delete/sort overflow
@@ -1220,7 +1224,9 @@ struct ServerPlaylistDetailView: View {
                     .menuOrder(.fixed)
                 }
                 .opacity(detailChromeIsLeaving ? 0 : 1)
-                .animation(.easeOut(duration: 0.15), value: detailChromeIsLeaving)
+                .transaction(value: detailChromeIsLeaving) { t in
+                    t.animation = detailChromeIsLeaving ? .none : .easeOut(duration: 0.15)
+                }
             }
         } else {
             ToolbarItemGroup(placement: .primaryAction) {
@@ -1235,7 +1241,9 @@ struct ServerPlaylistDetailView: View {
                     .menuOrder(.fixed)
                 }
                 .opacity(detailChromeIsLeaving ? 0 : 1)
-                .animation(.easeOut(duration: 0.15), value: detailChromeIsLeaving)
+                .transaction(value: detailChromeIsLeaving) { t in
+                    t.animation = detailChromeIsLeaving ? .none : .easeOut(duration: 0.15)
+                }
             }
         }
     }

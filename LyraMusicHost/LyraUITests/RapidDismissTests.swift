@@ -73,6 +73,78 @@ final class RapidDismissTests: XCTestCase {
         mark("test-end")
     }
 
+    /// The fastest human cadence — the edge-swipe test above can't reach it
+    /// because XCUITest synthesizes drags slowly. Here the close is a single
+    /// back-button tap ~150ms after the open tap, landing mid zoom-push, and
+    /// every later step *asserts* the UI stayed live: Library must reappear,
+    /// an immediate re-open must present the detail, a second instant close
+    /// must land, and a scroll must actually move the list. Any eaten tap or
+    /// stranded chrome fails the test instead of just marking the timeline.
+    @MainActor
+    func testInstantOpenCloseThenActions() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["LYRA_DEBUG_PLAYLIST"] = "rap v3"
+        // Stretch the rows fetch so the instant close always races the load.
+        app.launchEnvironment["LYRA_DEBUG_SLOW_ROWS_MS"] = "2600"
+        if ProcessInfo.processInfo.environment["LYRA_AB"] == "old" {
+            app.launchEnvironment["LYRA_DEBUG_DISABLE_DISMISS_FIXES"] = "1"
+        }
+        app.launch()
+
+        let board = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        post("com.lyra.debug.hangwatch")
+        post("com.lyra.debug.libraryTab")
+        Thread.sleep(forTimeInterval: 1.5)
+
+        let pin = app.staticTexts["rap v3"].firstMatch
+        XCTAssertTrue(pin.waitForExistence(timeout: 10), "pinned playlist cell not found")
+        let pinFrame = pin.frame
+        let screen = app.frame
+        let pinX = pinFrame.midX / screen.width
+        let pinY = pinFrame.midY / screen.height
+        let libraryMarker = app.staticTexts["Playlists"].firstMatch
+        // Back button center (inline nav bar, leading edge).
+        let backX = 0.09, backY = 0.092
+        let closeDelay = (Double(ProcessInfo.processInfo.environment["LYRA_CLOSE_DELAY_MS"] ?? "150") ?? 150) / 1000
+
+        // 1. Open, close mid zoom-push.
+        mark("tap-pin")
+        coord(board, x: pinX, y: pinY).tap()
+        Thread.sleep(forTimeInterval: closeDelay)
+        mark("tap-back")
+        coord(board, x: backX, y: backY).tap()
+        XCTAssertTrue(libraryMarker.waitForExistence(timeout: 3),
+                      "Library did not come back after instant close")
+
+        // 2. Immediately re-open the same playlist — the classic stuck state
+        //    ate exactly this tap while the doomed load was still landing.
+        mark("tap-pin-again")
+        coord(board, x: pinX, y: pinY).tap()
+        let play = app.buttons["Play"].firstMatch
+        XCTAssertTrue(play.waitForExistence(timeout: 4),
+                      "detail did not open on immediate re-tap (input eaten)")
+
+        // 3. Instant close again, while this second load is still in flight.
+        Thread.sleep(forTimeInterval: closeDelay)
+        mark("tap-back-2")
+        coord(board, x: backX, y: backY).tap()
+        XCTAssertTrue(libraryMarker.waitForExistence(timeout: 3),
+                      "Library did not come back after second instant close")
+
+        // 4. Scroll must actually move content right away.
+        let beforeY = libraryMarker.frame.midY
+        mark("scroll-1")
+        coord(board, x: 0.5, y: 0.7)
+            .press(forDuration: 0.03, thenDragTo: coord(board, x: 0.5, y: 0.3),
+                   withVelocity: XCUIGestureVelocity(2000), thenHoldForDuration: 0)
+        Thread.sleep(forTimeInterval: 0.6)
+        let moved = !libraryMarker.exists || abs(libraryMarker.frame.midY - beforeY) > 20
+        XCTAssertTrue(moved, "Library list did not scroll after rapid open/close cycles")
+
+        Thread.sleep(forTimeInterval: 2.0)
+        mark("test-end")
+    }
+
     /// Finds an edge-swipe synthesis that actually engages the interactive
     /// pop (springboard-proxy edge pans are unreliable). Requires a warm rows
     /// cache so the detail is settled. Success = Library content reappears.
