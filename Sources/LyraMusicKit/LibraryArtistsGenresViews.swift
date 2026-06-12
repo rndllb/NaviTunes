@@ -347,7 +347,7 @@ struct LibraryArtistsView: View {
             }
         }
         .musicLibraryToolbarMonochromeControls()
-        .searchable(text: $query, placement: .automatic, prompt: Text("Artists"))
+        .musicNativeSearchable(text: $query, prompt: Text("Artists"))
         .task(id: "\(app.isSignedIn)-\(app.backendKind)") { await load() }
         .refreshable { await load() }
         .onChange(of: artists) { _, _ in recomputeDisplayed() }
@@ -524,7 +524,7 @@ struct LibraryGenresView: View {
         .scrollIndicators(.hidden)
         .background(MusicDesign.background)
         .musicLibrarySectionScreen(title: "Genres")
-        .searchable(text: $query, placement: .automatic, prompt: Text("Genres"))
+        .musicNativeSearchable(text: $query, prompt: Text("Genres"))
         .task(id: "\(app.isSignedIn)-\(app.backendKind)") { await load() }
         .refreshable { await load() }
     }

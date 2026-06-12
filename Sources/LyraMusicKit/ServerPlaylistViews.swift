@@ -96,7 +96,7 @@ struct AddToPlaylistSheet: View {
             }
             .scrollContentBackground(.hidden)
             .background(MusicDesign.background)
-            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Find a playlist")
+            .musicNativeSearchable(text: $searchText, prompt: "Find a playlist")
             .navigationTitle("Add to playlist")
             .musicNavigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -371,7 +371,7 @@ struct ServerPlaylistDetailView: View {
 
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var offline: OfflineDownloadManager
-    @EnvironmentObject private var downtify: DowntifyDownloadManager
+    @EnvironmentObject private var acquisition: AcquisitionManager
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     @State private var rows: [PlaylistRowItem] = []
@@ -1410,12 +1410,12 @@ struct ServerPlaylistDetailView: View {
         }
     }
 
-    /// MusicBrainz-only track row — same chrome as owned rows; tap (play affordance) requests via Downtify.
+    /// MusicBrainz-only track row — same chrome as owned rows; tap (play affordance) requests via the active acquisition plugin.
     @ViewBuilder
     private func missingAlbumRow(_ preview: BrowseAlbumPreviewTrack, displayIndex: Int, showsBottomDivider: Bool) -> some View {
-        let previewJob = downtifyJob(forPreview: preview)
+        let previewJob = acquisitionJob(forPreview: preview)
         let isRequesting = previewJob.map { !$0.status.isTerminal } ?? false
-        let downtifyProgress: OfflineDownloadUIState? = {
+        let acquireProgress: OfflineDownloadUIState? = {
             guard let previewJob, !previewJob.status.isTerminal else { return nil }
             return .progress(min(1, max(0, previewJob.progress)))
         }()
@@ -1424,7 +1424,7 @@ struct ServerPlaylistDetailView: View {
             index: displayIndex,
             title: preview.title,
             subtitle: "Not in library",
-            offlineDownload: downtifyProgress,
+            offlineDownload: acquireProgress,
             isOfflineCached: false,
             isInLibrary: false,
             isInServerCatalog: false,
@@ -1439,29 +1439,30 @@ struct ServerPlaylistDetailView: View {
                 ChartStyleSongOverflowMenuContent(
                     shareItem: "\(preview.title) — \(albumOrNil?.artist ?? "")",
                     onAdd: { Task { await requestMissingTrack(preview) } },
-                    addDisabled: !app.downtifyConfigured || isRequesting
+                    addDisabled: !app.acquisitionConfigured || isRequesting
                 )
             }
         )
     }
 
     /// Match a preview row to a manager job by normalized title (previews have no URL).
-    private func downtifyJob(forPreview preview: BrowseAlbumPreviewTrack) -> DowntifyJob? {
-        let keys = Set(LibraryTrackMatcher.normalizedTitleKeys(from: preview.title))
-        guard !keys.isEmpty else { return nil }
-        return downtify.jobs.values.first { job in
-            guard let t = job.title, !t.isEmpty else { return false }
-            return !Set(LibraryTrackMatcher.normalizedTitleKeys(from: t)).isDisjoint(with: keys)
-        }
+    private func acquisitionJob(forPreview preview: BrowseAlbumPreviewTrack) -> AcquisitionJob? {
+        app.acquisition.job(matchingTitle: preview.title)
     }
 
     private func requestMissingTrack(_ preview: BrowseAlbumPreviewTrack) async {
-        guard app.downtifyConfigured else {
-            app.showTransientToast("Add your Downtify URL in Settings first.")
+        guard app.acquisitionConfigured else {
+            app.showTransientToast("Set up a download plugin in Settings first.")
             return
         }
-        await downtify.enqueue(artist: albumOrNil?.artist ?? "", title: preview.title)
-        app.showTransientToast("Requested “\(preview.title)”")
+        let artist = albumOrNil?.artist ?? ""
+        let request: AcquisitionRequest
+        if app.acquisitionCapabilities.granularity == .album {
+            request = AcquisitionRequest(artist: artist, albumTitle: albumOrNil?.title, coverURL: albumOrNil?.artworkURL)
+        } else {
+            request = AcquisitionRequest(artist: artist, trackTitle: preview.title, albumTitle: albumOrNil?.title, coverURL: albumOrNil?.artworkURL)
+        }
+        await app.requestAcquisition(request)
     }
 
     private func songRow(_ row: PlaylistRowItem, displayIndex: Int, showsBottomDivider: Bool) -> some View {
@@ -1632,13 +1633,17 @@ struct ServerPlaylistDetailView: View {
     }
 
     private func playAll() async {
-        guard let lib = app.activeLibrary, !tracksForPlayback.isEmpty else { return }
-        try? await app.player.playAlbum(library: lib, tracks: tracksForPlayback, startIndex: 0, source: playbackSource)
+        guard !tracksForPlayback.isEmpty else { return }
+        await app.playAlbumOrToast(tracks: tracksForPlayback, startIndex: 0, source: playbackSource)
     }
 
     private func shuffleAll() async {
         guard let lib = app.activeLibrary, !tracksForPlayback.isEmpty else { return }
-        try? await app.player.playAlbumShuffled(library: lib, tracks: tracksForPlayback, source: playbackSource)
+        do {
+            try await app.player.playAlbumShuffled(library: lib, tracks: tracksForPlayback, source: playbackSource)
+        } catch {
+            app.showTransientToast(error.musicPlaybackToastMessage)
+        }
     }
 
     private func playPlaylistNext() async {
@@ -1647,10 +1652,9 @@ struct ServerPlaylistDetailView: View {
     }
 
     private func play(row: PlaylistRowItem) async {
-        guard let lib = app.activeLibrary else { return }
         let playbackTracks = tracksForPlayback
         guard let idx = displayedRows.firstIndex(where: { $0.rowId == row.rowId }) else { return }
-        try? await app.player.playAlbum(library: lib, tracks: playbackTracks, startIndex: idx, source: playbackSource)
+        await app.playAlbumOrToast(tracks: playbackTracks, startIndex: idx, source: playbackSource)
     }
 
     // MARK: - Album-mode helpers
@@ -2394,7 +2398,7 @@ private struct PlaylistTrackAddSheet: View {
             .background(MusicDesign.background)
             .navigationTitle("Add Songs")
             .musicNavigationBarTitleDisplayMode(.inline)
-            .searchable(text: $searchText, prompt: "Search")
+            .musicNativeSearchable(text: $searchText, prompt: "Search")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -2490,11 +2494,7 @@ private extension View {
     @ViewBuilder
     func playlistTrackSearchable(enabled: Bool, text: Binding<String>) -> some View {
         if enabled {
-            #if os(iOS)
-            searchable(text: text, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search")
-            #else
-            searchable(text: text, prompt: "Search")
-            #endif
+            musicNativeSearchable(text: text, prompt: "Search")
         } else {
             self
         }

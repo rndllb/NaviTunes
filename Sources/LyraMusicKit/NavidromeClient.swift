@@ -100,24 +100,75 @@ final class NavidromeClient: MusicLibraryProviding {
         try await fetchAlbumList2(limit: limit, listType: "recent")
     }
 
+    private struct AlbumList2Page {
+        let albums: [AlbumSummary]
+        let totalCount: Int?
+    }
+
     private func fetchAlbumList2(limit: Int, listType: String) async throws -> [AlbumSummary] {
-        let items = try await subsonicRequest(path: "getAlbumList2", query: [
+        try await fetchAlbumList2Page(limit: limit, offset: 0, listType: listType).albums
+    }
+
+    /// Subsonic caps ``getAlbumList2`` at 500 rows per request; Navidrome also exposes ``x-total-count``.
+    private func fetchAlbumList2Page(limit: Int, offset: Int, listType: String) async throws -> AlbumList2Page {
+        let cappedLimit = min(max(1, limit), 500)
+        let url = try buildURL(path: "getAlbumList2", query: [
             "type": listType,
-            "size": "\(limit)",
+            "size": "\(cappedLimit)",
+            "offset": "\(max(0, offset))",
         ])
-        guard let albumList = items["albumList2"] as? [String: Any] else {
-            return []
+        let (data, res) = try await URLSession.lyra.data(from: url)
+        guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
+            throw URLError(.badServerResponse)
         }
-        let rawAlbums = albumList["album"]
-        let albums: [[String: Any]]
-        if let a = rawAlbums as? [[String: Any]] {
-            albums = a
-        } else if let o = rawAlbums as? [String: Any] {
-            albums = [o]
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let sub = json?["subsonic-response"] as? [String: Any] else {
+            throw URLError(.cannotParseResponse)
+        }
+        if let err = sub["error"] as? [String: Any],
+           let message = err["message"] as? String {
+            throw NSError(domain: "Navidrome", code: 0, userInfo: [NSLocalizedDescriptionKey: message])
+        }
+        let albums: [AlbumSummary]
+        if let albumList = sub["albumList2"] as? [String: Any] {
+            albums = parseAlbumListDict(albumList)
         } else {
             albums = []
         }
-        return albums.compactMap(parseAlbumDict)
+        let totalCount = http.value(forHTTPHeaderField: "x-total-count").flatMap { Int($0) }
+        return AlbumList2Page(albums: albums, totalCount: totalCount)
+    }
+
+    private func parseAlbumListDict(_ albumList: [String: Any]) -> [AlbumSummary] {
+        let rawAlbums = albumList["album"]
+        let rows: [[String: Any]]
+        if let a = rawAlbums as? [[String: Any]] {
+            rows = a
+        } else if let o = rawAlbums as? [String: Any] {
+            rows = [o]
+        } else {
+            rows = []
+        }
+        return rows.compactMap(parseAlbumDict)
+    }
+
+    /// Walks paged ``getAlbumList2`` so statistics are not stuck at the 500-row server cap.
+    private func fetchAllAlbumsForStatistics(maxAlbums: Int) async throws -> (albums: [AlbumSummary], totalCount: Int) {
+        let pageSize = 500
+        var offset = 0
+        var collected: [AlbumSummary] = []
+        var reportedTotal: Int?
+        while collected.count < maxAlbums {
+            let page = try await fetchAlbumList2Page(limit: pageSize, offset: offset, listType: "alphabeticalByName")
+            if reportedTotal == nil, let total = page.totalCount {
+                reportedTotal = total
+            }
+            if page.albums.isEmpty { break }
+            collected.append(contentsOf: page.albums)
+            offset += page.albums.count
+            if page.albums.count < pageSize { break }
+        }
+        return (collected, reportedTotal ?? collected.count)
     }
 
     private func parseAlbumDict(_ dict: [String: Any]) -> AlbumSummary? {
@@ -388,36 +439,6 @@ final class NavidromeClient: MusicLibraryProviding {
         return []
     }
 
-    private func countArtistsInLibraryIndex() async throws -> Int {
-        let items = try await subsonicRequest(path: "getArtists", query: [:])
-        guard let artistsRoot = items["artists"] as? [String: Any] else {
-            return 0
-        }
-        var count = 0
-        for dict in navidromeDictRows(artistsRoot["artist"]) {
-            if navidromeCoerceString(dict["id"]) != nil, navidromeCoerceString(dict["name"]) != nil {
-                count += 1
-            }
-        }
-        let rawIndexes = artistsRoot["index"]
-        let indexes: [[String: Any]]
-        if let a = rawIndexes as? [[String: Any]] {
-            indexes = a
-        } else if let o = rawIndexes as? [String: Any] {
-            indexes = [o]
-        } else {
-            indexes = []
-        }
-        for idx in indexes {
-            for dict in navidromeDictRows(idx["artist"]) {
-                if navidromeCoerceString(dict["id"]) != nil, navidromeCoerceString(dict["name"]) != nil {
-                    count += 1
-                }
-            }
-        }
-        return count
-    }
-
     func libraryGenres(limit: Int) async throws -> [LibraryGenreSummary] {
         let items = try await subsonicRequest(path: "getGenres", query: [:])
         let rows: [[String: Any]]
@@ -554,20 +575,22 @@ final class NavidromeClient: MusicLibraryProviding {
         return try buildMediaURL(path: "stream", query: query)
     }
 
-    /// Approximate totals via ``getArtists`` + ``getAlbumList2`` (song count sums album ``trackCount`` — no full-track fetch).
+    /// Server totals via ``getArtists`` + paged ``getAlbumList2`` (song count sums album ``trackCount``).
     func fetchApproximateLibraryStatistics() async throws -> LibraryStatistics {
         let cap = 50_000
-        async let artistCount = countArtistsInLibraryIndex()
-        async let albumRows = albums(limit: cap)
-        let (artists, albumsList) = try await (artistCount, albumRows)
+        async let artists = libraryArtists(limit: 20_000)
+        let (albumsList, totalAlbumCount) = try await fetchAllAlbumsForStatistics(maxAlbums: cap)
+        let artistCount = try await artists.count
         let summedTracks = albumsList.reduce(0) { partial, album in
             partial + max(0, album.trackCount ?? 0)
         }
+        let songsCapped = totalAlbumCount > albumsList.count
         return LibraryStatistics(
-            artistCount: artists,
-            albumCount: albumsList.count,
+            artistCount: artistCount,
+            albumCount: totalAlbumCount,
             songCount: summedTracks > 0 ? summedTracks : nil,
             playlistCount: nil,
+            songsMayBeApproximate: songsCapped || summedTracks == 0,
         )
     }
 

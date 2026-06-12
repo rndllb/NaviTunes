@@ -451,8 +451,16 @@ struct LibraryStatistics: Equatable {
     var albumCount: Int?
     var songCount: Int?
     var playlistCount: Int?
+    /// Navidrome song totals sum per-album ``trackCount``; may be partial when the fetch cap is hit.
+    var songsMayBeApproximate: Bool = false
 
-    static let empty = LibraryStatistics(artistCount: nil, albumCount: nil, songCount: nil, playlistCount: nil)
+    static let empty = LibraryStatistics(
+        artistCount: nil,
+        albumCount: nil,
+        songCount: nil,
+        playlistCount: nil,
+        songsMayBeApproximate: false,
+    )
 }
 
 // MARK: - Server connection (Settings)
