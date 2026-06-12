@@ -169,6 +169,19 @@ struct NowPlayingView: View {
         player.activeTrack != nil ? backdropPalette.nowPlayingDragHandle : npDragHandleSystem
     }
 
+    /// Apple Music paints the main player's metadata chrome (artist line,
+    /// star/ellipsis, bottom icon row) red. With the color backdrop disabled
+    /// the palette is neutral, so those elements map to the app accent; with
+    /// a backdrop on, the artwork-derived palette keeps owning them.
+    private var usesAccentChrome: Bool { !app.playerBackdropEnabled }
+    private var fgAccentChrome: Color { usesAccentChrome ? MusicDesign.accent : fgPrimary }
+
+    /// Display-normalizes multi-artist tags to Apple Music's joiner style:
+    /// "A, B, & C" → "A, B & C".
+    private func artistDisplay(_ raw: String) -> String {
+        raw.replacingOccurrences(of: ", & ", with: " & ")
+    }
+
     private var fgBottomGlow: Color {
         player.activeTrack != nil ? backdropPalette.heroGlassCircleFill : npBottomGlowSystem
     }
@@ -1270,17 +1283,18 @@ struct NowPlayingView: View {
                         .multilineTextAlignment(.leading)
                         .lineLimit(2)
                 } else if artistKey.isEmpty {
-                    Text(track.artist)
+                    Text(artistDisplay(track.artist))
                         .font(.title3)
-                        .foregroundStyle(fgSecondary)
+                        .foregroundStyle(usesAccentChrome ? MusicDesign.accent : fgSecondary)
                         .multilineTextAlignment(.leading)
                         .lineLimit(2)
                 } else {
                     ArtistNowPlayingMenuButton(
-                        artist: track.artist,
+                        artist: artistDisplay(track.artist),
                         albumSubtitle: albumSubtitle,
                         libraryAlbum: libraryAlbum,
                         heroBackdropPalette: backdropPalette,
+                        accentOverride: usesAccentChrome ? MusicDesign.accent : nil,
                         sourcePlaylist: sourcePlaylistForActiveTrack(track),
                         goToAlbumDisabled: libraryAlbum == nil && catalogAlbumFallback(from: track) == nil,
                         onGoToAlbum: {
@@ -1310,7 +1324,7 @@ struct NowPlayingView: View {
                 } label: {
                     Image(systemName: app.favoriteTrackIds.contains(track.id) ? "star.fill" : "star")
                         .font(.body.weight(.semibold))
-                        .foregroundStyle(liveRadio ? fgMuted : fgPrimary)
+                        .foregroundStyle(liveRadio ? fgMuted : fgAccentChrome)
                         .frame(width: 30, height: 30)
                         .background(Circle().fill(fgCapsule))
                 }
@@ -1322,7 +1336,7 @@ struct NowPlayingView: View {
                 } label: {
                     Image(systemName: "ellipsis")
                         .font(.body.weight(.semibold))
-                        .foregroundStyle(liveRadio ? fgMuted : fgPrimary)
+                        .foregroundStyle(liveRadio ? fgMuted : fgAccentChrome)
                         .frame(width: 30, height: 30)
                         .background(Circle().fill(fgCapsule))
                 }
@@ -1650,7 +1664,7 @@ struct NowPlayingView: View {
                 }
             }
             #if os(iOS)
-            AirPlayRoutePickerView(tint: fgPrimary, activeTint: fgPrimary)
+            AirPlayRoutePickerView(tint: fgAccentChrome, activeTint: fgAccentChrome)
                 .frame(width: 46, height: 46)
             #endif
             bottomChromeIconButton(
@@ -1747,7 +1761,7 @@ struct NowPlayingView: View {
             }
             Image(systemName: systemName)
                 .font(iconFont)
-                .foregroundStyle(isEnabled ? fgPrimary : fgMuted)
+                .foregroundStyle(isEnabled ? fgAccentChrome : fgMuted)
         }
         .frame(width: 40, height: 40)
         .contentShape(Rectangle())
@@ -1838,12 +1852,23 @@ private struct ScrubberBlock: View {
             HStack {
                 Text(formatTime(displayTime))
                 Spacer()
-                Text("-" + formatTime(max(0, effectiveDuration - displayTime)))
+                Text("−" + formatTime(max(0, effectiveDuration - displayTime)))
             }
             .font(.caption.weight(.medium))
             .foregroundStyle(timeLabelColor)
             .monospacedDigit()
             .animation(nil, value: displayTime)
+            // Delivered-format badge, centered between the time labels the way
+            // Apple Music centers "Dolby Atmos" / "Lossless" under the scrubber.
+            .overlay {
+                if let format = player.nowPlayingFormatLabel {
+                    Text(format)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(timeLabelColor)
+                        .lineLimit(1)
+                        .allowsHitTesting(false)
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
