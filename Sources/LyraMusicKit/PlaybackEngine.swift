@@ -141,6 +141,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
+    private var failObserver: NSObjectProtocol?
     /// A single pre-warmed `AVURLAsset` for the track that will play next, keyed by
     /// its stream URL. Created (and its `.isPlayable` key loaded) while the current
     /// track is playing so a skip reuses a warm asset instead of doing the DNS /
@@ -766,7 +767,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
             completion?()
             return
         }
-        let clamped = max(0, min(targetSeconds, d))
+        // Never land on the exact end — that fires AVPlayerItemDidPlayToEndTime
+        // and advances the queue (same guard skipForward uses).
+        let clamped = max(0, min(targetSeconds, max(0, d - 1.0)))
+        pbLog("seek target=\(targetSeconds) resolvedDur=\(d) clamped=\(clamped) itemDur=\(player?.currentItem?.duration.seconds ?? -1)")
 
         if let equalizedPlayer,
            let asset = equalizedPlaybackAsset {
@@ -918,6 +922,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     func skipNext() {
+        pbLog("skipNext from idx=\(currentIndex)")
         // Shuffle is a queue-reordering action — advance sequentially regardless of mode.
         guard currentIndex + 1 < queue.count else { return }
         let outgoing = queue[currentIndex]
@@ -929,6 +934,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     func skipPrevious() {
+        pbLog("skipPrevious from idx=\(currentIndex) currentTime=\(currentTime)")
         if currentTime > 3 {
             seek(toSeconds: 0)
             return
@@ -1176,6 +1182,12 @@ final class PlaybackEngine: NSObject, ObservableObject {
         playbackHead = 0
         lastEmittedUIProgress = -10_000
         lastNowPlayingInfoRefresh = -10_000
+        // Format badge is per-track: clear on handoff, NOT in teardownPlayer —
+        // teardown also runs for same-track reloads (stall recovery, EQ
+        // handoff) and nil-ing there made the badge flicker out mid-song.
+        if nowPlayingFormatLabel != nil { pbLog("format label cleared (track handoff)") }
+        nowPlayingFormatLabel = nil
+        spuriousEndRecoveryAttempted = false
     }
 
     private func cancelPendingAdvanceWork() {
@@ -1317,6 +1329,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
         timeObserver = nil
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         endObserver = nil
+        if let failObserver { NotificationCenter.default.removeObserver(failObserver) }
+        failObserver = nil
         timeControlStatusObservation?.invalidate()
         timeControlStatusObservation = nil
         cancelStallRecovery()
@@ -1393,6 +1407,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         guard let track = currentTrack, !track.isInternetRadioStream else { return }
         let playerTime = player.currentTime().seconds
         let resumeAt = max(playbackHead, playerTime.isFinite ? playerTime : 0)
+        pbLog("stall recovery firing → reload idx=\(currentIndex) at \(resumeAt)")
         let epoch = beginPlaybackSession()
         cancelPendingAdvanceWork()
         advanceWork = Task { [weak self] in
@@ -1419,7 +1434,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
         isSeeking = false
         localFileDuration = 0
         probingLocalFileURL = nil
-        nowPlayingFormatLabel = nil
         setBuffering(false)
         detachPlayerKeepingQueueState()
         currentTime = 0
@@ -1859,7 +1873,15 @@ final class PlaybackEngine: NSObject, ObservableObject {
             persistOfflineDurationIfNeeded(resolvedDuration)
             patchActiveQueueTrackDuration(resolvedDuration)
         }
-        nowPlayingFormatLabel = deliveredFormatLabel(candidateURL: candidate.url, track: track)
+        // Never replace a known label with nil — a same-track reload (EQ
+        // handoff, stall recovery) may resolve less than the original load did.
+        if let label = deliveredFormatLabel(candidateURL: candidate.url, track: track) {
+            nowPlayingFormatLabel = label
+        } else if nowPlayingFormatLabel == nil {
+            // Raw stream + no codec metadata on the track (stale snapshot /
+            // minimal server payload) — read the format off the loaded asset.
+            probeDeliveredFormat(asset: asset, epoch: epoch)
+        }
         // Stage the next track so the OS can pre-roll and transition to it without
         // any app work at the boundary.
         refreshEnqueuedNextItem()
@@ -1964,13 +1986,21 @@ final class PlaybackEngine: NSObject, ObservableObject {
         } else {
             isPlaying = false
         }
+        // The EQ engine has no `timeControlStatus` to observe — the AVPlayer
+        // KVO that normally clears the load spinner never fires on this path,
+        // so the play button stays a spinner forever without this.
+        setBuffering(false)
         refreshNowPlaying()
 
         if resolvedDuration > 0 {
             persistOfflineDurationIfNeeded(resolvedDuration)
             patchActiveQueueTrackDuration(resolvedDuration)
         }
-        nowPlayingFormatLabel = deliveredFormatLabel(candidateURL: candidate.url, track: track)
+        if let label = deliveredFormatLabel(candidateURL: candidate.url, track: track) {
+            nowPlayingFormatLabel = label
+        } else if nowPlayingFormatLabel == nil {
+            probeDeliveredFormat(asset: urlAsset, epoch: epoch)
+        }
         return true
     }
 
@@ -1980,15 +2010,26 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// Local downloads report their file extension; stream-cache files mirror
     /// the primary remote stream's bytes, so they re-derive from that URL.
     private func deliveredFormatLabel(candidateURL: URL, track: Track) -> String? {
+        var label: String?
         if candidateURL.isFileURL {
             let ext = candidateURL.pathExtension.lowercased()
-            if ext == "cache" {
-                guard let remote = primaryRemoteCandidate(for: track)?.url else { return nil }
-                return formatLabel(remoteURL: remote, track: track)
+            if !ext.isEmpty, ext != "cache" {
+                label = formatLabel(codec: ext, transcodeKbps: nil, track: track)
             }
-            return formatLabel(codec: ext, transcodeKbps: nil, track: track)
+            // Stream-cache files carry no extension — they mirror the remote
+            // stream's bytes, so derive from the URL the cache shadows.
+            if label == nil, let remote = primaryRemoteCandidate(for: track)?.url {
+                label = formatLabel(remoteURL: remote, track: track)
+            }
+        } else {
+            label = formatLabel(remoteURL: candidateURL, track: track)
         }
-        return formatLabel(remoteURL: candidateURL, track: track)
+        // Last resort: the track's own codec metadata.
+        if label == nil {
+            label = formatLabel(codec: track.audioCodec, transcodeKbps: nil, track: track)
+        }
+        pbLog("format label derive: url=\(candidateURL.isFileURL ? "file:.\(candidateURL.pathExtension)" : candidateURL.lastPathComponent) trackCodec=\(track.audioCodec ?? "nil") → \(label ?? "nil")")
+        return label
     }
 
     private func formatLabel(remoteURL: URL, track: Track) -> String? {
@@ -2021,6 +2062,42 @@ final class PlaybackEngine: NSObject, ObservableObject {
         // Internet radio / direct override URLs.
         let ext = remoteURL.pathExtension.lowercased()
         return ext.isEmpty ? nil : formatLabel(codec: ext, transcodeKbps: nil, track: track)
+    }
+
+    /// Last-resort badge source: reads the codec straight off the loaded
+    /// asset's audio format description. Used when the URL/track metadata
+    /// give nothing (raw stream + codec-less track payloads).
+    private func probeDeliveredFormat(asset: AVURLAsset, epoch: UInt) {
+        Task { [weak self] in
+            guard let audio = try? await asset.loadTracks(withMediaType: .audio).first,
+                  let desc = (try? await audio.load(.formatDescriptions))?.first else { return }
+            let subtype = CMFormatDescriptionGetMediaSubType(desc)
+            let dataRate = (try? await audio.load(.estimatedDataRate)) ?? 0
+            let kbps = dataRate > 0 ? Int(dataRate / 1000) : nil
+            await MainActor.run {
+                guard let self, self.isPlaybackEpochCurrent(epoch),
+                      self.nowPlayingFormatLabel == nil else { return }
+                self.nowPlayingFormatLabel = Self.formatLabel(audioSubtype: subtype, kbps: kbps)
+                self.pbLog("format label probe: subtype=\(subtype) kbps=\(kbps ?? -1) → \(self.nowPlayingFormatLabel ?? "nil")")
+            }
+        }
+    }
+
+    private static func formatLabel(audioSubtype subtype: FourCharCode, kbps: Int?) -> String? {
+        let name: String?
+        switch subtype {
+        case kAudioFormatFLAC: name = "FLAC"
+        case kAudioFormatMPEGLayer3: name = "MP3"
+        case kAudioFormatMPEG4AAC, kAudioFormatMPEG4AAC_HE, kAudioFormatMPEG4AAC_HE_V2: name = "AAC"
+        case kAudioFormatAppleLossless: name = "ALAC"
+        case kAudioFormatOpus: name = "Opus"
+        case kAudioFormatLinearPCM: name = "PCM"
+        default: name = nil
+        }
+        guard let name else { return nil }
+        if ["FLAC", "ALAC", "PCM"].contains(name) { return name }
+        if let kbps, kbps > 0 { return "\(name) \(kbps)" }
+        return name
     }
 
     /// `transcodeKbps` is the server-side cap for lossy transcodes; original
@@ -2292,10 +2369,26 @@ final class PlaybackEngine: NSObject, ObservableObject {
             forName: .AVPlayerItemDidPlayToEndTime,
             object: item,
             queue: .main,
-        ) { [weak self] _ in
+        ) { [weak self, weak item] _ in
             guard let self else { return }
             MainActor.assumeIsolated {
-                self.handleEnded()
+                self.handleEnded(endedItem: item)
+            }
+        }
+        if let failObserver { NotificationCenter.default.removeObserver(failObserver) }
+        failObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemFailedToPlayToEndTime,
+            object: item,
+            queue: .main,
+        ) { [weak self, weak item] _ in
+            guard let self else { return }
+            MainActor.assumeIsolated {
+                // A failed item routes through the same spurious-end recovery:
+                // the AVQueuePlayer auto-advances on failure too, which used to
+                // silently skip the song (e.g. seeking into an unbuffered part
+                // of a chunked transcode). handleEnded reloads in place when
+                // the playhead is nowhere near the end.
+                self.handleEnded(endedItem: item)
             }
         }
     }
@@ -2357,7 +2450,54 @@ final class PlaybackEngine: NSObject, ObservableObject {
         }
     }
 
-    private func handleEnded() {
+    /// Console diagnostics for playback-flow debugging — grep the Xcode
+    /// console for "[LYRA-PB]". DEBUG builds only.
+    private func pbLog(_ message: @autoclosure () -> String) {
+#if DEBUG
+        print("[LYRA-PB]", message())
+#endif
+    }
+
+    /// One-shot guard so a track with bad duration metadata can't loop forever
+    /// through spurious-end recovery. Reset on every track handoff.
+    private var spuriousEndRecoveryAttempted = false
+
+    private func handleEnded(endedItem: AVPlayerItem? = nil) {
+        let endedAtLog = endedItem?.currentTime().seconds ?? -1
+        let itemDurLog = endedItem?.duration.seconds ?? -1
+        pbLog("handleEnded endedItem=\(endedItem == nil ? "nil" : "set") endedAt=\(endedAtLog) itemDur=\(itemDurLog) engineDur=\(duration) idx=\(currentIndex) recoveryTried=\(spuriousEndRecoveryAttempted)")
+        // Spurious end: chunked/transcoded streams can't seek past the data
+        // AVFoundation has buffered — a scrub into an unloaded region plays out
+        // the loaded tail and fires DidPlayToEndTime mid-song, which used to
+        // skip to the next track. If the *ended item's* playhead is nowhere
+        // near its duration, reload the same track at that position instead.
+        if !spuriousEndRecoveryAttempted,
+           let endedItem,
+           queue.indices.contains(currentIndex) {
+            let endedAt = endedItem.currentTime().seconds
+            let itemDuration = endedItem.duration.seconds
+            let knownDuration = (itemDuration.isFinite && itemDuration > 0) ? itemDuration : duration
+            if endedAt.isFinite, knownDuration > 0, endedAt < knownDuration - 5 {
+                spuriousEndRecoveryAttempted = true
+                shouldAutoPlayAfterAdvance = isPlaying
+                let resumeAt = min(max(0, endedAt), max(0, knownDuration - 2))
+                pbLog("SPURIOUS end → reloading same track at \(resumeAt)")
+                cancelPendingAdvanceWork()
+                advanceWork = Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    let epoch = self.beginPlaybackSession()
+                    self.teardownPlayer()
+                    try? await self.startCurrentItem(
+                        epoch: epoch,
+                        startSeconds: resumeAt,
+                        autoPlay: true,
+                        skipTrackRefresh: true,
+                    )
+                }
+                return
+            }
+        }
+
         // Fast path: the OS queue auto-advanced to the item we pre-enqueued and the
         // queue hasn't changed underneath it — promote bookkeeping in place. Audio
         // never stopped, so this works reliably while backgrounded (no app-driven
@@ -2370,9 +2510,11 @@ final class PlaybackEngine: NSObject, ObservableObject {
            nextIndex == upcomingQueueIndices(limit: 1).first,
            queue.indices.contains(nextIndex),
            enqueuedNextTrack?.id == queue[nextIndex].id {
+            pbLog("gapless promote → idx=\(nextIndex)")
             promoteToEnqueuedNext(item: nextItem, index: nextIndex, track: queue[nextIndex])
             return
         }
+        pbLog("slow-path advance repeatMode=\(repeatMode)")
 
         // Slow path: nothing usable pre-enqueued (repeat-one, end of queue, queue
         // edited, or enqueue failed) — rebuild as before.
@@ -2416,13 +2558,22 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
         // New track is current — invalidate any in-flight load and refresh the
         // epoch the lyrics fetch keys off of.
-        _ = beginPlaybackSession()
+        let epoch = beginPlaybackSession()
 
         currentIndex = index
         scrobbledForCurrentTrack = false
         resetUIProgressForTrackHandoff()
         localFileDuration = 0
         probingLocalFileURL = nil
+
+        // The handoff reset cleared the format badge — re-derive it from the
+        // item the OS just advanced to (no reload happens on this path).
+        if let urlAsset = item.asset as? AVURLAsset {
+            nowPlayingFormatLabel = deliveredFormatLabel(candidateURL: urlAsset.url, track: track)
+            if nowPlayingFormatLabel == nil {
+                probeDeliveredFormat(asset: urlAsset, epoch: epoch)
+            }
+        }
 
         let fromItem = item.duration.seconds
         duration = (fromItem.isFinite && fromItem > 0) ? fromItem : (track.duration > 0 ? track.duration : 0)

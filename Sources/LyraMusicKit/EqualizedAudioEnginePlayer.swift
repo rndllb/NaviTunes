@@ -8,6 +8,10 @@ final class EqualizedAudioEnginePlayer {
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
     private let eqNode = AVAudioUnitEQ(numberOfBands: EqualizerBand.count)
+    /// Playback-speed support. `AVAudioPlayerNode.rate` is the AVAudio3DMixing
+    /// property — a no-op outside 3D environments — so rate must be applied by
+    /// a time-pitch unit in the chain (pitch-preserving, matching AVPlayer).
+    private let timePitchNode = AVAudioUnitTimePitch()
 
     private var streamTask: Task<Void, Never>?
     private var streamPrepareContinuation: CheckedContinuation<Void, Error>?
@@ -72,7 +76,7 @@ final class EqualizedAudioEnginePlayer {
         if !engine.isRunning {
             try? engine.start()
         }
-        playerNode.rate = rate
+        timePitchNode.rate = rate
         if !playerNode.isPlaying {
             playerNode.play()
         }
@@ -129,15 +133,19 @@ final class EqualizedAudioEnginePlayer {
     private func attachGraph(format: AVAudioFormat) throws {
         if isConfigured {
             engine.stop()
+            engine.disconnectNodeInput(timePitchNode)
             engine.disconnectNodeInput(eqNode)
             engine.disconnectNodeInput(engine.mainMixerNode)
             engine.detach(playerNode)
+            engine.detach(timePitchNode)
             engine.detach(eqNode)
             isConfigured = false
         }
         engine.attach(playerNode)
+        engine.attach(timePitchNode)
         engine.attach(eqNode)
-        engine.connect(playerNode, to: eqNode, format: format)
+        engine.connect(playerNode, to: timePitchNode, format: format)
+        engine.connect(timePitchNode, to: eqNode, format: format)
         engine.connect(eqNode, to: engine.mainMixerNode, format: format)
         connectedFormat = format
         isConfigured = true
@@ -170,9 +178,15 @@ final class EqualizedAudioEnginePlayer {
             at: nil,
             completionCallbackType: .dataPlayedBack,
         ) { [weak self] _ in
-            Task { @MainActor in self?.notifyFinishedIfNeeded() }
+            // .dataPlayedBack also fires when the node is STOPPED — every
+            // seek/reload stops the node, so without the token guard the old
+            // segment's completion lands after the new schedule and reports a
+            // bogus "finished", skipping the song (seen on every EQ-path seek).
+            Task { @MainActor in
+                guard let self, self.reloadToken == token else { return }
+                self.notifyFinishedIfNeeded()
+            }
         }
-        _ = token
     }
 
     // MARK: - Stream playback (AVAssetReader → PCM buffers)
@@ -285,7 +299,12 @@ final class EqualizedAudioEnginePlayer {
                     Self.silentBuffer(format: format),
                     completionCallbackType: .dataPlayedBack,
                 ) { [weak self] _ in
-                    Task { @MainActor in self?.notifyFinishedIfNeeded() }
+                    // Same stop-fires-completion trap as the file path — only
+                    // the schedule that is still current may report "finished".
+                    Task { @MainActor in
+                        guard let self, self.reloadToken == token else { return }
+                        self.notifyFinishedIfNeeded()
+                    }
                 }
             }
         } catch {
@@ -347,6 +366,7 @@ final class EqualizedAudioEnginePlayer {
         }
         if isConfigured {
             engine.detach(playerNode)
+            engine.detach(timePitchNode)
             engine.detach(eqNode)
             isConfigured = false
             connectedFormat = nil

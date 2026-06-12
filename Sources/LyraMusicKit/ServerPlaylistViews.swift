@@ -993,6 +993,13 @@ struct ServerPlaylistDetailView: View {
     }
 
     private func detailOnAppear() {
+        // Recover from a false `.gone`: NavigationStack can detach this view's
+        // hosting controller while it's merely COVERED by a forward push (Kill
+        // Mode list), which the cover-zoom observer reads as a committed pop.
+        // Stuck `.gone` leaves the toolbar chrome at opacity 0 and untappable.
+        if dismissalPhase == .gone {
+            dismissalPhase = .idle
+        }
         if navigationTitleText.isEmpty {
             if isHomeMix, let mix = activeHomeMix {
                 navigationTitleText = mix.title
