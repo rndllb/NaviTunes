@@ -32,6 +32,9 @@ enum DebugUIRemote {
         guard !installed else { return }
         installed = true
         observe("com.lyra.debug.openPlaylist")
+        observe("com.lyra.debug.addToPlaylist")
+        observe("com.lyra.debug.toast")
+        observe("com.lyra.debug.deleteUITestPlaylists")
         observe("com.lyra.debug.pop")
         observe("com.lyra.debug.libraryTab")
         observe("com.lyra.debug.ping")
@@ -68,6 +71,29 @@ enum DebugUIRemote {
             guard let playlist else { return }
             app.deepLinkTab = app.selectedTab
             app.presentedDeepLink = .playlist(playlist)
+        case "com.lyra.debug.addToPlaylist":
+            // Opens the add-to-playlist sheet with any resolvable track so its
+            // layout can be screenshot-verified without scripted taps.
+            let track = app.recentlyPlayedTracks.first
+                ?? app.libraryPlaylists.lazy
+                    .compactMap { app.cachedPlaylistRows(playlistId: $0.id)?.first?.track }
+                    .first
+            if let track { app.presentAddToPlaylist(tracks: [track]) }
+        case "com.lyra.debug.toast":
+            // Renders the rich confirmation toast for screenshot verification.
+            app.showTransientToast(TransientToastContent(
+                title: "1 song added",
+                subtitle: "lyra toast check",
+                artworkURL: app.libraryPlaylists.first?.artworkURL
+            ))
+        case "com.lyra.debug.deleteUITestPlaylists":
+            // Cleanup hook for scratch playlists created by the UI tests.
+            Task {
+                for playlist in app.libraryPlaylists where playlist.name.hasPrefix("lyra ui test") {
+                    try? await app.deletePlaylist(playlistId: playlist.id)
+                }
+                await app.refreshLibraryPlaylists()
+            }
         case "com.lyra.debug.pop":
             app.debugPopRequests += 1
         case "com.lyra.debug.libraryTab":

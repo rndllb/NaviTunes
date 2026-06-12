@@ -81,8 +81,8 @@ After server rescans, media file ids can change. `AppModel.recoverStaleTrackIfNe
 
 iOS has no stock toast/snackbar primitive. The app ships a minimal one built from stock SwiftUI primitives (Text + Capsule + overlay + animation):
 
-- State: `AppModel.transientToast: String?` plus `AppModel.showTransientToast(_:)`. The helper sets the message, schedules a ~1.8 s auto-clear, and fires a soft impact haptic on iOS. Calling it again replaces an in-flight toast — rapid actions don't pile up.
-- Render: a single `MusicTransientToastChrome` view modifier applied at the root in `RootView`. Don't add `musicTransientToastChrome()` further down the tree; the root copy is the only one.
+- State: `AppModel.transientToast: TransientToastContent?` plus `AppModel.showTransientToast(_:)` (String overload for plain messages; `TransientToastContent` adds optional subtitle + artwork for the Apple-Music-style "1 song added · ‹playlist›" confirmation). The helper sets the message, schedules a ~1.8 s auto-clear, and fires a soft impact haptic on iOS. Calling it again replaces an in-flight toast — rapid actions don't pile up.
+- Render: `MusicTransientToastChrome` applied at the root in `RootView`, plus one deliberate copy on the Now Playing `fullScreenCover` content (the cover occludes the root overlay; the two are never visible at once). Don't add `musicTransientToastChrome()` anywhere else.
 - Use for ephemeral user-action confirmations only (e.g. "Added to Queue", "Playing Next"). For anything modal/blocking (errors, destructive confirmation, choices) use `.alert` / `.confirmationDialog` — toasts are not interactive.
 
 If you wire a new action that ends in a queue/library/playlist mutation and a user might want feedback, call `app.showTransientToast(...)` from the closure. The haptic is bundled — don't re-fire `UIImpactFeedbackGenerator` separately at the call site.

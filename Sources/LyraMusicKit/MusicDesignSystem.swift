@@ -1265,21 +1265,35 @@ struct MusicTransientToastChrome: ViewModifier {
 
     func body(content: Content) -> some View {
         content.overlay(alignment: .bottom) {
-            if let message = app.transientToast {
-                Text(message)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 12)
-                    .background(
-                        Capsule(style: .continuous)
-                            .fill(Color.black.opacity(0.85))
-                    )
-                    .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
-                    .padding(.bottom, 110)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .accessibilityAddTraits(.isStaticText)
-                    .accessibilityLabel(message)
+            if let toast = app.transientToast {
+                HStack(spacing: 10) {
+                    if let artworkURL = toast.artworkURL {
+                        AlbumArtworkView(url: artworkURL, cornerRadius: 5)
+                            .frame(width: 34, height: 34)
+                    }
+                    VStack(alignment: toast.subtitle == nil ? .center : .leading, spacing: 1) {
+                        Text(toast.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                        if let subtitle = toast.subtitle {
+                            Text(subtitle)
+                                .font(.caption)
+                                .foregroundStyle(.white.opacity(0.7))
+                                .lineLimit(1)
+                        }
+                    }
+                }
+                .padding(.horizontal, toast.artworkURL == nil ? 18 : 12)
+                .padding(.vertical, toast.subtitle == nil ? 12 : 8)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(Color.black.opacity(0.85))
+                )
+                .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
+                .padding(.bottom, 110)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .accessibilityAddTraits(.isStaticText)
+                .accessibilityLabel(toast.subtitle.map { "\(toast.title), \($0)" } ?? toast.title)
             }
         }
         .animation(.spring(response: 0.42, dampingFraction: 0.85), value: app.transientToast)
