@@ -35,7 +35,7 @@ struct DownloadedTracksBrowserView: View {
                 }
             }
         }
-        .searchable(text: $searchText, prompt: "Search downloaded tracks")
+        .musicNativeSearchable(text: $searchText, prompt: "Search downloaded tracks")
         .navigationTitle("Downloaded Music")
         .musicNavigationBarTitleDisplayMode(.inline)
         .musicNavigationBarVisibleWhenPushed()

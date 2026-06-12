@@ -45,7 +45,7 @@ struct LoginView: View {
                 .padding(.bottom, 44)
             }
         }
-        .id("\(app.accentPresetId)-\(app.themePreference.rawValue)")
+        .id("\(app.accentPresetId)-\(app.appIconPresetId)-\(app.themePreference.rawValue)")
         .onAppear {
             SettingsFormDrafts.pullServer(from: app, into: &serverDraft)
         }
@@ -129,8 +129,8 @@ struct LoginView: View {
 
     private var logoBlock: some View {
         VStack(spacing: 14) {
-            LyraAccentLogoView(accentPresetId: app.accentPresetId, size: 88, showsIconPlate: true)
-                .animation(.easeInOut(duration: 0.2), value: app.accentPresetId)
+            LyraAccentLogoView(accentPresetId: app.appIconPresetId, size: 88, showsIconPlate: true)
+                .animation(.easeInOut(duration: 0.2), value: app.appIconPresetId)
             Text("Lyra Music")
                 .font(.title2.weight(.bold))
                 .foregroundStyle(primaryText)
