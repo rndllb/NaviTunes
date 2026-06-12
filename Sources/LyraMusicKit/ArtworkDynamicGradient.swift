@@ -35,6 +35,11 @@ enum ArtworkDynamicGradient {
         let backdropRelativeLuminance: Double
         /// When `true`, hero + toolbar use **dark** foreground (black glyphs, dark-filled pills) because ``heroSolidBackdropColor`` reads as **light**.
         let prefersDarkHeroChrome: Bool
+        /// True for the artwork-less ``listSurface(colorScheme:)`` palette (player
+        /// color backdrop off). Now Playing dims its scrubber/volume fills to
+        /// Apple Music's plain-black levels in this mode — full-strength white
+        /// fills only read correctly over colored artwork backdrops.
+        var isPlainSurface: Bool = false
 
         /// If ``heroSolidBackdropColor``’s WCAG relative luminance is **≥** this value, the surface is treated as **light** → dark chrome (black text / buttons).
         static let backdropLuminanceDarkChromeThreshold: Double = 0.43

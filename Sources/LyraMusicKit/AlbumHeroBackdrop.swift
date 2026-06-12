@@ -82,6 +82,7 @@ extension ArtworkDynamicGradient.BackdropPalette {
             heroSolidBackdropColor: MusicDesign.background,
             backdropRelativeLuminance: prefersDarkChrome ? 0.85 : 0.15,
             prefersDarkHeroChrome: prefersDarkChrome,
+            isPlainSurface: true,
         )
     }
 
@@ -108,12 +109,23 @@ extension ArtworkDynamicGradient.BackdropPalette {
     }
 
     /// Scrubber track well (subtle vs ``heroChromePrimary`` progress).
+    /// Plain surface (no artwork backdrop) uses Apple Music's exact plain-black
+    /// player levels: track ≈ 21% white, fill ≈ 42% white — full-strength
+    /// fills read garish on pure black.
     var nowPlayingScrubberTrackFill: Color {
-        prefersDarkHeroChrome ? Color.black.opacity(0.18) : Color.white.opacity(MusicDesign.nowPlayingSliderDimOpacity)
+        if isPlainSurface {
+            return prefersDarkHeroChrome ? Color.black.opacity(0.21) : Color.white.opacity(0.21)
+        }
+        return prefersDarkHeroChrome ? Color.black.opacity(0.18) : Color.white.opacity(MusicDesign.nowPlayingSliderDimOpacity)
     }
 
     var nowPlayingScrubberProgressFill: Color {
-        heroChromePrimary
+        if isPlainSurface {
+            // Composites over the 21% track capsule: 0.27 on top of it lands on
+            // Apple's flat ≈42% white fill.
+            return prefersDarkHeroChrome ? Color.black.opacity(0.27) : Color.white.opacity(0.27)
+        }
+        return heroChromePrimary
     }
 
     var nowPlayingScrubberStroke: Color {
@@ -130,8 +142,14 @@ extension ArtworkDynamicGradient.BackdropPalette {
         prefersDarkHeroChrome ? Color.black.opacity(0.35) : Color.white.opacity(0.3)
     }
 
-    /// Volume row speaker glyphs (matches ``nowPlayingTimeLabel`` rhythm).
-    var nowPlayingVolumeGlyph: Color { nowPlayingTimeLabel }
+    /// Volume row speaker glyphs (matches ``nowPlayingTimeLabel`` rhythm;
+    /// Apple's plain-black player uses brighter glyphs ≈ 68% white).
+    var nowPlayingVolumeGlyph: Color {
+        if isPlainSurface {
+            return prefersDarkHeroChrome ? Color.black.opacity(0.68) : Color.white.opacity(0.68)
+        }
+        return nowPlayingTimeLabel
+    }
 }
 
 // MARK: - Album backdrop (step 2): full-screen flat artwork tint (no gradients)
