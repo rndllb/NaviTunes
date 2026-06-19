@@ -7,10 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		U10000000000000000000003 /* RapidDismissTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = U10000000000000000000002 /* RapidDismissTests.swift */; };
-		U10000000000000000000023 /* AddToPlaylistSheetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = U10000000000000000000022 /* AddToPlaylistSheetTests.swift */; };
 		02E1B2612FB8DE7B006F4370 /* LyraMusicKit in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000014 /* LyraMusicKit */; };
 		A00000000000000000000011 /* LyraMusicHostApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000006 /* LyraMusicHostApp.swift */; };
+		BB0000000000000000000011 /* LyraWidgetsBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000003 /* LyraWidgetsBundle.swift */; };
+		BB0000000000000000000012 /* LyraRecentlyPlayedWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000004 /* LyraRecentlyPlayedWidget.swift */; };
+		BB0000000000000000000013 /* LyraNowPlayingWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000005 /* LyraNowPlayingWidget.swift */; };
+		BB0000000000000000000014 /* LyraWidgets.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000006 /* LyraWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		BB0000000000000000000070 /* LyraMusicKit in Frameworks */ = {isa = PBXBuildFile; productRef = BB0000000000000000000071 /* LyraMusicKit */; };
 		IC0000000000000000000020 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000010 /* AppIcon.icon */; };
 		IC0000000000000000000021 /* LyraIcon-blue.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000011 /* LyraIcon-blue.icon */; };
 		IC0000000000000000000022 /* LyraIcon-green.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000012 /* LyraIcon-green.icon */; };
@@ -23,13 +26,41 @@
 		IC0000000000000000000029 /* LyraIcon-lightgray.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000019 /* LyraIcon-lightgray.icon */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		BB0000000000000000000061 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BB0000000000000000000040;
+			remoteInfo = LyraWidgets;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		BB0000000000000000000033 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				BB0000000000000000000014 /* LyraWidgets.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
-		U10000000000000000000001 /* LyraUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LyraUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		U10000000000000000000002 /* RapidDismissTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RapidDismissTests.swift; sourceTree = "<group>"; };
-		U10000000000000000000022 /* AddToPlaylistSheetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddToPlaylistSheetTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000002 /* LyraMusicHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LyraMusicHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00000000000000000000006 /* LyraMusicHostApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyraMusicHostApp.swift; sourceTree = "<group>"; };
 		A00000000000000000000007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		BB0000000000000000000001 /* LyraWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = LyraWidgets.entitlements; sourceTree = "<group>"; };
+		BB0000000000000000000002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		BB0000000000000000000003 /* LyraWidgetsBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyraWidgetsBundle.swift; sourceTree = "<group>"; };
+		BB0000000000000000000004 /* LyraRecentlyPlayedWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyraRecentlyPlayedWidget.swift; sourceTree = "<group>"; };
+		BB0000000000000000000005 /* LyraNowPlayingWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyraNowPlayingWidget.swift; sourceTree = "<group>"; };
+		BB0000000000000000000006 /* LyraWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = LyraWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		BB0000000000000000000007 /* LyraMusicHost.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = LyraMusicHost.entitlements; sourceTree = "<group>"; };
 		IC0000000000000000000010 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		IC0000000000000000000011 /* LyraIcon-blue.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "LyraIcon-blue.icon"; sourceTree = "<group>"; };
 		IC0000000000000000000012 /* LyraIcon-green.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "LyraIcon-green.icon"; sourceTree = "<group>"; };
@@ -43,18 +74,19 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		U10000000000000000000006 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		A00000000000000000000009 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				02E1B2612FB8DE7B006F4370 /* LyraMusicKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB0000000000000000000031 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BB0000000000000000000070 /* LyraMusicKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -67,6 +99,7 @@
 				IC0000000000000000000001 /* AppIcons */,
 				A00000000000000000000006 /* LyraMusicHostApp.swift */,
 				A00000000000000000000007 /* Info.plist */,
+				BB0000000000000000000007 /* LyraMusicHost.entitlements */,
 			);
 			path = LyraMusicHost;
 			sourceTree = "<group>";
@@ -75,7 +108,7 @@
 			isa = PBXGroup;
 			children = (
 				A00000000000000000000002 /* LyraMusicHost.app */,
-				U10000000000000000000001 /* LyraUITests.xctest */,
+				BB0000000000000000000006 /* LyraWidgets.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -84,7 +117,7 @@
 			isa = PBXGroup;
 			children = (
 				A00000000000000000000003 /* LyraMusicHost */,
-				U10000000000000000000004 /* LyraUITests */,
+				BB0000000000000000000020 /* LyraWidgets */,
 				AA9E8B822FBCB48C006C70DB /* Frameworks */,
 				A00000000000000000000004 /* Products */,
 			);
@@ -95,6 +128,18 @@
 			children = (
 			);
 			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		BB0000000000000000000020 /* LyraWidgets */ = {
+			isa = PBXGroup;
+			children = (
+				BB0000000000000000000003 /* LyraWidgetsBundle.swift */,
+				BB0000000000000000000004 /* LyraRecentlyPlayedWidget.swift */,
+				BB0000000000000000000005 /* LyraNowPlayingWidget.swift */,
+				BB0000000000000000000001 /* LyraWidgets.entitlements */,
+				BB0000000000000000000002 /* Info.plist */,
+			);
+			path = LyraWidgets;
 			sourceTree = "<group>";
 		};
 		IC0000000000000000000001 /* AppIcons */ = {
@@ -114,15 +159,6 @@
 			path = AppIcons;
 			sourceTree = "<group>";
 		};
-		U10000000000000000000004 /* LyraUITests */ = {
-			isa = PBXGroup;
-			children = (
-				U10000000000000000000002 /* RapidDismissTests.swift */,
-				U10000000000000000000022 /* AddToPlaylistSheetTests.swift */,
-			);
-			path = LyraUITests;
-			sourceTree = "<group>";
-		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -133,10 +169,12 @@
 				A00000000000000000000008 /* Sources */,
 				A00000000000000000000009 /* Frameworks */,
 				IC0000000000000000000002 /* Resources */,
+				BB0000000000000000000033 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				BB0000000000000000000062 /* PBXTargetDependency */,
 			);
 			name = LyraMusicHost;
 			packageProductDependencies = (
@@ -146,22 +184,25 @@
 			productReference = A00000000000000000000002 /* LyraMusicHost.app */;
 			productType = "com.apple.product-type.application";
 		};
-		U10000000000000000000007 /* LyraUITests */ = {
+		BB0000000000000000000040 /* LyraWidgets */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = U10000000000000000000012 /* Build configuration list for PBXNativeTarget "LyraUITests" */;
+			buildConfigurationList = BB0000000000000000000052 /* Build configuration list for PBXNativeTarget "LyraWidgets" */;
 			buildPhases = (
-				U10000000000000000000005 /* Sources */,
-				U10000000000000000000006 /* Frameworks */,
+				BB0000000000000000000030 /* Sources */,
+				BB0000000000000000000031 /* Frameworks */,
+				BB0000000000000000000032 /* Resources */,
 			);
 			buildRules = (
 			);
 			dependencies = (
-				U10000000000000000000009 /* PBXTargetDependency */,
 			);
-			name = LyraUITests;
-			productName = LyraUITests;
-			productReference = U10000000000000000000001 /* LyraUITests.xctest */;
-			productType = "com.apple.product-type.bundle.ui-testing";
+			name = LyraWidgets;
+			packageProductDependencies = (
+				BB0000000000000000000071 /* LyraMusicKit */,
+			);
+			productName = LyraWidgets;
+			productReference = BB0000000000000000000006 /* LyraWidgets.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -171,14 +212,13 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1600;
-				LastUpgradeCheck = 1600;
+				LastUpgradeCheck = 2650;
 				TargetAttributes = {
 					A00000000000000000000010 = {
 						CreatedOnToolsVersion = 16.0;
 					};
-					U10000000000000000000007 = {
+					BB0000000000000000000040 = {
 						CreatedOnToolsVersion = 16.0;
-						TestTargetID = A00000000000000000000010;
 					};
 				};
 			};
@@ -199,30 +239,19 @@
 			projectRoot = "";
 			targets = (
 				A00000000000000000000010 /* LyraMusicHost */,
-				U10000000000000000000007 /* LyraUITests */,
+				BB0000000000000000000040 /* LyraWidgets */,
 			);
 		};
 /* End PBXProject section */
 
-/* Begin PBXContainerItemProxy section */
-		U10000000000000000000008 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = A00000000000000000000001 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = A00000000000000000000010;
-			remoteInfo = LyraMusicHost;
-		};
-/* End PBXContainerItemProxy section */
-
-/* Begin PBXTargetDependency section */
-		U10000000000000000000009 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = A00000000000000000000010 /* LyraMusicHost */;
-			targetProxy = U10000000000000000000008 /* PBXContainerItemProxy */;
-		};
-/* End PBXTargetDependency section */
-
 /* Begin PBXResourcesBuildPhase section */
+		BB0000000000000000000032 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		IC0000000000000000000002 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -251,16 +280,25 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		U10000000000000000000005 /* Sources */ = {
+		BB0000000000000000000030 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				U10000000000000000000003 /* RapidDismissTests.swift in Sources */,
-				U10000000000000000000023 /* AddToPlaylistSheetTests.swift in Sources */,
+				BB0000000000000000000011 /* LyraWidgetsBundle.swift in Sources */,
+				BB0000000000000000000012 /* LyraRecentlyPlayedWidget.swift in Sources */,
+				BB0000000000000000000013 /* LyraNowPlayingWidget.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		BB0000000000000000000062 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = BB0000000000000000000040 /* LyraWidgets */;
+			targetProxy = BB0000000000000000000061 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		A00000000000000000000100 /* Debug */ = {
@@ -268,8 +306,39 @@
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ENABLE_MODULES = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				DEVELOPMENT_TEAM = F7YZT72GUX;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
@@ -280,8 +349,37 @@
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ENABLE_MODULES = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				DEVELOPMENT_TEAM = F7YZT72GUX;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 			};
 			name = Release;
@@ -293,12 +391,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CODE_SIGN_ENTITLEMENTS = LyraMusicHost/LyraMusicHost.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = G98QGR9HZY;
+				DEVELOPMENT_TEAM = F7YZT72GUX;
 				ENABLE_PREVIEWS = YES;
 				GCC_GENERATE_DEBUGGING_SYMBOLS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -326,11 +426,13 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CODE_SIGN_ENTITLEMENTS = LyraMusicHost/LyraMusicHost.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = G98QGR9HZY;
+				DEVELOPMENT_TEAM = F7YZT72GUX;
 				ENABLE_PREVIEWS = YES;
 				GCC_GENERATE_DEBUGGING_SYMBOLS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -351,39 +453,59 @@
 			};
 			name = Release;
 		};
-		U10000000000000000000010 /* Debug */ = {
+		BB0000000000000000000050 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CODE_SIGN_ENTITLEMENTS = LyraWidgets/LyraWidgets.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = F7YZT72GUX;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = LyraWidgets/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.randll.lyra.LyraUITests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.randll.lyra.widgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_TARGET_NAME = LyraMusicHost;
 			};
 			name = Debug;
 		};
-		U10000000000000000000011 /* Release */ = {
+		BB0000000000000000000051 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CODE_SIGN_ENTITLEMENTS = LyraWidgets/LyraWidgets.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = F7YZT72GUX;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = LyraWidgets/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.randll.lyra.LyraUITests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.randll.lyra.widgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_EMIT_LOC_STRINGS = NO;
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_TARGET_NAME = LyraMusicHost;
 			};
 			name = Release;
 		};
@@ -408,11 +530,11 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		U10000000000000000000012 /* Build configuration list for PBXNativeTarget "LyraUITests" */ = {
+		BB0000000000000000000052 /* Build configuration list for PBXNativeTarget "LyraWidgets" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				U10000000000000000000010 /* Debug */,
-				U10000000000000000000011 /* Release */,
+				BB0000000000000000000050 /* Debug */,
+				BB0000000000000000000051 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -428,6 +550,11 @@
 
 /* Begin XCSwiftPackageProductDependency section */
 		A00000000000000000000014 /* LyraMusicKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A00000000000000000000013 /* XCLocalSwiftPackageReference ".." */;
+			productName = LyraMusicKit;
+		};
+		BB0000000000000000000071 /* LyraMusicKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = A00000000000000000000013 /* XCLocalSwiftPackageReference ".." */;
 			productName = LyraMusicKit;

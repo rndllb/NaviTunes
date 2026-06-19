@@ -43,6 +43,8 @@ final class EqualizedAudioEnginePlayer {
             band.bypass = bypass
         }
         eqNode.bypass = bypass
+        // Advanced enhancement (bass/vocal/loudness/stereo/vintage) is composed upstream
+        // in AppModel.effectiveEqualizerBandGains before gains reach this node.
     }
 
     func load(

@@ -3,7 +3,7 @@ import SwiftUI
 struct SettingsPlaybackView: View {
     @EnvironmentObject private var app: AppModel
     @State private var showResetConfirm = false
-    @AppStorage("streamingDiskCacheEnabled") private var streamingDiskCacheEnabled = false
+    @AppStorage("streamingDiskCacheEnabled") private var streamingDiskCacheEnabled = true
 
     private var isDefault: Bool {
         app.wifiStreamBitRate == .none
@@ -128,7 +128,7 @@ struct SettingsPlaybackView: View {
         } header: {
             Text("Stream Cache")
         } footer: {
-            Text("Replays fully cached streams from disk when available. New cache entries are not written during playback on this OS version.")
+            Text("Replays fully cached streams from disk when available. Required for the equalizer to apply on first play — enabling the EQ turns this on automatically.")
         }
     }
 

@@ -69,6 +69,59 @@ enum MusicBrainzNewReleasesClient {
         return Array(sorted.prefix(capped))
     }
 
+    /// Recent albums/EPs/singles for one artist MBID (newest first).
+    static func fetchRecentAlbums(
+        forArtistMBID artistMBID: String,
+        limit: Int = 8,
+        windowDays: Int = 365,
+    ) async throws -> [ChartAlbum] {
+        let trimmed = artistMBID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        let capped = min(max(limit, 1), 25)
+        let cal = Calendar(identifier: .gregorian)
+        let end = cal.startOfDay(for: Date())
+        guard let start = cal.date(byAdding: .day, value: -max(windowDays, 30), to: end) else { return [] }
+        let fmt = DateFormatter()
+        fmt.calendar = cal
+        fmt.timeZone = TimeZone(secondsFromGMT: 0)
+        fmt.dateFormat = "yyyy-MM-dd"
+        let startStr = fmt.string(from: start)
+        let endStr = fmt.string(from: end)
+        let query = "arid:\(trimmed) AND (primarytype:album OR primarytype:ep OR primarytype:single) AND firstreleasedate:[\(startStr) TO \(endStr)]"
+
+        guard var comps = URLComponents(string: "https://musicbrainz.org/ws/2/release-group") else { return [] }
+        comps.queryItems = [
+            URLQueryItem(name: "query", value: query),
+            URLQueryItem(name: "fmt", value: "json"),
+            URLQueryItem(name: "limit", value: "\(capped)"),
+        ]
+        guard let url = comps.url else { return [] }
+
+        var req = URLRequest(url: url)
+        req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse, (200 ..< 300).contains(http.statusCode) else { return [] }
+        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let groups = obj["release-groups"] as? [[String: Any]]
+        else { return [] }
+
+        var albums: [ChartAlbum] = []
+        var seen = Set<String>()
+        for g in groups {
+            guard let id = g["id"] as? String, !id.isEmpty,
+                  let title = g["title"] as? String, !title.isEmpty
+            else { continue }
+            guard seen.insert(id).inserted else { continue }
+            let artist = artistLine(from: g)
+            let cover = URL(string: "https://coverartarchive.org/release-group/\(id)/front-250")
+            albums.append(ChartAlbum(id: id, name: title, artistName: artist, imageURL: cover))
+        }
+
+        let sorted = albums.sorted { firstReleaseDate(for: $0.id, in: groups) > firstReleaseDate(for: $1.id, in: groups) }
+        return Array(sorted.prefix(capped))
+    }
+
     private static func firstReleaseDate(for id: String, in groups: [[String: Any]]) -> String {
         guard let g = groups.first(where: { ($0["id"] as? String) == id }),
               let d = g["first-release-date"] as? String
