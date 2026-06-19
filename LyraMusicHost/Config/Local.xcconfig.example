@@ -1,0 +1,9 @@
+// Copy this file to Local.xcconfig (same folder) and set your own Team ID.
+//
+//     cp LyraMusicHost/Config/Local.xcconfig.example LyraMusicHost/Config/Local.xcconfig
+//
+// Local.xcconfig is gitignored, so your team ID never gets committed and never
+// clobbers a collaborator's signing. Find your Team ID in Xcode → Settings →
+// Accounts, or at https://developer.apple.com/account (Membership).
+
+DEVELOPMENT_TEAM = YOUR_TEAM_ID_HERE

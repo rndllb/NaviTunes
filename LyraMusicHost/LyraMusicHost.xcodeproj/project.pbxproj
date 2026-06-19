@@ -61,6 +61,8 @@
 		BB0000000000000000000005 /* LyraNowPlayingWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyraNowPlayingWidget.swift; sourceTree = "<group>"; };
 		BB0000000000000000000006 /* LyraWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = LyraWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		BB0000000000000000000007 /* LyraMusicHost.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = LyraMusicHost.entitlements; sourceTree = "<group>"; };
+		A000000000000000000000CF /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
+		A000000000000000000000D0 /* Local.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Local.xcconfig.example; sourceTree = "<group>"; };
 		IC0000000000000000000010 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		IC0000000000000000000011 /* LyraIcon-blue.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "LyraIcon-blue.icon"; sourceTree = "<group>"; };
 		IC0000000000000000000012 /* LyraIcon-green.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "LyraIcon-green.icon"; sourceTree = "<group>"; };
@@ -116,11 +118,21 @@
 		A00000000000000000000005 = {
 			isa = PBXGroup;
 			children = (
+				A000000000000000000000D1 /* Config */,
 				A00000000000000000000003 /* LyraMusicHost */,
 				BB0000000000000000000020 /* LyraWidgets */,
 				AA9E8B822FBCB48C006C70DB /* Frameworks */,
 				A00000000000000000000004 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		A000000000000000000000D1 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				A000000000000000000000CF /* Signing.xcconfig */,
+				A000000000000000000000D0 /* Local.xcconfig.example */,
+			);
+			path = Config;
 			sourceTree = "<group>";
 		};
 		AA9E8B822FBCB48C006C70DB /* Frameworks */ = {
@@ -303,6 +315,7 @@
 /* Begin XCBuildConfiguration section */
 		A00000000000000000000100 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A000000000000000000000CF /* Signing.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ENABLE_MODULES = YES;
@@ -324,7 +337,6 @@
 				CLANG_WARN_SUSPICIOUS_MOVE = YES;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				DEVELOPMENT_TEAM = F7YZT72GUX;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -346,6 +358,7 @@
 		};
 		A00000000000000000000101 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A000000000000000000000CF /* Signing.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ENABLE_MODULES = YES;
@@ -367,7 +380,6 @@
 				CLANG_WARN_SUSPICIOUS_MOVE = YES;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				DEVELOPMENT_TEAM = F7YZT72GUX;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -386,6 +398,7 @@
 		};
 		A00000000000000000000200 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A000000000000000000000CF /* Signing.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "LyraIcon-pink LyraIcon-orange LyraIcon-yellow LyraIcon-green LyraIcon-teal LyraIcon-blue LyraIcon-indigo LyraIcon-purple LyraIcon-lightgray";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -398,7 +411,6 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = F7YZT72GUX;
 				ENABLE_PREVIEWS = YES;
 				GCC_GENERATE_DEBUGGING_SYMBOLS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -421,6 +433,7 @@
 		};
 		A00000000000000000000201 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A000000000000000000000CF /* Signing.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "LyraIcon-pink LyraIcon-orange LyraIcon-yellow LyraIcon-green LyraIcon-teal LyraIcon-blue LyraIcon-indigo LyraIcon-purple LyraIcon-lightgray";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -432,7 +445,6 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = F7YZT72GUX;
 				ENABLE_PREVIEWS = YES;
 				GCC_GENERATE_DEBUGGING_SYMBOLS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -455,6 +467,7 @@
 		};
 		BB0000000000000000000050 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A000000000000000000000CF /* Signing.xcconfig */;
 			buildSettings = {
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				CODE_SIGN_ENTITLEMENTS = LyraWidgets/LyraWidgets.entitlements;
@@ -462,7 +475,6 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = F7YZT72GUX;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = LyraWidgets/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -483,6 +495,7 @@
 		};
 		BB0000000000000000000051 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A000000000000000000000CF /* Signing.xcconfig */;
 			buildSettings = {
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				CODE_SIGN_ENTITLEMENTS = LyraWidgets/LyraWidgets.entitlements;
@@ -490,7 +503,6 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = F7YZT72GUX;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = LyraWidgets/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (

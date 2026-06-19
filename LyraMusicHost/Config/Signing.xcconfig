@@ -1,0 +1,16 @@
+// Code signing — shared base config.
+//
+// DEVELOPMENT_TEAM is intentionally NOT set here. Each collaborator signs with
+// their own Apple Developer team, and committing a team ID means every pull
+// overwrites someone else's signing and breaks their build with
+// "you don't have access to this membership resource".
+//
+// Instead, set YOUR team in Local.xcconfig (same folder, gitignored):
+//
+//     cp LyraMusicHost/Config/Local.xcconfig.example LyraMusicHost/Config/Local.xcconfig
+//     # then edit Local.xcconfig and put in your Team ID
+//
+// Find your Team ID in Xcode → Settings → Accounts (select your team), or at
+// https://developer.apple.com/account under Membership.
+
+#include? "Local.xcconfig"

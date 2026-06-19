@@ -38,3 +38,6 @@ Carthage/Build/
 .env
 .env.*
 !.env.example
+
+# Per-developer code-signing team (each dev sets their own; never commit)
+LyraMusicHost/Config/Local.xcconfig
