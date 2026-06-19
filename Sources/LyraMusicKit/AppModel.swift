@@ -253,6 +253,13 @@ public final class AppModel: ObservableObject {
     /// committed by the user via the kill list view (per-row swipe or "Remove All").
     @Published private(set) var killModePendingRemovals: [String: [String]] = [:]
 
+    /// playlistId → set of track ids "kept (green)": played fully to their natural end
+    /// while Kill Mode was on. Together with `killModePendingRemovals` (skipped/red) this
+    /// is the "listened" set — excluded from future runs so each song plays once. Persists
+    /// across disable/re-enable; reset only by "Clear listen history". Marked good (not
+    /// removed): never deletes from the playlist.
+    @Published private(set) var killModePassedTracks: [String: Set<String>] = [:]
+
     /// Set of artists the user has manually favorited from ``ArtistPageView``.
     /// Stored as `LibraryTrackMatcher.normalize`d names so the same artist hits the
     /// same key regardless of source (server artist row vs Last.fm row vs typed search).
@@ -888,6 +895,7 @@ public final class AppModel: ObservableObject {
         reloadCustomRadioStations()
         killModeEnabledPlaylistIds = KillModeStore.loadEnabled()
         killModePendingRemovals = KillModeStore.loadPending()
+        killModePassedTracks = KillModeStore.loadPassed()
         scrobbleService.bind(app: self)
         player.refreshTrackBeforePlay = { [weak self] track in
             await self?.refreshAlbumTracksIfNeeded(for: track) ?? track
@@ -914,6 +922,19 @@ public final class AppModel: ObservableObject {
             Task { @MainActor in
                 self?.handleKillModeSkip(track: track, source: source)
             }
+        }
+        player.onTrackCompleted = { [weak self] track, source in
+            Task { @MainActor in
+                self?.handleKillModeCompletion(track: track, source: source)
+            }
+        }
+        // Kill Mode: while playing from a kill-mode playlist, never auto-advance into a
+        // song already listened to (played fully or skipped) so each plays once per run.
+        player.autoAdvanceExclusion = { [weak self] track in
+            guard let self,
+                  case let .playlist(p)? = self.player.playbackSource,
+                  self.killModeEnabledPlaylistIds.contains(p.id) else { return false }
+            return self.killModeListenedTrackIds(playlistId: p.id).contains(track.id)
         }
         player.onAudioRouteChanged = { [weak self] in
             Task { @MainActor in
@@ -2780,6 +2801,48 @@ public final class AppModel: ObservableObject {
         KillModeStore.savePending(killModePendingRemovals)
     }
 
+    /// Track ids "kept (green)" — played fully to their natural end under Kill Mode.
+    func killModePassedTrackIds(playlistId: String) -> Set<String> {
+        killModePassedTracks[playlistId] ?? []
+    }
+
+    /// The full "listened" set for a playlist: skipped (red) ∪ kept (green). These are
+    /// excluded from future runs so each song plays once until listen history is cleared.
+    func killModeListenedTrackIds(playlistId: String) -> Set<String> {
+        killModePendingTrackIds(playlistId: playlistId).union(killModePassedTrackIds(playlistId: playlistId))
+    }
+
+    /// Clears the "kept (green)" set only — kept songs become eligible to play again on
+    /// the next run so the user can do another culling pass over the leftovers. The
+    /// pending-removal (red) queue is left intact for review.
+    func clearKillModeListenHistory(playlistId: String) {
+        guard killModePassedTracks[playlistId] != nil else { return }
+        killModePassedTracks[playlistId] = nil
+        KillModeStore.savePassed(killModePassedTracks)
+    }
+
+    /// Filters a playlist's tracks for a Kill Mode run: drops already-listened songs so
+    /// each plays once. An explicitly-chosen start track is always kept (an override, even
+    /// if it was listened). Returns the filtered tracks and the remapped start index.
+    /// Pass-through (no change) when the source isn't a kill-mode playlist.
+    func killModeFilteredPlayback(
+        tracks: [Track],
+        startIndex: Int,
+        source: PlaybackSource?,
+    ) -> (tracks: [Track], startIndex: Int) {
+        guard case let .playlist(p)? = source,
+              killModeEnabledPlaylistIds.contains(p.id) else { return (tracks, startIndex) }
+        let listened = killModeListenedTrackIds(playlistId: p.id)
+        guard !listened.isEmpty else { return (tracks, startIndex) }
+        let startId = tracks.indices.contains(startIndex) ? tracks[startIndex].id : nil
+        let filtered = tracks.enumerated().filter { idx, track in
+            idx == startIndex || !listened.contains(track.id)
+        }.map(\.element)
+        guard !filtered.isEmpty else { return (tracks, startIndex) }
+        let newStart = startId.flatMap { id in filtered.firstIndex { $0.id == id } } ?? 0
+        return (filtered, newStart)
+    }
+
     /// Removes a single track id from the pending set without touching the playlist.
     /// Used by the kill-list "Keep" action — undoes a skip-mark without deleting.
     func restoreFromKillList(playlistId: String, trackId: String) {
@@ -2807,12 +2870,39 @@ public final class AppModel: ObservableObject {
         current.insert(track.id, at: 0)
         killModePendingRemovals[p.id] = current
         KillModeStore.savePending(killModePendingRemovals)
+        // Skip wins over a prior "played fully" mark — the track is red, not green.
+        if var passed = killModePassedTracks[p.id], passed.remove(track.id) != nil {
+            killModePassedTracks[p.id] = passed.isEmpty ? nil : passed
+            KillModeStore.savePassed(killModePassedTracks)
+        }
+    }
+
+    /// Callback hook from `PlaybackEngine.onTrackCompleted`. Marks the finished track
+    /// "kept (green)" when it played fully to its natural end from a kill-mode playlist
+    /// and wasn't a Play Next / Add to Queue insert. A track already marked for removal
+    /// (red) stays red.
+    private func handleKillModeCompletion(track: Track, source: PlaybackSource?) {
+        guard case let .playlist(p)? = source,
+              killModeEnabledPlaylistIds.contains(p.id),
+              !player.userQueuedTrackIds.contains(track.id),
+              killModePendingRemovals[p.id]?.contains(track.id) != true else { return }
+        var passed = killModePassedTracks[p.id] ?? []
+        guard passed.insert(track.id).inserted else { return }
+        killModePassedTracks[p.id] = passed
+        KillModeStore.savePassed(killModePassedTracks)
     }
 
     /// Removes the given track ids from the pending list for a playlist and persists. Called
     /// after any successful playlist deletion path so the pending list never references tracks
     /// that are no longer in the playlist. Preserves the relative order of remaining entries.
     private func stripKillModePending(playlistId: String, trackIds: Set<String>) {
+        // Tracks removed from the playlist no longer exist — drop them from the kept
+        // (green) set too so listen history can't reference deleted tracks.
+        if var passed = killModePassedTracks[playlistId], !passed.isDisjoint(with: trackIds) {
+            passed.subtract(trackIds)
+            killModePassedTracks[playlistId] = passed.isEmpty ? nil : passed
+            KillModeStore.savePassed(killModePassedTracks)
+        }
         guard var current = killModePendingRemovals[playlistId], !current.isEmpty else { return }
         let before = current.count
         current.removeAll { trackIds.contains($0) }
@@ -3185,8 +3275,10 @@ public final class AppModel: ObservableObject {
             return
         }
         guard !tracks.isEmpty else { return }
+        // Kill Mode: drop already-listened songs so each run plays the unheard ones once.
+        let (playTracks, playStart) = killModeFilteredPlayback(tracks: tracks, startIndex: startIndex, source: source)
         do {
-            try await player.playAlbum(library: lib, tracks: tracks, startIndex: startIndex, source: source)
+            try await player.playAlbum(library: lib, tracks: playTracks, startIndex: playStart, source: source)
         } catch {
             showTransientToast(error.musicPlaybackToastMessage)
         }

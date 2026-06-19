@@ -190,6 +190,17 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// whether to mark the outgoing track.
     var onTrackSkipped: ((Track, PlaybackSource?) -> Void)?
 
+    /// Fires when a track reaches its **natural end** (end-of-playback advance), NOT
+    /// on a user skip. Drives Kill Mode's "played fully → kept (green)" path —
+    /// `AppModel` marks the outgoing track listened when the source is a kill-mode
+    /// playlist.
+    var onTrackCompleted: ((Track, PlaybackSource?) -> Void)?
+
+    /// Set by `AppModel` during an active Kill Mode session: returns true for tracks
+    /// already "listened" (played fully or skipped) that must not be auto-advanced into,
+    /// so each song plays once per run. Nil during normal playback (no effect).
+    var autoAdvanceExclusion: ((Track) -> Bool)?
+
     private var didConfigureRemoteCommands = false
     private var sleepTimerTask: Task<Void, Never>?
     private var nextTrackRemoteTarget: Any?
@@ -1492,7 +1503,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             var step = 1
             while result.count < limit, step <= queue.count {
                 let idx = (currentIndex + step) % queue.count
-                if seen.insert(idx).inserted { result.append(idx) }
+                if seen.insert(idx).inserted, !isExcludedFromAutoAdvance(idx) { result.append(idx) }
                 step += 1
             }
             return result
@@ -1500,7 +1511,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             var result: [Int] = []
             var idx = currentIndex + 1
             while idx < queue.count, result.count < limit {
-                result.append(idx)
+                if !isExcludedFromAutoAdvance(idx) { result.append(idx) }
                 idx += 1
             }
             return result
@@ -2558,6 +2569,12 @@ final class PlaybackEngine: NSObject, ObservableObject {
             }
         }
 
+        // Natural end-of-track (past spurious-end recovery). Notify BEFORE the advance
+        // moves currentIndex — Kill Mode marks the just-finished track "kept (green)".
+        if queue.indices.contains(currentIndex) {
+            onTrackCompleted?(queue[currentIndex], playbackSource)
+        }
+
         // Fast path: the OS queue auto-advanced to the item we pre-enqueued and the
         // queue hasn't changed underneath it — promote bookkeeping in place. Audio
         // never stopped, so this works reliably while backgrounded (no app-driven
@@ -2580,32 +2597,57 @@ final class PlaybackEngine: NSObject, ObservableObject {
         // edited, or enqueue failed) — rebuild as before.
         // Shuffle is a queue-reordering action (see ``toggleShuffle``) — once shuffled,
         // advance through the queue sequentially, otherwise every track end would re-randomize.
+        if repeatMode == .one {
+            shouldAutoPlayAfterAdvance = true
+            resetUIProgressForTrackHandoff()
+            scheduleAdvance()
+        } else if let next = nextAdvanceIndex() {
+            shouldAutoPlayAfterAdvance = true
+            currentIndex = next
+            resetUIProgressForTrackHandoff()
+            scheduleAdvance()
+        } else {
+            isPlaying = false
+            // No next track: end of a repeat-off queue, or (Kill Mode) every other
+            // track has already been listened to and is excluded. AVQueuePlayer
+            // advanced past the final item, so `currentItem` is nil and the
+            // single-player "seek to 0 and replay" path can't work. Drop to a clean
+            // pending-restore so a later play tap rebuilds from the start.
+            teardownPlayer()
+            refreshNowPlaying()
+        }
+    }
+
+    /// Index the natural-end advance should move to, honoring repeat mode and the
+    /// Kill Mode auto-advance exclusion. Returns nil when nothing qualifies (end of a
+    /// repeat-off queue, or every candidate excluded). `.all` may return the current
+    /// index as a last resort so a single-track repeat-all still loops.
+    private func nextAdvanceIndex() -> Int? {
+        guard !queue.isEmpty else { return nil }
         switch repeatMode {
         case .one:
-            shouldAutoPlayAfterAdvance = true
-            resetUIProgressForTrackHandoff()
-            scheduleAdvance()
+            return currentIndex
         case .all:
-            shouldAutoPlayAfterAdvance = true
-            currentIndex = (currentIndex + 1) % max(queue.count, 1)
-            resetUIProgressForTrackHandoff()
-            scheduleAdvance()
-        case .off:
-            if currentIndex + 1 < queue.count {
-                shouldAutoPlayAfterAdvance = true
-                currentIndex += 1
-                resetUIProgressForTrackHandoff()
-                scheduleAdvance()
-            } else {
-                isPlaying = false
-                // AVQueuePlayer advanced past the final item, so `currentItem` is
-                // now nil and the single-player "seek to 0 and replay" path can't
-                // work. Drop to a clean pending-restore so a later play tap rebuilds
-                // the last track from the start (matching the prior behavior).
-                teardownPlayer()
-                refreshNowPlaying()
+            var step = 1
+            while step <= queue.count {
+                let idx = (currentIndex + step) % queue.count
+                if !isExcludedFromAutoAdvance(idx) { return idx }
+                step += 1
             }
+            return nil
+        case .off:
+            var idx = currentIndex + 1
+            while idx < queue.count {
+                if !isExcludedFromAutoAdvance(idx) { return idx }
+                idx += 1
+            }
+            return nil
         }
+    }
+
+    private func isExcludedFromAutoAdvance(_ index: Int) -> Bool {
+        guard let exclude = autoAdvanceExclusion, queue.indices.contains(index) else { return false }
+        return exclude(queue[index])
     }
 
     /// Adopt the just-auto-advanced item as the current track without tearing the
@@ -2880,6 +2922,17 @@ final class PlaybackEngine: NSObject, ObservableObject {
             // non-zero rate makes the lock screen advance a phantom playhead.
             now[MPNowPlayingInfoPropertyPlaybackRate] = (isPlaying && !isBuffering) ? playbackRate : 0.0
             now[MPNowPlayingInfoPropertyMediaType] = MPNowPlayingInfoMediaType.audio.rawValue
+            // Queue position so CarPlay / car head units show "N/M" instead of "1/1".
+            // The underlying AVQueuePlayer is fed one item at a time, so the system
+            // can't derive this — we report the engine's own queue cursor. In shuffle
+            // the queue array is already shuffled, so currentIndex is the shown spot.
+            if queue.indices.contains(currentIndex) {
+                now[MPNowPlayingInfoPropertyPlaybackQueueIndex] = currentIndex
+                now[MPNowPlayingInfoPropertyPlaybackQueueCount] = queue.count
+            } else {
+                now.removeValue(forKey: MPNowPlayingInfoPropertyPlaybackQueueIndex)
+                now.removeValue(forKey: MPNowPlayingInfoPropertyPlaybackQueueCount)
+            }
             if let artwork {
                 now[MPMediaItemPropertyArtwork] = artwork
             } else {

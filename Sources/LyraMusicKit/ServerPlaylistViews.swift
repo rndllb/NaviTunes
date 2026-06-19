@@ -1164,6 +1164,10 @@ struct ServerPlaylistDetailView: View {
                 .listRowInsets(EdgeInsets())
         } else {
             let windowed = visible.prefix(rowRenderLimit)
+            // Hoist the Kill Mode sets once per render so per-row tinting is O(1).
+            let killEnabled = !isAlbumStyleDetail && app.isKillModeEnabled(playlistId: playlist.id)
+            let killRed = killEnabled ? app.killModePendingTrackIds(playlistId: playlist.id) : []
+            let killGreen = killEnabled ? app.killModePassedTrackIds(playlistId: playlist.id) : []
             ForEach(Array(windowed.enumerated()), id: \.element.rowId) { index, row in
                 let showsBottomDivider = index < visible.count - 1
                 let highlightOpacity: Double = row.rowId == highlightedRowId ? 0.28 : 0
@@ -1173,7 +1177,10 @@ struct ServerPlaylistDetailView: View {
                             .albumTrackListRowStyle(highlightOpacity: highlightOpacity)
                     } else {
                         songRow(row, displayIndex: index + 1, showsBottomDivider: showsBottomDivider)
-                            .heroBackdropSongListRowStyle(highlightOpacity: highlightOpacity)
+                            .heroBackdropSongListRowStyle(
+                                highlightOpacity: highlightOpacity,
+                                killTint: killModeRowTint(trackId: row.track.id, red: killRed, green: killGreen),
+                            )
                     }
                 }
                 .onAppear {
@@ -1610,6 +1617,23 @@ struct ServerPlaylistDetailView: View {
         guard !pending.isEmpty else { return 0 }
         let rowIds = Set(rows.map(\.track.id))
         return pending.intersection(rowIds).count
+    }
+
+    /// Kill Mode row wash for the main tracklist: red = marked for removal (skipped),
+    /// green = kept (played fully), nil = not yet listened. Opacity adapts to the active
+    /// backdrop so the tint reads on a hero image, a light backdrop, or the plain surface.
+    private func killModeRowTint(trackId: String, red: Set<String>, green: Set<String>) -> Color? {
+        let base: Color
+        if red.contains(trackId) {
+            base = .red
+        } else if green.contains(trackId) {
+            base = .green
+        } else {
+            return nil
+        }
+        let opacity = backdropPalette.isPlainSurface ? 0.14
+            : (backdropPalette.prefersDarkHeroChrome ? 0.22 : 0.18)
+        return base.opacity(opacity)
     }
 
     private var actionButtonTriplet: some View {

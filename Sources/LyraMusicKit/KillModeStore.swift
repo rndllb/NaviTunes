@@ -4,11 +4,13 @@ import Foundation
 ///
 /// - `enabledPlaylistsKey` → JSON-encoded `[String]` of playlist ids with Kill Mode on.
 /// - `pendingRemovalsKey`  → JSON-encoded `[String: [String]]` (playlistId → trackIds queued for removal).
+/// - `passedTracksKey`     → JSON-encoded `[String: [String]]` (playlistId → trackIds kept/green).
 ///
 /// Pure value-passing API: callers hold the in-memory `Set`/`Dictionary`, mutate, and write back.
 enum KillModeStore {
     private static let enabledPlaylistsKey = "lyra.killMode.enabledPlaylists"
     private static let pendingRemovalsKey = "lyra.killMode.pendingRemovals"
+    private static let passedTracksKey = "lyra.killMode.passed"
 
     static func loadEnabled() -> Set<String> {
         guard let data = UserDefaults.standard.data(forKey: enabledPlaylistsKey),
@@ -39,6 +41,23 @@ enum KillModeStore {
         let cleaned = map.compactMapValues { $0.isEmpty ? nil : $0 }
         if let data = try? JSONEncoder().encode(cleaned) {
             UserDefaults.standard.set(data, forKey: pendingRemovalsKey)
+        }
+    }
+
+    /// Kept (green) tracks — unordered, stored as sorted arrays for a stable on-disk shape.
+    static func loadPassed() -> [String: Set<String>] {
+        guard let data = UserDefaults.standard.data(forKey: passedTracksKey),
+              let dict = try? JSONDecoder().decode([String: [String]].self, from: data) else {
+            return [:]
+        }
+        return dict.mapValues { Set($0) }
+    }
+
+    static func savePassed(_ map: [String: Set<String>]) {
+        // Drop empty buckets; sort within each for deterministic output.
+        let cleaned = map.compactMapValues { $0.isEmpty ? nil : Array($0).sorted() }
+        if let data = try? JSONEncoder().encode(cleaned) {
+            UserDefaults.standard.set(data, forKey: passedTracksKey)
         }
     }
 }

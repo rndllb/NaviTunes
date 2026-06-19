@@ -30,8 +30,18 @@ struct PlaylistKillListView: View {
         return order.flatMap { rowsByTrackId[$0] ?? [] }
     }
 
+    /// Authoritative playlist song total for the summary percentages — the playlist's
+    /// own `songCount` when known, else the snapshot row count.
+    private var totalSongCount: Int {
+        app.libraryPlaylists.first(where: { $0.id == playlistId })?.songCount ?? rows.count
+    }
+
     var body: some View {
         List {
+            summaryHeader
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                .listRowSeparator(.hidden)
             ForEach(visibleRows) { row in
                 rowView(row)
                     .listRowBackground(MusicDesign.background)
@@ -100,6 +110,61 @@ struct PlaylistKillListView: View {
         .onChange(of: visibleRows.isEmpty) { _, isEmpty in
             if isEmpty { dismiss() }
         }
+    }
+
+    /// Progress summary: % of the playlist listened (kept + removed) and % marked for
+    /// removal, with a two-segment bar (green = kept, red = to-remove) and the
+    /// "Clear listen history" reset.
+    private var summaryHeader: some View {
+        let total = max(totalSongCount, 1)
+        let passed = app.killModePassedTrackIds(playlistId: playlistId).count
+        let removed = app.killModePendingTrackIds(playlistId: playlistId).count
+        let listened = min(passed + removed, total)
+        let pctListened = Int((Double(listened) / Double(total) * 100).rounded())
+        let pctRemoved = Int((Double(removed) / Double(total) * 100).rounded())
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(pctListened)% listened")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text("\(listened) of \(total) · \(removed) to remove")
+                        .font(.caption)
+                        .foregroundStyle(MusicDesign.secondaryLabel)
+                }
+                Spacer(minLength: 8)
+                Text("\(pctRemoved)% removed")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.red)
+            }
+            GeometryReader { geo in
+                let w = geo.size.width
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.12))
+                    HStack(spacing: 0) {
+                        Rectangle().fill(Color.green)
+                            .frame(width: w * (Double(passed) / Double(total)))
+                        Rectangle().fill(Color.red)
+                            .frame(width: w * (Double(removed) / Double(total)))
+                    }
+                    .clipShape(Capsule())
+                }
+            }
+            .frame(height: 6)
+            Button {
+                app.clearKillModeListenHistory(playlistId: playlistId)
+                app.showTransientToast("Listen history cleared")
+            } label: {
+                Label("Clear Listen History", systemImage: "arrow.counterclockwise")
+                    .font(.footnote.weight(.medium))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(MusicDesign.accent)
+            .disabled(passed == 0)
+            .opacity(passed == 0 ? 0.4 : 1)
+            .padding(.top, 2)
+        }
+        .padding(.vertical, 4)
     }
 
     private func rowView(_ row: PlaylistRowItem) -> some View {
