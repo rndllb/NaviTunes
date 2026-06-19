@@ -1,11 +1,16 @@
 import Foundation
 
-/// Internet radio entry from Subsonic ``getInternetRadioStations`` (Navidrome).
+/// Internet radio entry from Subsonic ``getInternetRadioStations`` (Navidrome)
+/// or a user-added station stored locally in Lyra.
 struct InternetRadioStation: Identifiable, Hashable {
     let id: String
     let name: String
     let streamURL: URL
     let homepageURL: URL?
+    /// Local or remote artwork; nil → deterministic mesh tile.
+    var artworkURL: URL? = nil
+    /// Stations added in Lyra (editable/removable); server entries are false.
+    var isUserAdded: Bool = false
 }
 
 /// Live internet stations grouped by genre words in the station title.

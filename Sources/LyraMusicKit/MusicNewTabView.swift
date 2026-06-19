@@ -16,7 +16,19 @@ struct MusicNewTabView: View {
     private let newTabFloatingHeaderCollapseSlack: CGFloat = 72
 
     private var hasNewTabTracks: Bool {
-        !app.newTabTopTracks.isEmpty || !app.newTabTopAlbums.isEmpty
+        !app.newTabTopTracks.isEmpty
+    }
+
+    private var hasFromYourArtists: Bool {
+        !app.newTabFromYourArtists.isEmpty
+    }
+
+    private var hasArtistHighlights: Bool {
+        !app.newTabArtistHighlights.isEmpty
+    }
+
+    private var hasDiscoverReleases: Bool {
+        !app.newTabDiscoverReleases.isEmpty
     }
 
     private var hasRecentReleases: Bool {
@@ -24,14 +36,17 @@ struct MusicNewTabView: View {
     }
 
     private var hasAnyNewTabContent: Bool {
-        hasNewTabTracks || hasRecentReleases
+        hasNewTabTracks || hasFromYourArtists || hasRecentReleases || hasDiscoverReleases
     }
 
     private var browseHeroEyebrow: String {
-        "New Releases"
+        app.newTabIsPersonalized ? "New For You" : "New Releases"
     }
 
     private var browseHeroBadge: String {
+        if app.newTabIsPersonalized {
+            return "Based on your listening"
+        }
         switch app.newTabBrowseBackend {
         case .musicBrainz: return "Recent on MusicBrainz"
         case .none: return "Discover"
@@ -39,7 +54,7 @@ struct MusicNewTabView: View {
     }
 
     private var trendingSectionTitle: String {
-        "New Albums"
+        app.newTabIsPersonalized ? "Picked For You" : "New Albums"
     }
 
     var body: some View {
@@ -121,24 +136,40 @@ struct MusicNewTabView: View {
             }
         } else {
             VStack(alignment: .leading, spacing: 0) {
-                if !app.newTabTopTracks.isEmpty {
+                if hasNewTabTracks {
                     heroCarousel(Array(app.newTabTopTracks.prefix(6)))
                     gap
                 }
 
-                if !app.newTabTopTracks.isEmpty {
+                if hasNewTabTracks {
                     sectionHeader(trendingSectionTitle)
                     trendingSongsCarousel(Array(app.newTabTopTracks.prefix(10)))
                     gap
                 }
 
-                if hasRecentReleases {
+                if app.newTabIsPersonalized, hasFromYourArtists {
+                    sectionHeader("From Artists You Play")
+                    albumShelf(Array(app.newTabFromYourArtists.prefix(12)))
+                    gap
+                }
+
+                if app.newTabIsPersonalized, hasArtistHighlights {
+                    sectionHeader("Artists You're Into")
+                    artistHighlightShelf(app.newTabArtistHighlights)
+                    gap
+                }
+
+                if app.newTabIsPersonalized, hasDiscoverReleases {
+                    sectionHeader("Discover")
+                    albumShelf(app.newTabDiscoverReleases)
+                    gap
+                } else if !app.newTabIsPersonalized, hasRecentReleases {
                     sectionHeader("Recent Releases")
                     albumShelf(Array(app.newTabRecentReleases.prefix(12)))
                     gap
                 }
 
-                if !app.newTabTopAlbums.isEmpty {
+                if !app.newTabIsPersonalized, !app.newTabTopAlbums.isEmpty {
                     sectionHeader("Top Albums")
                     albumShelf(app.newTabTopAlbums)
                     gap
@@ -158,14 +189,32 @@ struct MusicNewTabView: View {
 
     // MARK: - Hero Carousel (Apple Music–style: labels above rounded card + horizontal peek)
 
+    private enum NewTabHeroMetrics {
+        static let interPageSpacing: CGFloat = 12
+        static let eyebrowHeight: CGFloat = 16
+        static let eyebrowBottomSpacing: CGFloat = 1
+        static let titleArtistSpacing: CGFloat = 1
+        static let textToArtworkSpacing: CGFloat = 4
+        /// Max text block height for carousel layout (two title lines + artist).
+        static let titleArtistBlockHeight: CGFloat = 58
+    }
+
+    private func newTabHeroTextBlockHeight() -> CGFloat {
+        NewTabHeroMetrics.eyebrowHeight
+            + NewTabHeroMetrics.eyebrowBottomSpacing
+            + NewTabHeroMetrics.titleArtistBlockHeight
+            + NewTabHeroMetrics.textToArtworkSpacing
+    }
+
+    private func newTabHeroImageHeight(forCardWidth cardWidth: CGFloat) -> CGFloat {
+        cardWidth * MusicDesign.newTabHeroImageHeightFactor
+    }
+
     private func newTabHeroCarouselStackHeight(containerWidth: CGFloat) -> CGFloat {
         let inset = MusicDesign.newTabHorizontalInset
         let peek = MusicDesign.newTabHeroPeek
-        let spacing: CGFloat = 12
-        let cardWidth = max(260, containerWidth - inset - peek - spacing)
-        let imageHeight = cardWidth * MusicDesign.newTabHeroImageHeightFactor
-        let textBlock: CGFloat = 78
-        return textBlock + 12 + imageHeight
+        let cardWidth = max(260, containerWidth - inset - peek - NewTabHeroMetrics.interPageSpacing)
+        return newTabHeroTextBlockHeight() + newTabHeroImageHeight(forCardWidth: cardWidth)
     }
 
     private var newTabHeroCarouselOuterHeight: CGFloat {
@@ -180,15 +229,20 @@ struct MusicNewTabView: View {
         GeometryReader { geo in
             let inset = MusicDesign.newTabHorizontalInset
             let peek = MusicDesign.newTabHeroPeek
-            let spacing: CGFloat = 12
-            let cardWidth = max(260, geo.size.width - inset - peek - spacing)
-            let imageHeight = cardWidth * MusicDesign.newTabHeroImageHeightFactor
+            let cardWidth = max(260, geo.size.width - inset - peek - NewTabHeroMetrics.interPageSpacing)
+            let imageHeight = newTabHeroImageHeight(forCardWidth: cardWidth)
             let stackHeight = newTabHeroCarouselStackHeight(containerWidth: geo.size.width)
 
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: spacing) {
+                HStack(spacing: NewTabHeroMetrics.interPageSpacing) {
                     ForEach(items) { track in
-                        heroCarouselPage(track: track, cardWidth: cardWidth, imageHeight: imageHeight)
+                        heroCarouselPage(
+                            track: track,
+                            cardWidth: cardWidth,
+                            imageHeight: imageHeight,
+                            pageHeight: stackHeight,
+                        )
+                        .id(track.id)
                     }
                 }
                 .scrollTargetLayout()
@@ -202,69 +256,117 @@ struct MusicNewTabView: View {
         .frame(height: newTabHeroCarouselOuterHeight)
     }
 
-    private func heroCarouselPage(track: ChartTrack, cardWidth: CGFloat, imageHeight: CGFloat) -> some View {
+    private func heroCarouselPage(
+        track: ChartTrack,
+        cardWidth: CGFloat,
+        imageHeight: CGFloat,
+        pageHeight: CGFloat,
+    ) -> some View {
         let lib = resolvedLibraryTrack(for: track)
-        return VStack(alignment: .leading, spacing: 10) {
+        return VStack(alignment: .leading, spacing: 0) {
             Text(browseHeroEyebrow)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(MusicDesign.secondaryLabel)
                 .textCase(.uppercase)
                 .tracking(0.6)
+                .frame(height: NewTabHeroMetrics.eyebrowHeight, alignment: .leading)
+                .padding(.bottom, NewTabHeroMetrics.eyebrowBottomSpacing)
 
-            Text(track.name)
-                .font(.title3.bold())
-                .foregroundStyle(.primary)
-                .lineLimit(2)
+            VStack(alignment: .leading, spacing: NewTabHeroMetrics.titleArtistSpacing) {
+                Text(track.name)
+                    .font(.title2.bold())
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .lineSpacing(-3)
+                    .minimumScaleFactor(0.85)
+                    .fixedSize(horizontal: false, vertical: true)
 
-            Text(track.artistName)
-                .font(.title3)
-                .foregroundStyle(MusicDesign.secondaryLabel)
-                .lineLimit(1)
-
-            Group {
-                if let lib {
-                    Button {
-                        navigateLibraryTrack = lib
-                    } label: {
-                        heroCarouselArtworkCard(track: track, imageHeight: imageHeight, showOverflow: false, badgeText: browseHeroBadge)
-                            .coverZoomSource(id: lib.albumId)
-                    }
-                    .buttonStyle(.plain)
-                } else {
-                    let source = BrowseAlbumDetailSource.chartBrowse(
-                        artistName: track.artistName,
-                        title: track.name,
-                        imageURL: track.imageURL,
-                        kind: track.browseKind
-                    )
-                    NavigationLink {
-                        BrowseAlbumDetailView(source: source)
-                    } label: {
-                        heroCarouselArtworkCard(track: track, imageHeight: imageHeight, showOverflow: true, badgeText: browseHeroBadge)
-                            .coverZoomSource(id: source.coverZoomId)
-                    }
-                    .buttonStyle(.plain)
-                }
+                Text(track.artistName)
+                    .font(.subheadline)
+                    .foregroundStyle(MusicDesign.secondaryLabel)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .frame(width: cardWidth, height: imageHeight)
+            .padding(.bottom, NewTabHeroMetrics.textToArtworkSpacing)
+
+            heroCarouselArtworkLink(
+                track: track,
+                libraryTrack: lib,
+                cardWidth: cardWidth,
+                imageHeight: imageHeight,
+            )
         }
-        .frame(width: cardWidth, alignment: .leading)
+        .frame(width: cardWidth, height: pageHeight, alignment: .top)
     }
 
-    private func heroCarouselArtworkCard(track: ChartTrack, imageHeight: CGFloat, showOverflow: Bool, badgeText: String) -> some View {
+    @ViewBuilder
+    private func heroCarouselArtworkLink(
+        track: ChartTrack,
+        libraryTrack: Track?,
+        cardWidth: CGFloat,
+        imageHeight: CGFloat,
+    ) -> some View {
+        if let lib = libraryTrack {
+            Button {
+                navigateLibraryTrack = lib
+            } label: {
+                heroCarouselArtworkCard(
+                    track: track,
+                    cardWidth: cardWidth,
+                    imageHeight: imageHeight,
+                    showOverflow: false,
+                    badgeText: browseHeroBadge,
+                )
+                .coverZoomSource(id: lib.albumId)
+            }
+            .buttonStyle(.plain)
+        } else {
+            let source = BrowseAlbumDetailSource.chartBrowse(
+                artistName: track.artistName,
+                title: track.name,
+                imageURL: track.imageURL,
+                kind: track.browseKind
+            )
+            NavigationLink {
+                BrowseAlbumDetailView(source: source)
+            } label: {
+                heroCarouselArtworkCard(
+                    track: track,
+                    cardWidth: cardWidth,
+                    imageHeight: imageHeight,
+                    showOverflow: true,
+                    badgeText: browseHeroBadge,
+                )
+                .coverZoomSource(id: source.coverZoomId)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func heroCarouselArtworkCard(
+        track: ChartTrack,
+        cardWidth: CGFloat,
+        imageHeight: CGFloat,
+        showOverflow: Bool,
+        badgeText: String,
+    ) -> some View {
         ZStack(alignment: .topTrailing) {
             ZStack(alignment: .bottomLeading) {
-                RemoteArtworkScaledFill(url: track.imageURL, maxPixelSize: 900) {
-                    MusicDesign.tertiarySurfaceFill
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
+                NewTabHeroArtwork(
+                    releaseGroupId: track.id,
+                    fallbackURL: track.imageURL,
+                    seed: track.artistName + track.name,
+                    cardWidth: cardWidth,
+                    imageHeight: imageHeight,
+                )
 
                 LinearGradient(
                     colors: [.clear, .black.opacity(0.22), .black.opacity(0.62)],
                     startPoint: .center,
                     endPoint: .bottom
                 )
+                .frame(width: cardWidth, height: imageHeight)
+                .allowsHitTesting(false)
 
                 Text(badgeText)
                     .font(.footnote.weight(.medium))
@@ -272,6 +374,7 @@ struct MusicNewTabView: View {
                     .shadow(color: .black.opacity(0.35), radius: 6, x: 0, y: 1)
                     .padding(14)
             }
+            .frame(width: cardWidth, height: imageHeight)
             .clipShape(RoundedRectangle(cornerRadius: MusicDesign.newTabHeroCardCorner, style: .continuous))
 
             if showOverflow {
@@ -279,15 +382,21 @@ struct MusicNewTabView: View {
                     .padding(12)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(width: cardWidth, height: imageHeight)
     }
 
     // MARK: - Trending Songs (horizontal pages, 4 rows each)
 
-    /// Row height: artwork 56 + vertical padding 20.
+    private enum NewTabPickedForYouMetrics {
+        static let artworkSize: CGFloat = 48
+        static let artworkToTextSpacing: CGFloat = 10
+        static let titleArtistSpacing: CGFloat = 1
+        static let rowVerticalPadding: CGFloat = 6
+    }
+
     private var trendingSongCarouselHeight: CGFloat {
-        let rowHeight = CGFloat(56 + 20)
-        let dividerAllowance: CGFloat = 3
+        let rowHeight = NewTabPickedForYouMetrics.artworkSize + (NewTabPickedForYouMetrics.rowVerticalPadding * 2)
+        let dividerAllowance: CGFloat = 2
         return rowHeight * 4 + dividerAllowance
     }
 
@@ -330,7 +439,9 @@ struct MusicNewTabView: View {
                 if idx < tracks.count - 1 {
                     MusicChevronRowDivider(
                         kind: .custom(
-                            leading: MusicDesign.newTabHorizontalInset + 4 + 56 + 14,
+                            leading: MusicDesign.newTabHorizontalInset + 4
+                                + NewTabPickedForYouMetrics.artworkSize
+                                + NewTabPickedForYouMetrics.artworkToTextSpacing,
                             trailing: MusicDesign.newTabHorizontalInset,
                         )
                     )
@@ -418,15 +529,18 @@ struct MusicNewTabView: View {
         }
         .padding(.leading, MusicDesign.newTabHorizontalInset + 4)
         .padding(.trailing, MusicDesign.newTabHorizontalInset)
-        .padding(.vertical, 10)
+        .padding(.vertical, NewTabPickedForYouMetrics.rowVerticalPadding)
         .contentShape(Rectangle())
     }
 
     private func trendingSongRowMainContent(track: ChartTrack) -> some View {
-        HStack(spacing: 14) {
-            AlbumArtworkView(url: track.imageURL, cornerRadius: 8)
-                .frame(width: 56, height: 56)
-            VStack(alignment: .leading, spacing: 3) {
+        HStack(spacing: NewTabPickedForYouMetrics.artworkToTextSpacing) {
+            AlbumArtworkView(url: track.imageURL, cornerRadius: 7)
+                .frame(
+                    width: NewTabPickedForYouMetrics.artworkSize,
+                    height: NewTabPickedForYouMetrics.artworkSize,
+                )
+            VStack(alignment: .leading, spacing: NewTabPickedForYouMetrics.titleArtistSpacing) {
                 Text(track.name)
                     .font(.body.weight(.semibold))
                     .foregroundStyle(.primary)
@@ -464,9 +578,44 @@ struct MusicNewTabView: View {
 
     // MARK: - Album Shelves
 
-    private func albumShelf(_ items: [ChartAlbum]) -> some View {
+    private func artistHighlightShelf(_ items: [NewTabArtistHighlight]) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(spacing: 16) {
+                ForEach(items) { highlight in
+                    NavigationLink {
+                        ArtistPageView(input: .named(highlight.name))
+                    } label: {
+                        artistHighlightCard(highlight: highlight)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, MusicDesign.newTabHorizontalInset)
+            .padding(.bottom, 4)
+        }
+    }
+
+    private func artistHighlightCard(highlight: NewTabArtistHighlight) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            AlbumArtworkView(url: highlight.imageURL, cornerRadius: MusicDesign.albumCorner)
+                .frame(width: MusicDesign.shelfCardWidth, height: MusicDesign.shelfCardWidth)
+                .clipShape(Circle())
+            Text(highlight.name)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+                .frame(width: MusicDesign.shelfCardWidth, alignment: .leading)
+            Text(highlight.newReleaseCount == 1 ? "1 new release" : "\(highlight.newReleaseCount) new releases")
+                .font(.caption)
+                .foregroundStyle(MusicDesign.secondaryLabel)
+                .lineLimit(1)
+                .frame(width: MusicDesign.shelfCardWidth, alignment: .leading)
+        }
+    }
+
+    private func albumShelf(_ items: [ChartAlbum]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(alignment: .top, spacing: 16) {
                 ForEach(items) { album in
                     Group {
                         if let lib = matchedLibraryAlbum(for: album) {
@@ -500,21 +649,39 @@ struct MusicNewTabView: View {
         }
     }
 
+    private enum NewTabAlbumShelfMetrics {
+        static let titleHeight: CGFloat = 38
+        static let subtitleHeight: CGFloat = 16
+        static let textSpacing: CGFloat = 8
+    }
+
     private func albumCard(url: URL?, title: String, subtitle: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: NewTabAlbumShelfMetrics.textSpacing) {
             AlbumArtworkView(url: url, cornerRadius: MusicDesign.albumCorner)
                 .frame(width: MusicDesign.shelfCardWidth, height: MusicDesign.shelfCardHeight)
+
             Text(title)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
                 .lineLimit(2)
-                .frame(width: MusicDesign.shelfCardWidth, alignment: .leading)
+                .minimumScaleFactor(0.9)
+                .frame(
+                    width: MusicDesign.shelfCardWidth,
+                    height: NewTabAlbumShelfMetrics.titleHeight,
+                    alignment: .topLeading,
+                )
+
             Text(subtitle)
                 .font(.caption)
                 .foregroundStyle(MusicDesign.secondaryLabel)
                 .lineLimit(1)
-                .frame(width: MusicDesign.shelfCardWidth, alignment: .leading)
+                .frame(
+                    width: MusicDesign.shelfCardWidth,
+                    height: NewTabAlbumShelfMetrics.subtitleHeight,
+                    alignment: .topLeading,
+                )
         }
+        .frame(width: MusicDesign.shelfCardWidth, alignment: .topLeading)
     }
 
     // MARK: - Helpers
@@ -535,5 +702,60 @@ struct MusicNewTabView: View {
 
     private var gap: some View {
         Spacer().frame(height: 36)
+    }
+}
+
+/// Hero artwork with Cover Art Archive size fallbacks and a mesh placeholder when art is missing.
+private struct NewTabHeroArtwork: View {
+    let releaseGroupId: String
+    let fallbackURL: URL?
+    let seed: String
+    let cardWidth: CGFloat
+    let imageHeight: CGFloat
+
+    @State private var decoded: CGImage?
+    @State private var loadFailed = false
+
+    var body: some View {
+        ZStack {
+            if loadFailed {
+                RadioStationMeshArtworkView(seedKey: seed, cornerRadius: 0)
+            } else if let decoded {
+                ArtworkPlatformImage.swiftUIImage(cgImage: decoded)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: cardWidth, height: imageHeight)
+                    .clipped()
+            } else {
+                MusicDesign.tertiarySurfaceFill
+            }
+        }
+        .frame(width: cardWidth, height: imageHeight)
+        .clipped()
+        .task(id: releaseGroupId) {
+            await loadArtwork()
+        }
+    }
+
+    private func loadArtwork() async {
+        loadFailed = false
+        decoded = nil
+
+        if let cached = await CoverArtArchiveArtwork.loadReleaseGroupFront(
+            releaseGroupId: releaseGroupId,
+            maxPixelSize: 900,
+        ) {
+            decoded = cached
+            return
+        }
+
+        if let fallbackURL,
+           let cached = await RemoteArtworkLoad.cgImage(from: fallbackURL, maxPixelSize: 900)
+        {
+            decoded = cached
+            return
+        }
+
+        loadFailed = true
     }
 }

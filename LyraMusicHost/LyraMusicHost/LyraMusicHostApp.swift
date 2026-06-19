@@ -15,6 +15,9 @@ struct LyraMusicHostApp: App {
                 .onAppear {
                     appModel.syncHomeScreenIconIfNeeded()
                 }
+                .onOpenURL { url in
+                    appModel.handleWidgetDeepLink(url)
+                }
                 .onChange(of: scenePhase) { _, phase in
                     // `.inactive` fires when pressing Home on a physical device; `.background` alone is unreliable.
                     switch phase {

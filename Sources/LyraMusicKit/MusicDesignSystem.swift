@@ -488,8 +488,8 @@ enum MusicDesign {
     static let newTabHorizontalInset: CGFloat = 16
     /// Hero carousel: visible slice of the next card (horizontal peek).
     static let newTabHeroPeek: CGFloat = 44
-    /// Hero image height as a fraction of card width (wide landscape-style card).
-    static let newTabHeroImageHeightFactor: CGFloat = 10 / 16
+    /// Hero image height as a fraction of card width (wide landscape editorial card).
+    static let newTabHeroImageHeightFactor: CGFloat = 0.56
     /// Continuous-corner “billboard” cards on the New tab hero rail.
     static let newTabHeroCardCorner: CGFloat = 14
 
@@ -557,10 +557,7 @@ struct AlbumArtworkView: View {
 
     @ViewBuilder
     private var artworkContent: some View {
-        if let meshArtworkSeed {
-            RadioStationMeshArtworkView(seedKey: meshArtworkSeed, cornerRadius: cornerRadius)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let url {
+        if let url {
             Group {
                 if let decoded {
                     ArtworkPlatformImage.swiftUIImage(cgImage: decoded)
@@ -577,6 +574,9 @@ struct AlbumArtworkView: View {
             .task(id: url.absoluteString) {
                 await load(url: url)
             }
+        } else if let meshArtworkSeed {
+            RadioStationMeshArtworkView(seedKey: meshArtworkSeed, cornerRadius: cornerRadius)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             placeholder
         }
