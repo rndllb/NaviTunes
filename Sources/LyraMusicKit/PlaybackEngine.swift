@@ -182,6 +182,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// user tapped it, jumped to it, or auto-advanced. Drives the per-track Now Playing
     /// → Queue → History list, which records on start (not on scrobble threshold).
     var onTrackStarted: ((Track) -> Void)?
+    var onAudioRouteChanged: (() -> Void)?
 
     /// Fires the moment the user explicitly skips forward (`skipNext`). NOT fired by
     /// natural end-of-track advances or by `skipPrevious`. Drives Kill Mode's
@@ -306,6 +307,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         // route change (new device available, override, etc.) likewise
         // shouldn't force playback to keep going if the system paused us.
         _ = notification
+        onAudioRouteChanged?()
     }
     #endif
 
@@ -1673,7 +1675,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         let cacheEnabled = streamingDiskCacheEnabled || equalizerEnabled
         func appendUnique(_ u: URL, _ h: [String: String]) {
             // Prefer a fully-cached local copy of this exact stream over the network.
-            if cacheEnabled, CachingResourceLoaderDelegate.isCacheable(u),
+            if cacheEnabled, !activeTrack.isInternetRadioStream, CachingResourceLoaderDelegate.isCacheable(u),
                let cached = StreamingMediaDiskCache.shared.peekCachedFileURL(forKey: StreamingMediaDiskCache.key(for: u)),
                !seen.contains(cached.absoluteString) {
                 seen.insert(cached.absoluteString)
@@ -1705,6 +1707,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         }
 
         if equalizerEnabled,
+           isEqualizerEligible(for: activeTrack),
            !candidates.contains(where: { isEqualizerEligibleLocalFile($0.url, for: activeTrack) }),
            let remote = candidates.first(where: { !$0.url.isFileURL && CachingResourceLoaderDelegate.isCacheable($0.url) }) {
             // Brief off-main wait for a cache hit — fast networks get EQ on first play.
@@ -1761,7 +1764,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         autoPlay: Bool,
     ) async throws -> Bool {
         guard isPlaybackEpochCurrent(epoch) else { return false }
-        if equalizerEnabled, isEqualizerEligibleLocalFile(candidate.url, for: track) {
+        if equalizerEnabled, isEqualizerEligible(for: track), isEqualizerEligibleLocalFile(candidate.url, for: track) {
             do {
                 if try await loadEqualizedPlayerItem(
                     epoch: epoch,
@@ -1886,6 +1889,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         // any app work at the boundary.
         refreshEnqueuedNextItem()
         if equalizerEnabled,
+           isEqualizerEligible(for: track),
            !candidate.url.isFileURL,
            CachingResourceLoaderDelegate.isCacheable(candidate.url) {
             scheduleEqualizerHandoffWhenCached(
@@ -2125,8 +2129,15 @@ final class PlaybackEngine: NSObject, ObservableObject {
         return local.standardizedFileURL == url.standardizedFileURL
     }
 
+    /// Live internet radio never uses the EQ engine — streams are continuous and
+    /// must stay on AVPlayer for reliable playback.
+    private func isEqualizerEligible(for track: Track) -> Bool {
+        !track.isInternetRadioStream
+    }
+
     /// Local file the EQ engine can read: offline download or committed stream-cache file.
     private func isEqualizerEligibleLocalFile(_ url: URL, for track: Track) -> Bool {
+        guard isEqualizerEligible(for: track) else { return false }
         guard url.isFileURL else { return false }
         if isOfflineDownloadFile(url, for: track) { return true }
         return isCommittedStreamCacheFile(url)
@@ -2191,7 +2202,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         track: Track,
         epoch: UInt,
     ) {
-        guard equalizerEnabled else { return }
+        guard equalizerEnabled, isEqualizerEligible(for: track) else { return }
         let trackId = track.id
         eqCacheHandoffTask?.cancel()
         eqCacheHandoffTask = Task {

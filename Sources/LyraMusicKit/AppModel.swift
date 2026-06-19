@@ -2,7 +2,9 @@ import Combine
 import Network
 import SwiftUI
 #if os(iOS)
+import AVFoundation
 import UIKit
+import WidgetKit
 #endif
 
 public enum BackendKind: String, CaseIterable, Identifiable {
@@ -62,11 +64,17 @@ struct TransientToastContent: Equatable {
 
 @MainActor
 public final class AppModel: ObservableObject {
+    /// Weak reference set on init so AppIntents (e.g. PlayWidgetItemIntent) can reach the live model.
+    public static weak var shared: AppModel?
+
     /// Default album fetch size for library grid / sync (raised for large Jellyfin / Navidrome libraries).
     public static let defaultLibraryAlbumFetchLimit = 500
     @Published var accentPresetId: String = UserDefaults.standard.string(forKey: AppAccentPreset.accentPresetIdKey) ?? AppAccentPreset.defaultId {
         didSet {
             UserDefaults.standard.set(accentPresetId, forKey: AppAccentPreset.accentPresetIdKey)
+            if accentPresetId != AppAccentPreset.customId {
+                appIconPresetId = accentPresetId
+            }
         }
     }
 
@@ -195,6 +203,10 @@ public final class AppModel: ObservableObject {
     @Published private(set) var newTabTopTracks: [ChartTrack] = []
     @Published private(set) var newTabTopAlbums: [ChartAlbum] = []
     @Published private(set) var newTabRecentReleases: [ChartAlbum] = []
+    @Published private(set) var newTabFromYourArtists: [ChartAlbum] = []
+    @Published private(set) var newTabDiscoverReleases: [ChartAlbum] = []
+    @Published private(set) var newTabArtistHighlights: [NewTabArtistHighlight] = []
+    @Published private(set) var newTabIsPersonalized = false
     @Published private(set) var newTabBrowseLoading = false
     /// Set when MusicBrainz browse fails so the New tab can show a concrete reason instead of an empty shelf.
     @Published private(set) var newTabBrowseError: String?
@@ -572,6 +584,9 @@ public final class AppModel: ObservableObject {
     @Published var equalizerEnabled: Bool = UserDefaults.standard.bool(forKey: EqualizerStorage.enabledKey) {
         didSet {
             UserDefaults.standard.set(equalizerEnabled, forKey: EqualizerStorage.enabledKey)
+            if equalizerEnabled {
+                UserDefaults.standard.set(true, forKey: "streamingDiskCacheEnabled")
+            }
             syncEqualizerToEngine()
             Task { await player.reloadForEqualizerSettingsChange() }
         }
@@ -596,6 +611,112 @@ public final class AppModel: ObservableObject {
             syncEqualizerToEngine()
         }
     }
+
+    @Published private(set) var equalizerHistory = EqualizerHistory()
+
+    @Published var equalizerPrecisionDraw: Bool = UserDefaults.standard.bool(forKey: EqualizerStorage.precisionDrawKey) {
+        didSet { UserDefaults.standard.set(equalizerPrecisionDraw, forKey: EqualizerStorage.precisionDrawKey) }
+    }
+
+    @Published var equalizerStereoWidth: EqualizerStereoWidth = {
+        let raw = UserDefaults.standard.string(forKey: EqualizerStorage.stereoWidthKey) ?? EqualizerStereoWidth.normal.rawValue
+        return EqualizerStereoWidth(rawValue: raw) ?? .normal
+    }() {
+        didSet {
+            UserDefaults.standard.set(equalizerStereoWidth.rawValue, forKey: EqualizerStorage.stereoWidthKey)
+            syncEqualizerToEngine()
+        }
+    }
+
+    @Published var equalizerVintageMode: EqualizerVintageMode = {
+        let raw = UserDefaults.standard.string(forKey: EqualizerStorage.vintageModeKey) ?? EqualizerVintageMode.off.rawValue
+        return EqualizerVintageMode(rawValue: raw) ?? .off
+    }() {
+        didSet {
+            UserDefaults.standard.set(equalizerVintageMode.rawValue, forKey: EqualizerStorage.vintageModeKey)
+            syncEqualizerToEngine()
+        }
+    }
+
+    @Published var equalizerAdaptiveEnabled: Bool = UserDefaults.standard.bool(forKey: EqualizerStorage.adaptiveEnabledKey) {
+        didSet {
+            UserDefaults.standard.set(equalizerAdaptiveEnabled, forKey: EqualizerStorage.adaptiveEnabledKey)
+            syncEqualizerToEngine()
+        }
+    }
+
+    @Published var equalizerAdaptiveStrength: EqualizerAdaptiveStrength = {
+        let raw = UserDefaults.standard.string(forKey: EqualizerStorage.adaptiveStrengthKey) ?? EqualizerAdaptiveStrength.balanced.rawValue
+        return EqualizerAdaptiveStrength(rawValue: raw) ?? .balanced
+    }() {
+        didSet {
+            UserDefaults.standard.set(equalizerAdaptiveStrength.rawValue, forKey: EqualizerStorage.adaptiveStrengthKey)
+            syncEqualizerToEngine()
+        }
+    }
+
+    @Published var equalizerHeadphoneProfileId: String? = UserDefaults.standard.string(forKey: EqualizerStorage.headphoneProfileKey) {
+        didSet {
+            if let equalizerHeadphoneProfileId {
+                UserDefaults.standard.set(equalizerHeadphoneProfileId, forKey: EqualizerStorage.headphoneProfileKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: EqualizerStorage.headphoneProfileKey)
+            }
+            syncEqualizerToEngine()
+        }
+    }
+
+    @Published var equalizerFrequencyToolMode: EqualizerFrequencyToolMode = {
+        let raw = UserDefaults.standard.string(forKey: EqualizerStorage.frequencyToolModeKey) ?? EqualizerFrequencyToolMode.off.rawValue
+        return EqualizerFrequencyToolMode(rawValue: raw) ?? .off
+    }() {
+        didSet {
+            UserDefaults.standard.set(equalizerFrequencyToolMode.rawValue, forKey: EqualizerStorage.frequencyToolModeKey)
+            syncEqualizerToEngine()
+        }
+    }
+
+    @Published var equalizerFrequencyToolBand: Int = UserDefaults.standard.object(forKey: EqualizerStorage.frequencyToolBandKey) as? Int ?? 4 {
+        didSet {
+            UserDefaults.standard.set(equalizerFrequencyToolBand, forKey: EqualizerStorage.frequencyToolBandKey)
+            syncEqualizerToEngine()
+        }
+    }
+
+    @Published var equalizerHearingOffset: [Float] = EqualizerStorage.loadHearingOffset() {
+        didSet {
+            let normalized = EqualizerPreset.normalizedGains(equalizerHearingOffset)
+            UserDefaults.standard.set(normalized.map(Double.init), forKey: EqualizerStorage.hearingOffsetKey)
+            syncEqualizerToEngine()
+        }
+    }
+
+    @Published var equalizerBassEnhancement: Bool = UserDefaults.standard.bool(forKey: EqualizerStorage.bassEnhancementKey) {
+        didSet {
+            UserDefaults.standard.set(equalizerBassEnhancement, forKey: EqualizerStorage.bassEnhancementKey)
+            syncEqualizerToEngine()
+        }
+    }
+
+    @Published var equalizerVocalEnhancement: Bool = UserDefaults.standard.bool(forKey: EqualizerStorage.vocalEnhancementKey) {
+        didSet {
+            UserDefaults.standard.set(equalizerVocalEnhancement, forKey: EqualizerStorage.vocalEnhancementKey)
+            syncEqualizerToEngine()
+        }
+    }
+
+    @Published var equalizerLoudnessCompensation: Bool = UserDefaults.standard.bool(forKey: EqualizerStorage.loudnessCompensationKey) {
+        didSet {
+            UserDefaults.standard.set(equalizerLoudnessCompensation, forKey: EqualizerStorage.loudnessCompensationKey)
+            syncEqualizerToEngine()
+        }
+    }
+
+    @Published private(set) var equalizerProfiles: [EqualizerProfile] = EqualizerProfileStore.load()
+
+    private var equalizerUserOverride = false
+    private var equalizerHistorySuppressed = false
+    private var equalizerEditSessionBaseline: [Float]?
 
     @Published var albumBackdropEnabled: Bool = true {
         didSet { UserDefaults.standard.set(albumBackdropEnabled, forKey: Self.albumBackdropEnabledKey) }
@@ -700,6 +821,9 @@ public final class AppModel: ObservableObject {
     }
 
     public init() {
+        AppModel.shared = self
+        UserDefaults.standard.register(defaults: ["streamingDiskCacheEnabled": true])
+        registerWidgetCommandObserver()
         player.bind(offline: offline, resolveArtwork: { [weak self] track in
             self?.resolvedArtworkURL(for: track)
         })
@@ -717,7 +841,10 @@ public final class AppModel: ObservableObject {
                 return queue[index].id
             }
             .removeDuplicates()
-            .sink { [weak self] trackId in self?.nowPlayingTrackId = trackId }
+            .sink { [weak self] trackId in
+                self?.nowPlayingTrackId = trackId
+                self?.writeWidgetData()
+            }
             .store(in: &cancellables)
         offline.$downloadedTrackIds
             .sink { [weak self] _ in self?.objectWillChange.send() }
@@ -758,6 +885,7 @@ public final class AppModel: ObservableObject {
         loadRecentlyPlayedTracksFromDefaults()
         loadPlaylistLastPlayedDatesFromDefaults()
         loadRecentAddToPlaylistIdsFromDefaults()
+        reloadCustomRadioStations()
         killModeEnabledPlaylistIds = KillModeStore.loadEnabled()
         killModePendingRemovals = KillModeStore.loadPending()
         scrobbleService.bind(app: self)
@@ -779,11 +907,17 @@ public final class AppModel: ObservableObject {
             Task { @MainActor in
                 self?.recordRecentTrackPlay(track)
                 self?.scrobbleService.sendNowPlaying(track: track, source: self?.player.playbackSource)
+                self?.applyEqualizerAutomationForTrack(track)
             }
         }
         player.onTrackSkipped = { [weak self] track, source in
             Task { @MainActor in
                 self?.handleKillModeSkip(track: track, source: source)
+            }
+        }
+        player.onAudioRouteChanged = { [weak self] in
+            Task { @MainActor in
+                self?.applyEqualizerAutomationForRouteChange()
             }
         }
         installPlaybackQueueAutosave()
@@ -993,6 +1127,10 @@ public final class AppModel: ObservableObject {
         newTabTopTracks = []
         newTabTopAlbums = []
         newTabRecentReleases = []
+        newTabFromYourArtists = []
+        newTabDiscoverReleases = []
+        newTabArtistHighlights = []
+        newTabIsPersonalized = false
         newTabBrowseError = nil
         newTabBrowseBackend = .none
         discoveryLibraryTracks = []
@@ -1030,7 +1168,13 @@ public final class AppModel: ObservableObject {
 
     /// Prefer on-disk artwork, then per-track URL, then cached album art, then server cover lookup.
     func resolvedArtworkURL(for track: Track) -> URL? {
-        guard !track.isInternetRadioStream else { return nil }
+        if track.isInternetRadioStream {
+            if let file = track.artworkURL, file.isFileURL,
+               FileManager.default.fileExists(atPath: file.path) {
+                return file
+            }
+            return nil
+        }
         if let local = offline.localArtworkURL(forTrackId: track.id) { return local }
         if let localAlbum = offline.localArtworkURL(forAlbumId: track.albumId) { return localAlbum }
         if let file = track.artworkURL, file.isFileURL,
@@ -1849,6 +1993,77 @@ public final class AppModel: ObservableObject {
     public func handleAppBecameActive() {
         offline.handleAppBecameActive()
         Task { await evaluateAutoOfflineMode() }
+        writeWidgetData()
+        // Pick up any widget command that fired while the app wasn't running
+        handleWidgetCommandFromNotification()
+    }
+
+    public func handleWidgetDeepLink(_ url: URL) {
+        guard url.scheme == "lyra" else { return }
+        let host = url.host ?? ""
+        let itemId = url.pathComponents.dropFirst().first ?? ""
+        switch host {
+        case "album" where !itemId.isEmpty:
+            if let album = libraryAlbums.first(where: { $0.id == itemId }) {
+                selectedTab = .library
+                deepLinkTab = .library
+                presentedDeepLink = .album(album)
+            } else {
+                selectedTab = .home
+            }
+        case "track" where !itemId.isEmpty:
+            selectedTab = .home
+        default:
+            selectedTab = .home
+        }
+    }
+
+    public func handleWidgetPlayCommand(itemId: String, itemKind: String) async {
+        let currentAlbumId = player.activeTrack?.albumId.isEmpty == false
+            ? player.activeTrack!.albumId
+            : player.activeTrack?.id ?? ""
+        if currentAlbumId == itemId {
+            player.togglePlayPause()
+            writeWidgetData()
+            return
+        }
+        guard let lib = activeLibrary else { return }
+        do {
+            let tracks = try await lib.tracks(forAlbumId: itemId)
+            guard !tracks.isEmpty else { return }
+            try await player.playAlbum(library: lib, tracks: tracks, startIndex: 0)
+            writeWidgetData()
+        } catch {}
+    }
+
+    private func registerWidgetCommandObserver() {
+        let center = CFNotificationCenterGetDarwinNotifyCenter()
+        CFNotificationCenterAddObserver(center, Unmanaged.passUnretained(self).toOpaque(), { _, observer, _, _, _ in
+            guard let observer else { return }
+            let model = Unmanaged<AppModel>.fromOpaque(observer).takeUnretainedValue()
+            Task { @MainActor in model.handleWidgetCommandFromNotification() }
+        }, widgetCommandNotification, nil, .deliverImmediately)
+    }
+
+    private func handleWidgetCommandFromNotification() {
+        guard let defaults = UserDefaults(suiteName: WidgetDataStore.appGroupID),
+              let command = defaults.string(forKey: widgetCommandKey)
+        else { return }
+        defaults.removeObject(forKey: widgetCommandKey)
+
+        switch command {
+        case widgetCommandToggle:
+            player.togglePlayPause()
+            writeWidgetData()
+        case widgetCommandPlay:
+            let itemId   = defaults.string(forKey: widgetCommandPlayIdKey) ?? ""
+            let itemKind = defaults.string(forKey: widgetCommandPlayKindKey) ?? "album"
+            defaults.removeObject(forKey: widgetCommandPlayIdKey)
+            defaults.removeObject(forKey: widgetCommandPlayKindKey)
+            guard !itemId.isEmpty else { return }
+            Task { await handleWidgetPlayCommand(itemId: itemId, itemKind: itemKind) }
+        default: break
+        }
     }
 
     func addHomeWifiSSID(_ ssid: String) {
@@ -2874,39 +3089,86 @@ public final class AppModel: ObservableObject {
 
     public func refreshNewTabBrowse() async {
         newTabBrowseLoading = true
-        defer { newTabBrowseLoading = false }
 
         guard musicBrainzEnabled else {
             clearNewTabBrowseGrid()
             newTabBrowseBackend = .none
+            newTabIsPersonalized = false
+            newTabBrowseLoading = false
             return
         }
         newTabBrowseError = nil
+
+        // ── Phase 1: one global request (~500 ms). Surface content immediately. ──
+        let global: [ChartAlbum]
         do {
-            let mb = try await MusicBrainzNewReleasesClient.fetchRecentAlbums(limit: 50)
-            applyNewTabGrid(fromAlbums: mb, backend: .musicBrainz)
-            newTabBrowseError = mb.isEmpty ? "No recent albums from MusicBrainz in the last few months." : nil
+            global = try await MusicBrainzNewReleasesClient.fetchRecentAlbums(limit: 50)
         } catch {
             clearNewTabBrowseGrid()
             newTabBrowseBackend = .none
+            newTabIsPersonalized = false
+            newTabBrowseLoading = false
             newTabBrowseError = error.localizedDescription
+            return
         }
+        // Only overwrite with the bare global feed if the page is still blank.
+        // On refresh the user already sees content — keep it until phase 2 lands.
+        let pageIsBlank = newTabRecentReleases.isEmpty && newTabFromYourArtists.isEmpty
+        if pageIsBlank {
+            applyPersonalizedNewTabFeed(NewTabPersonalizationEngine.globalFallbackFeed(from: global))
+            newTabBrowseBackend = .musicBrainz
+        }
+        newTabBrowseLoading = false
+
+        // ── Phase 2: personalise. Per-artist MB requests with rate-limit pacing
+        //    (up to 5 artists × 1.1 s = ~5 s worst case). Content already visible. ──
+        let context = NewTabPersonalizationEngine.Context(
+            completedScrobbles: scrobbleService.store.completed,
+            favoriteTrackIds: favoriteTrackIds,
+            followedArtists: subscriptions.followed,
+            trackLookup: { [weak self] id in self?.cachedLibraryTrack(id: id) },
+            indexedTracks: discoveryLibraryTracks,
+            ownsAlbum: { [weak self] artist, title in
+                self?.libraryAlbumReleaseIndex.firstMatch(artist: artist, albumTitle: title) != nil
+            },
+        )
+        let feed = await NewTabPersonalizationEngine.buildFeed(globalAlbums: global, context: context)
+        applyPersonalizedNewTabFeed(feed)
+        newTabBrowseBackend = .musicBrainz
+        newTabBrowseError = feed.isEmpty
+            ? (feed.isPersonalized
+                ? "No new releases matched your listening yet. Keep playing and pull to refresh."
+                : "No recent albums from MusicBrainz in the last few months.")
+            : nil
     }
 
-    private func applyNewTabGrid(fromAlbums albums: [ChartAlbum], backend: NewTabBrowseBackend) {
-        newTabRecentReleases = albums
-        newTabTopTracks = Array(albums.prefix(20)).map {
-            ChartTrack(id: $0.id, name: $0.name, artistName: $0.artistName,
-                       imageURL: $0.imageURL, playcount: 0, browseKind: "Album")
+    private func applyPersonalizedNewTabFeed(_ feed: NewTabPersonalizedFeed) {
+        newTabIsPersonalized = feed.isPersonalized
+        newTabFromYourArtists = feed.fromYourArtists
+        newTabDiscoverReleases = feed.discoverAlbums
+        newTabArtistHighlights = feed.artistHighlights
+        newTabRecentReleases = feed.isPersonalized ? feed.fromYourArtists : feed.forYouAlbums
+        newTabTopAlbums = feed.isPersonalized ? feed.discoverAlbums : []
+        newTabTopTracks = feed.forYouAlbums.map {
+            ChartTrack(
+                id: $0.id,
+                name: $0.name,
+                artistName: $0.artistName,
+                imageURL: $0.imageURL,
+                playcount: 0,
+                browseKind: "Album",
+            )
         }
-        newTabTopAlbums = []
-        newTabBrowseBackend = backend
     }
 
     private func clearNewTabBrowseGrid() {
         newTabTopTracks = []
         newTabTopAlbums = []
         newTabRecentReleases = []
+        newTabFromYourArtists = []
+        newTabDiscoverReleases = []
+        newTabArtistHighlights = []
+        newTabIsPersonalized = false
     }
 
     // MARK: - Playback helpers
@@ -3002,14 +3264,40 @@ public final class AppModel: ObservableObject {
 
     // MARK: - Radio (Navidrome)
 
-    /// Plays a live stream from the server's internet radio list (`getInternetRadioStations`).
-    func playInternetRadioStation(_ station: InternetRadioStation) async {
-        guard let client = navidrome else {
-            errorMessage = "Internet radio requires a Navidrome connection."
-            return
+    @Published private(set) var customRadioStations: [CustomRadioStation] = []
+
+    func reloadCustomRadioStations() {
+        customRadioStations = CustomRadioStationStore.load()
+    }
+
+    func addCustomRadioStation(name: String, streamURL: URL, artworkData: Data?) throws {
+        _ = try CustomRadioStationStore.add(
+            name: name,
+            streamURL: streamURL,
+            artworkData: artworkData,
+        )
+        reloadCustomRadioStations()
+        showTransientToast("Station added")
+    }
+
+    func removeCustomRadioStation(id: String) {
+        let trackId = Self.customRadioTrackId(stationId: id)
+        if nowPlayingTrackId == trackId {
+            player.reset()
         }
+        CustomRadioStationStore.remove(id: id)
+        reloadCustomRadioStations()
+        showTransientToast("Station removed")
+    }
+
+    private static func customRadioTrackId(stationId: String) -> String {
+        "lyra-radio-custom-\(stationId)"
+    }
+
+    /// Plays a live stream from the server's internet radio list or a user-added station.
+    func playInternetRadioStation(_ station: InternetRadioStation) async {
         let track = Track(
-            id: "internet-radio-\(station.id)",
+            id: station.isUserAdded ? "lyra-radio-\(station.id)" : "internet-radio-\(station.id)",
             title: station.name,
             albumId: "internet-radio",
             albumTitle: "Live Radio",
@@ -3017,12 +3305,12 @@ public final class AppModel: ObservableObject {
             duration: 0,
             discNumber: 1,
             indexNumber: 1,
-            artworkURL: nil,
+            artworkURL: station.artworkURL,
             streamOverrideURL: station.streamURL,
         )
         player.shuffleMode = .off
         do {
-            try await player.playAlbum(library: client, tracks: [track], startIndex: 0)
+            try await player.playAlbum(library: activeLibrary, tracks: [track], startIndex: 0)
         } catch {
             guard !Self.isBenignPlaybackInterruption(error) else { return }
             errorMessage = error.localizedDescription
@@ -3201,6 +3489,54 @@ public final class AppModel: ObservableObject {
         recentlyPlayedEntries = next
         saveRecentlyPlayedEntriesToDefaults()
         rebuildHomeRecentlyPlayed()
+        writeWidgetData()
+    }
+
+    public func writeWidgetData() {
+        var seen = Set<String>()
+        let recent = recentlyPlayedTracks.compactMap { track -> WidgetDataStore.MusicItem? in
+            let id = track.albumId.isEmpty ? track.id : track.albumId
+            guard seen.insert(id).inserted else { return nil }
+            return WidgetDataStore.MusicItem(
+                id: id,
+                title: track.albumTitle.isEmpty ? track.title : track.albumTitle,
+                artist: track.artist,
+                artworkURLString: resolvedArtworkURL(for: track)?.absoluteString,
+                kind: .album
+            )
+        }.prefix(6)
+
+        let nowPlaying: WidgetDataStore.MusicItem? = player.activeTrack.map { track in
+            WidgetDataStore.MusicItem(
+                id: track.albumId.isEmpty ? track.id : track.albumId,
+                title: track.albumTitle.isEmpty ? track.title : track.albumTitle,
+                artist: track.artist,
+                artworkURLString: resolvedArtworkURL(for: track)?.absoluteString,
+                kind: .album
+            )
+        }
+
+        let accentHex = AppAccentPreset.hex(from: AppAccentPreset.current.color)
+        let payload = WidgetDataStore.Payload(
+            recentlyPlayed: Array(recent),
+            nowPlaying: nowPlaying,
+            isPlaying: player.isPlaying,
+            updatedAt: Date(),
+            accentHex: accentHex
+        )
+        WidgetDataStore.write(payload)
+        #if os(iOS)
+        // First reload: title/artist/play-state update immediately.
+        WidgetCenter.shared.reloadAllTimelines()
+        // Second reload: after artwork is fetched and saved to the shared container.
+        let allItems = Array(recent) + (nowPlaying.map { [$0] } ?? [])
+        Task.detached(priority: .utility) {
+            let wrote = await WidgetDataStore.cacheArtwork(items: allItems)
+            if wrote {
+                await WidgetCenter.shared.reloadAllTimelines()
+            }
+        }
+        #endif
     }
 
     private func rebuildHomeRecentlyPlayed() {
@@ -3509,24 +3845,234 @@ public final class AppModel: ObservableObject {
     func syncEqualizerToEngine() {
         player.equalizerEnabled = equalizerEnabled
         player.equalizerBypass = equalizerBypass
-        player.equalizerBandGains = equalizerBandGains
+        player.equalizerBandGains = effectiveEqualizerBandGains(for: player.activeTrack)
         player.applyLiveEqualizerGains()
+    }
+
+    func effectiveEqualizerBandGains(for track: Track?) -> [Float] {
+        var resolved = EqualizerAutomationEngine(
+            profiles: equalizerProfiles,
+        ).resolvedGains(
+            baseGains: equalizerBandGains,
+            track: track,
+            routeKey: EqualizerDeviceRoute.currentRouteKey(),
+            routeDisplayName: EqualizerDeviceRoute.currentRouteDisplayName(),
+            vintageMode: equalizerVintageMode,
+            stereoWidth: equalizerStereoWidth,
+            hearingOffset: equalizerHearingOffset,
+            adaptiveEnabled: equalizerAdaptiveEnabled,
+            adaptiveStrength: equalizerAdaptiveStrength,
+            headphoneProfileId: equalizerHeadphoneProfileId,
+            frequencyToolMode: equalizerFrequencyToolMode,
+            frequencyToolBand: equalizerFrequencyToolBand,
+        )
+        if equalizerBassEnhancement {
+            for index in 0 ... min(3, resolved.count - 1) {
+                resolved[index] = min(resolved[index] + 4, EqualizerBand.gainRange.upperBound)
+            }
+        }
+        if equalizerVocalEnhancement {
+            for index in 4 ... min(6, resolved.count - 1) {
+                resolved[index] = min(resolved[index] + 3.5, EqualizerBand.gainRange.upperBound)
+            }
+        }
+        if equalizerLoudnessCompensation {
+            #if os(iOS)
+            let volume = AVAudioSession.sharedInstance().outputVolume
+            if volume < 0.75 {
+                let boost = (0.75 - volume) * 10
+                resolved = resolved.enumerated().map { index, gain in
+                    let weight: Float = index < 4 ? 1.3 : (index < 7 ? 1.0 : 0.7)
+                    return min(gain + boost * weight, EqualizerBand.gainRange.upperBound)
+                }
+            }
+            #endif
+        }
+        return EqualizerPreset.normalizedGains(resolved)
+    }
+
+    func applyEqualizerAutomationForTrack(_ track: Track) {
+        equalizerUserOverride = false
+        guard equalizerEnabled else {
+            syncEqualizerToEngine()
+            return
+        }
+        if let gains = automatedBaseGains(for: track),
+           gains != equalizerBandGains {
+            setEqualizerBandGains(gains, recordHistory: false)
+        } else {
+            syncEqualizerToEngine()
+        }
+    }
+
+    func applyEqualizerAutomationForRouteChange() {
+        guard equalizerEnabled else { return }
+        syncEqualizerToEngine()
+    }
+
+    private func automatedBaseGains(for track: Track) -> [Float]? {
+        if let album = equalizerProfiles.first(where: { $0.kind == .album && $0.key == track.albumId }) {
+            return album.gains
+        }
+        let artistKey = LibraryTrackMatcher.normalize(track.artist)
+        if let artist = equalizerProfiles.first(where: { $0.kind == .artist && $0.key == artistKey }) {
+            return artist.gains
+        }
+        return nil
+    }
+
+    func reloadEqualizerProfiles() {
+        equalizerProfiles = EqualizerProfileStore.load()
     }
 
     func applyEqualizerPreset(_ preset: EqualizerPreset) {
         equalizerPresetId = preset.id
-        equalizerBandGains = preset.gains
+        setEqualizerBandGains(preset.gains, recordHistory: true)
     }
 
-    func setEqualizerBandGain(index: Int, gain: Float) {
+    func beginEqualizerEditSession() {
+        guard equalizerEditSessionBaseline == nil else { return }
+        equalizerEditSessionBaseline = EqualizerPreset.normalizedGains(equalizerBandGains)
+    }
+
+    func endEqualizerEditSession() {
+        guard let baseline = equalizerEditSessionBaseline else { return }
+        equalizerEditSessionBaseline = nil
+        let current = EqualizerPreset.normalizedGains(equalizerBandGains)
+        guard baseline != current else { return }
+        var history = equalizerHistory
+        history.recordUndo(before: baseline)
+        equalizerHistory = history
+    }
+
+    func setEqualizerBandGain(index: Int, gain: Float, recordHistory: Bool = false) {
         guard index >= 0, index < EqualizerBand.count else { return }
         var next = equalizerBandGains
         if next.count < EqualizerBand.count {
             next = EqualizerPreset.normalizedGains(next)
         }
         next[index] = min(max(gain, EqualizerBand.gainRange.lowerBound), EqualizerBand.gainRange.upperBound)
-        equalizerBandGains = next
+        equalizerUserOverride = true
+        setEqualizerBandGains(next, recordHistory: recordHistory)
         equalizerPresetId = EqualizerPreset.catalog[0].id
+    }
+
+    func setEqualizerBandGains(_ gains: [Float], recordHistory: Bool) {
+        let normalized = EqualizerPreset.normalizedGains(gains)
+        guard normalized != equalizerBandGains else { return }
+
+        if recordHistory, !equalizerHistorySuppressed {
+            var history = equalizerHistory
+            history.recordUndo(before: equalizerBandGains)
+            equalizerHistory = history
+        }
+        equalizerHistorySuppressed = true
+        equalizerBandGains = normalized
+        equalizerHistorySuppressed = false
+    }
+
+    func undoEqualizerChange() {
+        var history = equalizerHistory
+        guard let restored = history.undo(current: equalizerBandGains) else { return }
+        equalizerHistory = history
+        setEqualizerBandGains(restored, recordHistory: false)
+        equalizerPresetId = EqualizerPreset.catalog[0].id
+        triggerEqualizerUndoRedoHaptic()
+    }
+
+    func redoEqualizerChange() {
+        var history = equalizerHistory
+        guard let restored = history.redo(current: equalizerBandGains) else { return }
+        equalizerHistory = history
+        setEqualizerBandGains(restored, recordHistory: false)
+        equalizerPresetId = EqualizerPreset.catalog[0].id
+        triggerEqualizerUndoRedoHaptic()
+    }
+
+    private func triggerEqualizerUndoRedoHaptic() {
+        #if os(iOS)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        #endif
+    }
+
+    func saveEqualizerProfileForCurrentArtist() {
+        guard let track = player.activeTrack else { return }
+        let key = LibraryTrackMatcher.normalize(track.artist)
+        _ = EqualizerProfileStore.upsert(
+            kind: .artist,
+            key: key,
+            displayName: track.artist,
+            gains: equalizerBandGains,
+        )
+        reloadEqualizerProfiles()
+        equalizerUserOverride = false
+        showTransientToast("Saved for \(track.artist)")
+    }
+
+    func saveEqualizerProfileForCurrentAlbum() {
+        guard let track = player.activeTrack else { return }
+        _ = EqualizerProfileStore.upsert(
+            kind: .album,
+            key: track.albumId,
+            displayName: track.albumTitle,
+            gains: equalizerBandGains,
+        )
+        reloadEqualizerProfiles()
+        equalizerUserOverride = false
+        showTransientToast("Saved for \(track.albumTitle)")
+    }
+
+    func saveEqualizerProfileForCurrentDevice() {
+        guard let key = EqualizerDeviceRoute.currentRouteKey(),
+              let name = EqualizerDeviceRoute.currentRouteDisplayName()
+        else { return }
+        _ = EqualizerProfileStore.upsert(
+            kind: .device,
+            key: key,
+            displayName: name,
+            gains: equalizerBandGains,
+        )
+        reloadEqualizerProfiles()
+        showTransientToast("Saved for \(name)")
+    }
+
+    func removeEqualizerProfile(id: String) {
+        EqualizerProfileStore.remove(id: id)
+        reloadEqualizerProfiles()
+    }
+
+    func exportEqualizerPreset(named name: String) -> EqualizerPresetExport {
+        EqualizerPresetExport(
+            name: name,
+            gains: equalizerBandGains,
+            createdAt: Date(),
+        )
+    }
+
+    func importEqualizerPreset(_ export: EqualizerPresetExport) {
+        setEqualizerBandGains(export.gains, recordHistory: true)
+        equalizerPresetId = EqualizerPreset.catalog[0].id
+        showTransientToast("Imported \(export.name)")
+    }
+
+    func applyHearingTestOffsets(_ offsets: [Float]) {
+        equalizerHearingOffset = EqualizerPreset.normalizedGains(offsets)
+        showTransientToast("Hearing profile applied")
+    }
+
+    /// Apply the best-matching preset for the currently playing track's genre.
+    func applyEqualizerSuggestionForCurrentTrack() {
+        guard let track = player.activeTrack else { return }
+        for genre in track.genres {
+            if let presetId = EqualizerGenreMapping.presetId(forGenre: genre),
+               let preset = EqualizerPreset.catalog.first(where: { $0.id == presetId })
+            {
+                applyEqualizerPreset(preset)
+                showTransientToast("EQ set to \(preset.name)")
+                return
+            }
+        }
+        showTransientToast("No genre match — genres not tagged for \(track.title)")
     }
 
     func resetPlaybackSettingsToDefaults() {
