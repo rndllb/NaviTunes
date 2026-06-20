@@ -508,7 +508,7 @@ private struct ArtistTopSongRowView: View {
 /// Top Songs row ⋯ menu. Library tracks render the shared `StandardSongMenuContent`
 /// so the option set matches every other song-row ⋯ in the app. Preview-only tracks
 /// (the artist's catalog lookup found no matching server track) fall back to the
-/// chart-style menu whose primary action is Request via Downtify.
+/// chart-style menu whose primary action is Request via the request backend.
 private struct ArtistTopSongOverflowMenu: View {
     @EnvironmentObject private var app: AppModel
     let row: ArtistTopSongRow
@@ -654,7 +654,7 @@ private struct ArtistDiscographyCard: View {
                         .clipShape(RoundedRectangle(cornerRadius: MusicDesign.albumCorner, style: .continuous))
                     if item.needsRequest {
                         // Compact glyph in the top-right corner of the cover signals
-                        // "not on your server — tap to request via Downtify".
+                        // "not on your server — tap to request via the request backend".
                         Image(systemName: "arrow.down.circle.fill")
                             .font(.callout.weight(.semibold))
                             .foregroundStyle(.white)

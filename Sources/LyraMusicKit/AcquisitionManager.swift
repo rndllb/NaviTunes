@@ -5,9 +5,8 @@ import Combine
 /// backend is active. Feature code talks only to this manager + ``AcquisitionRequest``;
 /// the active ``AcquisitionProviding`` plugin is swappable at runtime.
 ///
-/// Generalizes the former `DowntifyDownloadManager`: jobs are keyed by the
-/// backend-agnostic ``AcquisitionRequest/requestKey`` so progress and completion
-/// survive navigation and plugin internals.
+/// Jobs are keyed by the backend-agnostic ``AcquisitionRequest/requestKey`` so progress
+/// and completion survive navigation and plugin internals.
 @MainActor
 final class AcquisitionManager: ObservableObject {
     /// Active + recently-finished jobs this app issued, keyed by `requestKey`.
@@ -38,13 +37,12 @@ final class AcquisitionManager: ObservableObject {
 
     init() {
         let stored = UserDefaults.standard.string(forKey: Self.activeKey)
+        // A previously-stored "downtify" no longer decodes (plugin removed) and falls through
+        // to the Lidarr default.
         if let stored, let kind = AcquisitionPluginKind(rawValue: stored) {
             activePlugin = kind
         } else {
-            activePlugin = .downtify
-            if stored != nil {
-                UserDefaults.standard.set(AcquisitionPluginKind.downtify.rawValue, forKey: Self.activeKey)
-            }
+            activePlugin = .lidarr
         }
     }
 
@@ -59,7 +57,6 @@ final class AcquisitionManager: ObservableObject {
 
     static func makeProvider(_ kind: AcquisitionPluginKind) -> AcquisitionProviding {
         switch kind {
-        case .downtify: return DowntifyAcquisitionPlugin()
         case .lidarr: return LidarrAcquisitionPlugin()
         }
     }

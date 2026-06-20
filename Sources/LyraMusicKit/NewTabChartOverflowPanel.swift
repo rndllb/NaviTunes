@@ -120,7 +120,7 @@ struct ChartStyleSongOverflowMenu: View {
 
 // MARK: - Chart browse ⋯
 
-/// Chart browse ⋯ on the **New** tab (same layout as missing-catalog / Downtify-not-in-library rows).
+/// Chart browse ⋯ on the **New** tab (same layout as missing-catalog / the request backend-not-in-library rows).
 struct NewTabChartOverflowPanel: View {
     let track: ChartTrack
     let onAdd: () -> Void

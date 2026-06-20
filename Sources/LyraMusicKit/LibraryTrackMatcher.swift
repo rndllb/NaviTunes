@@ -1,6 +1,6 @@
 import Foundation
 
-/// Fuzzy title / artist matching between external metadata (Downtify, chart browse, …) and Jellyfin/Navidrome `Track` rows.
+/// Fuzzy title / artist matching between external metadata (the request backend, chart browse, …) and Jellyfin/Navidrome `Track` rows.
 enum LibraryTrackMatcher {
     /// Split on punctuation while keeping words with apostrophes / hyphens intact.
     private static let tokenBoundary =
@@ -9,7 +9,7 @@ enum LibraryTrackMatcher {
             .inverted
 
     /// Lowercase, strip diacritics, drop apostrophes inside tokens (so "Whats" and
-    /// "What's" collapse to the same key — Downtify and the server frequently disagree
+    /// "What's" collapse to the same key — the request backend and the server frequently disagree
     /// on apostrophes), drop other punctuation, collapse whitespace. Hyphens inside
     /// tokens stay so "well-known" remains a single token.
     static func normalize(_ raw: String) -> String {
@@ -54,8 +54,8 @@ enum LibraryTrackMatcher {
         return out
     }
 
-    /// Normalized artist tokens from Downtify’s `artists` array.
-    static func normalizedDowntifyArtists(_ artists: [String]) -> Set<String> {
+    /// Normalized artist tokens from the request backend’s `artists` array.
+    static func normalizedArtistTokens(_ artists: [String]) -> Set<String> {
         Set(artists.map { normalize($0) }.filter { !$0.isEmpty })
     }
 
@@ -73,9 +73,9 @@ enum LibraryTrackMatcher {
         return map
     }
 
-    /// True when this Downtify hit corresponds to at least one library track (same normalized title + overlapping artists).
-    static func matchesLibrary(_ song: DowntifySong, titleIndex: [String: Set<String>]) -> Bool {
-        let songArtists = normalizedDowntifyArtists(song.artists)
+    /// True when this the request backend hit corresponds to at least one library track (same normalized title + overlapping artists).
+    static func matchesLibrary(_ song: MatchableSong, titleIndex: [String: Set<String>]) -> Bool {
+        let songArtists = normalizedArtistTokens(song.artists)
         guard !songArtists.isEmpty else { return false }
 
         let titleKeys = normalizedTitleKeys(from: song.name)
@@ -89,12 +89,12 @@ enum LibraryTrackMatcher {
     }
 
     /// Same rules as ``matchesLibrary``, returning the first catalog row (stable order follows `tracks`).
-    static func firstLibraryTrack(matching song: DowntifySong, in tracks: [Track]) -> Track? {
-        tracks.first { trackMatchesDowntifySong($0, song: song) }
+    static func firstLibraryTrack(matching song: MatchableSong, in tracks: [Track]) -> Track? {
+        tracks.first { trackMatchesMatchableSong($0, song: song) }
     }
 
-    static func trackMatchesDowntifySong(_ track: Track, song: DowntifySong) -> Bool {
-        let songArtists = normalizedDowntifyArtists(song.artists)
+    static func trackMatchesMatchableSong(_ track: Track, song: MatchableSong) -> Bool {
+        let songArtists = normalizedArtistTokens(song.artists)
         guard !songArtists.isEmpty else { return false }
         let songKeys = Set(normalizedTitleKeys(from: song.name))
         let trackKeys = Set(normalizedTitleKeys(from: track.title))
@@ -137,7 +137,7 @@ enum LibraryTrackMatcher {
 
     // MARK: - External chart tracks
 
-    /// True when this chart row matches a library track (same rules as Downtify).
+    /// True when this chart row matches a library track (same rules as the request backend).
     static func matchesLibrary(_ chart: ChartTrack, titleIndex: [String: Set<String>]) -> Bool {
         let songArtists = normalizedChartArtists(chart.artistName)
         guard !songArtists.isEmpty else { return false }
@@ -242,9 +242,9 @@ struct LibraryChartTrackIndex {
         return firstMatch(titleKeys: titleKeys, artistTokens: chartArtists)
     }
 
-    /// Same rules as ``LibraryTrackMatcher.firstLibraryTrack(matching:in:)`` for Downtify / browse preview rows.
-    func firstMatch(song: DowntifySong) -> Track? {
-        let songArtists = LibraryTrackMatcher.normalizedDowntifyArtists(song.artists)
+    /// Same rules as ``LibraryTrackMatcher.firstLibraryTrack(matching:in:)`` for the request backend / browse preview rows.
+    func firstMatch(song: MatchableSong) -> Track? {
+        let songArtists = LibraryTrackMatcher.normalizedArtistTokens(song.artists)
         guard !songArtists.isEmpty else { return nil }
         let titleKeys = LibraryTrackMatcher.normalizedTitleKeys(from: song.name)
         guard !titleKeys.isEmpty else { return nil }

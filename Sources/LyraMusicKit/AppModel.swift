@@ -71,10 +71,9 @@ public final class AppModel: ObservableObject {
     public static let defaultLibraryAlbumFetchLimit = 500
     @Published var accentPresetId: String = UserDefaults.standard.string(forKey: AppAccentPreset.accentPresetIdKey) ?? AppAccentPreset.defaultId {
         didSet {
+            // Accent color and app icon are independent — changing the accent must NOT change
+            // the home-screen icon. The icon is controlled solely by `appIconPresetId`.
             UserDefaults.standard.set(accentPresetId, forKey: AppAccentPreset.accentPresetIdKey)
-            if accentPresetId != AppAccentPreset.customId {
-                appIconPresetId = accentPresetId
-            }
         }
     }
 
@@ -186,9 +185,9 @@ public final class AppModel: ObservableObject {
     @Published private(set) var homeMixes: [HomeMix] = []
     @Published private(set) var libraryAlbumsLoadError: String?
 
-    /// Normalized track titles → normalized artist strings (for Downtify vs library matching).
+    /// Normalized track titles → normalized artist strings (for the request backend vs library matching).
     @Published private(set) var libraryTrackTitleIndex: [String: Set<String>] = [:]
-    /// Snapshot of tracks used to build ``libraryTrackTitleIndex`` (resolve Downtify rows → `Track`).
+    /// Snapshot of tracks used to build ``libraryTrackTitleIndex`` (resolve the request backend rows → `Track`).
     @Published private(set) var discoveryLibraryTracks: [Track] = [] {
         didSet { rebuildDiscoveryTrackIndices() }
     }
@@ -232,6 +231,19 @@ public final class AppModel: ObservableObject {
     private var trackIndexTask: Task<Void, Never>?
     /// In-memory playlist tracklists for instant detail hydration (Go to Playlist, revisit).
     private var playlistRowsCache: [String: [PlaylistRowItem]] = [:]
+    /// Instant album-detail hydration: read/write the existing ``albumTracksCache`` as plain
+    /// `[Track]` so reopening an album doesn't re-fetch from the server each time.
+    func cachedAlbumTracks(albumId: String) -> [Track]? {
+        let key = albumId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return nil }
+        return albumTracksCache[key]?.tracks
+    }
+
+    func cacheAlbumTracks(albumId: String, tracks: [Track]) {
+        let key = albumId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty, !tracks.isEmpty else { return }
+        albumTracksCache[key] = CachedAlbumTracks(tracks: tracks, retrievedAt: Date())
+    }
     /// In-flight playlist row fetches keyed by playlist id — see ``fetchPlaylistRows(playlistId:)``.
     private var playlistRowsFetchTasks: [String: Task<[PlaylistRowItem], Error>] = [:]
     /// Background sync-ahead of playlist tracklists — see ``warmPlaylistRowsCache()``.
@@ -281,6 +293,15 @@ public final class AppModel: ObservableObject {
     /// Playlist id → last time the user meaningfully played from that playlist (scrobble threshold).
     private static let playlistLastPlayedDatesKey = "LyraMusic.playlistLastPlayedDates"
     @Published private(set) var playlistLastPlayedDates: [String: Date] = [:]
+
+    /// Playlist id → when the user created it in this app. Used so a freshly-made playlist sorts
+    /// to the top of Library → Recently Added even before the server reports its `created` date.
+    private static let playlistCreatedDatesKey = "LyraMusic.playlistCreatedDates"
+    @Published private(set) var playlistCreatedDates: [String: Date] = [:]
+
+    func localPlaylistCreatedDate(_ id: String) -> Date? {
+        playlistCreatedDates[id.trimmingCharacters(in: .whitespacesAndNewlines)]
+    }
 
     /// Playlists the user most recently added songs to from the add-to-playlist
     /// sheet, newest first — drives its "Recents" section. Local-only.
@@ -884,6 +905,7 @@ public final class AppModel: ObservableObject {
         loadRecentlyPlayedEntriesFromDefaults()
         loadRecentlyPlayedTracksFromDefaults()
         loadPlaylistLastPlayedDatesFromDefaults()
+        loadPlaylistCreatedDatesFromDefaults()
         loadRecentAddToPlaylistIdsFromDefaults()
         reloadCustomRadioStations()
         killModeEnabledPlaylistIds = KillModeStore.loadEnabled()
@@ -1640,11 +1662,18 @@ public final class AppModel: ObservableObject {
             libraryPlaylistEntries = []
             return
         }
-        isResolvingLibraryMembership = true
-        defer { isResolvingLibraryMembership = false }
+        // Only surface the resolving spinner on the *initial* resolve (nothing shown yet).
+        // Background polls already have content on screen — toggling this every cycle made
+        // the Recently Added section flash a spinner.
+        let isInitialResolve = libraryMagicPlaylistId == nil
+        if isInitialResolve { isResolvingLibraryMembership = true }
+        defer { if isInitialResolve { isResolvingLibraryMembership = false } }
         do {
             let resolvedId = try await resolveMagicPlaylistId(identity: identity)
             let fetch = try await fetchMagicPlaylistContents(playlistId: resolvedId)
+            #if DEBUG
+            print("[MAGIC-SYNC] resolved id=\(resolvedId) name=\(fetch.name) tracks=\(fetch.trackIds.count) commentLen=\(fetch.comment?.count ?? -1)")
+            #endif
             let expectedNames = Set(
                 LibraryMembership.candidateMagicPlaylistNames(
                     backend: backendKind,
@@ -1779,10 +1808,25 @@ public final class AppModel: ObservableObject {
 
     private func applyMagicPlaylistFetch(playlistId: String, fetch: LibraryPlaylistFetchShape) {
         let payload = LibraryMembershipPayload.decode(fetch.comment)
-        libraryMagicPlaylistId = playlistId
-        librarySongIds = Set(fetch.trackIds)
-        libraryAlbumEntries = payload.albums
-        libraryPlaylistEntries = payload.playlists
+        #if DEBUG
+        print("[MAGIC-SYNC] apply id=\(playlistId) tracks=\(fetch.trackIds.count) payloadAlbums=\(payload.albums.count) payloadPlaylists=\(payload.playlists.count) curEntries=\(libraryAlbumEntries.count) curCatalog=\(libraryAlbums.count)")
+        #endif
+        // The ~20s background poll runs this every cycle. Only mutate @Published state when it
+        // actually changed — otherwise each poll reassigns identical data, fires objectWillChange,
+        // and re-renders the Library, making the Recently Added shelf flicker out and back in.
+        if libraryMagicPlaylistId != playlistId { libraryMagicPlaylistId = playlistId }
+        let newSongIds = Set(fetch.trackIds)
+        if librarySongIds != newSongIds { librarySongIds = newSongIds }
+        // A poll can transiently return the playlist without its comment/Overview JSON
+        // (or with a garbled one), which decodes to an empty payload. Overwriting with that
+        // wiped the Recently Added shelf. Only replace entries when the payload actually has
+        // content, or when the library is genuinely empty (no tracks). Direct add/remove
+        // mutations still update these arrays immediately.
+        let payloadHasContent = !payload.albums.isEmpty || !payload.playlists.isEmpty
+        if payloadHasContent || fetch.trackIds.isEmpty {
+            if libraryAlbumEntries != payload.albums { libraryAlbumEntries = payload.albums }
+            if libraryPlaylistEntries != payload.playlists { libraryPlaylistEntries = payload.playlists }
+        }
         invalidatePlaylistRowsCache(playlistId: playlistId)
         Task { await backfillMissingLibraryAlbumSummaries() }
         if backendKind == .navidrome {
@@ -1903,12 +1947,23 @@ public final class AppModel: ObservableObject {
             return results
         }
         guard !fetched.isEmpty else { return }
-        var merged = libraryAlbums
-        var byId = Dictionary(uniqueKeysWithValues: merged.map { ($0.id, $0) })
-        for album in fetched {
+        // Idempotent merge: only touch `libraryAlbums` when a fetched summary actually differs
+        // from what we already have. The ~20s poll re-runs this every cycle, and for Navidrome
+        // it re-fetches albums whose `coverArtId` stays nil forever — reassigning `libraryAlbums`
+        // (and reordering it) every poll re-rendered the Library and jolted the Recently Added
+        // grid. Preserve existing order; append only genuinely-new albums.
+        var byId = Dictionary(uniqueKeysWithValues: libraryAlbums.map { ($0.id, $0) })
+        var changed = false
+        for album in fetched where byId[album.id] != album {
             byId[album.id] = album
+            changed = true
         }
-        merged = Array(byId.values)
+        guard changed else { return }
+        let existingIds = Set(libraryAlbums.map(\.id))
+        var merged = libraryAlbums.map { byId[$0.id] ?? $0 }
+        for album in fetched where !existingIds.contains(album.id) {
+            merged.append(album)
+        }
         libraryAlbums = merged
         persistLibrarySnapshot()
     }
@@ -2043,6 +2098,15 @@ public final class AppModel: ObservableObject {
             let model = Unmanaged<AppModel>.fromOpaque(observer).takeUnretainedValue()
             Task { @MainActor in model.handleWidgetCommandFromNotification() }
         }, widgetCommandNotification, nil, .deliverImmediately)
+    }
+
+    deinit {
+        // The widget-command observer is registered with `passUnretained(self)`; remove it so
+        // a deallocated AppModel can never be invoked via a dangling pointer.
+        CFNotificationCenterRemoveEveryObserver(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            Unmanaged.passUnretained(self).toOpaque(),
+        )
     }
 
     private func handleWidgetCommandFromNotification() {
@@ -2249,7 +2313,7 @@ public final class AppModel: ObservableObject {
         // Kick off the server-side scan immediately so it can race the retry loop.
         Task { try? await lib.triggerLibraryScan() }
 
-        let probe = DowntifySong(songId: job.id, name: title,
+        let probe = MatchableSong(songId: job.id, name: title,
                                  artists: artist.isEmpty ? [] : [artist],
                                  albumName: "", url: job.id, coverURL: nil, year: nil, explicit: false)
         // ~60s total budget: 20 attempts × 3s. The early attempts catch fast scans
@@ -2468,7 +2532,7 @@ public final class AppModel: ObservableObject {
     /// rebuild that would otherwise duplicate the work in `didSet`.
     private var skipDiscoveryIndexRebuild = false
 
-    /// Rebuild both the title-index (used by Downtify match-Bool checks) and the
+    /// Rebuild both the title-index (used by the request backend match-Bool checks) and the
     /// chart-track index (used by New tab `Track` lookups) when the discovery
     /// snapshot is reassigned. Centralized so no caller can update one and forget
     /// the other.
@@ -2489,11 +2553,19 @@ public final class AppModel: ObservableObject {
             async let recent = lib.recentlyAdded(limit: 60)
             let fetched = try await all
             PerfLog.event("refreshLibraryAlbums.fetched", details: "count=\(fetched.count) limit=\(limit)")
-            libraryAlbums = fetched
+            // The server's paged listing caps at `limit`; personal-library albums that fall
+            // outside that page were previously dropped here and then re-added by
+            // `backfillMissingLibraryAlbumSummaries`, oscillating `libraryAlbums` and flickering
+            // the Recently Added shelf. Preserve summaries for personal-library album ids that
+            // aren't in the fresh fetch so they stay put.
+            let fetchedIds = Set(fetched.map(\.id))
+            let personalIds = Set(libraryAlbumEntries.map(\.id))
+            let preserved = libraryAlbums.filter { personalIds.contains($0.id) && !fetchedIds.contains($0.id) }
+            libraryAlbums = fetched + preserved
             recentlyAddedAlbums = (try? await recent) ?? []
             mergeOfflineCatalog()
             persistLibrarySnapshot()
-            // Discovery / Downtify-match index is deferred — building it for tens of
+            // Discovery / the request backend-match index is deferred — building it for tens of
             // thousands of tracks blocked the main thread on first launch. Views that
             // need it (LibrarySongsView, MusicNewTabView, DiscoverySearchView) call
             // ``scheduleDiscoveryTrackIndexRefreshIfNeeded`` on appear.
@@ -2684,6 +2756,7 @@ public final class AppModel: ObservableObject {
             }
             summary = try await client.createPlaylist(name: trimmed, trackIds: ids, isPublic: isPublic)
         }
+        recordPlaylistCreated(summary.id)
         await refreshLibraryPlaylists()
         return summary
     }
@@ -3444,6 +3517,21 @@ public final class AppModel: ObservableObject {
               let decoded = try? JSONDecoder().decode([String: Date].self, from: data)
         else { return }
         playlistLastPlayedDates = decoded
+    }
+
+    private func loadPlaylistCreatedDatesFromDefaults() {
+        guard let data = UserDefaults.standard.data(forKey: Self.playlistCreatedDatesKey),
+              let decoded = try? JSONDecoder().decode([String: Date].self, from: data)
+        else { return }
+        playlistCreatedDates = decoded
+    }
+
+    func recordPlaylistCreated(_ id: String) {
+        let key = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        playlistCreatedDates[key] = Date()
+        guard let data = try? JSONEncoder().encode(playlistCreatedDates) else { return }
+        UserDefaults.standard.set(data, forKey: Self.playlistCreatedDatesKey)
     }
 
     /// Bumps a playlist to the front of the add-to-playlist sheet's Recents.
