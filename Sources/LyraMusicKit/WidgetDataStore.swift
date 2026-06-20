@@ -1,9 +1,16 @@
 import Foundation
 
 /// Shared widget data model. Written by the main app, read by the LyraWidgets extension.
-/// Both targets share the App Group `group.com.randll.lyra`.
+/// Both targets share an App Group whose id is per-developer (the signing team owns it),
+/// so it's resolved from the bundle's `LyraAppGroupID` Info.plist key (injected from the
+/// `LYRA_APP_GROUP` build setting) rather than hardcoded. App and widget read the same
+/// value because both targets build with the same prefix. Falls back to the upstream id.
 public enum WidgetDataStore {
-    public static let appGroupID = "group.com.randll.lyra"
+    public static let appGroupID: String = {
+        (Bundle.main.object(forInfoDictionaryKey: "LyraAppGroupID") as? String)
+            .flatMap { $0.isEmpty || $0.hasPrefix("$(") ? nil : $0 }
+            ?? "group.com.randll.lyra"
+    }()
     static let defaultsKey = "lyraWidgetData"
 
     public struct MusicItem: Codable, Identifiable {

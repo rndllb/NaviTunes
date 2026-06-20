@@ -7,3 +7,9 @@
 // Accounts, or at https://developer.apple.com/account (Membership).
 
 DEVELOPMENT_TEAM = YOUR_TEAM_ID_HERE
+
+// Your own reverse-domain prefix so the bundle id ($(LYRA_BUNDLE_PREFIX).lyra) and the
+// App Group (group.$(LYRA_BUNDLE_PREFIX).lyra) are registered under YOUR team. Leave it
+// unset to inherit the upstream default (com.randll) — only override if that team isn't
+// yours. Example: com.yourname
+LYRA_BUNDLE_PREFIX = com.yourname
