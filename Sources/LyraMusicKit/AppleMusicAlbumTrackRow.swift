@@ -80,7 +80,7 @@ struct TrackOfflineDownloadIndicator: View {
     var onTapStartDownload: (() -> Void)?
     /// Tapping the "Add to Library" plus glyph adds the song to the user's library.
     var onAddToLibrary: (() -> Void)?
-    /// Tapping the "Request" cloud glyph forwards to Downtify (off-server discovery rows).
+    /// Tapping the "Request" cloud glyph forwards to the request backend (off-server discovery rows).
     var onRequest: (() -> Void)?
     /// When `nil`, resolves from ``listSurface(colorScheme:)`` (library lists). Album rows pass the hero palette.
     var backdropPalette: ArtworkDynamicGradient.BackdropPalette? = nil
@@ -203,7 +203,7 @@ struct TrackOfflineDownloadIndicator: View {
             .foregroundStyle(chrome.trackOfflineActionSecondary.opacity(0.5))
     }
 
-    /// Cloud + arrow — Request the song via Downtify when it's not on the server at all.
+    /// Cloud + arrow — Request the song vian acquisition when it's not on the server at all.
     @ViewBuilder
     private var requestGlyph: some View {
         if let onRequest {
@@ -425,7 +425,7 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
     /// Drives the row chip into Add-to-Library vs Download states. Defaults to `true`
     /// so legacy call sites in library-only views keep their current behavior.
     var isInLibrary: Bool = true
-    /// `false` for MusicBrainz / off-server rows that need a Downtify request.
+    /// `false` for MusicBrainz / off-server rows that need an acquisition request.
     var isInServerCatalog: Bool = true
     /// Grey title for tracks that aren't playable yet (e.g. missing from server catalog).
     var greysTitle: Bool = false

@@ -706,7 +706,7 @@ struct ServerPlaylistDetailView: View {
     private static let rowRenderChunk = 60
 
     /// Album-mode unified row: a real library track, or a MusicBrainz-only track the
-    /// user can request via Downtify.
+    /// user can request via the request backend.
     private enum AlbumMergedRow: Identifiable {
         case library(PlaylistRowItem, displayIndex: Int)
         case missing(BrowseAlbumPreviewTrack, displayIndex: Int)
@@ -733,7 +733,7 @@ struct ServerPlaylistDetailView: View {
     }
 
     /// MusicBrainz merge rows (missing / Request tracks) — only after Show Complete Album
-    /// for personal-library albums; always on for catalog browse where Downtify applies.
+    /// for personal-library albums; always on for catalog browse where the request backend applies.
     private var shouldShowMergedAlbumTracklist: Bool {
         guard isAlbum, !previewTracks.isEmpty else { return false }
         if isPersonalLibraryAlbum { return showCompleteAlbum }
@@ -757,12 +757,12 @@ struct ServerPlaylistDetailView: View {
 
         for (loopIdx, preview) in previewTracks.enumerated() {
             let displayIdx = preview.position > 0 ? preview.position : loopIdx + 1
-            let probe = DowntifySong(songId: "mb:\(preview.id)", name: preview.title,
+            let probe = MatchableSong(songId: "mb:\(preview.id)", name: preview.title,
                                      artists: [albumOrNil?.artist ?? ""], albumName: albumOrNil?.title ?? "",
                                      url: "", coverURL: nil, year: nil, explicit: false)
             if let match = libraryRows.first(where: {
                 !usedRowIds.contains($0.rowId) &&
-                LibraryTrackMatcher.trackMatchesDowntifySong($0.track, song: probe)
+                LibraryTrackMatcher.trackMatchesMatchableSong($0.track, song: probe)
             }) {
                 out.append(.library(match, displayIndex: displayIdx))
                 usedRowIds.insert(match.rowId)
@@ -985,11 +985,19 @@ struct ServerPlaylistDetailView: View {
             await MainActor.run { backdropPalette = .listSurface(colorScheme: colorScheme) }
             return
         }
+        // Instant: if this artwork was analyzed before, show its backdrop immediately with no
+        // async hop or pop-in.
+        if let cached = ArtworkDynamicGradient.cachedBackdrop(for: resolvedDetailArtworkURL) {
+            backdropPalette = cached
+            return
+        }
         let palette = await ArtworkDynamicGradient.analyzeBackdrop(from: resolvedDetailArtworkURL)
         // Same parking rules as row hydration — the palette write re-renders
         // the whole backdrop and lands right in the rapid open→swipe window.
         guard await waitOutDismissalGesture() else { return }
-        await MainActor.run { backdropPalette = palette }
+        await MainActor.run {
+            withAnimation(.easeOut(duration: 0.25)) { backdropPalette = palette }
+        }
     }
 
     private func detailOnAppear() {
@@ -1496,10 +1504,6 @@ struct ServerPlaylistDetailView: View {
             Button(action: beginRename) {
                 Label("Edit", systemImage: "pencil")
             }
-            Button {} label: {
-                Label("Start Collaboration", systemImage: "person.crop.circle.badge.plus")
-            }
-            .disabled(true)
             Menu {
                 ForEach(PlaylistTrackSortOrder.allCases) { order in
                     Button {
@@ -1516,10 +1520,6 @@ struct ServerPlaylistDetailView: View {
             } label: {
                 Label("Sort By", systemImage: "arrow.up.arrow.down")
             }
-            Button {} label: {
-                Label("Move to Folder", systemImage: "folder")
-            }
-            .disabled(true)
         }
         .tint(Color.primary)
 
@@ -1962,9 +1962,19 @@ struct ServerPlaylistDetailView: View {
     }
 
     private func hydrateFromCacheIfNeeded() {
-        guard case .playlist(let p) = source, rows.isEmpty,
-              let cached = app.cachedPlaylistRows(playlistId: p.id), !cached.isEmpty else { return }
-        rows = cached
+        guard rows.isEmpty else { return }
+        switch source {
+        case .playlist(let p):
+            guard let cached = app.cachedPlaylistRows(playlistId: p.id), !cached.isEmpty else { return }
+            rows = cached
+        case .album(let album, _):
+            guard let cached = app.cachedAlbumTracks(albumId: album.id), !cached.isEmpty else { return }
+            rows = cached.enumerated().map { idx, track in
+                PlaylistRowItem(rowId: "album-\(album.id)-\(idx)-\(track.id)", track: track)
+            }
+        case .homeMix:
+            return
+        }
         isLoading = false
         recomputeDisplayedRows()
     }
@@ -2012,6 +2022,7 @@ struct ServerPlaylistDetailView: View {
                     }
                 } else if let lib = app.activeLibrary {
                     let tracks = try await lib.tracks(forAlbumId: album.id)
+                    app.cacheAlbumTracks(albumId: album.id, tracks: tracks)
                     guard await waitOutDismissalGesture() else {
                         detailDebugLog("HYDRATION-DROPPED rows=\(tracks.count)")
                         return

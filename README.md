@@ -34,7 +34,7 @@ Built in SwiftUI for iOS 26, with an Apple Music–style layout: Home / New / Ra
 
 - **Discovery** tab — server catalog search (MusicBrainz new releases, TheAudioDB trending, iTunes artwork enrichment).
 - **Library search** — personal library only (songs in your magic playlist / indexed discovery cache).
-- **Acquisition plugins** — request missing music through a swappable backend (Downtify, Lidarr); optional auto-add to personal library after server scan.
+- **Acquisition plugins** — request missing music through Lidarr (a music collection manager); optional auto-add to personal library after server scan. Request any artist — even one not on your server — via Discover search or Settings → Following.
 - **Artist following** — follow artists from the artist page; Settings → Plugins → Following keeps discographies complete via MusicBrainz + the active acquisition plugin (wishlist when no album-level plugin is configured).
 
 ### Playback
@@ -69,14 +69,13 @@ iOS Settings–style **hub** (`SettingsView`) with dedicated subpages (`Settings
 - **Offline** / **Downloads** — offline mode, auto-offline, download queue and storage browser.
 - **Sound & Playback** — Wi‑Fi/cellular streaming quality, download quality, stream cache toggle, **equalizer** (presets + per-band sliders), player controls, artist play mode.
 - **Appearance** — theme, song list size, backdrop toggles, **accent color** (presets + custom hex), **app icon** (independent from accent — custom accents have no matching icon artwork).
-- **Plugins** — MusicBrainz toggle, **Downloads** (acquisition plugin picker + activity), **Following** (subscription management).
+- **Plugins** — MusicBrainz toggle, **Music Requests** (acquisition plugin picker + activity), **Following** (subscription management).
 - **About** — app info.
 - **Server health** pill on the hub; library stats refresh on Settings appear.
 
 ### Integrations
 
 - **Server scrobbling** — now playing + completed plays with pending queue and retry.
-- **CarPlay** (`CarPlayCoordinator`).
 - **Artist following** — MusicBrainz discography diff + acquisition enqueue (`MusicSubscriptionEngine`); works as a wishlist without a download plugin.
 - Transient toasts for queue/library confirmations.
 - Navidrome profile picture via magic-playlist cover upload.
@@ -94,7 +93,7 @@ Lyra Music IOS/
 │       ├── PlaybackEngine.swift        # AVPlayer + optional EQ engine path
 │       ├── EqualizedAudioEnginePlayer.swift
 │       ├── StreamingMediaDiskCache.swift
-│       ├── AcquisitionManager.swift    # Downtify / Lidarr plugins
+│       ├── AcquisitionManager.swift    # Lidarr acquisition plugin
 │       ├── MusicSubscriptionEngine.swift
 │       ├── HomeMixBuilder.swift        # Tuned In mixes
 │       ├── OfflineDownloadManager.swift
@@ -140,13 +139,12 @@ Settings → Sound & Playback: independent Wi‑Fi streaming, cellular streaming
 
 ### Acquisition plugins (requesting music)
 
-Settings → Plugins → Downloads. Requesting missing music goes through a single swappable
+Settings → Plugins → **Music Requests**. Requesting missing music goes through a single swappable
 **acquisition plugin** — one is active at a time:
 
 | Plugin | Granularity | Track search | Config |
 |---|---|---|---|
-| **Downtify** | Track | Yes | Server URL |
-| **Lidarr** | Album | No | Server URL + API key |
+| **Lidarr** (music collection manager) | Album | No | Server URL + API key |
 
 Every UI request (Discovery search, browse album, missing playlist/album rows, chart rows)
 builds one `AcquisitionRequest` and calls `app.requestAcquisition(_:)`, so backends are

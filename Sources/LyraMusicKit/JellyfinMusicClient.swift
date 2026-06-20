@@ -384,13 +384,41 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         guard !userId.isEmpty, !accessToken.isEmpty else {
             throw JellyfinClientError.unexpectedPayload
         }
+        let derived = try await libraryGenresDerivedFromAlbumTags(limitAlbums: min(15_000, max(cap * 80, 500)))
+            .filter(\.hasAlbums)
+        if !derived.isEmpty {
+            return Array(derived.prefix(cap))
+        }
+        if let fromAPI = try await jellyfinMusicGenresFromAPI(limit: cap), !fromAPI.isEmpty {
+            return fromAPI
+        }
+        return try await libraryGenresDerivedFromAlbumTags(limitAlbums: min(10_000, max(cap * 60, 500)))
+            .filter(\.hasAlbums)
+            .prefix(cap)
+            .map { $0 }
+    }
+
+    func browseGenreCategories(limit: Int) async throws -> [LibraryGenreSummary] {
+        let cap = max(1, min(limit, 500))
+        guard !userId.isEmpty, !accessToken.isEmpty else {
+            throw JellyfinClientError.unexpectedPayload
+        }
+        if let fromAPI = try await jellyfinMusicGenresFromAPI(limit: cap), !fromAPI.isEmpty {
+            return fromAPI
+        }
+        let derived = try await libraryGenresDerivedFromAlbumTags(limitAlbums: min(600, max(cap * 8, 200)))
+            .filter(\.hasAlbums)
+        return Array(derived.prefix(cap))
+    }
+
+    private func jellyfinMusicGenresFromAPI(limit: Int) async throws -> [LibraryGenreSummary]? {
         var comps = URLComponents(url: apiURL("Genres"), resolvingAgainstBaseURL: false)!
         comps.queryItems = [
             URLQueryItem(name: "UserId", value: userId),
             URLQueryItem(name: "IncludeItemTypes", value: "MusicAlbum"),
             URLQueryItem(name: "SortBy", value: "SortName"),
             URLQueryItem(name: "SortOrder", value: "Ascending"),
-            URLQueryItem(name: "Limit", value: "\(cap)"),
+            URLQueryItem(name: "Limit", value: "\(limit)"),
         ]
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
@@ -400,11 +428,9 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         }
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let rows = json?["Items"] as? [[String: Any]] ?? []
-        let parsed = rows.compactMap(parseLibraryGenre)
-        if !parsed.isEmpty {
-            return parsed
-        }
-        return try await libraryGenresDerivedFromAlbumTags(limitAlbums: min(10_000, max(cap * 60, 500)))
+        let parsed = rows.compactMap(parseLibraryGenre).filter(\.hasAlbums)
+        guard !parsed.isEmpty else { return nil }
+        return Array(parsed.prefix(limit))
     }
 
     func albums(forLibraryArtistId artistId: String, limit: Int) async throws -> [AlbumSummary] {
@@ -1124,7 +1150,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
     }
 
     /// `POST Library/Refresh`. Tells Jellyfin to walk every media library so the
-    /// audio file Downtify just wrote becomes visible. Fire-and-forget; callers
+    /// audio file the request backend just wrote becomes visible. Fire-and-forget; callers
     /// poll `searchCatalog` for the new item afterwards.
     func triggerLibraryScan() async throws {
         try requireSignedInUser()
@@ -1159,6 +1185,34 @@ final class JellyfinMusicClient: MusicLibraryProviding {
     }
 
     func similarTracks(to track: Track, limit: Int) async throws -> [Track] {
+        let cap = max(1, min(limit, 100))
+        // Real Jellyfin similarity: GET /Items/{id}/Similar. Falls back to artist-based
+        // shuffle when the server returns nothing (sparse music similarity is common).
+        var comps = URLComponents(url: apiURL("Items", track.id, "Similar"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [
+            URLQueryItem(name: "UserId", value: userId),
+            URLQueryItem(name: "Limit", value: "\(cap)"),
+            URLQueryItem(name: "Fields", value: Self.jellyfinAudioItemFields),
+        ]
+        var req = URLRequest(url: comps.url!)
+        applyAuth(&req)
+        if let (data, res) = try? await URLSession.lyra.data(for: req),
+           let http = res as? HTTPURLResponse, http.statusCode == 200,
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let items = json["Items"] as? [[String: Any]] ?? []
+            let tracks = items.compactMap { dict -> Track? in
+                let albumId = (dict["AlbumId"] as? String) ?? (dict["ParentId"] as? String) ?? ""
+                guard !albumId.isEmpty else { return nil }
+                return parseTrack(dict: dict, albumId: albumId)
+            }.filter { $0.id != track.id }
+            if !tracks.isEmpty { return Array(tracks.prefix(cap)) }
+        }
+        return try await artistBasedSimilarTracks(to: track, limit: cap)
+    }
+
+    /// Legacy fallback: songs by the same artist, shuffled. Used when Jellyfin's
+    /// `/Items/{id}/Similar` returns no usable results.
+    private func artistBasedSimilarTracks(to track: Track, limit: Int) async throws -> [Track] {
         let cap = max(1, min(limit, 100))
         let artistQuery = track.artist.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !artistQuery.isEmpty else { return [] }
@@ -1309,12 +1363,14 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         }
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let items = json?["Items"] as? [[String: Any]] ?? []
-        for dict in items {
-            if let summary = parsePlaylistSummary(dict), summary.name == name {
-                return summary
-            }
+        let matches = items.compactMap { parsePlaylistSummary($0) }.filter { $0.name == name }
+        // Duplicate playlists can share the magic name (multi-device race). Server order isn't
+        // stable, so returning the first match made membership sync flap between duplicates and
+        // the Library shelf flicker. Deterministically pick the richest (most songs; tiebreak by id).
+        return matches.max { lhs, rhs in
+            let l = lhs.songCount ?? 0, r = rhs.songCount ?? 0
+            return l != r ? l < r : lhs.id > rhs.id
         }
-        return nil
     }
 
     /// Creates an empty, private playlist with the given name. Returns the new id.

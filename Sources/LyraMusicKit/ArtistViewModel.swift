@@ -83,7 +83,7 @@ struct ArtistDiscographyItem: Identifiable, Hashable {
     }
 
     /// True when the card represents a release the user's server doesn't have —
-    /// tapping should open the request flow (``BrowseAlbumDetailView`` via Downtify).
+    /// tapping should open the request flow (``BrowseAlbumDetailView`` via the request backend).
     var needsRequest: Bool {
         if case .musicBrainz = source { return true }
         return false

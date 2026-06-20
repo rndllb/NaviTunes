@@ -51,12 +51,13 @@ Rule of thumb: anything that means "things the *user* owns / has added" must rea
 
 All "request missing music" flows funnel through one swappable abstraction so backends are interchangeable. **Only one plugin is active at a time** (`AcquisitionManager.activePlugin`, persisted in `UserDefaults`).
 
-- **Core** (`AcquisitionCore.swift`): `AcquisitionPluginKind` (`downtify`/`lidarr`), the unified `AcquisitionRequest` (artist/track/album + optional MBIDs + `requestKey`), `AcquisitionJob`(+`AcquisitionJobStatus`), `AcquisitionResult` (a concrete searchable item carrying its own request), `AcquisitionCapabilities` (granularity track/album, `supportsTrackSearch`, `configFields`), and the `AcquisitionProviding` protocol. `AcquisitionConfigStore` persists per-plugin credentials under distinct keys (`acquisition.<kind>.<field>`). `AcquisitionHTTP` is the shared REST helper for the network plugins.
-- **Manager** (`AcquisitionManager.swift`, `@MainActor`): `enqueue(_:)` is the single entry point; jobs keyed by `requestKey`; a shared poll loop reconciles against `provider.activeJobs()`; `onJobFinished` fires once per terminal job. `AppModel.acquisition` owns it and forwards `objectWillChange`.
-- **Plugins** (one file each, conform to `AcquisitionProviding`): `DowntifyAcquisitionPlugin` (track, wraps `DowntifyClient`), `LidarrAcquisitionPlugin` (album; MusicBrainz → add with full artist profiles → force-monitor → `AlbumSearch`, the #5012 monitor-race fix; polls `/queue` + `/command`). Legacy `DowntifyDownloadManager` was removed — all request flows use `AcquisitionManager`.
+- **Core** (`AcquisitionCore.swift`): `AcquisitionPluginKind` (currently just `lidarr` — Downtify was removed), the unified `AcquisitionRequest` (artist/track/album + optional MBIDs + `requestKey`), `AcquisitionJob`(+`AcquisitionJobStatus`), `AcquisitionResult` (a concrete searchable item carrying its own request), `AcquisitionCapabilities` (granularity track/album, `supportsTrackSearch`, `configFields`), and the `AcquisitionProviding` protocol. `AcquisitionConfigStore` persists per-plugin credentials under distinct keys (`acquisition.<kind>.<field>`). `AcquisitionHTTP` is the shared REST helper for the network plugins.
+- **Manager** (`AcquisitionManager.swift`, `@MainActor`): `enqueue(_:)` is the single entry point; jobs keyed by `requestKey`; a shared poll loop reconciles against `provider.activeJobs()`; `onJobFinished` fires once per terminal job. `AppModel.acquisition` owns it and forwards `objectWillChange`. Default plugin is **Lidarr**; an old persisted `"downtify"` value no longer decodes and falls back to Lidarr.
+- **Plugin** (conforms to `AcquisitionProviding`): `LidarrAcquisitionPlugin` (album; MusicBrainz → add with full artist profiles → force-monitor → `AlbumSearch`, the #5012 monitor-race fix; polls `/queue` + `/command`). Described to users as a **music collection manager**, not a downloader. The former Downtify plugin/client were deleted; the only surviving piece is `MatchableSong` (`MatchableSong.swift`, renamed from `DowntifySong`) — a generic fuzzy-match descriptor used by `LibraryTrackMatcher` / `BrowseAlbumDetailView`, unrelated to the plugin.
 - **Call sites**: UI never touches a concrete plugin. Build an `AcquisitionRequest` and call `AppModel.requestAcquisition(_:)` (`DiscoverySearchView`, `BrowseAlbumDetailView`, `ServerPlaylistViews`, `MusicNewTabView`). Gate affordances on `app.acquisitionCapabilities` (`supportsTrackSearch`, `granularity`). Album-level plugins request the whole release for missing-track rows.
-- **Settings**: `SettingsView` → Plugins → Downloads opens `AcquisitionPluginSettingsView` — active-plugin picker, capability-driven config fields, Test Connection (`provider.validate()`), and a unified Activity list (`acquisition.displayJobs`, includes server-side items started outside Lyra).
+- **Settings**: `SettingsView` → Plugins → **Music Requests** (renamed from "Downloads") opens `AcquisitionPluginSettingsView` — active-plugin picker, capability-driven config fields, Test Connection (`provider.validate()`), and a unified Activity list (`acquisition.displayJobs`, includes server-side items started outside Lyra). (The offline-media "Downloads" section under Settings is a separate thing.)
 - **Completion**: `AppModel.handleAcquisitionJobFinished` (backend-agnostic) triggers a server scan and retries `searchCatalog` until the new file surfaces, then adds it to the personal library.
+- **Request an artist not in your library**: Discover search surfaces MusicBrainz artist matches as normal artist rows (`MusicBrainzArtistClient.searchArtists`), and Settings → Following has an "Add artist" entry. Both open `ArtistPageView(input: .named(...))`, which resolves the discography on MusicBrainz and lets you request individual albums.
 
 To add a backend: add a `case` to `AcquisitionPluginKind`, write one `*AcquisitionPlugin.swift`, and register it in `AcquisitionManager.makeProvider`. No feature-code changes.
 
@@ -117,8 +118,12 @@ If you wire a new action that ends in a queue/library/playlist mutation and a us
 `SettingsView.swift` is an iOS Settings–style **hub** (account row + `NavigationLink` sections). Detail pages live in `SettingsSections.swift` (`SettingsLibrarySectionView`, `SettingsSyncSectionView`, `SettingsOfflineSectionView`, `SettingsDownloadsSectionView`, `SettingsAppearanceView`, `SettingsPluginsView`, `SettingsAboutView`) plus existing leaf views (`SettingsPlaybackView`, `SettingsLibraryDataView`, `AcquisitionPluginSettingsView`, `SubscriptionsView`, `SettingsEqualizerView`). Subpages use `.settingsSubpageChrome()`.
 
 - **Library** (`SettingsLibrarySectionView`) — two stat groups: **Your Library** (`librarySongIds` / `libraryAlbumEntries` / `libraryPlaylistEntries`) vs **Server Catalog** (`AppModel.libraryStatistics`). Stats refresh via `.task` on appear and when the hub appears (`refreshLibraryStatistics()`).
-- **Appearance** — `accentPresetId` + `customAccentHex` tint UI chrome (`MusicDesign.accent`); `appIconPresetId` is **independent** (home-screen icon via `AppAlternateIconSync`). Login logo uses `appIconPresetId`, not accent.
-- **Plugins** — MusicBrainz toggle, Downloads (acquisition), Following (subscriptions).
+- **Appearance** — `accentPresetId` + `customAccentHex` tint UI chrome (`MusicDesign.accent`); `appIconPresetId` is **independent** (home-screen icon via `AppAlternateIconSync`) — changing the accent does **not** change the icon and vice versa. Login logo uses `appIconPresetId`, not accent. Settings views use `MusicDesign.settingsBackground` (`systemGroupedBackground`) so light-mode cells stand out, not flat `systemBackground`.
+- **Plugins** — MusicBrainz toggle, **Music Requests** (acquisition / Lidarr), Following (subscriptions).
+
+**Genres** — `Library → Genres` (`LibraryGenresView`) rolls noisy server subgenres up into ~20 main genres via `GenreCanonicalizer` (e.g. "Acid Jazz" → Jazz, "Alternative & Indie" → Alternative). Merged rows fetch albums across **all** source subgenres (`LibraryGenreAlbumsView(sourceGenres:)`), deduped. The keyword table in `GenreCanonicalizer` is first-match-wins and easy to tweak.
+
+**Backdrop / detail performance** — album/playlist detail backdrop palettes are memoized in `ArtworkDynamicGradient` keyed by the **stable** part of the artwork URL (path + cover-id/size/tag — auth params like Subsonic salt / Jellyfin `api_key` vary per request and would otherwise miss). Detail views seed the palette synchronously from that cache (no pop-in on revisit) and fade in on first compute. Album track lists hydrate instantly from `AppModel.albumTracksCache` (same as playlists).
 
 ## Sound & playback settings
 
@@ -192,13 +197,15 @@ Document for contributors — not an exhaustive bug list:
 
 | Issue | Notes |
 |-------|--------|
-| Some overflow rows | Stubs remain (`Start Collaboration`, `Move to Folder`, some chart preview actions). |
+| Some overflow rows | A few chart-preview action stubs remain. (`Start Collaboration` / `Move to Folder` were removed.) |
 | Plain unsynced lyrics | No auto-scroll by design. |
-| Jellyfin “similar tracks” | Artist search shuffle, not a similarity API. |
+| Jellyfin “similar tracks” | Now uses the real `/Items/{id}/Similar` endpoint, with the old artist-shuffle as a fallback when the server returns nothing. Navidrome has no equivalent. |
 | Home mixes | Minimum 3 tracks per mix; still needs enough scrobble/history signal for On Repeat / Rediscover. |
 | Navidrome Settings stats | Song totals sum album `trackCount` — may differ slightly from true track count on odd tagging. Very large libraries use paginated album/artist fetches but song sum still depends on indexed album metadata. |
 | EQ on live streams | Requires local cache or download; first uncached play is AVPlayer until background cache + handoff (or replay). |
 | Stream cache during AVPlayer | Opportunistic `CachingResourceLoaderDelegate` commits may not write on current iOS; EQ `ensureCached` / `prefetchInBackground` is the supported cache path. |
+| Search tab: separated button vs scroll-collapse | The Search `Tab(role: .search)` (the detached search button) does **not** participate in `tabBarMinimizeBehavior`, so the tab bar + mini player don't collapse on scroll under Search. Dropping `role: .search` enables the collapse but turns the tab bar into one inline pill. iOS won't give both — currently set to keep the separated button (`.tabBarMinimizeBehavior(... == .search ? .never : .onScrollDown)` in `RootView`). |
+| iOS 27 alternate icon (Dark appearance) | `setAlternateIconName` succeeds but the home-screen icon's **dark** variant only refreshes on respring/reboot (light updates live). SpringBoard limitation; not app-fixable. Accent color and app icon are independent (`accentPresetId` / `appIconPresetId`). |
 
 ## Build / run
 

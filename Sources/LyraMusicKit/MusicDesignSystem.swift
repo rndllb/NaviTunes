@@ -404,6 +404,18 @@ enum MusicDesign {
         #endif
     }
 
+    /// Grouped-list background for Settings (light gray in light mode, like iOS Settings) so the
+    /// white grouped cells/sections stand out. `systemBackground` flattened everything to white.
+    static var settingsBackground: Color {
+        #if os(iOS)
+        Color(UIColor.systemGroupedBackground)
+        #elseif os(macOS)
+        Color(nsColor: .windowBackgroundColor)
+        #else
+        Color.gray.opacity(0.06)
+        #endif
+    }
+
     static var secondaryLabel: Color {
         #if os(iOS)
         Color(UIColor.secondaryLabel)
@@ -1024,6 +1036,41 @@ extension View {
         #else
         self.background(.ultraThinMaterial, in: Capsule(style: .continuous))
         #endif
+    }
+}
+
+/// Liquid Glass segmented pill — selected segment is a darker inset capsule (Discover / Library, Jellyfin / Navidrome, …).
+struct MusicGlassSegmentPillBar<Selection: Hashable>: View {
+    let options: [Selection]
+    @Binding var selection: Selection
+    let title: (Selection) -> String
+    @Namespace private var ns
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(options, id: \.self) { option in
+                Button {
+                    withAnimation(.smooth(duration: 0.22)) { selection = option }
+                } label: {
+                    Text(title(option))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(selection == option ? Color.primary : MusicDesign.secondaryLabel)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 5)
+                        .background {
+                            if selection == option {
+                                Capsule(style: .continuous)
+                                    .fill(Color.black.opacity(0.28))
+                                    .matchedGeometryEffect(id: "pillSelection", in: ns)
+                            }
+                        }
+                        .contentShape(Capsule(style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(3)
+        .musicGlassEffect(in: Capsule(style: .continuous))
     }
 }
 

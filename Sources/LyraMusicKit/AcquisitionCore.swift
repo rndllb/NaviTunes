@@ -6,7 +6,6 @@ typealias AcquisitionProgress = @Sendable (Double) -> Void
 /// The selectable acquisition backends. Only one is active at a time
 /// (`AcquisitionManager.activePlugin`); every request flows through the active one.
 enum AcquisitionPluginKind: String, CaseIterable, Identifiable, Sendable {
-    case downtify
     case lidarr
 
     var id: String { rawValue }
@@ -37,7 +36,7 @@ enum AcquisitionJobStatus: String, Sendable {
 ///
 /// `requestKey` is a backend-agnostic stable identity (normalized artist|title|album)
 /// used for job tracking, so a request stays trackable no matter what native id the
-/// plugin uses internally (Downtify URL, Lidarr foreignAlbumId, …).
+/// plugin uses internally (the request backend URL, Lidarr foreignAlbumId, …).
 struct AcquisitionRequest: Hashable, Sendable {
     var artist: String
     var trackTitle: String?
@@ -45,7 +44,7 @@ struct AcquisitionRequest: Hashable, Sendable {
     var artistMBID: String?
     var releaseGroupMBID: String?
     var coverURL: URL?
-    /// Optional direct handle a plugin can act on immediately (e.g. a Downtify song
+    /// Optional direct handle a plugin can act on immediately (e.g. an acquisition song
     /// URL) when it's already known.
     var sourceURL: String?
     var requestKey: String
@@ -93,7 +92,7 @@ struct AcquisitionRequest: Hashable, Sendable {
     }
 }
 
-/// A concrete, enqueue-able item returned by track-search plugins (Downtify).
+/// A concrete, enqueue-able item returned by track-search plugins (the request backend).
 /// Carries the ``AcquisitionRequest`` needed to download it, so the UI never touches
 /// plugin internals.
 struct AcquisitionResult: Identifiable, Hashable, Sendable {
