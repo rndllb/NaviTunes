@@ -12,18 +12,5 @@
 //
 // Find your Team ID in Xcode → Settings → Accounts (select your team), or at
 // https://developer.apple.com/account under Membership.
-//
-// The bundle id + App Group are also team-owned resources, so they're namespaced by
-// LYRA_BUNDLE_PREFIX. Each developer signs their own copy under their own team:
-//   - bundle ids: $(LYRA_BUNDLE_PREFIX).lyra  /  $(LYRA_BUNDLE_PREFIX).lyra.widgets
-//   - app group:  group.$(LYRA_BUNDLE_PREFIX).lyra
-// Set LYRA_BUNDLE_PREFIX to your own reverse-domain prefix in Local.xcconfig so
-// automatic signing registers these under your team (fixes "you don't have access to
-// this membership resource"). Default below is the upstream identity.
-
-LYRA_BUNDLE_PREFIX = com.randll
 
 #include? "Local.xcconfig"
-
-// Derived from the (possibly overridden) prefix — keep after the include.
-LYRA_APP_GROUP = group.$(LYRA_BUNDLE_PREFIX).lyra
