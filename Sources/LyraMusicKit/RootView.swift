@@ -403,9 +403,11 @@ private struct NowPlayingGestureHost: View {
                 try? await Task.sleep(for: .milliseconds(500))
                 fullyPresented = true
             }
+#if DEBUG
             .onChange(of: scenePhase) { old, new in
                 print("[NP-DIAG] phase \(old)→\(new) dragOffset=\(dragOffset) isDismissAnimating=\(isDismissAnimating) fullyPresented=\(fullyPresented) hostHeight=\(hostHeight) isPresented=\(isPresented)")
             }
+#endif
     }
 
     private var dismissDragGesture: some Gesture {

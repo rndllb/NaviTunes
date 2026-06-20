@@ -94,6 +94,37 @@ enum MusicBrainzArtistClient {
         }
     }
 
+    /// Artist name search returning up to `limit` candidates (id + display name), ranked by
+    /// MusicBrainz score. Used to surface artists not in the server library as search results.
+    static func searchArtists(name: String, limit: Int = 5) async -> [(id: String, name: String)] {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.lowercased() != "various artists" else { return [] }
+        guard var comps = URLComponents(string: "https://musicbrainz.org/ws/2/artist") else { return [] }
+        comps.queryItems = [
+            URLQueryItem(name: "query", value: "artist:\"\(trimmed)\""),
+            URLQueryItem(name: "fmt", value: "json"),
+            URLQueryItem(name: "limit", value: "\(max(1, min(limit, 25)))"),
+        ]
+        guard let url = comps.url else { return [] }
+        do {
+            var req = URLRequest(url: url)
+            req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                  let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let artists = obj["artists"] as? [[String: Any]]
+            else { return [] }
+            return artists.compactMap { dict in
+                guard let id = dict["id"] as? String, !id.isEmpty,
+                      let n = dict["name"] as? String, !n.isEmpty
+                else { return nil }
+                return (id, n)
+            }
+        } catch {
+            return []
+        }
+    }
+
     /// All release-groups credited to `artistId`, deduped, newest first.
     /// Walks the paginated `/release-group?artist=` endpoint until exhaustion or `maxPages`.
     static func releaseGroups(artistId: String, maxPages: Int = 4, pageSize: Int = 100) async -> [MusicBrainzArtistRelease] {

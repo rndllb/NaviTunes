@@ -18,7 +18,7 @@ struct SettingsView: View {
         .musicNavigationBarTitleDisplayMode(.inline)
         .musicNavigationBarVisibleWhenPushed()
         .scrollContentBackground(.hidden)
-        .background(MusicDesign.background)
+        .background(MusicDesign.settingsBackground)
         .musicNavigationChrome()
         .onAppear {
             app.prefetchAccountAvatar()
@@ -241,7 +241,7 @@ struct AcquisitionPluginSettingsView: View {
             validateSucceeded = false
             Task { await app.acquisition.refreshFromServer() }
         }
-        .navigationTitle("Downloads")
+        .navigationTitle("Music Requests")
         .settingsSubpageChrome()
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {

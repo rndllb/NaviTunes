@@ -353,6 +353,34 @@ struct LibraryGenreSummary: Identifiable, Hashable {
     let albumCount: Int?
 }
 
+extension LibraryGenreSummary {
+    /// `false` when the server reported zero albums for this genre.
+    var hasAlbums: Bool {
+        (albumCount ?? 0) > 0
+    }
+}
+
+/// Builds genre rows from album tag strings already present on catalog albums.
+enum LibraryGenreCatalog {
+    static func summarize(from albums: [AlbumSummary], limit: Int) -> [LibraryGenreSummary] {
+        var counts: [String: Int] = [:]
+        for album in albums {
+            for raw in album.genres {
+                let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !name.isEmpty else { continue }
+                counts[name, default: 0] += 1
+            }
+        }
+        let cap = max(1, min(limit, 5000))
+        return counts
+            .map { LibraryGenreSummary(id: $0.key, name: $0.key, albumCount: $0.value) }
+            .filter(\.hasAlbums)
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .prefix(cap)
+            .map { $0 }
+    }
+}
+
 /// Server-wide catalog search results. Songs / albums / artists across the entire
 /// connected Navidrome / Jellyfin instance — **not** scoped to the user's personal
 /// library. Use this for "find anything on the server"; use ``AppModel`` personal-
@@ -391,6 +419,8 @@ protocol MusicLibraryProviding: AnyObject {
     func libraryArtists(limit: Int) async throws -> [LibraryArtistSummary]
     /// Library sidebar — Genres.
     func libraryGenres(limit: Int) async throws -> [LibraryGenreSummary]
+    /// Search Discover idle tiles — server genre index first; avoids full-library scans.
+    func browseGenreCategories(limit: Int) async throws -> [LibraryGenreSummary]
     /// Albums credited to this library artist id.
     func albums(forLibraryArtistId artistId: String, limit: Int) async throws -> [AlbumSummary]
     /// Tracks attributed to this artist (album tracks by default; Jellyfin uses a single Audio query).
@@ -403,11 +433,11 @@ protocol MusicLibraryProviding: AnyObject {
 
     /// Server-wide catalog search. Returns songs / albums / artists matching `query`,
     /// **not** scoped to the user's personal library. Caps each kind at `limit`.
-    /// Used by the Discovery → Downtify hybrid tab to surface "already on the server,
-    /// just not in your library yet" candidates alongside Downtify download results.
+    /// Used by the Discovery → the request backend hybrid tab to surface "already on the server,
+    /// just not in your library yet" candidates alongside the request backend download results.
     func searchCatalog(query: String, limit: Int) async throws -> CatalogSearchResults
 
-    /// Ask the backend to scan its music library so files Downtify just wrote
+    /// Ask the backend to scan its music library so files the request backend just wrote
     /// surface in the catalog. Best-effort and fire-and-forget: failure is fine —
     /// the catalog will pick up the new file on its next scheduled scan anyway.
     func triggerLibraryScan() async throws
@@ -445,6 +475,10 @@ extension MusicLibraryProviding {
     func randomTracks(limit: Int, genre: String?) async throws -> [Track] {
         _ = genre
         return []
+    }
+
+    func browseGenreCategories(limit: Int) async throws -> [LibraryGenreSummary] {
+        try await libraryGenres(limit: limit)
     }
 
     func fallbackStreamURLs(for track: Track) -> [URL] { [] }

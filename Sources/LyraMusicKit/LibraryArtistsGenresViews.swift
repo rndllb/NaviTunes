@@ -433,6 +433,13 @@ struct LibraryArtistsView: View {
 // artist row all push ArtistPageView directly.
 
 /// Library → **Genres** (Jellyfin `MusicGenre` / Navidrome `getGenres`).
+/// A canonical genre and the raw server subgenres rolled up into it.
+private struct MergedGenre: Identifiable, Hashable {
+    let summary: LibraryGenreSummary
+    let members: [LibraryGenreSummary]
+    var id: String { summary.id }
+}
+
 struct LibraryGenresView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var offline: OfflineDownloadManager
@@ -462,10 +469,27 @@ struct LibraryGenresView: View {
         return genres.filter { names.contains($0.name.lowercased()) }
     }
 
-    private var filtered: [LibraryGenreSummary] {
+    /// Server subgenres rolled up into canonical main genres (see ``GenreCanonicalizer``),
+    /// each carrying its source genres so the albums view can fetch across all of them.
+    private var mergedGenres: [MergedGenre] {
+        var buckets: [String: [LibraryGenreSummary]] = [:]
+        for g in scopeGenres {
+            buckets[GenreCanonicalizer.canonical(for: g.name), default: []].append(g)
+        }
+        return buckets.map { canonical, members in
+            let total = members.reduce(into: 0) { $0 += ($1.albumCount ?? 0) }
+            return MergedGenre(
+                summary: LibraryGenreSummary(id: "canon:\(canonical)", name: canonical, albumCount: total > 0 ? total : nil),
+                members: members,
+            )
+        }
+        .sorted { $0.summary.name.localizedCaseInsensitiveCompare($1.summary.name) == .orderedAscending }
+    }
+
+    private var filtered: [MergedGenre] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !q.isEmpty else { return scopeGenres }
-        return scopeGenres.filter { $0.name.lowercased().contains(q) }
+        guard !q.isEmpty else { return mergedGenres }
+        return mergedGenres.filter { $0.summary.name.lowercased().contains(q) }
     }
 
     var body: some View {
@@ -508,11 +532,11 @@ struct LibraryGenresView: View {
                     ContentUnavailableView.search(text: query)
                         .padding(.top, 40)
                 } else {
-                    ForEach(Array(filtered.enumerated()), id: \.element.id) { index, genre in
+                    ForEach(Array(filtered.enumerated()), id: \.element.id) { index, merged in
                         NavigationLink {
-                            LibraryGenreAlbumsView(genre: genre)
+                            LibraryGenreAlbumsView(genre: merged.summary, sourceGenres: merged.members)
                         } label: {
-                            genreRow(genre)
+                            genreRow(merged.summary)
                         }
                         .buttonStyle(.plain)
                         .musicChevronRowDivider(.symbolIcon, shows: index < filtered.count - 1)
@@ -581,10 +605,12 @@ struct LibraryGenresView: View {
     }
 }
 
-/// Albums tagged with a genre.
+/// Albums tagged with a genre. When `sourceGenres` is supplied (a merged main genre),
+/// albums are fetched across every source subgenre and de-duplicated.
 struct LibraryGenreAlbumsView: View {
     @EnvironmentObject private var app: AppModel
     let genre: LibraryGenreSummary
+    var sourceGenres: [LibraryGenreSummary]? = nil
 
     @State private var albums: [AlbumSummary] = []
     @State private var loadError: String?
@@ -651,9 +677,21 @@ struct LibraryGenreAlbumsView: View {
         isLoading = true
         loadError = nil
         defer { isLoading = false }
+        let toFetch = (sourceGenres?.isEmpty == false) ? sourceGenres! : [genre]
         do {
-            albums = try await lib.albums(inGenre: genre, limit: 4000)
-                .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+            if toFetch.count == 1 {
+                albums = try await lib.albums(inGenre: toFetch[0], limit: 4000)
+                    .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+            } else {
+                // Merged main genre: union albums across every source subgenre, de-duped by id.
+                var byId: [String: AlbumSummary] = [:]
+                for g in toFetch {
+                    let fetched = (try? await lib.albums(inGenre: g, limit: 4000)) ?? []
+                    for album in fetched { byId[album.id] = album }
+                }
+                albums = byId.values
+                    .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+            }
         } catch {
             loadError = error.localizedDescription
             albums = []

@@ -29,6 +29,14 @@ struct ArtistFollowButton: View {
 /// wishlisted because no plugin can fetch them.
 struct SubscriptionsView: View {
     @EnvironmentObject private var app: AppModel
+    @State private var showAddArtistAlert = false
+    @State private var addArtistName = ""
+    @State private var browseArtist: BrowseArtistTarget?
+
+    private struct BrowseArtistTarget: Identifiable {
+        let id = UUID()
+        let name: String
+    }
 
     var body: some View {
         List {
@@ -86,6 +94,14 @@ struct SubscriptionsView: View {
         }
         .navigationTitle("Following")
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    addArtistName = ""
+                    showAddArtistAlert = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     Task { await app.refreshSubscriptions() }
@@ -97,6 +113,26 @@ struct SubscriptionsView: View {
                     }
                 }
                 .disabled(app.subscriptions.isChecking || app.subscriptions.followed.isEmpty)
+            }
+        }
+        .alert("Request Artist", isPresented: $showAddArtistAlert) {
+            TextField("Artist name", text: $addArtistName)
+            Button("Browse") {
+                let name = addArtistName.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !name.isEmpty { browseArtist = BrowseArtistTarget(name: name) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Find any artist on MusicBrainz to browse and request their albums — even ones not in your library.")
+        }
+        .sheet(item: $browseArtist) { target in
+            NavigationStack {
+                ArtistPageView(input: .named(target.name))
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("Done") { browseArtist = nil }
+                        }
+                    }
             }
         }
         .task { await app.refreshSubscriptions() }

@@ -29,7 +29,7 @@ extension View {
         musicNavigationBarTitleDisplayMode(.inline)
             .musicNavigationBarVisibleWhenPushed()
             .scrollContentBackground(.hidden)
-            .background(MusicDesign.background)
+            .background(MusicDesign.settingsBackground)
             .musicNavigationChrome()
     }
 }
@@ -414,7 +414,7 @@ struct SettingsPluginsView: View {
                 } label: {
                     SettingsPluginRow(
                         icon: app.acquisitionCapabilities.iconName,
-                        title: "Downloads",
+                        title: "Music Requests",
                         subtitle: app.acquisitionConfigured
                             ? app.acquisitionCapabilities.displayName
                             : "Set up \(app.acquisitionCapabilities.displayName)",

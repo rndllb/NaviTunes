@@ -222,8 +222,14 @@ struct BrowseAlbumDetailView: View {
                 await MainActor.run { backdropPalette = .listSurface(colorScheme: colorScheme) }
                 return
             }
+            if let cached = ArtworkDynamicGradient.cachedBackdrop(for: displayArtworkURL) {
+                backdropPalette = cached
+                return
+            }
             let p = await ArtworkDynamicGradient.analyzeBackdrop(from: displayArtworkURL)
-            await MainActor.run { backdropPalette = p }
+            await MainActor.run {
+                withAnimation(.easeOut(duration: 0.25)) { backdropPalette = p }
+            }
         }
         .overlay {
             if (isLoadingTracks || isLoadingPreviewTracks), libraryTracks.isEmpty, previewTracks.isEmpty {
@@ -586,7 +592,7 @@ struct BrowseAlbumDetailView: View {
         .id("browse-missing-\(preview.id)")
     }
 
-    /// Same native ``Menu`` / ``ControlGroup`` shape as ``NewTabChartOverflowPanel`` / Downtify search.
+    /// Same native ``Menu`` / ``ControlGroup`` shape as ``NewTabChartOverflowPanel`` / the request backend search.
     @ViewBuilder
     private func browseInLibraryTrackOverflowMenu(track: Track) -> some View {
         let isInLibrary = app.isSongInLibrary(track.id)
@@ -729,8 +735,8 @@ struct BrowseAlbumDetailView: View {
         return String(format: "%d:%02d", m, sec)
     }
 
-    private func downtifySong(forPreview preview: BrowseAlbumPreviewTrack) -> DowntifySong {
-        DowntifySong(
+    private func matchableSong(forPreview preview: BrowseAlbumPreviewTrack) -> MatchableSong {
+        MatchableSong(
             songId: "browse-preview:\(preview.id)",
             name: preview.title,
             artists: [matchArtist],
@@ -743,7 +749,7 @@ struct BrowseAlbumDetailView: View {
     }
 
     private func libraryTrackMatchingPreview(_ preview: BrowseAlbumPreviewTrack) -> Track? {
-        let song = downtifySong(forPreview: preview)
+        let song = matchableSong(forPreview: preview)
         if isLibraryPlayback {
             return LibraryTrackMatcher.firstLibraryTrack(matching: song, in: libraryTracks)
         }
@@ -777,7 +783,7 @@ struct BrowseAlbumDetailView: View {
             flashToast("Set up a download plugin in Settings first.")
             return
         }
-        let song = downtifySong(forPreview: preview)
+        let song = matchableSong(forPreview: preview)
         if LibraryTrackMatcher.matchesLibrary(song, titleIndex: app.libraryTrackTitleIndex) {
             flashToast("Already in your library")
             return
@@ -806,7 +812,7 @@ struct BrowseAlbumDetailView: View {
                 skipped += 1
                 continue
             }
-            let song = downtifySong(forPreview: preview)
+            let song = matchableSong(forPreview: preview)
             if LibraryTrackMatcher.matchesLibrary(song, titleIndex: app.libraryTrackTitleIndex) {
                 skipped += 1
                 continue

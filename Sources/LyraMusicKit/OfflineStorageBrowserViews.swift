@@ -311,6 +311,9 @@ struct DangerousStorageActionsSection: View {
     @EnvironmentObject private var app: AppModel
     @State private var isExpanded = false
     @State private var confirmAction: DangerousCacheAction?
+    /// Precomputed off-main so the confirmation alert never decodes the library
+    /// snapshot / walks disk on the main thread while building its message.
+    @State private var cacheSummary: LocalCacheUsageSummary?
 
     private enum DangerousCacheAction: Identifiable {
         case imageCache
@@ -343,10 +346,19 @@ struct DangerousStorageActionsSection: View {
                 message: Text(alertMessage(action)),
                 primaryButton: .destructive(Text("Clear")) {
                     perform(action)
+                    Task { await refreshSummary() }
                 },
                 secondaryButton: .cancel()
             )
         }
+        .task { await refreshSummary() }
+        .onChange(of: isExpanded) { _, expanded in
+            if expanded { Task { await refreshSummary() } }
+        }
+    }
+
+    private func refreshSummary() async {
+        cacheSummary = await app.localCacheUsageSummaryAsync()
     }
 
     private func dangerousButton(_ title: String, action: DangerousCacheAction) -> some View {
@@ -370,7 +382,16 @@ struct DangerousStorageActionsSection: View {
     }
 
     private func alertMessage(_ action: DangerousCacheAction) -> String {
-        let summary = app.localCacheUsageSummary()
+        // Use the off-main precomputed summary. If it hasn't finished loading yet,
+        // fall back to a message without specific counts rather than block the main thread.
+        guard let summary = cacheSummary else {
+            switch action {
+            case .imageCache:     return "Removes all cached artwork from this device."
+            case .downloadedMusic: return "Removes all downloaded tracks. Playback queue downloads are not affected."
+            case .metadata:       return "Removes cached album and playlist entries from the on-device library snapshot."
+            case .all:            return "Removes all downloaded music, cached images, and library metadata stored on this device."
+            }
+        }
         switch action {
         case .imageCache:
             return "Removes \(LocalCacheByteFormatter.string(summary.imageCacheBytes)) of cached artwork (\(summary.imageCacheCount) files)."

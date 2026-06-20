@@ -1,6 +1,6 @@
 import Foundation
 
-/// Origin row on the **New** tab — drives lookup terms and Downtify request.
+/// Origin row on the **New** tab — drives lookup terms and the request backend request.
 enum BrowseAlbumDetailSource {
     case chartBrowse(artistName: String, title: String, imageURL: URL?, kind: String)
 

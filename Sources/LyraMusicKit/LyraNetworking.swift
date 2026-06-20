@@ -58,6 +58,10 @@ enum LyraURLSession {
 
     static let shared: URLSession = {
         let config = URLSessionConfiguration.default
+        // Self-hosted servers over flaky links (LAN / Tailscale / tunnels) can stall;
+        // cap waits so a dead request fails fast instead of hanging on the default 60s.
+        config.timeoutIntervalForRequest = 25
+        config.timeoutIntervalForResource = 60
         return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     }()
 }

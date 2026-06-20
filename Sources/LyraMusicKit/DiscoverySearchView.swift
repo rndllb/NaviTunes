@@ -13,27 +13,27 @@ enum SearchNavTarget: Hashable {
     case album(AlbumSummary)
     case playlist(PlaylistSummary)
     case artist(LibraryArtistSummary)
+    /// An artist by name only (not in the server library) — resolved via MusicBrainz on
+    /// the artist page so the user can browse and request their discography.
+    case namedArtist(String)
     case genre(LibraryGenreSummary)
     case acquire(AcquisitionResult)
 }
 
-/// Apple-Music-style genre tile used in the search idle state. Renders the
-/// genre name on a deterministic gradient (hash → palette) so colors stay
-/// stable across launches without relying on artwork the server rarely
-/// provides for genres. Pure label view — taps are owned by the outer
-/// `NavigationLink` / `Button` wrapper.
+/// Colorful genre tile for the Discover idle grid (no heading — tiles only).
 private struct SearchGenreTile: View {
     let title: String
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
+        ZStack(alignment: .bottomLeading) {
             LinearGradient(
                 colors: SearchGenrePalette.gradient(for: title),
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing,
             )
             Text(title)
-                .font(.headline.weight(.heavy))
+                .font(.headline.weight(.semibold))
                 .foregroundStyle(.white)
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
@@ -41,16 +41,17 @@ private struct SearchGenreTile: View {
                 .shadow(color: .black.opacity(0.35), radius: 4, x: 0, y: 1)
         }
         .frame(maxWidth: .infinity)
-        .aspectRatio(16.0 / 10.0, contentMode: .fit)
+        .aspectRatio(16.0 / 8.0, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(MusicDesign.songRowArtworkBorder(for: colorScheme), lineWidth: 0.5)
+        }
         .contentShape(Rectangle())
     }
 }
 
 private enum SearchGenrePalette {
-    /// Hand-tuned, mostly-saturated gradient pairs that read well over the
-    /// dark `MusicDesign.background`. Selection is deterministic per genre
-    /// name so the grid doesn't shuffle on each appearance.
     private static let pairs: [(Color, Color)] = [
         (.init(red: 0.93, green: 0.27, blue: 0.45), .init(red: 0.58, green: 0.13, blue: 0.42)),
         (.init(red: 0.98, green: 0.62, blue: 0.22), .init(red: 0.74, green: 0.31, blue: 0.10)),
@@ -150,11 +151,20 @@ private enum RecentSearchEntityStore {
     }
 }
 
-/// One row in the Downtify hybrid feed — either a server-catalog hit (Add) or a
-/// Downtify download candidate (Download). Server hits already in the user's
-/// personal library are filtered out upstream (they live in the Library tab).
+/// An artist found on MusicBrainz that isn't in the server library — surfaced as a
+/// normal artist result row so missing artists flow into the artist page like server ones.
+private struct NamedArtistMatch: Identifiable, Hashable {
+    let id: String   // MusicBrainz artist id
+    let name: String
+}
+
+/// One row in the hybrid Discover feed — either a server-catalog hit, a MusicBrainz artist,
+/// or an acquisition request candidate. Server hits already in the user's personal library
+/// are filtered out upstream (they live in the Library tab).
+
 private enum HybridRow: Identifiable {
     case serverArtist(LibraryArtistSummary)
+    case namedArtist(NamedArtistMatch)
     case serverSong(Track)
     case serverAlbum(AlbumSummary)
     case acquire(AcquisitionResult)
@@ -162,6 +172,7 @@ private enum HybridRow: Identifiable {
     var id: String {
         switch self {
         case .serverArtist(let a): return "srv-artist-\(a.id)"
+        case .namedArtist(let a): return "mb-artist-\(a.id)"
         case .serverSong(let t): return "srv-song-\(t.id)"
         case .serverAlbum(let a): return "srv-album-\(a.id)"
         case .acquire(let r): return "acq-\(r.id)"
@@ -191,6 +202,7 @@ struct DiscoverySearchView: View {
     // Hybrid Discover-tab state.
     @State private var serverResults: CatalogSearchResults = .empty
     @State private var acquireResults: [AcquisitionResult] = []
+    @State private var namedArtistMatches: [NamedArtistMatch] = []
     @State private var isFetching = false
     @State private var searchError: String?
     @State private var hybridSearchTask: Task<Void, Never>?
@@ -199,6 +211,7 @@ struct DiscoverySearchView: View {
     @State private var serverGenres: [LibraryGenreSummary] = []
     @State private var isLoadingGenres = false
     @State private var genresLoadError: String?
+    @State private var genresLoadedForKey: String?
 
     // Per-row interaction state.
     @State private var addingAlbumIds: Set<String> = []
@@ -247,7 +260,7 @@ struct DiscoverySearchView: View {
     }
 
     /// Unified, relevance-sorted hybrid feed. Both the server catalog and
-    /// Downtify return their own internal relevance order; we score every row
+    /// the request backend return their own internal relevance order; we score every row
     /// against the query and merge-sort so the strongest match wins regardless
     /// of source instead of always surfacing Navidrome/Jellyfin first.
     private var hybridRows: [HybridRow] {
@@ -260,12 +273,19 @@ struct DiscoverySearchView: View {
         var scored: [(row: HybridRow, score: Double, kindPriority: Int)] = []
 
         // Artists pinned to the top of Top Results. Each artist gets a large
-        // score bump so any matching artist surfaces above albums/songs/Downtify
+        // score bump so any matching artist surfaces above albums/songs/the request backend
         // — Apple Music does the same: tapping search for "Deftones" returns
         // the artist row first, then their albums, then their songs.
         for artist in serverResults.artists {
             let s = Self.relevanceScore(title: artist.name, artist: artist.name, query: q)
             scored.append((.serverArtist(artist), s + 1.0, -1))
+        }
+
+        // Artists not on the server (MusicBrainz matches) get the same artist-row treatment
+        // and priority, so a missing artist surfaces alongside server artists.
+        for match in namedArtistMatches {
+            let s = Self.relevanceScore(title: match.name, artist: match.name, query: q)
+            scored.append((.namedArtist(match), s + 1.0, -1))
         }
 
         for album in serverResults.albums where !personalAlbumIds.contains(album.id) {
@@ -296,7 +316,7 @@ struct DiscoverySearchView: View {
         return scored
             .sorted { lhs, rhs in
                 if lhs.score != rhs.score { return lhs.score > rhs.score }
-                // Equal score → preserve a stable order (artist > album > song > downtify).
+                // Equal score → preserve a stable order (artist > album > song > request backend).
                 return lhs.kindPriority < rhs.kindPriority
             }
             .map(\.row)
@@ -364,9 +384,6 @@ struct DiscoverySearchView: View {
         }
         .task(id: genreLoadTaskKey) {
             await loadServerGenresIfNeeded()
-            if app.homeGenreShelves.isEmpty {
-                await app.refreshHome()
-            }
         }
     }
 
@@ -409,13 +426,7 @@ struct DiscoverySearchView: View {
                         .padding(.horizontal, 16)
                 }
 
-                // Tile grid: the colorful Apple-Music-style top-of-search browse.
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("Browse Categories")
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .padding(.horizontal, 16)
-
                     if isLoadingGenres {
                         HStack {
                             ProgressView().tint(MusicDesign.accent)
@@ -454,69 +465,11 @@ struct DiscoverySearchView: View {
                         .padding(.horizontal, 16)
                     }
                 }
-
-                // Per-genre album shelves: mirrors Apple's "Oldies → Pet Sounds…"
-                // deeper browse. Source is `homeGenreShelves`, populated by
-                // `refreshHome` (4 genres × ~8 albums).
-                if !app.homeGenreShelves.isEmpty {
-                    ForEach(app.homeGenreShelves, id: \.genre) { shelf in
-                        discoverGenreShelf(title: shelf.genre, albums: shelf.albums)
-                    }
-                }
             }
             .padding(.vertical, 12)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    }
-
-    private func discoverGenreShelf(title: String, albums: [AlbumSummary]) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(title)
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(.primary)
-                .padding(.horizontal, 16)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 14) {
-                    ForEach(albums) { album in
-                        Button {
-                            recordRecent(.init(
-                                kind: .album,
-                                primaryId: album.id,
-                                title: album.title,
-                                subtitle: album.artist,
-                                artworkURL: album.artworkURL,
-                            ))
-                            navigationPath.append(SearchNavTarget.album(album))
-                        } label: {
-                            shelfAlbumCard(album)
-                                .coverZoomSource(id: album.id)
-                        }
-                        .buttonStyle(.plain)
-                        .libraryAlbumContextMenu(album)
-                    }
-                }
-                .padding(.horizontal, 16)
-            }
-        }
-    }
-
-    private func shelfAlbumCard(_ album: AlbumSummary) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            AlbumArtworkView(url: album.artworkURL, cornerRadius: 8)
-                .frame(width: 140, height: 140)
-            Text(album.title)
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .frame(width: 140, alignment: .leading)
-            Text(album.artist)
-                .font(.caption)
-                .foregroundStyle(MusicDesign.secondaryLabel)
-                .lineLimit(1)
-                .frame(width: 140, alignment: .leading)
-        }
     }
 
     private var hybridRecentlySearchedList: some View {
@@ -596,16 +549,23 @@ struct DiscoverySearchView: View {
     }
 
     private func loadServerGenresIfNeeded() async {
+        let key = genreLoadTaskKey
+        if genresLoadedForKey == key, !serverGenres.isEmpty {
+            return
+        }
+
         guard !app.effectiveOfflineMode else {
             serverGenres = []
             genresLoadError = nil
             isLoadingGenres = false
+            genresLoadedForKey = nil
             return
         }
         guard let lib = app.activeLibrary else {
             serverGenres = []
             genresLoadError = nil
             isLoadingGenres = false
+            genresLoadedForKey = nil
             return
         }
 
@@ -614,13 +574,14 @@ struct DiscoverySearchView: View {
         defer { isLoadingGenres = false }
 
         do {
-            // Cap chosen to fill 4-6 vertical screens of tiles on iPhone.
-            serverGenres = try await lib.libraryGenres(limit: 60)
+            serverGenres = try await lib.browseGenreCategories(limit: 60)
+            genresLoadedForKey = key
         } catch is CancellationError {
             return
         } catch {
             genresLoadError = error.localizedDescription
             serverGenres = []
+            genresLoadedForKey = nil
         }
     }
 
@@ -629,6 +590,8 @@ struct DiscoverySearchView: View {
         switch row {
         case .serverArtist(let artist):
             serverArtistRow(artist)
+        case .namedArtist(let match):
+            namedArtistRow(match)
         case .serverAlbum(let album):
             serverAlbumRow(album)
         case .serverSong(let track):
@@ -657,6 +620,43 @@ struct DiscoverySearchView: View {
                     .clipShape(Circle())
                 VStack(alignment: .leading, spacing: 2) {
                     Text(artist.name)
+                        .font(entityTitleFont)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text("Artist")
+                        .font(entitySubtitleFont)
+                        .foregroundStyle(MusicDesign.secondaryLabel)
+                }
+                Spacer(minLength: 8)
+                MusicNavigationChevron()
+            }
+            .musicChevronRowPadding()
+            .padding(.vertical, entityVerticalPadding)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(discoverRowBackground)
+        .discoverySearchListRowChrome()
+    }
+
+    /// Artist not on the server (MusicBrainz match). Visually identical to ``serverArtistRow``
+    /// and navigates to the same artist page (resolved by name), so the flow is the same.
+    private func namedArtistRow(_ match: NamedArtistMatch) -> some View {
+        Button {
+            recordRecent(.init(
+                kind: .artist,
+                primaryId: "mb:\(match.id)",
+                title: match.name,
+                artworkURL: nil,
+            ))
+            navigationPath.append(SearchNavTarget.namedArtist(match.name))
+        } label: {
+            HStack(spacing: 12) {
+                AlbumArtworkView(url: nil, cornerRadius: rowArtworkSide / 2)
+                    .frame(width: rowArtworkSide, height: rowArtworkSide)
+                    .clipShape(Circle())
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(match.name)
                         .font(entityTitleFont)
                         .foregroundStyle(.primary)
                         .lineLimit(1)
@@ -1357,7 +1357,7 @@ struct DiscoverySearchView: View {
         }
     }
 
-    /// Debounced fan-out to server-catalog search + Downtify. Cancels prior in-flight
+    /// Debounced fan-out to server-catalog search + the request backend. Cancels prior in-flight
     /// task on each call so rapid typing collapses to the last query.
     private func scheduleHybridSearch(debounce: Bool = true) {
         hybridSearchTask?.cancel()
@@ -1365,6 +1365,7 @@ struct DiscoverySearchView: View {
         guard !q.isEmpty else {
             serverResults = .empty
             acquireResults = []
+            namedArtistMatches = []
             searchError = nil
             isFetching = false
             return
@@ -1386,6 +1387,7 @@ struct DiscoverySearchView: View {
             if Task.isCancelled || trimmedQuery != query { return }
             serverResults = offline
             acquireResults = []
+            namedArtistMatches = []
             isFetching = false
             return
         }
@@ -1404,6 +1406,9 @@ struct DiscoverySearchView: View {
         if Task.isCancelled || trimmedQuery != query { return }
         serverResults = server
 
+        // Resolve artists not on the server via MusicBrainz, concurrently with acquisition search.
+        async let mbArtists = MusicBrainzArtistClient.searchArtists(name: query, limit: 5)
+
         let acquire: [AcquisitionResult]
         if acquireOK {
             acquire = await acquisition.search(query: query)
@@ -1412,6 +1417,16 @@ struct DiscoverySearchView: View {
         }
         if Task.isCancelled || trimmedQuery != query { return }
         acquireResults = acquire
+
+        let serverArtistNames = Set(server.artists.map { LibraryTrackMatcher.normalize($0.name) })
+        var seenNames = Set<String>()
+        let matches = (await mbArtists).compactMap { artist -> NamedArtistMatch? in
+            let norm = LibraryTrackMatcher.normalize(artist.name)
+            guard !serverArtistNames.contains(norm), seenNames.insert(norm).inserted else { return nil }
+            return NamedArtistMatch(id: artist.id, name: artist.name)
+        }
+        if Task.isCancelled || trimmedQuery != query { return }
+        namedArtistMatches = Array(matches.prefix(3))
         isFetching = false
     }
 
@@ -1450,24 +1465,6 @@ struct DiscoverySearchView: View {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             toast = nil
         }
-    }
-}
-
-// MARK: - Discover / Library scope (login-style segmented picker)
-
-/// Discover / Library scope — matches ``LoginView``'s Jellyfin / Navidrome segmented picker.
-struct DiscoverLibraryScopeBar: View {
-    @Binding var scope: SearchScope
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        Picker("Scope", selection: $scope) {
-            ForEach(SearchScope.allCases, id: \.self) { s in
-                Text(s.rawValue).tag(s)
-            }
-        }
-        .pickerStyle(.segmented)
-        .tint(colorScheme == .dark ? MusicDesign.accent : nil)
     }
 }
 

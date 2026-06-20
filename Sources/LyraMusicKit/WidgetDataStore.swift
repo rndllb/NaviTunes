@@ -85,7 +85,8 @@ public enum WidgetDataStore {
         return try? Data(contentsOf: url)
     }
 
-    /// Download artwork for each item and save to the shared container.
+    /// Download artwork for each item and save to the shared container, then prune any
+    /// cached files that are no longer referenced by the current payload.
     /// Returns true if any new files were written (caller can trigger a timeline reload).
     @discardableResult
     public static func cacheArtwork(items: [MusicItem]) async -> Bool {
@@ -98,11 +99,27 @@ public enum WidgetDataStore {
                   let dest = artworkCacheURL(for: item.id)
             else { continue }
             if FileManager.default.fileExists(atPath: dest.path) { continue }
-            if let (data, _) = try? await URLSession.shared.data(from: url) {
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 20
+            if let (data, _) = try? await URLSession.shared.data(for: request) {
                 try? data.write(to: dest, options: .atomic)
                 wrote = true
             }
         }
+        pruneArtworkCache(keeping: items)
         return wrote
+    }
+
+    /// Removes cached artwork files not referenced by the current payload, so the shared
+    /// container doesn't grow unbounded as the recently-played set churns.
+    private static func pruneArtworkCache(keeping items: [MusicItem]) {
+        guard let dir = artworkCacheDir else { return }
+        let keepPaths = Set(items.compactMap { artworkCacheURL(for: $0.id)?.path })
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil
+        ) else { return }
+        for file in files where !keepPaths.contains(file.path) {
+            try? FileManager.default.removeItem(at: file)
+        }
     }
 }

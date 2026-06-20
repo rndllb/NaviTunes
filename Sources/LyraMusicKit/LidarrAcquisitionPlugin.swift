@@ -18,7 +18,7 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
         AcquisitionCapabilities(
             displayName: "Lidarr",
             iconName: "square.stack.3d.up",
-            blurb: "Album-level requests via Lidarr. Lyra resolves the album in MusicBrainz, adds and monitors it, then searches your indexers.",
+            blurb: "A music collection manager. Lyra resolves the album on MusicBrainz and hands it to Lidarr, which adds it to your collection and keeps it monitored and complete.",
             granularity: .album,
             supportsTrackSearch: false,
             configFields: [

@@ -152,9 +152,13 @@ struct LibraryView: View {
             }
         }
         for playlist in app.libraryPlaylists where !seenPlaylistIds.contains(playlist.id) {
-            // Use `.distantPast` when the server didn't return a `created` date so the
-            // playlist still appears in Recently Added (just sorted to the bottom).
-            dated.append((.playlist(playlist), playlist.libraryAddedDate ?? .distantPast))
+            // Prefer the most recent of the server `created` date and the local "created in
+            // this app" stamp, so a freshly-made playlist sorts to the top even before the
+            // server reports a date. Falls back to `.distantPast` when neither is known.
+            let added = [playlist.libraryAddedDate, app.localPlaylistCreatedDate(playlist.id)]
+                .compactMap { $0 }
+                .max() ?? .distantPast
+            dated.append((.playlist(playlist), added))
         }
 
         return dated

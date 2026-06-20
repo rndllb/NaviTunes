@@ -227,12 +227,11 @@ struct AccountView: View {
     private var serverSection: some View {
         Group {
             Section {
-                Picker("Server", selection: $app.backendKind) {
-                    Text("Jellyfin").tag(BackendKind.jellyfin)
-                    Text("Navidrome").tag(BackendKind.navidrome)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+                MusicGlassSegmentPillBar(
+                    options: Array(BackendKind.allCases),
+                    selection: $app.backendKind,
+                    title: { $0.title }
+                )
                 .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
             }
 
