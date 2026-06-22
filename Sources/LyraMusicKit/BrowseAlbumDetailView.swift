@@ -23,18 +23,30 @@ struct BrowseAlbumDetailView: View {
     @State private var isDownloading = false
     @State private var navigateLibraryAlbum: AlbumSummary?
     @State private var trackPendingDownloadedDelete: Track?
+    @State private var dismissalPhase: CoverZoomTransitionPhase = .idle
 
     private var matchedLibraryAlbum: AlbumSummary? {
-        app.libraryAlbumReleaseIndex.firstMatch(artist: matchArtist, albumTitle: matchAlbumTitle)
+        app.libraryAlbumMatchingBrowseRelease(artist: matchArtist, albumTitle: matchAlbumTitle)
+    }
+
+    private var isLibraryPlayback: Bool {
+        matchedLibraryAlbum != nil || !libraryTracks.isEmpty || browseHasResolvedServerTracks
+    }
+
+    private var browseHasResolvedServerTracks: Bool {
+        browseQueuedRows.contains {
+            if case .library = $0.kind { return true }
+            return false
+        }
     }
 
     private var matchArtist: String {
-        if case .chartBrowse(let a, _, _, _) = source { return a }
+        if case .chartBrowse(let a, _, _, _, _) = source { return a }
         return ""
     }
 
     private var matchAlbumTitle: String {
-        if case .chartBrowse(_, let t, _, _) = source { return t }
+        if case .chartBrowse(_, let t, _, _, _) = source { return t }
         return ""
     }
 
@@ -47,12 +59,12 @@ struct BrowseAlbumDetailView: View {
 
     private var displayArtworkURL: URL? {
         if let a = matchedLibraryAlbum { return a.artworkURL }
-        if case .chartBrowse(_, _, let url, _) = source { return url }
+        if case .chartBrowse(_, _, let url, _, _) = source { return url }
         return nil
     }
 
     private var albumKindLabel: String {
-        if case .chartBrowse(_, _, _, let kind) = source { return kind }
+        if case .chartBrowse(_, _, _, let kind, _) = source { return kind }
         return "Album"
     }
 
@@ -73,8 +85,6 @@ struct BrowseAlbumDetailView: View {
         }()
         return min(max(w - 52, 260), 320)
     }
-
-    private var isLibraryPlayback: Bool { matchedLibraryAlbum != nil }
 
     private struct BrowseQueuedRow: Identifiable {
         enum Kind {
@@ -201,7 +211,7 @@ struct BrowseAlbumDetailView: View {
             .environment(\.defaultMinListRowHeight, 0)
             .padding(.bottom, 36)
         }
-        .coverZoomDestination(id: source.coverZoomId)
+        .coverZoomDestination(id: source.coverZoomId, dismissalPhase: $dismissalPhase)
         .navigationTitle("")
         .musicNavigationBarTitleDisplayMode(.inline)
         .musicNavigationBarVisibleWhenPushed()
@@ -212,9 +222,20 @@ struct BrowseAlbumDetailView: View {
         .navigationDestination(item: $navigateLibraryAlbum) { album in
             ServerPlaylistDetailView(album: album)
         }
-        .task(id: matchedLibraryAlbum?.id ?? "none") { await loadLibraryTracks() }
-        .task(id: "\(isLibraryPlayback)-\(matchArtist)-\(matchAlbumTitle)") { await loadPreviewTracksIfNeeded() }
+        .task(id: "\(matchArtist)-\(matchAlbumTitle)-\(albumKindLabel)") {
+            await app.reconcileBrowseChartRelease(
+                artist: matchArtist,
+                albumTitle: matchAlbumTitle,
+                kind: albumKindLabel
+            )
+            await loadPreviewTracksIfNeeded()
+            await loadLibraryTracks()
+        }
         .onChange(of: app.libraryCatalogEpoch) { _, _ in
+            Task { await loadLibraryTracks() }
+            recomputeBrowseQueuedRows()
+        }
+        .onChange(of: app.discoveryLibraryTracks.count) { _, _ in
             recomputeBrowseQueuedRows()
         }
         .task(id: "\(displayArtworkURL?.absoluteString ?? "")-\(app.albumBackdropEnabled)-\(colorScheme)") {
@@ -227,9 +248,8 @@ struct BrowseAlbumDetailView: View {
                 return
             }
             let p = await ArtworkDynamicGradient.analyzeBackdrop(from: displayArtworkURL)
-            await MainActor.run {
-                withAnimation(.easeOut(duration: 0.25)) { backdropPalette = p }
-            }
+            guard await waitForSafeBrowseMutation() else { return }
+            await MainActor.run { backdropPalette = p }
         }
         .overlay {
             if (isLoadingTracks || isLoadingPreviewTracks), libraryTracks.isEmpty, previewTracks.isEmpty {
@@ -537,7 +557,7 @@ struct BrowseAlbumDetailView: View {
             ProgressView()
                 .scaleEffect(0.85)
                 .tint(MusicDesign.accent)
-            Text("Checking MusicBrainz for full track list…")
+            Text("Loading full track list…")
                 .font(.subheadline)
                 .foregroundStyle(backdropPalette.heroChromeSecondary)
             Spacer(minLength: 0)
@@ -685,7 +705,7 @@ struct BrowseAlbumDetailView: View {
                     .foregroundStyle(backdropPalette.heroChromeSecondary)
             }
             if !previewTracks.isEmpty {
-                Text("Track list from MusicBrainz where available \u{00B7} \(app.acquisitionCapabilities.displayName) for downloads.")
+                Text("Track list from Apple Music where available \u{00B7} \(app.acquisitionCapabilities.displayName) for downloads.")
                     .font(.caption)
                     .foregroundStyle(backdropPalette.heroChromeTertiary)
             }
@@ -697,22 +717,55 @@ struct BrowseAlbumDetailView: View {
 
     // MARK: - Actions
 
+    @MainActor
+    private func waitForSafeBrowseMutation() async -> Bool {
+        while dismissalPhase == .appearing || dismissalPhase == .dismissing {
+            do {
+                try await Task.sleep(for: .milliseconds(80))
+            } catch {
+                return false
+            }
+        }
+        return dismissalPhase != .gone && !Task.isCancelled
+    }
+
     private func loadLibraryTracks() async {
-        guard let album = matchedLibraryAlbum, let lib = app.activeLibrary else {
+        guard let lib = app.activeLibrary else {
             libraryTracks = []
             recomputeBrowseQueuedRows()
             return
         }
         isLoadingTracks = true
         defer { isLoadingTracks = false }
-        libraryTracks = (try? await lib.tracks(forAlbumId: album.id)) ?? []
+
+        if let album = matchedLibraryAlbum {
+            let tracks = (try? await lib.tracks(forAlbumId: album.id)) ?? []
+            guard await waitForSafeBrowseMutation() else { return }
+            libraryTracks = tracks
+            recomputeBrowseQueuedRows()
+            return
+        }
+
+        if let preview = previewTracks.first,
+           let track = libraryTrackMatchingPreview(preview) {
+            let tracks = (try? await lib.tracks(forAlbumId: track.albumId)) ?? [track]
+            guard await waitForSafeBrowseMutation() else { return }
+            libraryTracks = tracks
+            recomputeBrowseQueuedRows()
+            return
+        }
+
+        guard await waitForSafeBrowseMutation() else { return }
+        libraryTracks = []
         recomputeBrowseQueuedRows()
     }
 
     private func loadPreviewTracksIfNeeded() async {
         isLoadingPreviewTracks = true
         defer { isLoadingPreviewTracks = false }
-        previewTracks = await app.resolveBrowseAlbumPreviewTracks(source: source)
+        let previews = await app.resolveBrowseAlbumPreviewTracks(source: source)
+        guard await waitForSafeBrowseMutation() else { return }
+        previewTracks = previews
         recomputeBrowseQueuedRows()
     }
 
@@ -750,10 +803,21 @@ struct BrowseAlbumDetailView: View {
 
     private func libraryTrackMatchingPreview(_ preview: BrowseAlbumPreviewTrack) -> Track? {
         let song = matchableSong(forPreview: preview)
-        if isLibraryPlayback {
-            return LibraryTrackMatcher.firstLibraryTrack(matching: song, in: libraryTracks)
+        if let matched = LibraryTrackMatcher.firstLibraryTrack(matching: song, in: libraryTracks) {
+            return matched
         }
-        return app.libraryChartTrackIndex.firstMatch(song: song)
+        if let matched = app.libraryChartTrackIndex.firstMatch(song: song) {
+            return matched
+        }
+        let chart = ChartTrack(
+            id: preview.id,
+            name: matchAlbumTitle,
+            artistName: matchArtist,
+            imageURL: displayArtworkURL,
+            playcount: 0,
+            browseKind: albumKindLabel
+        )
+        return app.libraryChartTrackIndex.firstMatch(chart: chart)
     }
 
     private func primaryBrowseRequestAction() async {
@@ -781,6 +845,10 @@ struct BrowseAlbumDetailView: View {
     private func requestPreviewTrack(_ preview: BrowseAlbumPreviewTrack) async {
         guard app.acquisitionConfigured else {
             flashToast("Set up a download plugin in Settings first.")
+            return
+        }
+        if libraryTrackMatchingPreview(preview) != nil {
+            flashToast("Already on your server")
             return
         }
         let song = matchableSong(forPreview: preview)

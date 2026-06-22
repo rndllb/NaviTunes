@@ -5,15 +5,16 @@ import SwiftUI
 /// (see ``SubscriptionsView``), so the affordance never hard-disables.
 struct ArtistFollowButton: View {
     @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var subscriptions: MusicSubscriptionEngine
     let name: String
     var mbid: String? = nil
     var coverURL: URL? = nil
 
-    private var isFollowing: Bool { app.subscriptions.isFollowing(name: name, mbid: mbid) }
+    private var isFollowing: Bool { subscriptions.isFollowing(name: name, mbid: mbid) }
 
     var body: some View {
         Button {
-            app.subscriptions.toggle(name: name, mbid: mbid, coverURL: coverURL)
+            subscriptions.toggle(name: name, mbid: mbid, coverURL: coverURL)
             // `isFollowing` recomputes from the engine, so it already reflects the new state.
             app.showTransientToast(isFollowing ? "Following \(name)" : "Unfollowed \(name)")
         } label: {
@@ -29,6 +30,7 @@ struct ArtistFollowButton: View {
 /// wishlisted because no plugin can fetch them.
 struct SubscriptionsView: View {
     @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var subscriptions: MusicSubscriptionEngine
     @State private var showAddArtistAlert = false
     @State private var addArtistName = ""
     @State private var browseArtist: BrowseArtistTarget?
@@ -40,7 +42,7 @@ struct SubscriptionsView: View {
 
     var body: some View {
         List {
-            if app.subscriptions.followed.isEmpty {
+            if subscriptions.followed.isEmpty {
                 ContentUnavailableView(
                     "No followed artists",
                     systemImage: "bell",
@@ -58,9 +60,9 @@ struct SubscriptionsView: View {
                     }
                 }
 
-                ForEach(app.subscriptions.followed) { artist in
+                ForEach(subscriptions.followed) { artist in
                     Section {
-                        let statuses = app.subscriptions.statusByArtist[artist.id] ?? []
+                        let statuses = subscriptions.statusByArtist[artist.id] ?? []
                         if statuses.isEmpty {
                             Text(artist.lastChecked == nil ? "Not checked yet" : "Nothing missing")
                                 .font(.footnote)
@@ -82,7 +84,7 @@ struct SubscriptionsView: View {
                             }
                         }
                         Button(role: .destructive) {
-                            app.subscriptions.unfollow(id: artist.id)
+                            subscriptions.unfollow(id: artist.id)
                         } label: {
                             Label("Unfollow", systemImage: "bell.slash")
                         }
@@ -106,13 +108,13 @@ struct SubscriptionsView: View {
                 Button {
                     Task { await app.refreshSubscriptions() }
                 } label: {
-                    if app.subscriptions.isChecking {
+                    if subscriptions.isChecking {
                         ProgressView()
                     } else {
                         Image(systemName: "arrow.clockwise")
                     }
                 }
-                .disabled(app.subscriptions.isChecking || app.subscriptions.followed.isEmpty)
+                .disabled(subscriptions.isChecking || subscriptions.followed.isEmpty)
             }
         }
         .alert("Request Artist", isPresented: $showAddArtistAlert) {

@@ -1225,7 +1225,7 @@ struct FavoritePlaylistView: View {
             Button {
                 Task { await playAll() }
             } label: {
-                HStack(spacing: MusicDesign.albumHeroPlayLabelSpacing) {
+                HStack(spacing: MusicDesign.libraryPlayShuffleLabelSpacing) {
                     Image(systemName: "play.fill")
                     Text("Play")
                 }
@@ -1789,6 +1789,7 @@ struct AlbumsGridView: View {
     @State private var displayedScrubberLetters: [String] = []
     @State private var displayedBaseAlbumCount = 0
     @State private var showsDisplayedAlbumSections = true
+    @State private var albumDisplayDebounceTask: Task<Void, Never>?
 
     init(scope: AlbumsGridScope = .library) {
         self.scope = scope
@@ -1837,6 +1838,15 @@ struct AlbumsGridView: View {
     private func recomputeAlbumDisplay() {
         PerfLog.measure("LibraryView.recomputeAlbumDisplay", details: "base=\(baseAlbums.count) sort=\(sort) q=\(query.count)c") {
             recomputeAlbumDisplayBody()
+        }
+    }
+
+    private func scheduleRecomputeAlbumDisplay() {
+        albumDisplayDebounceTask?.cancel()
+        albumDisplayDebounceTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            recomputeAlbumDisplay()
         }
     }
 
@@ -2154,7 +2164,7 @@ struct AlbumsGridView: View {
         }
         .onChange(of: app.libraryAlbumEntries) { _, _ in recomputeAlbumDisplay() }
         .onChange(of: app.libraryAlbums.count) { _, _ in recomputeAlbumDisplay() }
-        .onChange(of: offline.downloadedTrackIds) { _, _ in recomputeAlbumDisplay() }
+        .onChange(of: offline.downloadedTrackIds) { _, _ in scheduleRecomputeAlbumDisplay() }
         .onAppear { recomputeAlbumDisplay() }
         .refreshable {
             if scope == .library {
