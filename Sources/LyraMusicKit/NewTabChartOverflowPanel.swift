@@ -141,6 +141,87 @@ struct NewTabChartOverflowPanel: View {
     }
 }
 
+/// **New** tab song row ⋯ — library ``StandardSongMenuContent`` when the release is on the
+/// server; chart **Request** menu while missing or downloading.
+struct NewTabChartRowOverflowMenu: View {
+    @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var acquisition: AcquisitionManager
+    let chart: ChartTrack
+    let onRequest: () -> Void
+    let onBrowseAlbum: () -> Void
+    var onGoToLibraryAlbum: ((AlbumSummary) -> Void)? = nil
+
+    var body: some View {
+        if let job = acquisition.job(forKey: chart.acquisitionRequest.requestKey), !job.status.isTerminal {
+            VStack(alignment: .trailing, spacing: 3) {
+                ProgressView(value: min(1, job.progress))
+                    .tint(MusicDesign.accent)
+                    .frame(width: 52)
+                Text("\(Int((min(1, job.progress) * 100).rounded()))%")
+                    .font(.caption2.weight(.medium).monospacedDigit())
+                    .foregroundStyle(MusicDesign.secondaryLabel)
+            }
+            .frame(width: 54, alignment: .trailing)
+        } else if let track = app.resolvedServerTrack(for: chart) {
+            Menu {
+                StandardSongMenuContent(
+                    track: track,
+                    onPlayNext: {
+                        Task { @MainActor in
+                            try? await app.player.playTracksNext(library: app.activeLibrary, tracks: [track])
+                        }
+                    },
+                    onAddToQueue: {
+                        Task { @MainActor in
+                            guard let lib = app.activeLibrary else { return }
+                            try? await app.player.addToQueue(library: lib, track: track)
+                            app.showTransientToast("Added to Queue")
+                        }
+                    },
+                    onFavorite: { app.toggleFavoriteTrack(id: track.id) },
+                    onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
+                    onAddToLibrary: app.isSongInLibrary(track.id)
+                        ? nil
+                        : { Task { await app.addSongToLibrary(track) } },
+                    onDownload: app.isSongInLibrary(track.id)
+                        && !app.offline.downloadedTrackIds.contains(track.id)
+                        ? { app.enqueueOfflineTrack(track) }
+                        : nil,
+                    onRemoveDownload: app.offline.downloadedTrackIds.contains(track.id)
+                        ? { try? app.offline.remove(trackId: track.id) }
+                        : nil,
+                    onGoToAlbum: {
+                        let album = app.albumSummary(for: track)
+                        if let onGoToLibraryAlbum {
+                            onGoToLibraryAlbum(album)
+                        }
+                    },
+                    onRemoveFromLibrary: app.isSongInLibrary(track.id)
+                        ? { Task { await app.removeSongFromLibrary(track) } }
+                        : nil,
+                    onDeleteFromLibrary: app.canDeleteFromLibrary
+                        ? { app.beginLibraryTrackDeletion(track) }
+                        : nil
+                )
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(MusicDesign.secondaryLabel)
+                    .frame(width: 28, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .menuOrder(.fixed)
+        } else {
+            NewTabChartOverflowPanel(
+                track: chart,
+                onAdd: onRequest,
+                onGoToAlbum: onBrowseAlbum
+            )
+        }
+    }
+}
+
 // MARK: - Album hero toolbar ⋯ (system `UIMenu` / Liquid Glass)
 
 /// Inner items for library / browse album toolbar overflow — uses native ``Menu`` styling (not a custom popover).

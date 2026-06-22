@@ -103,6 +103,7 @@ private struct ArtistHeroSection: View {
     private var bannerURL: URL? {
         model.details?.wideArtworkURL
             ?? model.details?.thumbArtworkURL
+            ?? model.fallbackBannerArtworkURL
             ?? model.input.serverArtworkURL
     }
 
@@ -400,7 +401,8 @@ private struct ArtistTopSongsSection: View {
                         artistName: row.artist,
                         title: row.albumTitle ?? row.title,
                         imageURL: row.artworkURL,
-                        kind: "Single"
+                        kind: "Single",
+                        albumId: nil
                     ))
                 }
             }
@@ -696,19 +698,20 @@ private struct ArtistDiscographyCard: View {
     }
 
     private var browseSource: BrowseAlbumDetailSource? {
-        guard case .musicBrainz(let release) = item.source else { return nil }
+        guard case .remote(let album) = item.source else { return nil }
         return .chartBrowse(
-            artistName: release.artistCredit.isEmpty ? item.artist : release.artistCredit,
-            title: release.title,
-            imageURL: release.coverArtURL,
-            kind: bucketLabel
+            artistName: album.artist.isEmpty ? item.artist : album.artist,
+            title: album.title,
+            imageURL: album.artworkURL,
+            kind: bucketLabel,
+            albumId: album.id
         )
     }
 
     private var coverZoomId: String {
         switch item.source {
         case .libraryAlbum(let album): return album.id
-        case .musicBrainz: return browseSource?.coverZoomId ?? item.id
+        case .remote: return browseSource?.coverZoomId ?? item.id
         }
     }
 
@@ -717,7 +720,7 @@ private struct ArtistDiscographyCard: View {
         switch item.source {
         case .libraryAlbum(let album):
             ServerPlaylistDetailView(album: album, librarySource: true)
-        case .musicBrainz:
+        case .remote:
             if let browseSource {
                 BrowseAlbumDetailView(source: browseSource)
             }

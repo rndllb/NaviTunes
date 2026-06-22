@@ -5,7 +5,7 @@ import Foundation
 /// when it's present, that Lyra supplies itself when it isn't.
 ///
 /// Design: the brain lives here (in the app), and every backend is an *optional
-/// accelerator*. The only hard dependency is the always-available MusicBrainz floor,
+/// accelerator*. The only hard dependency is the always-available iTunes catalog,
 /// which yields the canonical discography. From there:
 ///   • "have it?"  → matched against the connected server catalog (any backend)
 ///   • "get it"    → handed to whatever acquisition plugin is active (if any)
@@ -80,8 +80,8 @@ final class MusicSubscriptionEngine: ObservableObject {
         defer { isChecking = false }
         for artist in followed {
             await check(artistId: artist.id)
-            // Be polite to the MusicBrainz API (~1 req/s) between artists.
-            try? await Task.sleep(for: .milliseconds(1100))
+            // Light spacing between artists to stay friendly to the iTunes API.
+            try? await Task.sleep(for: .milliseconds(300))
         }
     }
 
@@ -89,22 +89,13 @@ final class MusicSubscriptionEngine: ObservableObject {
     private func check(artistId: String) async {
         guard let artist = followed.first(where: { $0.id == artistId }) else { return }
 
-        // 1. Canonical discography — the always-available floor.
-        // (Resolved explicitly: `await` can't live inside a `??` autoclosure.)
-        let mbid: String?
-        if let existing = artist.artistMBID {
-            mbid = existing
-        } else {
-            mbid = await MusicBrainzArtistClient.findArtistId(name: artist.name)
-        }
-        let releases: [MusicBrainzArtistRelease]
-        if let mbid {
-            releases = await MusicBrainzArtistClient.releaseGroups(artistId: mbid)
-        } else {
-            releases = []
-        }
+        // 1. Canonical discography — from iTunes (Apple's catalog).
+        let releases = await ITunesArtistClient.discography(forArtist: artist.name)
         // Only full-length albums and EPs are auto-maintained; singles/live/comps are noisy.
-        let maintained = releases.filter { $0.kind == .album || $0.kind == .ep }
+        // iTunes lumps singles + EPs together, so distinguish EPs by track count (≥ 4).
+        let maintained = releases.filter {
+            $0.bucket == .albums || ($0.bucket == .singlesAndEPs && ($0.trackCount ?? 0) >= 4)
+        }
 
         // 2. "Have it?" — match against whatever library backend is connected.
         let serverAlbums = await env.serverAlbumsForArtist(artist.name)
@@ -120,36 +111,35 @@ final class MusicSubscriptionEngine: ObservableObject {
             let titleKey = LibraryTrackMatcher.normalize(release.title)
             if haveTitles.contains(titleKey) {
                 statuses.append(.init(id: release.id, title: release.title,
-                                      year: release.releaseYear, coverURL: release.coverArtURL, state: .have))
+                                      year: release.releaseYear, coverURL: release.artworkURL, state: .have))
                 continue
             }
             if requested.contains(release.id) {
                 statuses.append(.init(id: release.id, title: release.title,
-                                      year: release.releaseYear, coverURL: release.coverArtURL, state: .requested))
+                                      year: release.releaseYear, coverURL: release.artworkURL, state: .requested))
                 continue
             }
             guard canFetchAlbums else {
                 // No fetcher (or a track-only plugin that can't pull whole albums): wishlist it.
                 statuses.append(.init(id: release.id, title: release.title,
-                                      year: release.releaseYear, coverURL: release.coverArtURL, state: .pending))
+                                      year: release.releaseYear, coverURL: release.artworkURL, state: .pending))
                 continue
             }
+            // Lidarr resolves by artist + album text (it does its own MusicBrainz lookup).
             let request = AcquisitionRequest(
                 artist: artist.name,
                 albumTitle: release.title,
-                artistMBID: mbid,
-                releaseGroupMBID: release.id,
-                coverURL: release.coverArtURL
+                coverURL: release.artworkURL
             )
             let result = await env.enqueue(request)
             switch result {
             case .started, .alreadyActive:
                 requested.insert(release.id)
                 statuses.append(.init(id: release.id, title: release.title,
-                                      year: release.releaseYear, coverURL: release.coverArtURL, state: .requested))
+                                      year: release.releaseYear, coverURL: release.artworkURL, state: .requested))
             case .notConfigured, .failed:
                 statuses.append(.init(id: release.id, title: release.title,
-                                      year: release.releaseYear, coverURL: release.coverArtURL, state: .pending))
+                                      year: release.releaseYear, coverURL: release.artworkURL, state: .pending))
             }
         }
 
@@ -157,7 +147,6 @@ final class MusicSubscriptionEngine: ObservableObject {
         if let idx = followed.firstIndex(where: { $0.id == artistId }) {
             followed[idx].requestedReleaseIds = requested
             followed[idx].lastChecked = Date()
-            if followed[idx].artistMBID == nil { followed[idx].artistMBID = mbid }
             persist()
         }
         statusByArtist[artistId] = statuses.sorted { ($0.year ?? 0) > ($1.year ?? 0) }

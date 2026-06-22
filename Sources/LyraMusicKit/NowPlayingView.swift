@@ -355,14 +355,18 @@ struct NowPlayingView: View {
                     return
                 }
                 if let url = artworkURL(for: player.activeTrack) {
-                    let p = await ArtworkDynamicGradient.analyzeBackdrop(from: url, style: .nowPlaying)
+                    if let cached = ArtworkDynamicGradient.cachedBackdrop(for: url) {
+                        backdropPalette = cached
+                        return
+                    }
+                    let p = await ArtworkDynamicGradient.analyzeBackdrop(from: url)
                     await MainActor.run { backdropPalette = p }
                     return
                 }
                 if let track = player.activeTrack,
                    isLiveRadio(track),
                    let seedKey = RadioStationMeshArtwork.seedKey(for: track) {
-                    let p = await ArtworkDynamicGradient.analyzeBackdrop(fromMeshSeedKey: seedKey, style: .nowPlaying)
+                    let p = await ArtworkDynamicGradient.analyzeBackdrop(fromMeshSeedKey: seedKey, style: .detail)
                     await MainActor.run { backdropPalette = p }
                     return
                 }
@@ -2592,7 +2596,6 @@ private struct LyricsFocusScrollView: View {
             player.seek(toSeconds: start)
         }
         .animation(.easeInOut(duration: 0.28), value: activeIndex)
-        .animation(.easeInOut(duration: 0.45), value: progress)
     }
 
     /// Light each dot up in sequence (≈⅓, ⅔, 1.0 of the silence elapsed).

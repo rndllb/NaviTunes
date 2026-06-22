@@ -16,7 +16,7 @@ actor ArtistEnrichmentCache {
         let details: TheAudioDBClient.ArtistDetails?
         let topTracks: [LastFmTopTrack]
         let similarArtists: [LastFmSimilarArtist]
-        let releases: [MusicBrainzArtistRelease]
+        let releases: [ITunesArtistAlbum]
         let savedAt: Date
     }
 
@@ -42,7 +42,7 @@ actor ArtistEnrichmentCache {
         details: TheAudioDBClient.ArtistDetails?,
         topTracks: [LastFmTopTrack],
         similarArtists: [LastFmSimilarArtist],
-        releases: [MusicBrainzArtistRelease]
+        releases: [ITunesArtistAlbum]
     ) {
         let k = key(forArtistName: name)
         guard !k.isEmpty else { return }

@@ -48,6 +48,48 @@ extension AlbumSummary {
     }
 }
 
+extension AlbumSummary {
+    /// iTunes / chart titles like ``Circles - Single`` vs server tags ``Circles``.
+    static func browseReleaseTitleLookupVariants(_ raw: String) -> [String] {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        var seen = Set<String>()
+        var out: [String] = []
+        func append(_ value: String) {
+            let key = normalizedReleaseKey(value)
+            guard !key.isEmpty, seen.insert(key).inserted else { return }
+            out.append(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        append(trimmed)
+        let suffixes = [
+            " - Single", " - single", " - SINGLE",
+            " - EP", " - ep",
+            " (Single)", " (single)",
+            " [Single]", " [single]",
+        ]
+        for suffix in suffixes {
+            if trimmed.hasSuffix(suffix) {
+                append(String(trimmed.dropLast(suffix.count)))
+            } else if trimmed.localizedCaseInsensitiveHasSuffix(suffix.trimmingCharacters(in: .whitespaces)) {
+                let cut = trimmed.count - suffix.trimmingCharacters(in: .whitespaces).count
+                if cut > 0 {
+                    append(String(trimmed.prefix(cut)))
+                }
+            }
+        }
+        if let range = trimmed.range(of: #" - (Single|single|EP|ep)$"#, options: .regularExpression) {
+            append(String(trimmed[..<range.lowerBound]))
+        }
+        return out
+    }
+}
+
+private extension String {
+    func localizedCaseInsensitiveHasSuffix(_ suffix: String) -> Bool {
+        lowercased().hasSuffix(suffix.lowercased())
+    }
+}
+
 extension Array where Element == AlbumSummary {
     func firstMatchingNewTabRelease(artist: String, albumTitle: String) -> AlbumSummary? {
         first { $0.matchesNewTabRelease(artist: artist, albumTitle: albumTitle) }

@@ -518,6 +518,8 @@ enum MusicDesign {
     static let albumHeroPrimaryCapsuleWidth: CGFloat = 158
     /// Icon–title gap inside the primary Play capsule (``ServerPlaylistDetailView`` hero).
     static let albumHeroPlayLabelSpacing: CGFloat = 5
+    /// Tighter icon–title gap for library section Play / Shuffle capsules.
+    static let libraryPlayShuffleLabelSpacing: CGFloat = 2
 
     /// Hairline around song-list artwork (Apple Music–style, barely visible).
     static func songRowArtworkBorder(for colorScheme: ColorScheme) -> Color {
@@ -1429,7 +1431,7 @@ struct AlbumHeroPlayShuffleCluster: View {
 
     private func heroCapsuleButton(systemImage: String, title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: MusicDesign.albumHeroPlayLabelSpacing) {
+            HStack(spacing: MusicDesign.libraryPlayShuffleLabelSpacing) {
                 Image(systemName: systemImage)
                 Text(title)
             }
@@ -1453,23 +1455,29 @@ struct LibraryPlayShuffleRow: View {
     var body: some View {
         HStack(spacing: 12) {
             Button(action: onPlay) {
-                Label("Play", systemImage: "play.fill")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(MusicDesign.accent)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 13)
-                    .background(Capsule(style: .continuous).fill(MusicDesign.chromeCapsuleFill))
+                HStack(spacing: MusicDesign.libraryPlayShuffleLabelSpacing) {
+                    Image(systemName: "play.fill")
+                    Text("Play")
+                }
+                .font(.body.weight(.semibold))
+                .foregroundStyle(MusicDesign.accent)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 13)
+                .background(Capsule(style: .continuous).fill(MusicDesign.chromeCapsuleFill))
             }
             .buttonStyle(.plain)
             .disabled(isDisabled)
 
             Button(action: onShuffle) {
-                Label("Shuffle", systemImage: "shuffle")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(MusicDesign.accent)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 13)
-                    .background(Capsule(style: .continuous).fill(MusicDesign.chromeCapsuleFill))
+                HStack(spacing: MusicDesign.libraryPlayShuffleLabelSpacing) {
+                    Image(systemName: "shuffle")
+                    Text("Shuffle")
+                }
+                .font(.body.weight(.semibold))
+                .foregroundStyle(MusicDesign.accent)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 13)
+                .background(Capsule(style: .continuous).fill(MusicDesign.chromeCapsuleFill))
             }
             .buttonStyle(.plain)
             .disabled(isDisabled)

@@ -12,9 +12,9 @@ import AppKit
 enum ArtworkDynamicGradient {
     /// How the flat backdrop tint is sampled from cover art.
     enum BackdropAnalysisStyle: Sendable {
-        /// Album / playlist detail — literal most frequent sRGB on the cover.
+        /// Album / playlist detail + Now Playing — literal most frequent sRGB on the cover.
         case detail
-        /// Now Playing — atmospheric hue wash (legacy).
+        /// Legacy atmospheric hue wash (unused; kept for cache-key compatibility).
         case nowPlaying
     }
 
@@ -109,7 +109,7 @@ enum ArtworkDynamicGradient {
     /// Internet radio mesh artwork → same backdrop analysis path as cover art.
     static func analyzeBackdrop(
         fromMeshSeedKey seedKey: String,
-        style: BackdropAnalysisStyle = .nowPlaying,
+        style: BackdropAnalysisStyle = .detail,
     ) async -> BackdropPalette {
         #if os(iOS)
         let cgImage = await MainActor.run { RadioStationMeshArtwork.renderCGImage(seedKey: seedKey) }

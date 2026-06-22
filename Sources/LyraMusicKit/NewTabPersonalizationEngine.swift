@@ -23,33 +23,29 @@ struct NewTabArtistHighlight: Identifiable {
 /// Personalized shelves for the **New** tab.
 struct NewTabPersonalizedFeed {
     let isPersonalized: Bool
+    /// Charting / taste-ranked **songs** for the hero + Best New Songs shelves.
+    let forYouTracks: [ChartTrack]
     let forYouAlbums: [ChartAlbum]
     let fromYourArtists: [ChartAlbum]
     let discoverAlbums: [ChartAlbum]
     let artistHighlights: [NewTabArtistHighlight]
+    /// Every recent release connected to the user's listening taste (releases by the
+    /// artists they play/follow/favorite, plus affinity-ranked new music), ordered
+    /// newest-first. The New tab splits this by recency into "New This Week" and
+    /// "Recent Releases" so both shelves are taste-driven and never identical.
+    let recentTasteReleases: [ChartAlbum]
 
     var isEmpty: Bool {
-        forYouAlbums.isEmpty && fromYourArtists.isEmpty && discoverAlbums.isEmpty
+        forYouTracks.isEmpty && forYouAlbums.isEmpty && fromYourArtists.isEmpty && discoverAlbums.isEmpty
     }
 }
 
 /// Builds a listening-taste-aware New tab from scrobbles (Tuned In signal), favorites,
-/// followed artists, and MusicBrainz release metadata.
+/// followed artists, and the user's top genres — sourced entirely from Apple's free iTunes
+/// feeds (`ITunesNewReleasesClient`). All requests run concurrently with no rate-limit pacing,
+/// so the personalized feed is ready in ~1–2 s.
 enum NewTabPersonalizationEngine {
     private static let maxArtistFetches = 5
-    private static let mbPacing: Duration = .milliseconds(1100)
-
-    /// Non-personalised feed built from global results only — used for the fast first
-    /// paint while per-artist requests are in flight.
-    static func globalFallbackFeed(from globalAlbums: [ChartAlbum]) -> NewTabPersonalizedFeed {
-        NewTabPersonalizedFeed(
-            isPersonalized: false,
-            forYouAlbums: Array(globalAlbums.prefix(20)),
-            fromYourArtists: [],
-            discoverAlbums: [],
-            artistHighlights: [],
-        )
-    }
 
     struct Context {
         let completedScrobbles: [CompletedScrobble]
@@ -58,30 +54,64 @@ enum NewTabPersonalizationEngine {
         let trackLookup: (String) -> Track?
         let indexedTracks: [Track]
         let ownsAlbum: (String, String) -> Bool
+        let ownsTrack: (String, String) -> Bool
+        /// The user's top genres (canonicalised, most-listened first). Computed by `AppModel`
+        /// from reliably-loaded data — recently played, favorites, and library albums — so it
+        /// doesn't depend on the sparse discovery-track index.
+        let topGenres: [String]
     }
 
-    static func buildFeed(globalAlbums: [ChartAlbum], context: Context) async -> NewTabPersonalizedFeed {
+    static func buildFeed(context: Context) async -> NewTabPersonalizedFeed {
         let taste = buildTasteProfile(context: context)
         let canPersonalize = taste.hasPersonalizationSignal
+        let topGenres = context.topGenres
 
-        let ownedFilteredGlobal = globalAlbums.filter { album in
-            !context.ownsAlbum(album.artistName, album.name)
+        // Genre chart songs + per-artist recent singles, fetched concurrently from iTunes.
+        async let genreSongsTask = ITunesNewReleasesClient.topSongsForGenres(topGenres, perGenre: 20)
+        async let genreReleasesTask = ITunesNewReleasesClient.newReleasesForGenres(topGenres, perGenre: 20)
+        let artistReleases = canPersonalize
+            ? await fetchRecentFromTasteArtists(taste.artists)
+            : []
+        let artistSingles = canPersonalize
+            ? await fetchRecentSinglesFromTasteArtists(taste.artists)
+            : []
+        let genreReleases = await genreReleasesTask
+        let genreSongs = await genreSongsTask
+
+        let notOwnedAlbum: (ChartAlbum) -> Bool = { !context.ownsAlbum($0.artistName, $0.name) }
+        let notOwnedTrack: (ChartTrack) -> Bool = { !context.ownsTrack($0.artistName, $0.name) }
+        let fromYourArtists = artistReleases.filter(notOwnedAlbum)
+        var genrePool = genreReleases.filter(notOwnedAlbum)
+        var songPool = genreSongs.filter(notOwnedTrack)
+
+        // No personal signal at all → fall back to the global charts.
+        if genrePool.isEmpty, fromYourArtists.isEmpty {
+            genrePool = (await ITunesNewReleasesClient.topAlbums(genreId: nil, limit: 30)).filter(notOwnedAlbum)
+        }
+        if songPool.isEmpty, artistSingles.isEmpty {
+            songPool = (await ITunesNewReleasesClient.topSongs(genreId: nil, limit: 30)).filter(notOwnedTrack)
         }
 
-        var fromYourArtists: [ChartAlbum] = []
-        if canPersonalize {
-            fromYourArtists = await fetchRecentFromTasteArtists(taste.artists, context: context)
-        }
+        let isPersonalized = canPersonalize || !topGenres.isEmpty
 
-        let rankedGlobal = rankAlbums(ownedFilteredGlobal, taste: taste)
-        let forYouPool = mergeUnique(fromYourArtists, rankedGlobal.filter { $0.score > 0 }.map(\.album))
+        // Taste-rank pools, then put the user's own artists' releases first.
+        let rankedGenre = rankAlbums(genrePool, taste: taste).map(\.album)
+        let forYouPool = mergeUnique(fromYourArtists, rankedGenre)
+
         let forYouAlbums = Array(forYouPool.prefix(20))
+        let rankedSongs = rankTracks(songPool, taste: taste).map(\.track)
+        let forYouTrackPool = mergeUniqueTracks(artistSingles, rankedSongs)
+        let forYouTracks = diversifyTracks(forYouTrackPool, maxPerArtist: 2, totalLimit: 20)
+        // Newest-first pool the New tab splits into "New This Week" / "Recent Releases".
+        let recentTasteReleases = forYouPool.sorted {
+            ($0.releaseDate ?? .distantPast) > ($1.releaseDate ?? .distantPast)
+        }
 
         let forYouIds = Set(forYouAlbums.map(\.id))
         let fromYourIds = Set(fromYourArtists.map(\.id))
-        let discoverAlbums = ownedFilteredGlobal
+        let discoverAlbums = genrePool
             .filter { !forYouIds.contains($0.id) && !fromYourIds.contains($0.id) }
-            .prefix(canPersonalize ? 12 : 20)
+            .prefix(12)
             .map { $0 }
 
         let highlights = buildArtistHighlights(
@@ -90,22 +120,14 @@ enum NewTabPersonalizationEngine {
             forYouAlbums: forYouAlbums,
         )
 
-        if !canPersonalize {
-            return NewTabPersonalizedFeed(
-                isPersonalized: false,
-                forYouAlbums: Array(ownedFilteredGlobal.prefix(20)),
-                fromYourArtists: [],
-                discoverAlbums: [],
-                artistHighlights: [],
-            )
-        }
-
         return NewTabPersonalizedFeed(
-            isPersonalized: true,
+            isPersonalized: isPersonalized,
+            forYouTracks: forYouTracks,
             forYouAlbums: forYouAlbums,
             fromYourArtists: Array(fromYourArtists.prefix(16)),
             discoverAlbums: Array(discoverAlbums),
             artistHighlights: highlights,
+            recentTasteReleases: recentTasteReleases,
         )
     }
 
@@ -120,6 +142,11 @@ enum NewTabPersonalizationEngine {
 
     private struct ScoredAlbum {
         let album: ChartAlbum
+        let score: Double
+    }
+
+    private struct ScoredTrack {
+        let track: ChartTrack
         let score: Double
     }
 
@@ -198,36 +225,51 @@ enum NewTabPersonalizationEngine {
         return TasteProfile(artists: artists, affinityByKey: affinity)
     }
 
-    // MARK: - MusicBrainz per-artist fetch
+    // MARK: - iTunes per-artist fetch
 
-    private static func fetchRecentFromTasteArtists(
-        _ artists: [NewTabTasteArtist],
-        context: Context,
-    ) async -> [ChartAlbum] {
+    /// Recent albums from the user's top taste artists via iTunes, fetched concurrently and
+    /// biased toward the last few years so "From Artists You Play" feels current.
+    private static func fetchRecentFromTasteArtists(_ artists: [NewTabTasteArtist]) async -> [ChartAlbum] {
+        let candidates = Array(artists.prefix(maxArtistFetches))
+        guard !candidates.isEmpty else { return [] }
+
         var collected: [ChartAlbum] = []
         var seen = Set<String>()
-        let candidates = artists.prefix(maxArtistFetches)
-
-        for (index, artist) in candidates.enumerated() {
-            if index > 0 {
-                try? await Task.sleep(for: mbPacing)
+        await withTaskGroup(of: [ChartAlbum].self) { group in
+            for artist in candidates {
+                group.addTask { await ITunesNewReleasesClient.recentAlbums(forArtist: artist.name, limit: 6) }
             }
-            var mbid = artist.artistMBID
-            if mbid == nil {
-                mbid = await MusicBrainzArtistClient.findArtistId(name: artist.name)
-            }
-            guard let mbid else { continue }
-            guard let albums = try? await MusicBrainzNewReleasesClient.fetchRecentAlbums(
-                forArtistMBID: mbid,
-                limit: 8,
-            ) else { continue }
-
-            for album in albums where !context.ownsAlbum(album.artistName, album.name) {
-                guard seen.insert(album.id).inserted else { continue }
-                collected.append(album)
+            for await albums in group {
+                for album in albums where seen.insert(album.id).inserted {
+                    collected.append(album)
+                }
             }
         }
 
+        let cutoff = Calendar.current.date(byAdding: .year, value: -3, to: Date()) ?? .distantPast
+        let recent = collected.filter { ($0.releaseDate ?? .distantPast) >= cutoff }
+        return (recent.isEmpty ? collected : recent).sorted {
+            ($0.releaseDate ?? .distantPast) > ($1.releaseDate ?? .distantPast)
+        }
+    }
+
+    /// Recent official singles from the user's top taste artists (iTunes discography, not Search).
+    private static func fetchRecentSinglesFromTasteArtists(_ artists: [NewTabTasteArtist]) async -> [ChartTrack] {
+        let candidates = Array(artists.prefix(maxArtistFetches))
+        guard !candidates.isEmpty else { return [] }
+
+        var collected: [ChartTrack] = []
+        var seen = Set<String>()
+        await withTaskGroup(of: [ChartTrack].self) { group in
+            for artist in candidates {
+                group.addTask { await ITunesNewReleasesClient.recentSingles(forArtist: artist.name, limit: 4) }
+            }
+            for await singles in group {
+                for track in singles where seen.insert(track.id).inserted {
+                    collected.append(track)
+                }
+            }
+        }
         return collected
     }
 
@@ -241,6 +283,17 @@ enum NewTabPersonalizationEngine {
             .sorted { lhs, rhs in
                 if lhs.score != rhs.score { return lhs.score > rhs.score }
                 return lhs.album.name.localizedCaseInsensitiveCompare(rhs.album.name) == .orderedAscending
+            }
+    }
+
+    private static func rankTracks(_ tracks: [ChartTrack], taste: TasteProfile) -> [ScoredTrack] {
+        tracks
+            .map { track in
+                ScoredTrack(track: track, score: affinityScore(for: track.artistName, taste: taste))
+            }
+            .sorted { lhs, rhs in
+                if lhs.score != rhs.score { return lhs.score > rhs.score }
+                return lhs.track.name.localizedCaseInsensitiveCompare(rhs.track.name) == .orderedAscending
             }
     }
 
@@ -308,5 +361,33 @@ enum NewTabPersonalizationEngine {
             merged.append(album)
         }
         return merged
+    }
+
+    private static func mergeUniqueTracks(_ primary: [ChartTrack], _ secondary: [ChartTrack]) -> [ChartTrack] {
+        var seen = Set<String>()
+        var merged: [ChartTrack] = []
+        for track in primary + secondary {
+            guard seen.insert(track.id).inserted else { continue }
+            merged.append(track)
+        }
+        return merged
+    }
+
+    /// Prevent one artist from flooding the Best New Songs shelf (common with posthumous catalogs).
+    private static func diversifyTracks(
+        _ tracks: [ChartTrack],
+        maxPerArtist: Int,
+        totalLimit: Int,
+    ) -> [ChartTrack] {
+        var perArtist = [String: Int]()
+        var result: [ChartTrack] = []
+        for track in tracks {
+            let key = LibraryTrackMatcher.normalize(track.artistName)
+            guard perArtist[key, default: 0] < maxPerArtist else { continue }
+            perArtist[key] = perArtist[key, default: 0] + 1
+            result.append(track)
+            if result.count >= totalLimit { break }
+        }
+        return result
     }
 }

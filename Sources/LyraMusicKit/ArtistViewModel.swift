@@ -51,12 +51,12 @@ enum ArtistDiscographyBucket: Hashable {
     case compilations
 }
 
-/// A discography card — either an album on the user's server (playable) or a
-/// MusicBrainz release-group not present locally (links to BrowseAlbumDetailView).
+/// A discography card — either an album on the user's server (playable) or an
+/// iTunes album not present locally (links to BrowseAlbumDetailView for request).
 struct ArtistDiscographyItem: Identifiable, Hashable {
     enum Source: Hashable {
         case libraryAlbum(AlbumSummary)
-        case musicBrainz(MusicBrainzArtistRelease)
+        case remote(ITunesArtistAlbum)
     }
 
     let id: String
@@ -77,15 +77,15 @@ struct ArtistDiscographyItem: Identifiable, Hashable {
         return nil
     }
 
-    var musicBrainzRelease: MusicBrainzArtistRelease? {
-        if case .musicBrainz(let r) = source { return r }
+    var remoteAlbum: ITunesArtistAlbum? {
+        if case .remote(let a) = source { return a }
         return nil
     }
 
     /// True when the card represents a release the user's server doesn't have —
     /// tapping should open the request flow (``BrowseAlbumDetailView`` via the request backend).
     var needsRequest: Bool {
-        if case .musicBrainz = source { return true }
+        if case .remote = source { return true }
         return false
     }
 }
@@ -136,6 +136,18 @@ final class ArtistViewModel: ObservableObject {
         !topSongs.compactMap(\.libraryTrack).isEmpty || !serverTracks.isEmpty
     }
 
+    /// Banner fallback when TheAudioDB has no artist photo: the artist's top album cover
+    /// (newest full album first), so the hero shows real artwork instead of a flat gradient.
+    var fallbackBannerArtworkURL: URL? {
+        let order: [ArtistDiscographyBucket] = [.albums, .singlesAndEPs, .compilations, .live]
+        for bucket in order {
+            if let url = discography[bucket]?.first(where: { $0.artworkURL != nil })?.artworkURL {
+                return url
+            }
+        }
+        return serverAlbums.first(where: { $0.artworkURL != nil })?.artworkURL
+    }
+
     func playbackTracks(for mode: ArtistPlayMode) -> [Track] {
         switch mode {
         case .topSongs:
@@ -165,7 +177,7 @@ final class ArtistViewModel: ObservableObject {
             self.details = cached.details
             self.similarArtists = cached.similarArtists
             self.lastFmTopTracksSnapshot = cached.topTracks
-            self.musicBrainzReleasesSnapshot = cached.releases
+            self.remoteReleasesSnapshot = cached.releases
             self.isLoadingEnrichment = false
         }
 
@@ -173,11 +185,11 @@ final class ArtistViewModel: ObservableObject {
         // Load server catalog first so dependent sections (top songs + discography)
         // can render against real album/track data. Enrichment runs concurrently.
         async let enrichment: Void = loadEnrichment()
-        async let mbDiscography: Void = loadMusicBrainzReleases()
+        async let remoteDiscography: Void = loadRemoteReleases()
         await loadServerCatalog(using: app)
-        _ = await (enrichment, mbDiscography)
+        _ = await (enrichment, remoteDiscography)
         rebuildTopSongs()
-        applyDiscography(releases: musicBrainzReleasesSnapshot, serverAlbums: serverAlbums)
+        applyDiscography(releases: remoteReleasesSnapshot, serverAlbums: serverAlbums)
         isLoadingDiscography = false
 
         await ArtistEnrichmentCache.shared.save(
@@ -185,7 +197,7 @@ final class ArtistViewModel: ObservableObject {
             details: details,
             topTracks: lastFmTopTracksSnapshot,
             similarArtists: similarArtists,
-            releases: musicBrainzReleasesSnapshot
+            releases: remoteReleasesSnapshot
         )
     }
 
@@ -230,7 +242,7 @@ final class ArtistViewModel: ObservableObject {
     }
 
     private var lastFmTopTracksSnapshot: [LastFmTopTrack] = []
-    private var musicBrainzReleasesSnapshot: [MusicBrainzArtistRelease] = []
+    private var remoteReleasesSnapshot: [ITunesArtistAlbum] = []
 
     private func loadEnrichment() async {
         let name = input.displayName
@@ -286,15 +298,8 @@ final class ArtistViewModel: ObservableObject {
         )
     }
 
-    private func loadMusicBrainzReleases() async {
-        let name = input.displayName
-        let releases: [MusicBrainzArtistRelease]
-        if let mbid = await MusicBrainzArtistClient.findArtistId(name: name) {
-            releases = await MusicBrainzArtistClient.releaseGroups(artistId: mbid)
-        } else {
-            releases = []
-        }
-        self.musicBrainzReleasesSnapshot = releases
+    private func loadRemoteReleases() async {
+        self.remoteReleasesSnapshot = await ITunesArtistClient.discography(forArtist: input.displayName)
     }
 
     // MARK: - Section composition
@@ -386,22 +391,21 @@ final class ArtistViewModel: ObservableObject {
     ///   Apple Music does this too — the user asked for the blend behavior on
     ///   the Albums section, with strict singles, and the other secondary
     ///   buckets stay server-faithful.
-    private func applyDiscography(releases: [MusicBrainzArtistRelease], serverAlbums: [AlbumSummary]) {
-        let mbByNormalizedTitle: [String: MusicBrainzArtistRelease] = Dictionary(releases.map {
+    private func applyDiscography(releases: [ITunesArtistAlbum], serverAlbums: [AlbumSummary]) {
+        let remoteByNormalizedTitle: [String: ITunesArtistAlbum] = Dictionary(releases.map {
             (LibraryTrackMatcher.normalize($0.title), $0)
         }, uniquingKeysWith: { first, _ in first })
 
-        // 1. Place each server album into a bucket. Use the MusicBrainz primary/
-        //    secondary-type when we can match by title, otherwise fall back to
-        //    a heuristic on title text and track count.
+        // 1. Place each server album into a bucket. Use the iTunes album's bucket when we can
+        //    match by title, otherwise fall back to a heuristic on title text and track count.
         var bucketed: [ArtistDiscographyBucket: [ArtistDiscographyItem]] = [:]
         var matchedReleaseIds = Set<String>()
         for album in serverAlbums {
             let key = LibraryTrackMatcher.normalize(album.title)
             let bucket: ArtistDiscographyBucket
-            if let mb = mbByNormalizedTitle[key] {
-                matchedReleaseIds.insert(mb.id)
-                bucket = bucketFor(mb)
+            if let remote = remoteByNormalizedTitle[key] {
+                matchedReleaseIds.insert(remote.id)
+                bucket = remote.bucket
             } else {
                 bucket = heuristicBucket(for: album)
             }
@@ -417,25 +421,25 @@ final class ArtistViewModel: ObservableObject {
             ))
         }
 
-        // 2. Blend in MusicBrainz releases that don't have a matching server
-        //    album — only into Albums and Singles & EPs (per the design rule).
+        // 2. Blend in iTunes releases that don't have a matching server album — only into
+        //    Albums and Singles & EPs (per the design rule).
         let serverTrackTitles = Set(serverTracks.map { LibraryTrackMatcher.normalize($0.title) })
-        for mb in releases where !matchedReleaseIds.contains(mb.id) {
-            let bucket = bucketFor(mb)
+        for remote in releases where !matchedReleaseIds.contains(remote.id) {
+            let bucket = remote.bucket
             guard bucket == .albums || bucket == .singlesAndEPs else { continue }
             if bucket == .singlesAndEPs {
-                let titleKey = LibraryTrackMatcher.normalize(mb.title)
+                let titleKey = LibraryTrackMatcher.normalize(remote.title)
                 if serverTrackTitles.contains(titleKey) { continue }
             }
             bucketed[bucket, default: []].append(ArtistDiscographyItem(
-                id: "mb-\(mb.id)",
-                title: mb.title,
-                artist: mb.artistCredit.isEmpty ? input.displayName : mb.artistCredit,
+                id: "itunes-\(remote.id)",
+                title: remote.title,
+                artist: remote.artist.isEmpty ? input.displayName : remote.artist,
                 bucket: bucket,
-                releaseYear: mb.releaseYear,
-                releaseSortDate: Self.parseMusicBrainzDate(mb.firstReleaseDate),
-                artworkURL: mb.coverArtURL,
-                source: .musicBrainz(mb)
+                releaseYear: remote.releaseYear,
+                releaseSortDate: remote.releaseDate,
+                artworkURL: remote.artworkURL,
+                source: .remote(remote)
             ))
         }
 
@@ -456,16 +460,6 @@ final class ArtistViewModel: ObservableObject {
         self.discography = bucketed
     }
 
-    private func bucketFor(_ release: MusicBrainzArtistRelease) -> ArtistDiscographyBucket {
-        switch release.kind {
-        case .album: return .albums
-        case .single, .ep: return .singlesAndEPs
-        case .live: return .live
-        case .compilation: return .compilations
-        case .other: return .albums
-        }
-    }
-
     private func heuristicBucket(for album: AlbumSummary) -> ArtistDiscographyBucket {
         let title = album.title.lowercased()
         if title.range(of: #"\blive\b"#, options: .regularExpression) != nil { return .live }
@@ -477,19 +471,6 @@ final class ArtistViewModel: ObservableObject {
             if n <= 6 { return .singlesAndEPs }
         }
         return .albums
-    }
-
-    /// Parse MusicBrainz `first-release-date` (which can be `yyyy`, `yyyy-MM`, or
-    /// `yyyy-MM-dd`) into a comparable `Date` for newest-first sort.
-    private static func parseMusicBrainzDate(_ raw: String?) -> Date? {
-        guard let raw, !raw.isEmpty else { return nil }
-        var comps = DateComponents()
-        let parts = raw.split(separator: "-")
-        guard let y = Int(parts.first ?? "") else { return nil }
-        comps.year = y
-        if parts.count >= 2, let m = Int(parts[1]) { comps.month = m } else { comps.month = 1 }
-        if parts.count >= 3, let d = Int(parts[2]) { comps.day = d } else { comps.day = 1 }
-        return Calendar(identifier: .gregorian).date(from: comps)
     }
 }
 

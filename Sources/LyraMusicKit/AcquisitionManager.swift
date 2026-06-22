@@ -266,6 +266,7 @@ final class AcquisitionManager: ObservableObject {
                 nativeId: current.nativeId ?? match.nativeId,
                 files: match.files ?? current.files
             )
+            guard merged != current else { continue }
             jobs[key] = merged
             if merged.status.isTerminal, !finishedNotified.contains(key) {
                 finishedNotified.insert(key)
