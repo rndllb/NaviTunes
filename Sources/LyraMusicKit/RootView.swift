@@ -174,6 +174,7 @@ private struct MainShellView: View {
         }
         .environmentObject(app.offline)
         .environmentObject(app.acquisition)
+        .environmentObject(app.subscriptions)
         .task {
             app.scheduleLibraryBootstrap()
             if app.isSignedIn {
@@ -225,6 +226,7 @@ private struct NowPlayingFullScreenCoverModifier: ViewModifier {
                 .environmentObject(app)
                 .environmentObject(app.offline)
                 .environmentObject(app.acquisition)
+                .environmentObject(app.subscriptions)
                 // The root toast overlay is occluded while this cover is up, so the
                 // cover carries its own copy ("1 song added", sleep timer, etc.).
                 // Never both visible at once — the cover is full-screen.
@@ -241,6 +243,7 @@ private struct NowPlayingFullScreenCoverModifier: ViewModifier {
                     .environmentObject(app)
                     .environmentObject(app.offline)
                     .environmentObject(app.acquisition)
+                    .environmentObject(app.subscriptions)
             }
         }
         .animation(
@@ -382,6 +385,7 @@ private struct NowPlayingGestureHost: View {
             .environmentObject(app)
             .environmentObject(app.offline)
             .environmentObject(app.acquisition)
+            .environmentObject(app.subscriptions)
             .scaleEffect(1 - dragProgress * 0.06, anchor: .center)
             .clipShape(RoundedRectangle(cornerRadius: dragProgress * 28, style: .continuous))
             .offset(y: max(0, dragOffset))

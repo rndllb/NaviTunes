@@ -539,9 +539,11 @@ struct LibraryGenresView: View {
                             genreRow(merged.summary)
                         }
                         .buttonStyle(.plain)
-                        .musicChevronRowDivider(.symbolIcon, shows: index < filtered.count - 1)
+                        .musicChevronRowDivider(
+                            .custom(leading: MusicChevronRowMetrics.leadingPadding),
+                            shows: index < filtered.count - 1
+                        )
                     }
-                    .padding(.vertical, 8)
                 }
             }
         }
@@ -554,29 +556,18 @@ struct LibraryGenresView: View {
     }
 
     private func genreRow(_ genre: LibraryGenreSummary) -> some View {
-        HStack(spacing: 16) {
-            Image(systemName: "paintbrush.pointed.fill")
-                .font(.body.weight(.semibold))
-                .foregroundStyle(MusicDesign.accent)
-                .frame(width: 28, alignment: .center)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(genre.name)
-                    .font(.body)
-                    .foregroundStyle(.primary)
-                if let n = genre.albumCount, n > 0 {
-                    Text("\(n) albums")
-                        .font(.caption)
-                        .foregroundStyle(MusicDesign.secondaryLabel)
-                }
-            }
-
+        HStack(alignment: .center, spacing: 0) {
+            Text(genre.name)
+                .font(.body)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
             Spacer(minLength: 8)
-
             MusicNavigationChevron()
         }
+        .frame(maxWidth: .infinity, minHeight: 22, alignment: .center)
         .musicChevronRowPadding()
-        .padding(.vertical, 14)
+        .padding(.top, 14)
+        .padding(.bottom, 14)
         .contentShape(Rectangle())
     }
 
@@ -597,7 +588,9 @@ struct LibraryGenresView: View {
         loadError = nil
         defer { isLoading = false }
         do {
-            genres = try await lib.libraryGenres(limit: 2000)
+            // Same index-first path as Discover genre tiles (`browseGenreCategories`) —
+            // avoids scanning thousands of albums via `libraryGenres`.
+            genres = try await lib.browseGenreCategories(limit: 500)
         } catch {
             loadError = error.localizedDescription
             genres = []

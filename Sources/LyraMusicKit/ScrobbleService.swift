@@ -1,4 +1,3 @@
-import Combine
 import Foundation
 
 struct PendingScrobble: Identifiable, Codable, Equatable {
@@ -192,13 +191,9 @@ final class ScrobbleService {
     private weak var app: AppModel?
     private var processTask: Task<Void, Never>?
     private var timerTask: Task<Void, Never>?
-    private var cancellables = Set<AnyCancellable>()
 
     func bind(app: AppModel) {
         self.app = app
-        store.objectWillChange
-            .sink { [weak app] _ in app?.objectWillChange.send() }
-            .store(in: &cancellables)
         startPeriodicProcessing()
         Task { await processPendingScrobbles() }
     }
