@@ -260,6 +260,12 @@ public final class AppModel: ObservableObject {
     /// removed): never deletes from the playlist.
     @Published private(set) var killModePassedTracks: [String: Set<String>] = [:]
 
+    /// Memoized `pending ∪ passed` per playlist. The auto-advance exclusion predicate is
+    /// hit in tight loops (`refreshEnqueuedNextItem` runs on every transport event), so we
+    /// avoid rebuilding the union Set each call. Cleared on any kill-mode mutation.
+    private var killModeListenedCache: [String: Set<String>] = [:]
+    private func invalidateKillModeListenedCache() { killModeListenedCache.removeAll() }
+
     /// Set of artists the user has manually favorited from ``ArtistPageView``.
     /// Stored as `LibraryTrackMatcher.normalize`d names so the same artist hits the
     /// same key regardless of source (server artist row vs Last.fm row vs typed search).
@@ -2799,6 +2805,7 @@ public final class AppModel: ObservableObject {
         guard killModePendingRemovals[playlistId] != nil else { return }
         killModePendingRemovals[playlistId] = nil
         KillModeStore.savePending(killModePendingRemovals)
+        invalidateKillModeListenedCache()
     }
 
     /// Track ids "kept (green)" — played fully to their natural end under Kill Mode.
@@ -2809,7 +2816,10 @@ public final class AppModel: ObservableObject {
     /// The full "listened" set for a playlist: skipped (red) ∪ kept (green). These are
     /// excluded from future runs so each song plays once until listen history is cleared.
     func killModeListenedTrackIds(playlistId: String) -> Set<String> {
-        killModePendingTrackIds(playlistId: playlistId).union(killModePassedTrackIds(playlistId: playlistId))
+        if let cached = killModeListenedCache[playlistId] { return cached }
+        let set = killModePendingTrackIds(playlistId: playlistId).union(killModePassedTrackIds(playlistId: playlistId))
+        killModeListenedCache[playlistId] = set
+        return set
     }
 
     /// Clears the "kept (green)" set only — kept songs become eligible to play again on
@@ -2819,6 +2829,7 @@ public final class AppModel: ObservableObject {
         guard killModePassedTracks[playlistId] != nil else { return }
         killModePassedTracks[playlistId] = nil
         KillModeStore.savePassed(killModePassedTracks)
+        invalidateKillModeListenedCache()
     }
 
     /// Filters a playlist's tracks for a Kill Mode run: drops already-listened songs so
@@ -2875,6 +2886,7 @@ public final class AppModel: ObservableObject {
             killModePassedTracks[p.id] = passed.isEmpty ? nil : passed
             KillModeStore.savePassed(killModePassedTracks)
         }
+        invalidateKillModeListenedCache()
     }
 
     /// Callback hook from `PlaybackEngine.onTrackCompleted`. Marks the finished track
@@ -2890,12 +2902,14 @@ public final class AppModel: ObservableObject {
         guard passed.insert(track.id).inserted else { return }
         killModePassedTracks[p.id] = passed
         KillModeStore.savePassed(killModePassedTracks)
+        invalidateKillModeListenedCache()
     }
 
     /// Removes the given track ids from the pending list for a playlist and persists. Called
     /// after any successful playlist deletion path so the pending list never references tracks
     /// that are no longer in the playlist. Preserves the relative order of remaining entries.
     private func stripKillModePending(playlistId: String, trackIds: Set<String>) {
+        invalidateKillModeListenedCache()
         // Tracks removed from the playlist no longer exist — drop them from the kept
         // (green) set too so listen history can't reference deleted tracks.
         if var passed = killModePassedTracks[playlistId], !passed.isDisjoint(with: trackIds) {

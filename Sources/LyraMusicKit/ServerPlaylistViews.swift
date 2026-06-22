@@ -1000,6 +1000,12 @@ struct ServerPlaylistDetailView: View {
         if dismissalPhase == .gone {
             dismissalPhase = .idle
         }
+        // Same false-pop story for `isBeingDismissed`: being covered by the Kill Mode
+        // list flips `\.isPresented` to false (DetailDismissTracker sets this true), and
+        // it's never cleared on return — leaving the trailing toolbar items (Kill Mode
+        // button + overflow menu) faded to opacity 0 until the playlist is reopened.
+        // We're appearing, so we are definitively not dismissed.
+        isBeingDismissed = false
         if navigationTitleText.isEmpty {
             if isHomeMix, let mix = activeHomeMix {
                 navigationTitleText = mix.title
