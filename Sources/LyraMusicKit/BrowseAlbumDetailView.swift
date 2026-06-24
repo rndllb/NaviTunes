@@ -22,8 +22,24 @@ struct BrowseAlbumDetailView: View {
     @State private var backdropPalette: ArtworkDynamicGradient.BackdropPalette = .fallback
     @State private var isDownloading = false
     @State private var navigateLibraryAlbum: AlbumSummary?
+    @State private var navigateArtist: ArtistNameNavigation?
     @State private var trackPendingDownloadedDelete: Track?
     @State private var dismissalPhase: CoverZoomTransitionPhase = .idle
+    @State private var isBeingDismissed = false
+    @State private var artistRequestBlocked = false
+
+    private var acquisitionRequestsEnabled: Bool {
+        app.acquisitionConfigured && !artistRequestBlocked
+    }
+
+    init(source: BrowseAlbumDetailSource) {
+        self.source = source
+        let seedURL: URL? = {
+            if case .chartBrowse(_, _, let imageURL, _, _) = source { return imageURL }
+            return nil
+        }()
+        _backdropPalette = State(initialValue: ArtworkDynamicGradient.seededBackdrop(for: seedURL))
+    }
 
     private var matchedLibraryAlbum: AlbumSummary? {
         app.libraryAlbumMatchingBrowseRelease(artist: matchArtist, albumTitle: matchAlbumTitle)
@@ -167,7 +183,7 @@ struct BrowseAlbumDetailView: View {
     }
 
     private var browseLeadingMenuIcon: String {
-        isLibraryPlayback ? "arrow.down.circle" : "plus"
+        isLibraryPlayback ? "arrow.down.circle" : "arrow.down.circle.fill"
     }
 
     /// Leading ⋯ control: offline cache when this release is in your library; acquisition **Request** otherwise.
@@ -211,16 +227,36 @@ struct BrowseAlbumDetailView: View {
             .environment(\.defaultMinListRowHeight, 0)
             .padding(.bottom, 36)
         }
+        .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
         .coverZoomDestination(id: source.coverZoomId, dismissalPhase: $dismissalPhase)
+        .detailDismissTracker(isBeingDismissed: $isBeingDismissed)
+        .onAppear {
+            isBeingDismissed = false
+            if dismissalPhase == .gone { dismissalPhase = .idle }
+        }
         .navigationTitle("")
         .musicNavigationBarTitleDisplayMode(.inline)
         .musicNavigationBarVisibleWhenPushed()
         .musicHeroAlbumNavigationChrome(palette: backdropPalette)
         .toolbar {
-            ToolbarItemGroup(placement: MusicToolbar.trailingItemPlacement) { toolbarButtons }
+            ToolbarItemGroup(placement: MusicToolbar.trailingItemPlacement) {
+                toolbarButtons
+                    .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
+            }
         }
         .navigationDestination(item: $navigateLibraryAlbum) { album in
             ServerPlaylistDetailView(album: album)
+        }
+        .navigationDestination(item: $navigateArtist) { item in
+            ArtistPageView(input: .named(item.id))
+        }
+        .task(id: matchArtist) {
+            guard app.acquisitionConfigured, app.acquisitionCapabilities.granularity == .album else {
+                artistRequestBlocked = false
+                return
+            }
+            let canRequest = await acquisition.canRequestArtist(named: matchArtist)
+            artistRequestBlocked = !canRequest
         }
         .task(id: "\(matchArtist)-\(matchAlbumTitle)-\(albumKindLabel)") {
             await app.reconcileBrowseChartRelease(
@@ -238,9 +274,10 @@ struct BrowseAlbumDetailView: View {
         .onChange(of: app.discoveryLibraryTracks.count) { _, _ in
             recomputeBrowseQueuedRows()
         }
+        .onAppear(perform: seedCachedBrowseBackdropIfNeeded)
         .task(id: "\(displayArtworkURL?.absoluteString ?? "")-\(app.albumBackdropEnabled)-\(colorScheme)") {
             guard app.albumBackdropEnabled else {
-                await MainActor.run { backdropPalette = .listSurface(colorScheme: colorScheme) }
+                backdropPalette = .listSurface(colorScheme: colorScheme)
                 return
             }
             if let cached = ArtworkDynamicGradient.cachedBackdrop(for: displayArtworkURL) {
@@ -248,8 +285,8 @@ struct BrowseAlbumDetailView: View {
                 return
             }
             let p = await ArtworkDynamicGradient.analyzeBackdrop(from: displayArtworkURL)
-            guard await waitForSafeBrowseMutation() else { return }
-            await MainActor.run { backdropPalette = p }
+            guard !Task.isCancelled, dismissalPhase != .gone else { return }
+            backdropPalette = p
         }
         .overlay {
             if (isLoadingTracks || isLoadingPreviewTracks), libraryTracks.isEmpty, previewTracks.isEmpty {
@@ -305,9 +342,12 @@ struct BrowseAlbumDetailView: View {
                     Button {
                         Task { await requestAlbum() }
                     } label: {
-                        Label("Request \(app.acquisitionCapabilities.displayName)", systemImage: "arrow.down.circle.fill")
+                        HStack(spacing: MusicDesign.requestActionLabelSpacing) {
+                            Image(systemName: "arrow.down.circle.fill")
+                            Text("Request \(app.acquisitionCapabilities.displayName)")
+                        }
                     }
-                    .disabled(!app.acquisitionConfigured)
+                    .disabled(!acquisitionRequestsEnabled)
                 }
             }
             .tint(Color.primary)
@@ -328,17 +368,30 @@ struct BrowseAlbumDetailView: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 16)
 
-                Text(displayArtist)
-                    .font(.title3.weight(.regular))
-                    .foregroundStyle(backdropPalette.heroChromeSecondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 20)
+                ArtistNameButton(
+                    name: displayArtist,
+                    font: .title3.weight(.regular),
+                    foreground: backdropPalette.heroChromeSecondary,
+                    lineLimit: nil,
+                    multilineTextAlignment: .center,
+                ) {
+                    navigateArtist = ArtistNameNavigation(id: displayArtist)
+                }
+                .padding(.horizontal, 20)
 
                 if !metadataDetailLine.isEmpty {
                     Text(metadataDetailLine)
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(backdropPalette.heroChromeTertiary)
                         .multilineTextAlignment(.center)
+                }
+
+                if artistRequestBlocked {
+                    Text("This artist isn’t in \(app.acquisitionCapabilities.displayName) and can’t be requested.")
+                        .font(.subheadline)
+                        .foregroundStyle(.orange)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 20)
                 }
             }
 
@@ -391,7 +444,7 @@ struct BrowseAlbumDetailView: View {
                             if isDownloading {
                                 ProgressView().tint(backdropPalette.heroPlayCapsuleForeground)
                             } else {
-                                Label("Request", systemImage: "arrow.down.circle.fill")
+                                RequestActionLabel(font: .headline.weight(.bold))
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.82)
                             }
@@ -403,7 +456,7 @@ struct BrowseAlbumDetailView: View {
                         .background(Capsule().fill(backdropPalette.heroPlayCapsuleBackground))
                     }
                     .buttonStyle(.plain)
-                    .disabled(!app.acquisitionConfigured || isDownloading)
+                    .disabled(!acquisitionRequestsEnabled || isDownloading)
                 }
 
                 if isLibraryPlayback, let first = libraryTracks.first, let lib = app.activeLibrary {
@@ -432,23 +485,12 @@ struct BrowseAlbumDetailView: View {
                     }
                     .disabled(firstSavedOffline)
                 } else {
-                    Button { Task { await primaryBrowseRequestAction() } } label: {
-                        Image(systemName: isDownloading ? "arrow.down.circle" : "plus")
-                            .font(.title3.weight(.bold))
-                            .foregroundStyle(
-                                app.acquisitionConfigured ? backdropPalette.heroGlassIcon : backdropPalette.heroChromeTertiary.opacity(0.4)
-                            )
-                            .frame(width: 54, height: 54)
-                            .background(
-                                Circle().fill(
-                                    app.acquisitionConfigured
-                                        ? backdropPalette.heroGlassCircleFill
-                                        : backdropPalette.heroGlassCircleFillDisabled
-                                )
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!app.acquisitionConfigured || isDownloading)
+                    Image(systemName: "plus")
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(backdropPalette.heroChromeTertiary.opacity(0.45))
+                        .frame(width: 54, height: 54)
+                        .background(Circle().fill(backdropPalette.heroGlassCircleFillDisabled))
+                        .accessibilityLabel("Add to library unavailable until requested")
                 }
             }
             Spacer(minLength: 0)
@@ -605,7 +647,7 @@ struct BrowseAlbumDetailView: View {
                     onAdd: {
                         Task { await requestPreviewTrack(preview) }
                     },
-                    addDisabled: !app.acquisitionConfigured || isRequestingPreview
+                    addDisabled: !acquisitionRequestsEnabled || isRequestingPreview
                 )
             }
         )
@@ -716,6 +758,15 @@ struct BrowseAlbumDetailView: View {
     }
 
     // MARK: - Actions
+
+    private func seedCachedBrowseBackdropIfNeeded() {
+        guard app.albumBackdropEnabled else { return }
+        if let cached = ArtworkDynamicGradient.cachedBackdrop(for: displayArtworkURL) {
+            backdropPalette = cached
+            return
+        }
+        ArtworkDynamicGradient.prefetchBackdrop(for: displayArtworkURL)
+    }
 
     @MainActor
     private func waitForSafeBrowseMutation() async -> Bool {
@@ -843,8 +894,10 @@ struct BrowseAlbumDetailView: View {
     }
 
     private func requestPreviewTrack(_ preview: BrowseAlbumPreviewTrack) async {
-        guard app.acquisitionConfigured else {
-            flashToast("Set up a download plugin in Settings first.")
+        guard acquisitionRequestsEnabled else {
+            flashToast(artistRequestBlocked
+                ? "This artist can't be requested via \(app.acquisitionCapabilities.displayName)."
+                : "Set up a download plugin in Settings first.")
             return
         }
         if libraryTrackMatchingPreview(preview) != nil {
@@ -860,8 +913,10 @@ struct BrowseAlbumDetailView: View {
     }
 
     private func requestAllPreviewTracksSequentially() async {
-        guard app.acquisitionConfigured else {
-            flashToast("Set up a download plugin in Settings first.")
+        guard acquisitionRequestsEnabled else {
+            flashToast(artistRequestBlocked
+                ? "This artist can't be requested via \(app.acquisitionCapabilities.displayName)."
+                : "Set up a download plugin in Settings first.")
             return
         }
         if previewTracks.isEmpty {
@@ -927,8 +982,10 @@ struct BrowseAlbumDetailView: View {
     }
 
     private func requestAlbum() async {
-        guard app.acquisitionConfigured else {
-            flashToast("Set up a download plugin in Settings first.")
+        guard acquisitionRequestsEnabled else {
+            flashToast(artistRequestBlocked
+                ? "This artist can't be requested via \(app.acquisitionCapabilities.displayName)."
+                : "Set up a download plugin in Settings first.")
             return
         }
         isDownloading = true

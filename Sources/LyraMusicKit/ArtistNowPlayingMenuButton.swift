@@ -59,11 +59,11 @@ struct ArtistNowPlayingMenuButton: UIViewRepresentable {
         coordinator.onGoToPlaylist = onGoToPlaylist
 
         let isDarkSystem = context.environment.colorScheme == .dark
-        let hasBackdrop = heroBackdropPalette != nil
+        let palette = heroBackdropPalette
 
         let configSig = [
             artist,
-            hasBackdrop ? "1" : "0",
+            palette.map { $0.prefersDarkHeroChrome ? "dark" : "light" } ?? "none",
             isDarkSystem ? "1" : "0",
             compact ? "1" : "0",
             accentOverride.map { "\($0)" } ?? ""
@@ -75,8 +75,8 @@ struct ArtistNowPlayingMenuButton: UIViewRepresentable {
             cfg.title = artist
             if let accentOverride {
                 cfg.baseForegroundColor = UIColor(accentOverride)
-            } else if hasBackdrop {
-                cfg.baseForegroundColor = UIColor.white.withAlphaComponent(0.55)
+            } else if let palette {
+                cfg.baseForegroundColor = UIColor(palette.heroChromeSecondary)
             } else {
                 cfg.baseForegroundColor = isDarkSystem ? UIColor.white.withAlphaComponent(0.55) : UIColor.secondaryLabel
             }
@@ -91,7 +91,8 @@ struct ArtistNowPlayingMenuButton: UIViewRepresentable {
             cfg.titlePadding = 0
             button.configuration = cfg
             button.tintColor = accentOverride.map { UIColor($0) }
-                ?? (hasBackdrop ? .white : (isDarkSystem ? .white : .label))
+                ?? palette.map { UIColor($0.heroChromeSecondary) }
+                ?? (isDarkSystem ? .white : .label)
         }
 
         let albumLine = albumSubtitle.trimmingCharacters(in: .whitespacesAndNewlines)

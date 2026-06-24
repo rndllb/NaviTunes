@@ -21,6 +21,13 @@ extension AlbumSummary {
         return base
     }
 
+    /// Stable artist + album identity for deduping catalog rows that share a release under different ids.
+    var catalogReleaseIdentityKey: String {
+        let artistKey = Self.normalizedReleaseKey(artist)
+        let titleKey = Self.normalizedAlbumTitleLoose(title)
+        return "\(artistKey)|\(titleKey)"
+    }
+
     /// True when this catalog album is the same release as a **New** tab row (for showing Play).
     func matchesNewTabRelease(artist: String, albumTitle: String) -> Bool {
         let wantArtist = Self.normalizedReleaseKey(artist)

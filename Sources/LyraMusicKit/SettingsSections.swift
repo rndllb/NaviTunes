@@ -395,19 +395,6 @@ struct SettingsPluginsView: View {
     var body: some View {
         Form {
             Section {
-                Toggle(isOn: $app.musicBrainzEnabled) {
-                    SettingsPluginRow(
-                        icon: "globe",
-                        title: "MusicBrainz",
-                        subtitle: "Recent releases in New tab",
-                    )
-                }
-                .onChange(of: app.musicBrainzEnabled) { _, _ in
-                    Task { await app.refreshNewTabBrowse() }
-                }
-            }
-
-            Section {
                 NavigationLink {
                     AcquisitionPluginSettingsView()
                         .environmentObject(app)

@@ -875,6 +875,8 @@ struct NowPlayingView: View {
                         artist: track.artist,
                         albumSubtitle: albumSubtitle,
                         libraryAlbum: libraryAlbum,
+                        heroBackdropPalette: backdropPalette,
+                        accentOverride: usesAccentChrome ? MusicDesign.accent : nil,
                         sourcePlaylist: sourcePlaylistForActiveTrack(track),
                         compact: true,
                         goToAlbumDisabled: libraryAlbum == nil && catalogAlbumFallback(from: track) == nil,
@@ -1036,6 +1038,8 @@ struct NowPlayingView: View {
                 artist: track.artist,
                 albumSubtitle: albumSubtitle,
                 libraryAlbum: libraryAlbum,
+                heroBackdropPalette: backdropPalette,
+                accentOverride: usesAccentChrome ? MusicDesign.accent : nil,
                 sourcePlaylist: {
                     if case .playlist(let p) = player.playbackSource { return p }
                     return nil

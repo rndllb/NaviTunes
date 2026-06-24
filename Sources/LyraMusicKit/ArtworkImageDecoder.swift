@@ -119,6 +119,143 @@ enum ArtworkPlatformImage {
     }
 }
 
+// MARK: - Vertical color bleed (Apple Music Top Picks shelf)
+
+enum ArtworkVerticalBleed {
+    /// Stretches the bottom edge strip of cover art vertically; optional light blur applied in ``HomeTopPickArtworkBleed``.
+    static func cgImage(
+        from source: CGImage,
+        pixelWidth: Int,
+        pixelHeight: Int,
+        stripHeightRatio: CGFloat = 0.05
+    ) -> CGImage? {
+        guard pixelWidth > 0, pixelHeight > 0 else { return nil }
+        let sw = source.width
+        let sh = source.height
+        guard sw > 0, sh > 0 else { return nil }
+
+        let stripH = max(1, Int(round(CGFloat(sh) * stripHeightRatio)))
+        let cropY = sh - stripH
+        guard let strip = source.cropping(to: CGRect(x: 0, y: cropY, width: sw, height: stripH)) else {
+            return nil
+        }
+
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: nil,
+            width: pixelWidth,
+            height: pixelHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+
+        ctx.interpolationQuality = .none
+        ctx.setAllowsAntialiasing(false)
+        ctx.draw(strip, in: CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight))
+        return ctx.makeImage()
+    }
+}
+
+/// Bottom-band fill for ``HomeTopPickCard`` — pixel-stretched artwork colors with progressive blur.
+struct HomeTopPickArtworkBleed: View {
+    let url: URL?
+    let width: CGFloat
+    let height: CGFloat
+    var fallbackColor: Color
+
+    @Environment(\.displayScale) private var displayScale
+    @State private var bleedImage: CGImage?
+
+    var body: some View {
+        Group {
+            if let bleedImage {
+                progressiveBleed(image: bleedImage)
+            } else {
+                fallbackColor
+            }
+        }
+        .frame(width: width, height: height)
+        .clipped()
+        .task(id: taskKey) {
+            await loadBleed()
+        }
+    }
+
+    private func stretchLayer(_ image: CGImage) -> some View {
+        ArtworkPlatformImage.swiftUIImage(cgImage: image)
+            .resizable()
+            .interpolation(.none)
+            .scaledToFill()
+            .frame(width: width, height: height)
+    }
+
+    private func progressiveBleed(image: CGImage) -> some View {
+        ZStack {
+            stretchLayer(image)
+                .blur(radius: MusicDesign.homeTopPickBleedBlurRadiusTop + 1.5, opaque: true)
+
+            stretchLayer(image)
+                .blur(radius: MusicDesign.homeTopPickBleedBlurRadiusBottom, opaque: true)
+                .mask(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .clear, location: 0),
+                            .init(color: .clear, location: 0.34),
+                            .init(color: .white.opacity(0.55), location: 0.5),
+                            .init(color: .white, location: 0.68),
+                            .init(color: .white, location: 1),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom,
+                    ),
+                )
+        }
+        .mask(bleedSeamFadeMask)
+        .clipped()
+    }
+
+    /// Fades the whole bleed in from transparent so no hard line meets the cover.
+    private var bleedSeamFadeMask: LinearGradient {
+        LinearGradient(
+            stops: [
+                .init(color: .clear, location: 0),
+                .init(color: .white.opacity(0.18), location: 0.14),
+                .init(color: .white.opacity(0.52), location: 0.32),
+                .init(color: .white.opacity(0.88), location: 0.5),
+                .init(color: .white, location: 0.68),
+            ],
+            startPoint: .top,
+            endPoint: .bottom,
+        )
+    }
+
+    private var taskKey: String {
+        "\(url?.absoluteString ?? "none")|\(width)|\(height)"
+    }
+
+    private func loadBleed() async {
+        guard let url else {
+            bleedImage = nil
+            return
+        }
+        guard let source = await RemoteArtworkLoad.cgImage(from: url, maxPixelSize: 512) else { return }
+        let scale = max(displayScale, 2)
+        let pxW = max(1, Int((width * scale).rounded()))
+        let pxH = max(1, Int((height * scale).rounded()))
+        let bleed = ArtworkVerticalBleed.cgImage(
+            from: source,
+            pixelWidth: pxW,
+            pixelHeight: pxH,
+            stripHeightRatio: MusicDesign.homeTopPickBleedSourceRatio,
+        )
+        await MainActor.run {
+            bleedImage = bleed
+        }
+    }
+}
+
 /// Remote artwork as `scaledToFill` without SwiftUI `AsyncImage` (avoids ImageIO / BGRx8 noise on some 24‑bpp sources).
 struct RemoteArtworkScaledFill<Placeholder: View>: View {
     let url: URL?

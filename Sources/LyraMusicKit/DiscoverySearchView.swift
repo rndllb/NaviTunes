@@ -13,7 +13,7 @@ enum SearchNavTarget: Hashable {
     case album(AlbumSummary)
     case playlist(PlaylistSummary)
     case artist(LibraryArtistSummary)
-    /// An artist by name only (not in the server library) — resolved via MusicBrainz on
+    /// An artist by name only (not in the server library) — resolved via iTunes on
     /// the artist page so the user can browse and request their discography.
     case namedArtist(String)
     case genre(LibraryGenreSummary)
@@ -151,14 +151,15 @@ private enum RecentSearchEntityStore {
     }
 }
 
-/// An artist found on MusicBrainz that isn't in the server library — surfaced as a
+/// An artist found via iTunes that isn't in the server library — surfaced as a
 /// normal artist result row so missing artists flow into the artist page like server ones.
 private struct NamedArtistMatch: Identifiable, Hashable {
-    let id: String   // MusicBrainz artist id
+    let id: String
     let name: String
+    let artworkURL: URL?
 }
 
-/// One row in the hybrid Discover feed — either a server-catalog hit, a MusicBrainz artist,
+/// One row in the hybrid Discover feed — either a server-catalog hit, an iTunes artist,
 /// or an acquisition request candidate. Server hits already in the user's personal library
 /// are filtered out upstream (they live in the Library tab).
 
@@ -172,7 +173,7 @@ private enum HybridRow: Identifiable {
     var id: String {
         switch self {
         case .serverArtist(let a): return "srv-artist-\(a.id)"
-        case .namedArtist(let a): return "mb-artist-\(a.id)"
+        case .namedArtist(let a): return "itunes-artist-\(a.id)"
         case .serverSong(let t): return "srv-song-\(t.id)"
         case .serverAlbum(let a): return "srv-album-\(a.id)"
         case .acquire(let r): return "acq-\(r.id)"
@@ -281,7 +282,7 @@ struct DiscoverySearchView: View {
             scored.append((.serverArtist(artist), s + 1.0, -1))
         }
 
-        // Artists not on the server (MusicBrainz matches) get the same artist-row treatment
+        // Artists not on the server (iTunes matches) get the same artist-row treatment
         // and priority, so a missing artist surfaces alongside server artists.
         for match in namedArtistMatches {
             let s = Self.relevanceScore(title: match.name, artist: match.name, query: q)
@@ -639,20 +640,20 @@ struct DiscoverySearchView: View {
         .discoverySearchListRowChrome()
     }
 
-    /// Artist not on the server (MusicBrainz match). Visually identical to ``serverArtistRow``
+    /// Artist not on the server (iTunes match). Visually identical to ``serverArtistRow``
     /// and navigates to the same artist page (resolved by name), so the flow is the same.
     private func namedArtistRow(_ match: NamedArtistMatch) -> some View {
         Button {
             recordRecent(.init(
                 kind: .artist,
-                primaryId: "mb:\(match.id)",
+                primaryId: "itunes:\(match.id)",
                 title: match.name,
-                artworkURL: nil,
+                artworkURL: match.artworkURL,
             ))
             navigationPath.append(SearchNavTarget.namedArtist(match.name))
         } label: {
             HStack(spacing: 12) {
-                AlbumArtworkView(url: nil, cornerRadius: rowArtworkSide / 2)
+                AlbumArtworkView(url: match.artworkURL, cornerRadius: rowArtworkSide / 2)
                     .frame(width: rowArtworkSide, height: rowArtworkSide)
                     .clipShape(Circle())
                 VStack(alignment: .leading, spacing: 2) {
@@ -1406,8 +1407,8 @@ struct DiscoverySearchView: View {
         if Task.isCancelled || trimmedQuery != query { return }
         serverResults = server
 
-        // Resolve artists not on the server via MusicBrainz, concurrently with acquisition search.
-        async let mbArtists = MusicBrainzArtistClient.searchArtists(name: query, limit: 5)
+        // Resolve artists not on the server via iTunes, concurrently with acquisition search.
+        async let itunesArtists = ITunesArtistClient.searchArtists(name: query, limit: 5)
 
         let acquire: [AcquisitionResult]
         if acquireOK {
@@ -1420,10 +1421,10 @@ struct DiscoverySearchView: View {
 
         let serverArtistNames = Set(server.artists.map { LibraryTrackMatcher.normalize($0.name) })
         var seenNames = Set<String>()
-        let matches = (await mbArtists).compactMap { artist -> NamedArtistMatch? in
+        let matches = (await itunesArtists).compactMap { artist -> NamedArtistMatch? in
             let norm = LibraryTrackMatcher.normalize(artist.name)
             guard !serverArtistNames.contains(norm), seenNames.insert(norm).inserted else { return nil }
-            return NamedArtistMatch(id: artist.id, name: artist.name)
+            return NamedArtistMatch(id: artist.id, name: artist.name, artworkURL: artist.artworkURL)
         }
         if Task.isCancelled || trimmedQuery != query { return }
         namedArtistMatches = Array(matches.prefix(3))

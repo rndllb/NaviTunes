@@ -7,11 +7,11 @@ import UIKit
 /// (banner extends through the safe area and stretches with overscroll), Top
 /// Songs as a paged horizontal carousel of 4-row columns, classified discography
 /// with size hierarchy (Albums prominent, Singles/EPs/Live/Compilations smaller),
-/// MusicBrainz "Other Releases" the user's server doesn't have, About with inline
-/// MORE expansion, and Similar Artists.
+/// iTunes releases the user's server doesn't have, About with inline MORE expansion,
+/// and Similar Artists.
 ///
 /// Driven by ``ArtistViewModel`` which loads server catalog + Last.fm + TheAudioDB
-/// + MusicBrainz in parallel and publishes each slice independently so sections
+/// + iTunes in parallel and publishes each slice independently so sections
 /// render as their data resolves. Empty slices hide entirely.
 struct ArtistPageView: View {
     @EnvironmentObject private var app: AppModel
@@ -32,6 +32,7 @@ struct ArtistPageView: View {
         ScrollView {
             LazyVStack(spacing: 0) {
                 ArtistHeroSection(model: model, scrollSpace: Self.scrollCoordinateSpace)
+                ArtistAcquisitionBanner(model: model)
 
                 ArtistTopSongsSection(model: model, onGoToAlbum: { navigateAlbum = $0 })
                 ArtistDiscographyCarousel(model: model, bucket: .albums, title: "Albums", layout: .prominent)
@@ -361,6 +362,30 @@ private struct ArtistSectionHeader: View {
     }
 }
 
+// MARK: - Acquisition availability
+
+private struct ArtistAcquisitionBanner: View {
+    @EnvironmentObject private var app: AppModel
+    @ObservedObject var model: ArtistViewModel
+
+    var body: some View {
+        if model.showsCannotRequestBanner {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .foregroundStyle(.orange)
+                Text("This artist is in Apple’s catalog but isn’t available in \(app.acquisitionCapabilities.displayName), so albums here can’t be requested.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(MusicDesign.tertiarySurfaceFill)
+        }
+    }
+}
+
 // MARK: - Top Songs (paginated horizontal carousel: each page is 4 rows tall)
 
 private struct ArtistTopSongsSection: View {
@@ -384,9 +409,12 @@ private struct ArtistTopSongsSection: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(alignment: .top, spacing: 16) {
                         ForEach(Array(pages.enumerated()), id: \.offset) { _, page in
-                            ArtistTopSongsPage(rows: page,
-                                               onRequest: { requestSheetFor = $0 },
-                                               onGoToAlbum: onGoToAlbum)
+                            ArtistTopSongsPage(
+                                rows: page,
+                                canRequest: model.canRequestViaAcquisition,
+                                onRequest: { requestSheetFor = $0 },
+                                onGoToAlbum: onGoToAlbum
+                            )
                         }
                     }
                     .padding(.horizontal, 20)
@@ -414,6 +442,7 @@ private struct ArtistTopSongsSection: View {
 /// peeks in at the trailing edge — Apple Music's paging affordance.
 private struct ArtistTopSongsPage: View {
     let rows: [ArtistTopSongRow]
+    let canRequest: Bool
     let onRequest: (ArtistTopSongRow) -> Void
     let onGoToAlbum: (AlbumSummary) -> Void
 
@@ -428,7 +457,12 @@ private struct ArtistTopSongsPage: View {
     var body: some View {
         VStack(spacing: 0) {
             ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                ArtistTopSongRowView(row: row, onRequest: onRequest, onGoToAlbum: onGoToAlbum)
+                ArtistTopSongRowView(
+                    row: row,
+                    canRequest: canRequest,
+                    onRequest: onRequest,
+                    onGoToAlbum: onGoToAlbum
+                )
                 if index < rows.count - 1 {
                     Rectangle()
                         .fill(MusicDesign.secondaryLabel.opacity(0.18))
@@ -444,6 +478,7 @@ private struct ArtistTopSongsPage: View {
 private struct ArtistTopSongRowView: View {
     @EnvironmentObject private var app: AppModel
     let row: ArtistTopSongRow
+    let canRequest: Bool
     let onRequest: (ArtistTopSongRow) -> Void
     let onGoToAlbum: (AlbumSummary) -> Void
 
@@ -487,7 +522,12 @@ private struct ArtistTopSongRowView: View {
 
                 Spacer(minLength: 6)
 
-                ArtistTopSongOverflowMenu(row: row, onRequest: onRequest, onGoToAlbum: onGoToAlbum)
+                ArtistTopSongOverflowMenu(
+                    row: row,
+                    canRequest: canRequest,
+                    onRequest: onRequest,
+                    onGoToAlbum: onGoToAlbum
+                )
             }
             .padding(.vertical, 6)
             .contentShape(Rectangle())
@@ -501,7 +541,7 @@ private struct ArtistTopSongRowView: View {
                 guard let lib = app.activeLibrary else { return }
                 try? await app.player.playAlbum(library: lib, tracks: [track], startIndex: 0)
             }
-        } else {
+        } else if canRequest {
             onRequest(row)
         }
     }
@@ -514,6 +554,7 @@ private struct ArtistTopSongRowView: View {
 private struct ArtistTopSongOverflowMenu: View {
     @EnvironmentObject private var app: AppModel
     let row: ArtistTopSongRow
+    let canRequest: Bool
     let onRequest: (ArtistTopSongRow) -> Void
     let onGoToAlbum: (AlbumSummary) -> Void
 
@@ -556,7 +597,7 @@ private struct ArtistTopSongOverflowMenu: View {
                 ChartStyleSongOverflowMenuContent(
                     shareItem: "\(row.title) — \(row.artist)",
                     onAdd: { onRequest(row) },
-                    addDisabled: !app.acquisitionConfigured
+                    addDisabled: !app.acquisitionConfigured || !canRequest
                 )
             }
         } label: {
@@ -630,7 +671,11 @@ private struct ArtistDiscographyCarousel: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(alignment: .top, spacing: 14) {
                         ForEach(items) { item in
-                            ArtistDiscographyCard(item: item, layout: layout)
+                            ArtistDiscographyCard(
+                                item: item,
+                                layout: layout,
+                                canRequest: model.canRequestViaAcquisition
+                            )
                         }
                     }
                     .padding(.horizontal, 20)
@@ -644,7 +689,11 @@ private struct ArtistDiscographyCarousel: View {
 private struct ArtistDiscographyCard: View {
     let item: ArtistDiscographyItem
     let layout: DiscographyLayout
+    let canRequest: Bool
 
+    private var showsRequestBadge: Bool {
+        item.needsRequest && canRequest
+    }
     var body: some View {
         NavigationLink {
             destination
@@ -654,7 +703,7 @@ private struct ArtistDiscographyCard: View {
                     ArtistAlbumCardArtwork(url: item.artworkURL, seed: item.title)
                         .frame(width: layout.cardSide, height: layout.cardSide)
                         .clipShape(RoundedRectangle(cornerRadius: MusicDesign.albumCorner, style: .continuous))
-                    if item.needsRequest {
+                    if showsRequestBadge {
                         // Compact glyph in the top-right corner of the cover signals
                         // "not on your server — tap to request via the request backend".
                         Image(systemName: "arrow.down.circle.fill")
@@ -674,7 +723,7 @@ private struct ArtistDiscographyCard: View {
                             .lineLimit(2)
                             .multilineTextAlignment(.leading)
                             .fixedSize(horizontal: false, vertical: true)
-                        if item.needsRequest {
+                        if showsRequestBadge {
                             Image(systemName: "arrow.down.circle")
                                 .font(layout.subtitleFont)
                                 .foregroundStyle(MusicDesign.accent)
@@ -771,7 +820,7 @@ private struct ArtistDiscographyCard: View {
 /// Album-card artwork that always falls back to a seeded gradient (matching the
 /// artist banner) instead of a flat gray rectangle. Uses
 /// ``RemoteArtworkScaledFill`` so when Cover Art Archive returns 404 for a
-/// MusicBrainz release-group, the gradient stays visible (the default
+/// iTunes album artwork, the gradient stays visible (the default
 /// ``AlbumArtworkView`` would show its own music.note placeholder, which the
 /// design brief explicitly calls out as breaking the premium feel).
 private struct ArtistAlbumCardArtwork: View {

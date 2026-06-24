@@ -125,7 +125,7 @@ struct SubscriptionsView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Find any artist on MusicBrainz to browse and request their albums — even ones not in your library.")
+            Text("Find any artist to browse and request their albums — even ones not in your library.")
         }
         .sheet(item: $browseArtist) { target in
             NavigationStack {

@@ -1,12 +1,12 @@
 import Foundation
 
-/// An artist the user "follows". Lyra watches the canonical MusicBrainz discography
+/// An artist the user "follows". Lyra watches the canonical iTunes discography
 /// for them and auto-requests anything missing from the connected server through the
 /// active acquisition plugin. Following works with **zero** plugins — without a fetcher
 /// the missing releases simply surface as a wishlist (see ``SubscriptionReleaseStatus``).
 ///
 /// This is the persisted "wanted" intent. It is intentionally backend-agnostic: the
-/// MusicBrainz floor (`MusicBrainzArtistClient`) supplies the discography regardless of
+/// iTunes Search API (`ITunesArtistClient`) supplies the discography regardless of
 /// which library/acquisition backends the user has configured.
 struct FollowedArtist: Codable, Identifiable, Hashable, Sendable {
     /// Stable id: the artist MBID when known, else a normalized-name fallback so the

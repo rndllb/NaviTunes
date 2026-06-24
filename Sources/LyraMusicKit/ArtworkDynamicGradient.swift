@@ -46,6 +46,21 @@ enum ArtworkDynamicGradient {
         guard let artworkURL else { return nil }
         return paletteCache.object(forKey: cacheKey(artworkURL, style))?.palette
     }
+
+    /// First paint value for detail heroes — uses the memoized palette when available.
+    static func seededBackdrop(for artworkURL: URL?) -> BackdropPalette {
+        cachedBackdrop(for: artworkURL) ?? .fallback
+    }
+
+    /// Warms the palette cache while cover art is on screen so the pushed detail can
+    /// show its backdrop on frame one instead of after decode + analysis.
+    static func prefetchBackdrop(for artworkURL: URL?, style: BackdropAnalysisStyle = .detail) {
+        guard let artworkURL else { return }
+        if cachedBackdrop(for: artworkURL, style: style) != nil { return }
+        Task(priority: .utility) {
+            _ = await analyzeBackdrop(from: artworkURL, style: style)
+        }
+    }
     private static let fallbackHeroSolid = Color(red: 54 / 255, green: 48 / 255, blue: 62 / 255)
 
     /// Neutral fallback for APIs that still ask for gradient stops (single flat color).

@@ -425,7 +425,7 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
     /// Drives the row chip into Add-to-Library vs Download states. Defaults to `true`
     /// so legacy call sites in library-only views keep their current behavior.
     var isInLibrary: Bool = true
-    /// `false` for MusicBrainz / off-server rows that need an acquisition request.
+    /// `false` for iTunes / off-server rows that need an acquisition request.
     var isInServerCatalog: Bool = true
     /// Grey title for tracks that aren't playable yet (e.g. missing from server catalog).
     var greysTitle: Bool = false

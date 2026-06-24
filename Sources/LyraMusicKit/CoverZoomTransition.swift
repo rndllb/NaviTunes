@@ -1,5 +1,26 @@
 import SwiftUI
 
+#if DEBUG
+/// A/B switch for on-simulator verification: launching with
+/// `LYRA_DEBUG_DISABLE_DISMISS_FIXES=1` restores pre-fix dismiss behavior.
+/// Always false in Release.
+let lyraDismissFixesDisabledForAB =
+    ProcessInfo.processInfo.environment["LYRA_DEBUG_DISABLE_DISMISS_FIXES"] != nil
+#else
+let lyraDismissFixesDisabledForAB = false
+#endif
+
+/// Whether pushed album/playlist detail chrome should accept taps. Disabled while
+/// the cover-zoom push/pop is in flight so a finger still down from the list tap
+/// — or a fast re-tap during dismiss — cannot fire Play / Request / + underneath.
+func coverZoomDetailInteractionEnabled(
+    phase: CoverZoomTransitionPhase,
+    isBeingDismissed: Bool = false
+) -> Bool {
+    guard !lyraDismissFixesDisabledForAB else { return true }
+    return !isBeingDismissed && phase == .idle
+}
+
 /// Shared-element "cover zoom" for album / playlist detail pushes.
 ///
 /// Apple-Music-style hero transition built from the stock zoom navigation
@@ -214,11 +235,81 @@ private struct CoverZoomDismissalObserver: UIViewControllerRepresentable {
 }
 #endif
 
+/// Flags a pushed detail view the moment its pop begins.
+struct DetailDismissTracker: ViewModifier {
+    @Environment(\.isPresented) private var isPresented
+    @Binding var isBeingDismissed: Bool
+
+    func body(content: Content) -> some View {
+        content.onChange(of: isPresented) { _, presented in
+            if !presented {
+                if !lyraDismissFixesDisabledForAB { isBeingDismissed = true }
+            }
+        }
+    }
+}
+
+private struct CoverZoomDetailInteractionGate: ViewModifier {
+    @Binding var phase: CoverZoomTransitionPhase
+    @Binding var isBeingDismissed: Bool
+    @State private var interactionArmed = false
+    @State private var armGeneration = 0
+
+    func body(content: Content) -> some View {
+        content
+            .allowsHitTesting(
+                lyraDismissFixesDisabledForAB
+                    || (interactionArmed
+                        && coverZoomDetailInteractionEnabled(
+                            phase: phase,
+                            isBeingDismissed: isBeingDismissed
+                        ))
+            )
+            .onAppear { scheduleInteractionArming() }
+            .onChange(of: phase) { _, _ in scheduleInteractionArming() }
+            .onChange(of: isBeingDismissed) { _, _ in scheduleInteractionArming() }
+    }
+
+    private func scheduleInteractionArming() {
+        guard !lyraDismissFixesDisabledForAB else {
+            interactionArmed = true
+            return
+        }
+        interactionArmed = false
+        guard coverZoomDetailInteractionEnabled(phase: phase, isBeingDismissed: isBeingDismissed) else {
+            return
+        }
+        armGeneration &+= 1
+        let generation = armGeneration
+        Task { @MainActor in
+            // UIKit reports `.idle` before the zoom morph finishes; hold hero
+            // buttons briefly so a list-tap release cannot land on Play / +.
+            try? await Task.sleep(for: .milliseconds(180))
+            guard generation == armGeneration,
+                  coverZoomDetailInteractionEnabled(phase: phase, isBeingDismissed: isBeingDismissed)
+            else { return }
+            interactionArmed = true
+        }
+    }
+}
+
 extension View {
     /// Provides the zoom namespace for one `NavigationStack`. Apply to the
     /// stack itself so cells and pushed destinations share it.
     func coverZoomContext() -> some View {
         modifier(CoverZoomContext())
+    }
+
+    func detailDismissTracker(isBeingDismissed: Binding<Bool>) -> some View {
+        modifier(DetailDismissTracker(isBeingDismissed: isBeingDismissed))
+    }
+
+    /// Gate hero Play / Request / + and track rows during cover-zoom transitions.
+    func coverZoomDetailHitTesting(
+        phase: Binding<CoverZoomTransitionPhase>,
+        isBeingDismissed: Binding<Bool> = .constant(false)
+    ) -> some View {
+        modifier(CoverZoomDetailInteractionGate(phase: phase, isBeingDismissed: isBeingDismissed))
     }
 
     /// Marks an album/playlist cover cell as the zoom origin. `id` must match

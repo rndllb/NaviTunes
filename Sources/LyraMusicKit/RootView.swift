@@ -185,6 +185,12 @@ private struct MainShellView: View {
             guard phase == .active, app.isSignedIn else { return }
             Task { await app.refreshLibraryMembershipIfStale() }
         }
+        .onChange(of: showNowPlaying) { _, presented in
+            app.isNowPlayingCoverPresented = presented
+            #if canImport(UIKit)
+            if !presented { OverPlayerSheetPresenter.shared.dismiss(animated: false) }
+            #endif
+        }
 #if DEBUG
         .onChange(of: app.debugOpenPlayerRequests) { _, _ in
             guard app.player.activeTrack != nil else { return }
@@ -219,6 +225,11 @@ private struct NowPlayingFullScreenCoverModifier: ViewModifier {
         #if os(iOS)
         content.fullScreenCover(isPresented: $isPresented) {
             NowPlayingGestureHost(isPresented: $isPresented)
+                .background {
+                    #if os(iOS)
+                    NowPlayingZoomDestinationInstaller()
+                    #endif
+                }
                 .ignoresSafeArea()
                 .navigationTransition(
                     .zoom(sourceID: "playerArtwork", in: artworkNamespace),
@@ -262,9 +273,10 @@ private struct TabViewMiniPlayerAccessory: View {
     #endif
     @EnvironmentObject private var app: AppModel
     @Binding var showNowPlaying: Bool
-    @ObservedObject var player: PlaybackEngine
-    /// Forwarded into the mini player so the tap button can mark itself as the
-    /// zoom-transition source for the presented full player.
+    /// Forwarded into the mini player. Not ``ObservedObject`` here — observing
+    /// ``PlaybackEngine`` on the accessory re-renders the zoom source mid-transition
+    /// and breaks the ``tabViewBottomAccessory`` ↔ ``fullScreenCover`` morph on iOS 26.
+    let player: PlaybackEngine
     let artworkNamespace: Namespace.ID
 
     private var layout: MiniPlayerLayout {
@@ -276,20 +288,28 @@ private struct TabViewMiniPlayerAccessory: View {
     }
 
     var body: some View {
-        // The matched-transition-source modifier lives here — on the
-        // accessory itself, which is rendered exactly once — instead of inside
-        // ``MiniPlayerView`` on each layout's tap button. During the tab bar's
-        // morph between `.inline` and `.expanded` placements, both layouts
-        // could briefly be alive, registering two sources with the same id;
-        // SwiftUI would then fail to pick one and fall back to the default
-        // `fullScreenCover` slide-up animation. Anchoring at this layer keeps
-        // exactly one source registered no matter what's happening below.
         MiniPlayerView(
             showNowPlaying: $showNowPlaying,
             player: player,
-            layout: layout
+            layout: layout,
+            onRequestExpand: expandNowPlaying
         )
+        .background {
+            #if os(iOS)
+            MiniPlayerZoomSourceAnchor()
+            #endif
+        }
         .matchedTransitionSource(id: "playerArtwork", in: artworkNamespace)
+    }
+
+    private func expandNowPlaying() {
+        // Flip presentation from the accessory layer (same view as the zoom source),
+        // then reconcile playback on the next turn so ``PlaybackEngine`` publishes
+        // don't rebuild this subtree while the transition is pairing.
+        showNowPlaying = true
+        Task { @MainActor in
+            player.reconcilePlaybackSessionAfterUIMilestone()
+        }
     }
 }
 

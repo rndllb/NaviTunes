@@ -18,20 +18,34 @@ struct HomeView: View {
     private let inset: CGFloat = MusicDesign.newTabHorizontalInset
 
     private var topPicksAlbums: [AlbumSummary] {
-        Array(app.recentlyAddedAlbums.prefix(8))
+        if !app.homeTopPickAlbums.isEmpty {
+            return app.homeTopPickAlbums
+        }
+        return Array(app.recentlyAddedAlbums.filter { app.isEligibleForHomeTopPick($0) }.prefix(8))
     }
 
     private var newReleasesAlbums: [AlbumSummary] {
-        Array(app.recentlyAddedAlbums.dropFirst(topPicksAlbums.count).prefix(20))
+        if !app.homeNewReleaseAlbums.isEmpty {
+            return app.homeNewReleaseAlbums
+        }
+        let topPickIds = Set(topPicksAlbums.map(\.id))
+        let topPickReleases = Set(topPicksAlbums.map(\.catalogReleaseIdentityKey))
+        return Array(
+            app.recentlyAddedAlbums.filter {
+                app.isEligibleForHomeTopPick($0)
+                    && !topPickIds.contains($0.id)
+                    && !topPickReleases.contains($0.catalogReleaseIdentityKey)
+            }
+            .prefix(20)
+        )
     }
 
-    /// Most recently added unique artists, derived by walking ``AppModel/recentlyAddedAlbums``
-    /// (already sorted newest-first) and deduping by normalized artist name. Capped at 12 so
-    /// the shelf doesn't run the full library in one row.
+    /// Unique artists from server recently-added albums the user has **not** added to their library.
     private var newlyAddedArtists: [HomeArtistTile] {
         var seen = Set<String>()
         var out: [HomeArtistTile] = []
         for album in app.recentlyAddedAlbums {
+            guard app.isEligibleForHomeTopPick(album) else { continue }
             let normalized = LibraryTrackMatcher.normalize(album.artist)
             guard !normalized.isEmpty else { continue }
             guard seen.insert(normalized).inserted else { continue }
@@ -263,15 +277,21 @@ struct HomeView: View {
 
     private func newArtistCircleTile(artist: HomeArtistTile) -> some View {
         VStack(spacing: 8) {
-            AlbumArtworkView(url: artist.artworkURL, cornerRadius: 60)
-                .frame(width: 110, height: 110)
+            AlbumArtworkView(url: artist.artworkURL, cornerRadius: MusicDesign.artistCircleTileSize / 2)
+                .frame(width: MusicDesign.artistCircleTileSize, height: MusicDesign.artistCircleTileSize)
                 .clipShape(Circle())
             Text(artist.name)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.primary)
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
-                .frame(minWidth: 120, idealWidth: 120, maxWidth: 120, minHeight: 30, alignment: .top)
+                .frame(
+                    minWidth: MusicDesign.artistCircleTileLabelWidth,
+                    idealWidth: MusicDesign.artistCircleTileLabelWidth,
+                    maxWidth: MusicDesign.artistCircleTileLabelWidth,
+                    minHeight: 30,
+                    alignment: .top
+                )
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -321,12 +341,7 @@ struct HomeView: View {
     // MARK: - Cells
 
     private func heroCard(album: AlbumSummary) -> some View {
-        let width: CGFloat = MusicDesign.shelfCardWidth + 60
-        return VStack(alignment: .leading, spacing: 10) {
-            AlbumArtworkView(url: album.artworkURL, cornerRadius: MusicDesign.heroCorner)
-                .frame(width: width, height: width)
-            shelfLabelBlock(title: album.title, subtitle: album.artist, width: width)
-        }
+        HomeTopPickCard(album: album)
     }
 
     private func shelfCard(album: AlbumSummary) -> some View {
@@ -390,4 +405,124 @@ struct HomeView: View {
     /// lines + spacing + one subtitle line. Keeps shelf rows aligned regardless
     /// of how long the individual album/playlist names are.
     private static let shelfLabelBlockMinHeight: CGFloat = 56
+}
+
+// MARK: - Top Picks editorial card
+
+/// Apple Music–style Home shelf card: sharp cover on top, vertically stretched color bleed below, metadata at the bottom.
+private struct HomeTopPickCard: View {
+    let album: AlbumSummary
+
+    @State private var palette: ArtworkDynamicGradient.BackdropPalette
+
+    init(album: AlbumSummary) {
+        self.album = album
+        _palette = State(initialValue: ArtworkDynamicGradient.seededBackdrop(for: album.artworkURL))
+    }
+
+    private var cardWidth: CGFloat { MusicDesign.homeTopPickCardWidth }
+    private var cardHeight: CGFloat { MusicDesign.homeTopPickCardHeight }
+    private var cardCorner: CGFloat { MusicDesign.homeTopPickCardCorner }
+    private var artworkSize: CGFloat { MusicDesign.homeTopPickArtworkSize }
+    private var bleedBandHeight: CGFloat { MusicDesign.homeTopPickBleedBandHeight }
+    private var seamOverlap: CGFloat { MusicDesign.homeTopPickBleedSeamOverlap }
+    private var bleedRenderHeight: CGFloat { bleedBandHeight + seamOverlap }
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            artworkBleedBand
+                .offset(y: artworkSize - seamOverlap)
+
+            coverArtWithSeamFade
+
+            VStack(spacing: 0) {
+                Color.clear
+                    .frame(width: cardWidth, height: artworkSize)
+                bleedMetadataRegion
+                    .frame(width: cardWidth, height: bleedBandHeight)
+            }
+        }
+        .frame(width: cardWidth, height: cardHeight)
+        .clipShape(RoundedRectangle(cornerRadius: cardCorner, style: .continuous))
+        .onAppear {
+            ArtworkDynamicGradient.prefetchBackdrop(for: album.artworkURL)
+        }
+        .task(id: album.artworkURL?.absoluteString ?? album.id) {
+            if let cached = ArtworkDynamicGradient.cachedBackdrop(for: album.artworkURL) {
+                palette = cached
+                return
+            }
+            palette = await ArtworkDynamicGradient.analyzeBackdrop(from: album.artworkURL)
+        }
+    }
+
+    private var coverArtWithSeamFade: some View {
+        AlbumArtworkView(url: album.artworkURL, cornerRadius: 0, showsSubtleBorder: false)
+            .frame(width: artworkSize, height: artworkSize)
+            .mask {
+                VStack(spacing: 0) {
+                    Rectangle().fill(.white)
+                    LinearGradient(
+                        colors: [.white, .clear],
+                        startPoint: .top,
+                        endPoint: .bottom,
+                    )
+                    .frame(height: MusicDesign.homeTopPickArtSeamFadeHeight)
+                }
+            }
+    }
+
+    private var bleedMetadataRegion: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Spacer(minLength: 0)
+            metadataBlock
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 14)
+        .padding(.bottom, 14)
+    }
+
+    private var artworkBleedBand: some View {
+        ZStack(alignment: .top) {
+            HomeTopPickArtworkBleed(
+                url: album.artworkURL,
+                width: cardWidth,
+                height: bleedRenderHeight,
+                fallbackColor: palette.heroSolidBackdropColor,
+            )
+
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0),
+                    .init(color: .clear, location: 0.5),
+                    .init(color: .black.opacity(0.2), location: 0.78),
+                    .init(color: .black.opacity(0.46), location: 1),
+                ],
+                startPoint: .top,
+                endPoint: .bottom,
+            )
+        }
+        .frame(width: cardWidth, height: bleedRenderHeight)
+    }
+
+    private var metadataBlock: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("New Release")
+                .font(.caption)
+                .foregroundStyle(Color.white.opacity(0.55))
+                .lineLimit(1)
+                .padding(.bottom, 2)
+            Text(album.title)
+                .font(.headline.weight(.bold))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(album.artist)
+                .font(.subheadline)
+                .foregroundStyle(Color.white.opacity(0.82))
+                .lineLimit(1)
+                .padding(.top, 1)
+        }
+    }
 }

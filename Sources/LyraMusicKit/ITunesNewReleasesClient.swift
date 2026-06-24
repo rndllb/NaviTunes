@@ -11,7 +11,7 @@ import Foundation
 enum ITunesNewReleasesClient {
     /// Canonical genre name (lowercased, as produced by ``GenreCanonicalizer``) → iTunes genre id.
     static let genreIds: [String: Int] = [
-        "hip-hop": 18, "r&b": 15, "electronic": 7, "metal": 1153, "punk": 1144,
+        "hip-hop": 18, "r&b": 15, "electronic": 7, "lo-fi": 7, "metal": 1153, "punk": 1144,
         "jazz": 11, "blues": 2, "country": 6, "folk": 1062, "reggae": 24,
         "latin": 12, "classical": 5, "gospel": 22, "funk": 15, "alternative": 20,
         "pop": 14, "rock": 21, "soundtrack": 16, "world": 19, "holiday": 8,

@@ -56,7 +56,7 @@ struct PlaylistRowItem: Identifiable, Hashable, Codable {
     }
 }
 
-/// Drives the global “add to playlist” sheet (`MainShellView`).
+/// Drives the global “add to playlist” sheet (``MainShellView`` or Now Playing).
 struct PlaylistPickerPayload: Identifiable {
     let id = UUID()
     let tracks: [Track]

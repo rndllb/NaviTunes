@@ -390,4 +390,67 @@ enum NewTabPersonalizationEngine {
         }
         return result
     }
+
+    // MARK: - Server catalog (Home Top Picks)
+
+    /// Ranks server ``AlbumSummary`` rows by taste; falls back to input order when there is no signal.
+    static func tasteRankedAlbumSummaries(
+        _ albums: [AlbumSummary],
+        context: Context,
+        limit: Int,
+        recentlyAddedOrder: [String: Int] = [:],
+    ) -> [AlbumSummary] {
+        guard !albums.isEmpty else { return [] }
+        let taste = buildTasteProfile(context: context)
+        let topGenres = context.topGenres.map { $0.lowercased() }
+        let hasTasteSignal = taste.hasPersonalizationSignal || !topGenres.isEmpty
+
+        let scored: [(album: AlbumSummary, score: Double)] = albums.map { album in
+            var score = affinityScore(for: album.artist, taste: taste)
+
+            for (idx, genre) in topGenres.prefix(10).enumerated() {
+                let weight = max(0.35, 1.0 - Double(idx) / 10.0)
+                for raw in album.genres {
+                    if GenreCanonicalizer.canonical(for: raw).lowercased() == genre {
+                        score += weight * 2.2
+                        break
+                    }
+                }
+            }
+
+            if let idx = recentlyAddedOrder[album.id] {
+                score += max(0.25, 1.4 - Double(idx) / 35.0)
+            }
+            if let date = album.libraryAddedDate {
+                let age = Date().timeIntervalSince(date)
+                score += max(0, 0.8 - age / (120 * 86_400))
+            }
+
+            return (album, score)
+        }
+
+        let sorted = scored.sorted { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            return lhs.album.title.localizedCaseInsensitiveCompare(rhs.album.title) == .orderedAscending
+        }
+
+        if !hasTasteSignal || sorted.allSatisfy({ $0.score <= 0.01 }) {
+            return dedupedAlbumSummaries(from: albums, limit: limit)
+        }
+
+        return dedupedAlbumSummaries(from: sorted.map(\.album), limit: limit)
+    }
+
+    private static func dedupedAlbumSummaries(from albums: [AlbumSummary], limit: Int) -> [AlbumSummary] {
+        var seenIDs = Set<String>()
+        var seenReleases = Set<String>()
+        var result: [AlbumSummary] = []
+        for album in albums {
+            guard seenIDs.insert(album.id).inserted else { continue }
+            guard seenReleases.insert(album.catalogReleaseIdentityKey).inserted else { continue }
+            result.append(album)
+            if result.count >= limit { break }
+        }
+        return result
+    }
 }

@@ -32,11 +32,14 @@ There is no single backend field for this. The accurate approach is hybrid:
 
 Limitation of the local-stamp path: actions taken outside this app (Jellyfin web UI, other clients) won't appear with an accurate "added" date until the user touches them here.
 
+`isAlbumInLibrary(_:)` returns true when the album is in `libraryAlbumEntries` **or** any indexed track on that album is in `librarySongIds`.
+
 ## Server catalog vs personal library (do not confuse these)
 
 The app surfaces two distinct collections. The naming is a footgun — `AppModel.libraryAlbums` is the **whole server catalog**, not "your library".
 
 - **Server catalog** — every album/track on the connected Navidrome / Jellyfin instance. Loaded via `MusicLibraryProviding.albums(limit:)` → Subsonic `getAlbumList2` / Jellyfin `Items?IncludeItemTypes=MusicAlbum`. Cached in `AppModel.libraryAlbums` / `recentlyAddedAlbums`. Server-wide search is `MusicLibraryProviding.searchCatalog(query:)` → Subsonic `search3` / Jellyfin `Items?searchTerm=…`.
+- **Home discovery shelves** (Top Picks, New Releases, genre rows, New Artists Added) surface **server catalog only** — albums the user has **not** added to their magic playlist (`AppModel.isEligibleForHomeTopPick`). Top Picks + New Releases are taste-ranked via `NewTabPersonalizationEngine.tasteRankedAlbumSummaries`; genre rows use `listeningTopGenres()`.
 - **Personal library (Lyra "My Library" magic playlist)** — a per-user opaquely-named playlist (`__lyra_<sha12>`) Lyra creates on the backend. Its contents are the canonical "what *I* added" set, synced across devices:
   - Playlist tracks → `AppModel.librarySongIds: Set<String>`
   - `comment` (Subsonic) / `Overview` (Jellyfin) JSON → `LibraryMembershipPayload` → `libraryAlbumEntries` + `libraryPlaylistEntries` (each entry carries a per-item `added` date so "Recently Added (yours)" is accurate).
@@ -57,16 +60,16 @@ All "request missing music" flows funnel through one swappable abstraction so ba
 - **Call sites**: UI never touches a concrete plugin. Build an `AcquisitionRequest` and call `AppModel.requestAcquisition(_:)` (`DiscoverySearchView`, `BrowseAlbumDetailView`, `ServerPlaylistViews`, `MusicNewTabView`). Gate affordances on `app.acquisitionCapabilities` (`supportsTrackSearch`, `granularity`). Album-level plugins request the whole release for missing-track rows.
 - **Settings**: `SettingsView` → Plugins → **Music Requests** (renamed from "Downloads") opens `AcquisitionPluginSettingsView` — active-plugin picker, capability-driven config fields, Test Connection (`provider.validate()`), and a unified Activity list (`acquisition.displayJobs`, includes server-side items started outside Lyra). (The offline-media "Downloads" section under Settings is a separate thing.)
 - **Completion**: `AppModel.handleAcquisitionJobFinished` (backend-agnostic) triggers a server scan and retries `searchCatalog` until the new file surfaces, then adds it to the personal library.
-- **Request an artist not in your library**: Discover search surfaces MusicBrainz artist matches as normal artist rows (`MusicBrainzArtistClient.searchArtists`), and Settings → Following has an "Add artist" entry. Both open `ArtistPageView(input: .named(...))`, which resolves the discography on MusicBrainz and lets you request individual albums.
+- **Request an artist not in your library**: Discover search surfaces iTunes artist matches as normal artist rows (`ITunesArtistClient.searchArtists`), and Settings → Following has an "Add artist" entry. Both open `ArtistPageView(input: .named(...))`, which resolves the discography via iTunes and lets you request individual albums.
 
 To add a backend: add a `case` to `AcquisitionPluginKind`, write one `*AcquisitionPlugin.swift`, and register it in `AcquisitionManager.makeProvider`. No feature-code changes.
 
 ## Follow-artist completeness (subscriptions)
 
-The "Lidarr-style brain" — keep a followed artist's discography complete — but it **lives in the app**, so it works with *any* subset of plugins. The only hard dependency is the always-available MusicBrainz floor (`MusicBrainzArtistClient`); acquisition/library backends are optional accelerators.
+The "Lidarr-style brain" — keep a followed artist's discography complete — but it **lives in the app**, so it works with *any* subset of plugins. The only hard dependency is the always-available iTunes Search API floor (`ITunesArtistClient`); acquisition/library backends are optional accelerators.
 
 - **Models/store** (`MusicSubscriptionModels.swift`): `FollowedArtist` (persisted "wanted" intent; id = MBID or normalized-name fallback; tracks `requestedReleaseIds` so re-checks don't re-enqueue), `SubscriptionReleaseStatus` (`.have`/`.requested`/`.pending` UI status), and `MusicSubscriptionStore` (JSON in `Application Support/LyraMusic/subscriptions.json`, same layout as `LibrarySnapshotStore`).
-- **Engine** (`MusicSubscriptionEngine.swift`, `@MainActor`): env-injected (no `AppModel` internals) so it stays testable. `check(artistId:)` = canonical discography (MusicBrainz) → diff against the connected server (`serverAlbumsForArtist`, normalized-title match, any backend) → enqueue missing albums/EPs through the **active acquisition plugin**. Graceful degradation: with no plugin (or a track-only one that can't pull whole albums) missing releases become `.pending` (wishlist) instead of disabling the feature. `checkAll()` paces MusicBrainz at ~1 req/s.
+- **Engine** (`MusicSubscriptionEngine.swift`, `@MainActor`): env-injected (no `AppModel` internals) so it stays testable. `check(artistId:)` = canonical discography (iTunes) → diff against the connected server (`serverAlbumsForArtist`, normalized-title match, any backend) → enqueue missing albums/EPs through the **active acquisition plugin**. Graceful degradation: with no plugin (or a track-only one that can't pull whole albums) missing releases become `.pending` (wishlist) instead of disabling the feature. `checkAll()` paces iTunes artist fetches.
 - **AppModel** owns `subscriptions` (built in `init`, forwards `objectWillChange`); `serverAlbums(forArtistName:)` is the "have it?" probe; `refreshSubscriptions()` runs a pass. The engine calls `acquisition.enqueue` directly (not `requestAcquisition`) to avoid per-album toasts.
 - **UI**: `ArtistFollowButton` (bell toggle in the artist-page toolbar, always shown — following without a plugin is a valid wishlist) and `SubscriptionsView` (Settings → Plugins → **Following**: per-artist status, "Check now", unfollow; banner when no download plugin is configured).
 - **Capability gating**: auto-fetch only when `acquisition.isConfigured` **and** `capabilities.granularity == .album`. Everything keys off capabilities, never a named plugin.
@@ -80,6 +83,30 @@ The "Lidarr-style brain" — keep a followed artist's discography complete — b
 - Synthetic playlist IDs: `__lyra_home_mix:<mixId>` via `HomeMix.asPlaylistSummary()`.
 - Library → Playlists surfaces mixes when `AppModel.showHomeMixesInPlaylists` is true (Settings → Library & Data).
 - Mix detail: `ServerPlaylistDetailView(homeMixId:)` — album-style UI, mosaic hero, no remove-from-playlist.
+
+## Home discovery shelves
+
+- **Top Picks** (`homeTopPickAlbums`, 8) + **New Releases** (`homeNewReleaseAlbums`, 20) — one taste-ranked pass over a server-catalog candidate pool (`recentlyAddedAlbums`, server recently played, top-3 taste-genre albums). Ranked by `NewTabPersonalizationEngine.tasteRankedAlbumSummaries`.
+- **Eligibility** — `isEligibleForHomeTopPick` excludes magic-playlist albums (`libraryAlbumEntries` + release-identity match via `catalogReleaseIdentityKey`). Does **not** use `libraryAlbumReleaseIndex` (whole server catalog).
+- **Genre shelves** — session-locked `homeSelectedGenres` from `listeningTopGenres()` mapped onto server genres; 9 albums per shelf; filtered with `homeDiscoveryCatalogAlbums`.
+- **UI** — `HomeTopPickCard` editorial cards (250×325, vertical color bleed via `HomeTopPickArtworkBleed` / `ArtworkVerticalBleed`).
+- Rebuild hooks: `refreshHome()`, library refresh, magic-playlist membership changes (`addAlbumToLibrary` / `removeAlbumFromLibrary` / `applyMagicPlaylistFetch`).
+
+## New tab (iTunes browse)
+
+- **No MusicBrainz browse** — `refreshNewTabBrowse()` builds from `ITunesNewReleasesClient` + `NewTabPersonalizationEngine` only. `musicBrainzEnabled` and `MusicBrainzArtistClient` / `MusicBrainzTracklistClient` were removed.
+- `newTabBrowseBackend` is `.appleMusic` (iTunes) on success.
+- Off-server album rows use `ITunesTracklistClient`; artist pages use `ITunesArtistClient.discography`.
+
+## Artist navigation & Now Playing chrome
+
+- `ArtistNavigation.swift` / `ArtistNameButton` — programmatic artist pushes (avoids nested `NavigationLink` on album detail). “Various Artists” is not tappable.
+- `ArtistNowPlayingMenuButton` — UIKit menu on iOS; uses `heroChromeSecondary` from backdrop palette when a track is playing (fixes white-on-white artist text on light artwork).
+- `OverPlayerSheetPresenter` — presents `AddToPlaylistSheet` above the Now Playing `fullScreenCover` without entering SwiftUI’s sheet tree (preserves mini-player zoom transition). `RootView` mirrors `isNowPlayingCoverPresented` into `AppModel`.
+
+## Genres
+
+`GenreCanonicalizer` rolls server subgenres into ~20 main genres. **Lo-Fi** is its own bucket (includes boom bap / chillhop keywords); boom bap was removed from Hip-Hop.
 
 ## Lyrics
 
@@ -119,9 +146,9 @@ If you wire a new action that ends in a queue/library/playlist mutation and a us
 
 - **Library** (`SettingsLibrarySectionView`) — two stat groups: **Your Library** (`librarySongIds` / `libraryAlbumEntries` / `libraryPlaylistEntries`) vs **Server Catalog** (`AppModel.libraryStatistics`). Stats refresh via `.task` on appear and when the hub appears (`refreshLibraryStatistics()`).
 - **Appearance** — `accentPresetId` + `customAccentHex` tint UI chrome (`MusicDesign.accent`); `appIconPresetId` is **independent** (home-screen icon via `AppAlternateIconSync`) — changing the accent does **not** change the icon and vice versa. Login logo uses `appIconPresetId`, not accent. Settings views use `MusicDesign.settingsBackground` (`systemGroupedBackground`) so light-mode cells stand out, not flat `systemBackground`.
-- **Plugins** — MusicBrainz toggle, **Music Requests** (acquisition / Lidarr), Following (subscriptions).
+- **Plugins** — **Music Requests** (acquisition / Lidarr), Following (subscriptions).
 
-**Genres** — `Library → Genres` (`LibraryGenresView`) rolls noisy server subgenres up into ~20 main genres via `GenreCanonicalizer` (e.g. "Acid Jazz" → Jazz, "Alternative & Indie" → Alternative). Merged rows fetch albums across **all** source subgenres (`LibraryGenreAlbumsView(sourceGenres:)`), deduped. The keyword table in `GenreCanonicalizer` is first-match-wins and easy to tweak.
+**Genres** — `Library → Genres` (`LibraryGenresView`) rolls noisy server subgenres up into ~20 main genres via `GenreCanonicalizer` (e.g. "Acid Jazz" → Jazz, "Boom Bap" → Lo-Fi). Merged rows fetch albums across **all** source subgenres (`LibraryGenreAlbumsView(sourceGenres:)`), deduped. The keyword table in `GenreCanonicalizer` is first-match-wins and easy to tweak.
 
 **Backdrop / detail performance** — album/playlist detail backdrop palettes are memoized in `ArtworkDynamicGradient` keyed by the **stable** part of the artwork URL (path + cover-id/size/tag — auth params like Subsonic salt / Jellyfin `api_key` vary per request and would otherwise miss). Detail views seed the palette synchronously from that cache (no pop-in on revisit) and fade in on first compute. Album track lists hydrate instantly from `AppModel.albumTracksCache` (same as playlists).
 
@@ -197,10 +224,11 @@ Document for contributors — not an exhaustive bug list:
 
 | Issue | Notes |
 |-------|--------|
-| Some overflow rows | A few chart-preview action stubs remain. (`Start Collaboration` / `Move to Folder` were removed.) |
+| Some overflow rows | A few chart-preview action stubs remain. |
 | Plain unsynced lyrics | No auto-scroll by design. |
-| Jellyfin “similar tracks” | Now uses the real `/Items/{id}/Similar` endpoint, with the old artist-shuffle as a fallback when the server returns nothing. Navidrome has no equivalent. |
+| Jellyfin “similar tracks” | Uses `/Items/{id}/Similar` with artist-shuffle fallback. Navidrome has no equivalent. |
 | Home mixes | Minimum 3 tracks per mix; still needs enough scrobble/history signal for On Repeat / Rediscover. |
+| Home taste shelves | Empty until library/taste data loads; shelves omit albums already in your magic playlist. |
 | Navidrome Settings stats | Song totals sum album `trackCount` — may differ slightly from true track count on odd tagging. Very large libraries use paginated album/artist fetches but song sum still depends on indexed album metadata. |
 | EQ on live streams | Requires local cache or download; first uncached play is AVPlayer until background cache + handoff (or replay). |
 | Stream cache during AVPlayer | Opportunistic `CachingResourceLoaderDelegate` commits may not write on current iOS; EQ `ensureCached` / `prefetchInBackground` is the supported cache path. |
