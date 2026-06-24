@@ -35,6 +35,7 @@ struct NewTabChartListView: View {
     @State private var navigateLibraryTrack: Track?
     @State private var navigateLibraryAlbum: AlbumSummary?
     @State private var browseChartSingle: ChartTrack?
+    @State private var navigateArtist: ArtistNameNavigation?
 
     private var itemSize: SongListItemSize { app.songListItemSize }
 
@@ -78,6 +79,9 @@ struct NewTabChartListView: View {
                 kind: track.browseKind,
                 albumId: track.id
             ))
+        }
+        .navigationDestination(item: $navigateArtist) { item in
+            ArtistPageView(input: .named(item.id))
         }
     }
 
@@ -138,10 +142,9 @@ struct NewTabChartListView: View {
                     .font(itemSize.titleFont.weight(.semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                Text(artist)
-                    .font(itemSize.subtitleFont)
-                    .foregroundStyle(MusicDesign.secondaryLabel)
-                    .lineLimit(1)
+                ArtistNameButton(name: artist, font: itemSize.subtitleFont) {
+                    navigateArtist = ArtistNameNavigation(id: artist)
+                }
             }
             Spacer(minLength: 8)
         }
@@ -170,6 +173,7 @@ struct NewTabChartAlbumsGridView: View {
 
     @EnvironmentObject private var app: AppModel
     @State private var navigateLibraryAlbum: AlbumSummary?
+    @State private var navigateArtist: ArtistNameNavigation?
 
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: MusicDesign.gridMinCell), spacing: 16, alignment: .top)]
@@ -200,6 +204,9 @@ struct NewTabChartAlbumsGridView: View {
         .navigationDestination(item: $navigateLibraryAlbum) { album in
             ServerPlaylistDetailView(album: album)
         }
+        .navigationDestination(item: $navigateArtist) { item in
+            ArtistPageView(input: .named(item.id))
+        }
     }
 
     @ViewBuilder
@@ -208,7 +215,10 @@ struct NewTabChartAlbumsGridView: View {
             Button {
                 navigateLibraryAlbum = lib
             } label: {
-                NewTabChartAlbumGridCell(album: album)
+                NewTabChartAlbumGridCell(
+                    album: album,
+                    onArtistTap: { navigateArtist = ArtistNameNavigation(id: album.artistName) },
+                )
                     .coverZoomSource(id: lib.id)
             }
             .buttonStyle(.plain)
@@ -223,7 +233,10 @@ struct NewTabChartAlbumsGridView: View {
             NavigationLink {
                 BrowseAlbumDetailView(source: source)
             } label: {
-                NewTabChartAlbumGridCell(album: album)
+                NewTabChartAlbumGridCell(
+                    album: album,
+                    onArtistTap: { navigateArtist = ArtistNameNavigation(id: album.artistName) },
+                )
                     .coverZoomSource(id: source.coverZoomId)
             }
             .buttonStyle(.plain)
@@ -233,6 +246,7 @@ struct NewTabChartAlbumsGridView: View {
 
 private struct NewTabChartAlbumGridCell: View {
     let album: ChartAlbum
+    let onArtistTap: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -242,10 +256,7 @@ private struct NewTabChartAlbumGridCell: View {
                 .foregroundStyle(.primary)
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
-            Text(album.artistName)
-                .font(.caption)
-                .foregroundStyle(MusicDesign.secondaryLabel)
-                .lineLimit(1)
+            ArtistNameButton(name: album.artistName, font: .caption, onTap: onArtistTap)
         }
     }
 }

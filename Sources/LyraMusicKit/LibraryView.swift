@@ -1039,6 +1039,8 @@ struct FavoritePlaylistView: View {
     @State private var showDownloadedFavoritesActions = false
     @State private var navigateAlbum: AlbumSummary?
     @State private var trackPendingDownloadedDelete: Track?
+    @State private var dismissalPhase: CoverZoomTransitionPhase = .idle
+    @State private var isBeingDismissed = false
 
     private var displayTitle: String {
         downloadsOnly ? "Downloaded Favorites" : "Favorite Songs"
@@ -1114,7 +1116,13 @@ struct FavoritePlaylistView: View {
             .scrollContentBackground(.hidden)
             .background(Color.clear)
         }
-        .coverZoomDestination(id: "__favorite_songs__")
+        .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
+        .coverZoomDestination(id: "__favorite_songs__", dismissalPhase: $dismissalPhase)
+        .detailDismissTracker(isBeingDismissed: $isBeingDismissed)
+        .onAppear {
+            isBeingDismissed = false
+            if dismissalPhase == .gone { dismissalPhase = .idle }
+        }
         .navigationTitle("")
         .musicNavigationBarTitleDisplayMode(.inline)
         .musicFavoriteSongsNavigationChrome()
@@ -1124,6 +1132,7 @@ struct FavoritePlaylistView: View {
         .toolbar { favoriteDetailToolbar }
         .navigationDestination(item: $navigateAlbum) { album in
             ServerPlaylistDetailView(album: album, librarySource: true)
+                .onDisappear { navigateAlbum = nil }
         }
         .task { await load() }
         .onChange(of: app.libraryCatalogEpoch) { _, _ in
@@ -1176,6 +1185,7 @@ struct FavoritePlaylistView: View {
                     .foregroundStyle(.primary)
             }
             .menuOrder(.fixed)
+            .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
         }
     }
 
@@ -1364,7 +1374,7 @@ struct FavoritePlaylistView: View {
                 }
             },
             hasActiveQueue: app.hasActivePlaybackQueue,
-            onGoToAlbum: { navigateAlbum = app.albumSummary(for: track) },
+            onGoToAlbum: { openFavoriteSongAlbumDetail(for: track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
             onRemoveFromLibrary: app.isSongInLibrary(track.id)
                 ? { Task { await app.removeSongFromLibrary(track) } } : nil,
@@ -1389,6 +1399,18 @@ struct FavoritePlaylistView: View {
     private func scopedTracks(_ loaded: [Track]) -> [Track] {
         guard downloadsOnly else { return loaded }
         return loaded.filter { app.offline.downloadedTrackIds.contains($0.id) }
+    }
+
+    private func openFavoriteSongAlbumDetail(for track: Track) {
+        let album = app.albumSummary(for: track)
+        if navigateAlbum?.id == album.id {
+            navigateAlbum = nil
+            DispatchQueue.main.async {
+                navigateAlbum = album
+            }
+        } else {
+            navigateAlbum = album
+        }
     }
 
     private func load() async {

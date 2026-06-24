@@ -9,6 +9,7 @@ struct MusicNewTabView: View {
     @State private var navigateLibraryTrack: Track?
     @State private var navigateLibraryAlbum: AlbumSummary?
     @State private var browseChartSingle: ChartTrack?
+    @State private var navigateArtist: ArtistNameNavigation?
     /// Shows the custom **New** + profile row; driven by vertical scroll offset via ``onScrollGeometryChange``.
     @State private var newTabShowFloatingHeader = true
 
@@ -103,6 +104,9 @@ struct MusicNewTabView: View {
                     kind: tr.browseKind,
                     albumId: tr.id
                 ))
+            }
+            .navigationDestination(item: $navigateArtist) { item in
+                ArtistPageView(input: .named(item.id))
             }
             .navigationDestination(for: NewTabSectionDestination.self) { section in
                 NewTabSectionDetailView(section: section)
@@ -305,11 +309,9 @@ struct MusicNewTabView: View {
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                Text(track.artistName)
-                    .font(.subheadline)
-                    .foregroundStyle(MusicDesign.secondaryLabel)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                ArtistNameButton(name: track.artistName, font: .subheadline) {
+                    navigateArtist = ArtistNameNavigation(id: track.artistName)
+                }
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxWidth: .infinity, minHeight: NewTabHeroMetrics.titleArtistBlockHeight, maxHeight: NewTabHeroMetrics.titleArtistBlockHeight, alignment: .topLeading)
@@ -395,8 +397,7 @@ struct MusicNewTabView: View {
         ZStack(alignment: .topTrailing) {
             ZStack(alignment: .bottomLeading) {
                 NewTabHeroArtwork(
-                    releaseGroupId: track.id,
-                    fallbackURL: track.imageURL,
+                    imageURL: track.imageURL,
                     seed: track.artistName + track.name,
                     cardWidth: cardWidth,
                     imageHeight: imageHeight,
@@ -553,10 +554,9 @@ struct MusicNewTabView: View {
                     .font(.body.weight(.semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                Text(track.artistName)
-                    .font(.subheadline)
-                    .foregroundStyle(MusicDesign.secondaryLabel)
-                    .lineLimit(1)
+                ArtistNameButton(name: track.artistName) {
+                    navigateArtist = ArtistNameNavigation(id: track.artistName)
+                }
             }
             Spacer(minLength: 8)
         }
@@ -597,19 +597,19 @@ struct MusicNewTabView: View {
 
     private func artistHighlightCard(highlight: NewTabArtistHighlight) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            AlbumArtworkView(url: highlight.imageURL, cornerRadius: MusicDesign.albumCorner)
-                .frame(width: MusicDesign.shelfCardWidth, height: MusicDesign.shelfCardWidth)
+            AlbumArtworkView(url: highlight.imageURL, cornerRadius: MusicDesign.artistCircleTileSize / 2)
+                .frame(width: MusicDesign.artistCircleTileSize, height: MusicDesign.artistCircleTileSize)
                 .clipShape(Circle())
             Text(highlight.name)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
                 .lineLimit(2)
-                .frame(width: MusicDesign.shelfCardWidth, alignment: .leading)
+                .frame(width: MusicDesign.artistCircleTileLabelWidth, alignment: .leading)
             Text(highlight.newReleaseCount == 1 ? "1 new release" : "\(highlight.newReleaseCount) new releases")
                 .font(.caption)
                 .foregroundStyle(MusicDesign.secondaryLabel)
                 .lineLimit(1)
-                .frame(width: MusicDesign.shelfCardWidth, alignment: .leading)
+                .frame(width: MusicDesign.artistCircleTileLabelWidth, alignment: .leading)
         }
     }
 
@@ -622,7 +622,12 @@ struct MusicNewTabView: View {
                             Button {
                                 navigateLibraryAlbum = lib
                             } label: {
-                                albumCard(url: album.imageURL, title: album.name, subtitle: album.artistName)
+                                albumCard(
+                                    url: album.imageURL,
+                                    title: album.name,
+                                    artist: album.artistName,
+                                    onArtistTap: { navigateArtist = ArtistNameNavigation(id: album.artistName) },
+                                )
                                     .coverZoomSource(id: lib.id)
                             }
                             .buttonStyle(.plain)
@@ -637,7 +642,12 @@ struct MusicNewTabView: View {
                             NavigationLink {
                                 BrowseAlbumDetailView(source: source)
                             } label: {
-                                albumCard(url: album.imageURL, title: album.name, subtitle: album.artistName)
+                                albumCard(
+                                    url: album.imageURL,
+                                    title: album.name,
+                                    artist: album.artistName,
+                                    onArtistTap: { navigateArtist = ArtistNameNavigation(id: album.artistName) },
+                                )
                                     .coverZoomSource(id: source.coverZoomId)
                             }
                             .buttonStyle(.plain)
@@ -650,7 +660,12 @@ struct MusicNewTabView: View {
         }
     }
 
-    private func albumCard(url: URL?, title: String, subtitle: String) -> some View {
+    private func albumCard(
+        url: URL?,
+        title: String,
+        artist: String,
+        onArtistTap: @escaping () -> Void,
+    ) -> some View {
         let cardWidth = MusicDesign.shelfCardWidth
         return VStack(alignment: .leading, spacing: 4) {
             AlbumArtworkView(url: url, cornerRadius: MusicDesign.albumCorner)
@@ -663,10 +678,7 @@ struct MusicNewTabView: View {
                 .lineLimit(1)
                 .frame(width: cardWidth, alignment: .topLeading)
 
-            Text(subtitle)
-                .font(.caption)
-                .foregroundStyle(MusicDesign.secondaryLabel)
-                .lineLimit(1)
+            ArtistNameButton(name: artist, font: .caption, onTap: onArtistTap)
                 .frame(width: cardWidth, alignment: .topLeading)
         }
         .frame(width: cardWidth, alignment: .topLeading)
@@ -708,10 +720,9 @@ struct MusicNewTabView: View {
     }
 }
 
-/// Hero artwork with Cover Art Archive size fallbacks and a mesh placeholder when art is missing.
+/// Hero artwork from the iTunes feed with a mesh placeholder when art is missing.
 private struct NewTabHeroArtwork: View {
-    let releaseGroupId: String
-    let fallbackURL: URL?
+    let imageURL: URL?
     let seed: String
     let cardWidth: CGFloat
     let imageHeight: CGFloat
@@ -735,7 +746,7 @@ private struct NewTabHeroArtwork: View {
         }
         .frame(width: cardWidth, height: imageHeight)
         .clipped()
-        .task(id: releaseGroupId) {
+        .task(id: imageURL?.absoluteString ?? seed) {
             await loadArtwork()
         }
     }
@@ -743,22 +754,12 @@ private struct NewTabHeroArtwork: View {
     private func loadArtwork() async {
         loadFailed = false
         decoded = nil
-
-        if let cached = await CoverArtArchiveArtwork.loadReleaseGroupFront(
-            releaseGroupId: releaseGroupId,
-            maxPixelSize: 900,
-        ) {
-            decoded = cached
+        guard let imageURL,
+              let cached = await RemoteArtworkLoad.cgImage(from: imageURL, maxPixelSize: 900)
+        else {
+            loadFailed = true
             return
         }
-
-        if let fallbackURL,
-           let cached = await RemoteArtworkLoad.cgImage(from: fallbackURL, maxPixelSize: 900)
-        {
-            decoded = cached
-            return
-        }
-
-        loadFailed = true
+        decoded = cached
     }
 }

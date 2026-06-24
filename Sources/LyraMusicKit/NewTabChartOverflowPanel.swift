@@ -55,9 +55,14 @@ struct ChartStyleSongOverflowMenuContent: View {
     var body: some View {
         ControlGroup {
             Button(action: onAdd) {
-                Label("Request", systemImage: "arrow.down.circle.fill")
+                RequestActionLabel()
             }
             .disabled(addDisabled)
+            Button {} label: {
+                Image(systemName: "plus")
+            }
+            .disabled(true)
+            .accessibilityLabel("Add to library unavailable until requested")
             if let onToggleFavorite {
                 Button(action: onToggleFavorite) {
                     Label("Favorite", systemImage: "star.fill")
@@ -257,10 +262,22 @@ struct AlbumToolbarOverflowMenuContent<ExtraContent: View>: View {
                 Button {
                     onLeading?()
                 } label: {
-                    Label(leadingTitle, systemImage: leadingSystemImage)
+                    if leadingTitle == "Request" {
+                        RequestActionLabel()
+                    } else {
+                        Label(leadingTitle, systemImage: leadingSystemImage)
+                    }
                 }
                 .disabled(onLeading == nil || leadingDisabled)
                 .accessibilityLabel(leadingAccessibilityLabel ?? leadingTitle)
+
+                if leadingTitle == "Request" {
+                    Button {} label: {
+                        Image(systemName: "plus")
+                    }
+                    .disabled(true)
+                    .accessibilityLabel("Add to library unavailable until requested")
+                }
 
                 Button(action: togglePlaylistFavorites) {
                     Label(

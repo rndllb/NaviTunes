@@ -1,7 +1,7 @@
 import Foundation
 
 /// In-memory, per-session cache for the artist page's enrichment payloads
-/// (TheAudioDB details, Last.fm top tracks + similar artists, MusicBrainz
+/// (TheAudioDB details, Last.fm top tracks + similar artists, iTunes
 /// discography). Keyed by the normalized artist name so cross-source matches
 /// (the same artist as `Slipknot` vs `slipknot`) hit the same slot.
 ///

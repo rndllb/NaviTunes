@@ -16,11 +16,30 @@ struct MiniPlayerView: View {
     @GestureState private var isDragging = false
     @State private var horizontalDragOffset: CGFloat = 0
     var layout: MiniPlayerLayout = .standalone
+    /// When set, opens the full player without mutating ``showNowPlaying`` from a nested
+    /// button — the accessory layer calls this so the zoom source and presentation flip
+    /// stay in the same view (required for ``tabViewBottomAccessory`` morphs on iOS 26).
+    var onRequestExpand: (() -> Void)?
 
-    init(showNowPlaying: Binding<Bool>, player: PlaybackEngine, layout: MiniPlayerLayout = .standalone) {
+    init(
+        showNowPlaying: Binding<Bool>,
+        player: PlaybackEngine,
+        layout: MiniPlayerLayout = .standalone,
+        onRequestExpand: (() -> Void)? = nil
+    ) {
         _showNowPlaying = showNowPlaying
         _player = ObservedObject(wrappedValue: player)
         self.layout = layout
+        self.onRequestExpand = onRequestExpand
+    }
+
+    private func expandNowPlaying() {
+        if let onRequestExpand {
+            onRequestExpand()
+        } else {
+            showNowPlaying = true
+            player.reconcilePlaybackSessionAfterUIMilestone()
+        }
     }
 
     var body: some View {
@@ -67,8 +86,7 @@ struct MiniPlayerView: View {
                         }
 
                         if isUpwardSwipe {
-                            player.reconcilePlaybackSessionAfterUIMilestone()
-                            showNowPlaying = true
+                            expandNowPlaying()
                         }
 
                         horizontalDragOffset = 0
@@ -81,8 +99,7 @@ struct MiniPlayerView: View {
     private func inlineAccessoryBody(track: Track, artURL: URL?) -> some View {
         HStack(alignment: .center, spacing: 8) {
             Button {
-                player.reconcilePlaybackSessionAfterUIMilestone()
-                showNowPlaying = true
+                expandNowPlaying()
             } label: {
                 HStack(alignment: .center, spacing: 8) {
                     AlbumArtworkView(
@@ -149,8 +166,7 @@ struct MiniPlayerView: View {
 
         HStack(alignment: .center, spacing: spacing) {
             Button {
-                player.reconcilePlaybackSessionAfterUIMilestone()
-                showNowPlaying = true
+                expandNowPlaying()
             } label: {
                 HStack(alignment: .center, spacing: spacing) {
                     AlbumArtworkView(

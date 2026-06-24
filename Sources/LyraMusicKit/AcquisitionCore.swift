@@ -230,6 +230,8 @@ protocol AcquisitionProviding: Sendable {
 extension AcquisitionProviding {
     func search(query: String) async throws -> [AcquisitionResult] { [] }
     func activeJobs() async -> [AcquisitionJob] { [] }
+    /// Whether the active plugin's catalog (Lidarr → MusicBrainz) knows this artist.
+    func canRequestArtist(named name: String) async -> Bool { true }
 }
 
 /// Generic LocalizedError carrying a user-facing message.
