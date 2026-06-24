@@ -1,6 +1,6 @@
 import Foundation
 
-/// External chart / browse metadata (MusicBrainz new releases, etc.).
+/// External chart / browse metadata (iTunes new releases, etc.).
 struct ChartTrack: Identifiable, Hashable {
     let id: String
     let name: String
@@ -25,7 +25,7 @@ struct ChartAlbum: Identifiable {
     let name: String
     let artistName: String
     var imageURL: URL?
-    /// First-release date when known (MusicBrainz `first-release-date`); drives the
+    /// First-release date when known (iTunes `releaseDate`); drives the
     /// "New This Week" vs "Recent Releases" recency split on the New tab.
     var releaseDate: Date? = nil
 }

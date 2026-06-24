@@ -165,6 +165,7 @@ struct LibrarySongsView: View {
         .musicNativeSearchable(text: $searchText, prompt: Text("Songs"))
         .navigationDestination(item: $navigateAlbum) { album in
             ServerPlaylistDetailView(album: album, librarySource: true)
+                .onDisappear { navigateAlbum = nil }
         }
         .onChange(of: tracks) { _, _ in recomputeDisplayed() }
         .onChange(of: searchText) { _, _ in recomputeDisplayed() }
@@ -323,7 +324,7 @@ struct LibrarySongsView: View {
                 }
             },
             hasActiveQueue: app.hasActivePlaybackQueue,
-            onGoToAlbum: { navigateAlbum = albumSummary(for: track) },
+            onGoToAlbum: { openAlbumDetail(for: track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
             onRemoveFromLibrary: app.isSongInLibrary(track.id)
                 ? { Task { await app.removeSongFromLibrary(track) } } : nil,
@@ -341,6 +342,18 @@ struct LibrarySongsView: View {
 
     private func cacheOffline(track: Track) async {
         app.enqueueOfflineTrack(track)
+    }
+
+    private func openAlbumDetail(for track: Track) {
+        let album = albumSummary(for: track)
+        if navigateAlbum?.id == album.id {
+            navigateAlbum = nil
+            DispatchQueue.main.async {
+                navigateAlbum = album
+            }
+        } else {
+            navigateAlbum = album
+        }
     }
 
     private func albumSummary(for track: Track) -> AlbumSummary {

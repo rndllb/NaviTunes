@@ -66,8 +66,8 @@ struct ArtistDiscographyItem: Identifiable, Hashable {
     let releaseYear: Int?
     /// Best-effort sort date — the most precise date the source exposes
     /// (Jellyfin/Subsonic ``AlbumSummary/releaseDate`` when present, otherwise
-    /// the first-of-year fallback derived from ``releaseYear``; for MusicBrainz,
-    /// ``MusicBrainzArtistRelease/firstReleaseDate`` parsed liberally).
+    /// the first-of-year fallback derived from ``releaseYear``; for iTunes,
+    /// ``ITunesArtistAlbum/releaseDate`` when present).
     let releaseSortDate: Date?
     let artworkURL: URL?
     let source: Source
@@ -112,6 +112,8 @@ final class ArtistViewModel: ObservableObject {
     @Published private(set) var isLoadingEnrichment = true
 
     @Published private(set) var loadError: String?
+    /// False when iTunes shows this artist but the active acquisition plugin (Lidarr) has no catalog match.
+    @Published private(set) var canRequestViaAcquisition = true
 
     init(input: ArtistPageInput) {
         self.input = input
@@ -148,6 +150,14 @@ final class ArtistViewModel: ObservableObject {
         return serverAlbums.first(where: { $0.artworkURL != nil })?.artworkURL
     }
 
+    var hasOffServerCatalogContent: Bool {
+        discography.values.contains { $0.contains(where: \.needsRequest) } || !remoteReleasesSnapshot.isEmpty
+    }
+
+    var showsCannotRequestBanner: Bool {
+        !canRequestViaAcquisition && hasOffServerCatalogContent
+    }
+
     func playbackTracks(for mode: ArtistPlayMode) -> [Track] {
         switch mode {
         case .topSongs:
@@ -168,7 +178,7 @@ final class ArtistViewModel: ObservableObject {
     }
 
     /// Drives the whole page: resolve the server artist id (when input was a bare name),
-    /// then kick off server catalog + Last.fm + TheAudioDB + MusicBrainz in parallel.
+    /// then kick off server catalog + Last.fm + TheAudioDB + iTunes discography in parallel.
     func load(using app: AppModel) async {
         // Warm-paint from per-session cache so banner/bio/similar appear instantly
         // on return visits. Top songs + discography still rebuild from the live
@@ -191,6 +201,7 @@ final class ArtistViewModel: ObservableObject {
         rebuildTopSongs()
         applyDiscography(releases: remoteReleasesSnapshot, serverAlbums: serverAlbums)
         isLoadingDiscography = false
+        await loadAcquisitionRequestability(using: app)
 
         await ArtistEnrichmentCache.shared.save(
             forArtistName: input.displayName,
@@ -302,6 +313,18 @@ final class ArtistViewModel: ObservableObject {
         self.remoteReleasesSnapshot = await ITunesArtistClient.discography(forArtist: input.displayName)
     }
 
+    private func loadAcquisitionRequestability(using app: AppModel) async {
+        guard app.acquisitionConfigured, app.acquisitionCapabilities.granularity == .album else {
+            canRequestViaAcquisition = true
+            return
+        }
+        guard hasOffServerCatalogContent else {
+            canRequestViaAcquisition = true
+            return
+        }
+        canRequestViaAcquisition = await app.acquisition.canRequestArtist(named: input.displayName)
+    }
+
     // MARK: - Section composition
 
     private func rebuildTopSongs() {
@@ -376,18 +399,18 @@ final class ArtistViewModel: ObservableObject {
     }
 
     /// Build the four discography buckets by blending the user's server catalog with
-    /// MusicBrainz release-groups, then sorting each bucket newest-first.
+    /// the iTunes discography, then sorting each bucket newest-first.
     ///
     /// Blending rules:
-    /// - **Albums**: server albums + every MusicBrainz `primary-type=Album` release
+    /// - **Albums**: server albums + every iTunes album-type release
     ///   that doesn't match a server album. Missing-on-server items are tagged
     ///   `needsRequest = true` so the card renders a download glyph.
-    /// - **Singles & EPs**: server albums classified as Single/EP + MusicBrainz
+    /// - **Singles & EPs**: server albums classified as Single/EP + iTunes
     ///   Single/EP releases that aren't matched to a server album. **Strict
-    ///   dedupe**: a MusicBrainz single titled e.g. "Wake Up" is dropped when the
+    ///   dedupe**: an iTunes single titled e.g. "Wake Up" is dropped when the
     ///   user already has a track titled "Wake Up" on any server album — the user
     ///   effectively already has the song, so listing it again is noise.
-    /// - **Live** and **Compilations**: server-only (no MusicBrainz blending).
+    /// - **Live** and **Compilations**: server-only (no iTunes blending).
     ///   Apple Music does this too — the user asked for the blend behavior on
     ///   the Albums section, with strict singles, and the other secondary
     ///   buckets stay server-faithful.

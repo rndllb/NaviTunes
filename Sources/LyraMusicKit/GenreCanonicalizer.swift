@@ -8,7 +8,8 @@ import Foundation
 enum GenreCanonicalizer {
     /// (canonical name, lowercase keywords that roll up into it). First match wins.
     private static let rules: [(canonical: String, keywords: [String])] = [
-        ("Hip-Hop",     ["hip hop", "hip-hop", "hiphop", "rap", "trap", "drill", "grime", "boom bap"]),
+        ("Lo-Fi",       ["lofi", "lo-fi", "lo fi", "boom bap", "boom-bap", "boombap", "chillhop", "chill hop"]),
+        ("Hip-Hop",     ["hip hop", "hip-hop", "hiphop", "rap", "trap", "drill", "grime"]),
         ("R&B",         ["r&b", "rnb", "rhythm and blues", "soul", "motown", "neo soul", "neo-soul"]),
         ("Electronic",  ["electronic", "electronica", "edm", "house", "techno", "trance", "dubstep",
                          "drum and bass", "drum & bass", "dnb", "electro", "synthwave", "ambient",

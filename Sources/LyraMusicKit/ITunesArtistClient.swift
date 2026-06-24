@@ -16,12 +16,53 @@ struct ITunesArtistAlbum: Hashable {
     }
 }
 
-/// An artist's discography from Apple's free, public iTunes APIs — replaces MusicBrainz on the
-/// artist page and for the follow-artist completeness check. Two-step: resolve the artist's
-/// iTunes id (Search), then list every album (`lookup?entity=album`). Artwork comes built in
-/// from the fast `mzstatic` CDN.
+/// An artist's discography from Apple's free, public iTunes APIs — the sole external metadata
+/// source for browse/discovery. Two-step: resolve the artist's iTunes id (Search), then list
+/// every album (`lookup?entity=album`). Artwork comes built in from the fast `mzstatic` CDN.
 enum ITunesArtistClient {
     private static let iso = ISO8601DateFormatter()
+
+    struct SearchResult: Identifiable, Hashable {
+        let id: String
+        let name: String
+        let artworkURL: URL?
+    }
+
+    /// Artists matching `name` for Discover search (not on the user's server).
+    static func searchArtists(name: String, limit: Int = 5, country: String = "us") async -> [SearchResult] {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        guard var comps = URLComponents(string: "https://itunes.apple.com/search") else { return [] }
+        comps.queryItems = [
+            URLQueryItem(name: "term", value: trimmed),
+            URLQueryItem(name: "entity", value: "musicArtist"),
+            URLQueryItem(name: "country", value: country),
+            URLQueryItem(name: "limit", value: String(max(1, min(limit, 25)))),
+        ]
+        guard let url = comps.url,
+              let (data, resp) = try? await URLSession.shared.data(from: url),
+              let http = resp as? HTTPURLResponse, (200 ..< 300).contains(http.statusCode),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let results = obj["results"] as? [[String: Any]]
+        else { return [] }
+
+        var artists: [SearchResult] = []
+        var seen = Set<String>()
+        for r in results {
+            guard let artistId = r["artistId"] as? Int,
+                  let artistName = r["artistName"] as? String
+            else { continue }
+            let id = String(artistId)
+            let norm = LibraryTrackMatcher.normalize(artistName)
+            guard !norm.isEmpty, seen.insert(norm).inserted else { continue }
+            artists.append(SearchResult(
+                id: id,
+                name: artistName,
+                artworkURL: (r["artworkUrl100"] as? String).flatMap(upscale),
+            ))
+        }
+        return artists
+    }
 
     /// The iTunes artist id best matching `name`, or `nil`.
     static func artistId(forName name: String, country: String = "us") async -> Int? {

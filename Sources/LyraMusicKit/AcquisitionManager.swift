@@ -76,6 +76,11 @@ final class AcquisitionManager: ObservableObject {
 
     /// Match a tracked job to a preview/row by normalized title (rows that build their
     /// own request key may differ slightly from the resolved one).
+    /// True when the active plugin's catalog includes this artist (Lidarr → MusicBrainz).
+    func canRequestArtist(named name: String) async -> Bool {
+        await provider.canRequestArtist(named: name)
+    }
+
     func job(matchingTitle title: String) -> AcquisitionJob? {
         let keys = Set(LibraryTrackMatcher.normalizedTitleKeys(from: title))
         guard !keys.isEmpty else { return nil }

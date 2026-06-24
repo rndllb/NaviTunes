@@ -494,6 +494,27 @@ enum MusicDesign {
     static let gridMinCell: CGFloat = 158
     static let shelfCardWidth: CGFloat = 168
     static let shelfCardHeight: CGFloat = 168
+    /// Circular artist avatar in horizontal shelves (Home “New Artists Added”, New tab “Artists You're Into”).
+    static let artistCircleTileSize: CGFloat = 110
+    static let artistCircleTileLabelWidth: CGFloat = 120
+
+    // MARK: - Home Top Picks editorial card
+    static let homeTopPickCardWidth: CGFloat = 250
+    static let homeTopPickCardHeight: CGFloat = 325
+    /// Square cover — full card width, flush to the top edge.
+    static let homeTopPickArtworkSize: CGFloat = homeTopPickCardWidth
+    static let homeTopPickBleedBandHeight: CGFloat = homeTopPickCardHeight - homeTopPickArtworkSize
+    /// Bottom strip of cover art sampled for the vertical stretch bleed.
+    static let homeTopPickBleedSourceRatio: CGFloat = 0.05
+    /// Soft blur at the bleed top — eases the seam with cover art.
+    static let homeTopPickBleedBlurRadiusTop: CGFloat = 2.5
+    /// Stronger blur from ~mid-band downward.
+    static let homeTopPickBleedBlurRadiusBottom: CGFloat = 11
+    /// Bleed draws upward under the cover bottom for a seamless blend.
+    static let homeTopPickBleedSeamOverlap: CGFloat = 44
+    /// Cover art fades out over this height at its bottom edge.
+    static let homeTopPickArtSeamFadeHeight: CGFloat = 48
+    static let homeTopPickCardCorner: CGFloat = 14
 
     // MARK: - New tab (Apple Music Browse-style)
     /// Leading inset for hero labels, shelves, and section headers (aligned with large navigation title).
@@ -520,6 +541,8 @@ enum MusicDesign {
     static let albumHeroPlayLabelSpacing: CGFloat = 5
     /// Tighter icon–title gap for library section Play / Shuffle capsules.
     static let libraryPlayShuffleLabelSpacing: CGFloat = 2
+    /// Icon–title gap for **Request** actions (overflow menus + browse hero capsule).
+    static let requestActionLabelSpacing: CGFloat = 2
 
     /// Hairline around song-list artwork (Apple Music–style, barely visible).
     static func songRowArtworkBorder(for colorScheme: ColorScheme) -> Color {
@@ -612,6 +635,7 @@ struct AlbumArtworkView: View {
                 loadFailed = false
                 loadedArtworkID = loadKey
             }
+            ArtworkDynamicGradient.prefetchBackdrop(for: url)
             return
         }
         withTransaction(Transaction(animation: nil)) {
@@ -626,6 +650,9 @@ struct AlbumArtworkView: View {
                 decoded = cg
                 loadFailed = cg == nil
                 loadedArtworkID = loadKey
+            }
+            if cg != nil {
+                ArtworkDynamicGradient.prefetchBackdrop(for: url)
             }
         }
     }
@@ -1403,6 +1430,19 @@ struct LibrarySearchPill: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
         .background(Capsule(style: .continuous).fill(MusicDesign.chromeCapsuleFill))
+    }
+}
+
+/// Request pill / menu label — tighter icon–title gap than stock ``Label``.
+struct RequestActionLabel: View {
+    var font: Font = .body
+
+    var body: some View {
+        HStack(spacing: MusicDesign.requestActionLabelSpacing) {
+            Image(systemName: "arrow.down.circle.fill")
+            Text("Request")
+        }
+        .font(font)
     }
 }
 

@@ -31,3 +31,11 @@
 **Current choice:** keep the detached button — `.tabBarMinimizeBehavior(app.selectedTab == .search ? .never : .onScrollDown)`. The mini-player collapse can't be driven independently because its layout reads the read-only system `\.tabViewBottomAccessoryPlacement`.
 
 **Also tried (reverted):** a custom Liquid-Glass search header that collapsed on scroll via height-squeeze — not the native `.searchable` sandwich animation, so it was reverted. A full switch to native `.searchable` + `.searchScopes` would give the exact native collapse but replaces the custom header and renders via the nav bar instead of the floating-header style the other tabs use.
+
+## Home taste shelves empty until data loads
+
+**Where:** `AppModel.applyHomeDiscoveryShelvesRanking()` / `HomeView` — Top Picks, New Releases, genre rows, New Artists Added.
+
+**Behavior:** Shelves only show **server catalog** albums **not** in the user's magic playlist (`isEligibleForHomeTopPick`). Until `recentlyAddedAlbums`, taste genres, and/or scrobble signals load, rows can be empty or fall back to server **New Releases**. This is expected, not a fetch failure.
+
+**Removed (2026-06):** MusicBrainz browse clients and Settings toggle — New/Discover/Following metadata now comes from iTunes Search API only.

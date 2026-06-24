@@ -1,7 +1,7 @@
 import Foundation
 
-/// Acquisition backend for Lidarr. Album-level: resolves the request to a MusicBrainz
-/// release group, adds + monitors the album, and triggers an indexer search.
+/// Acquisition backend for Lidarr. Album-level: Lidarr resolves the release on its
+/// MusicBrainz-backed catalog, adds + monitors the album, and triggers an indexer search.
 ///
 /// Works around Lidarr #5012 (adding an album whose artist is new unmonitors the album
 /// right after, so the auto-search finds nothing): we add with `searchForNewAlbum=false`,
@@ -18,7 +18,7 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
         AcquisitionCapabilities(
             displayName: "Lidarr",
             iconName: "square.stack.3d.up",
-            blurb: "A music collection manager. Lyra resolves the album on MusicBrainz and hands it to Lidarr, which adds it to your collection and keeps it monitored and complete.",
+            blurb: "A music collection manager. Lyra sends album requests to Lidarr, which adds them to your collection and keeps them monitored and complete.",
             granularity: .album,
             supportsTrackSearch: false,
             configFields: [
@@ -116,6 +116,26 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
             headers: ["X-Api-Key": apiKey],
             jsonBody: jsonBody
         )
+    }
+
+    func canRequestArtist(named name: String) async -> Bool {
+        guard isConfigured else { return false }
+        let term = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { return false }
+        guard let rows = try? await artistLookup(term: term), !rows.isEmpty else { return false }
+        let target = LibraryTrackMatcher.normalize(term)
+        return rows.contains { row in
+            let artistName = AcquisitionHTTP.string(row["artistName"])
+                ?? AcquisitionHTTP.string(row["name"])
+                ?? ""
+            let norm = LibraryTrackMatcher.normalize(artistName)
+            return !norm.isEmpty && (norm == target || norm.contains(target) || target.contains(norm))
+        }
+    }
+
+    private func artistLookup(term: String) async throws -> [[String: Any]] {
+        let data = try await send(path: "artist/lookup", query: ["term": term])
+        return data as? [[String: Any]] ?? []
     }
 
     private func albumLookup(term: String) async throws -> [[String: Any]] {
