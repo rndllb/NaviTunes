@@ -2,10 +2,29 @@ import AVFoundation
 import Combine
 import Foundation
 
-enum OfflineDownloadError: Error {
+enum OfflineDownloadError: Error, LocalizedError {
     case pathEscapesRoot
     case unrecognizedAudioFormat
     case storageLimitReached
+    /// The downloaded file is in a container iOS/AVFoundation can't decode (Opus, Ogg, WebM).
+    case unplayableFormat(String)
+
+    /// Audio container extensions AVFoundation cannot play on iOS — saving these produces
+    /// downloads that fail at playback with a generic "operation stopped" error.
+    static let unplayableExtensions: Set<String> = ["ogg", "opus", "oga", "webm"]
+
+    var errorDescription: String? {
+        switch self {
+        case .pathEscapesRoot:
+            return "Download path was invalid."
+        case .unrecognizedAudioFormat:
+            return "Unrecognized audio format."
+        case .storageLimitReached:
+            return "Storage limit reached."
+        case .unplayableFormat(let ext):
+            return "This track is \(ext.uppercased()), which iPhone can't play. In Settings → Sound & Playback → Download Format, choose MP3, AAC, or FLAC, then re-download."
+        }
+    }
 }
 
 /// Serializes JSON persistence onto a utility queue so the main actor only pays
@@ -661,6 +680,12 @@ final class OfflineDownloadManager: ObservableObject {
         }
 
         let ext = Self.fileExtension(forMime: mime, sniffing: sniff)
+        // Reject formats AVFoundation can't decode (Opus/Ogg/WebM) up front, with an
+        // actionable message — otherwise the file saves fine but fails at playback with a
+        // cryptic "operation stopped". The tmp file is cleaned up by the `defer` above.
+        if OfflineDownloadError.unplayableExtensions.contains(ext) {
+            throw OfflineDownloadError.unplayableFormat(ext)
+        }
         let root = try Self.downloadsFolder()
         let relative = Self.uniqueStructuredRelativePath(for: track, ext: ext, root: root)
         let candidate = root.appendingPathComponent(relative)
