@@ -223,6 +223,12 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// audio. Set by the app-lifecycle observers installed alongside the audio
     /// session observers.
     private var isAppBackgrounded = false
+    /// Debounced task that releases the audio session after we go idle so iOS
+    /// can suspend the app. Cancelled if playback resumes within the window.
+    private var audioSessionDeactivateTask: Task<Void, Never>?
+    /// Context for (re)installing the periodic time observer at a new cadence
+    /// (foreground 0.35s vs background 2.0s).
+    private var timeObserverContext: (item: AVPlayerItem, track: Track, player: AVPlayer)?
     /// Captures `isPlaying` when an interruption begins so we can decide on
     /// `.ended` whether to resume — `isPlaying` itself is flipped to `false`
     /// on `.began` to keep the transport button in sync with the system pause.
@@ -266,10 +272,16 @@ final class PlaybackEngine: NSObject, ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.isAppBackgrounded = true
+                // Widen the periodic time-observer cadence for the background.
+                self.installPeriodicTimeObserver()
                 // Stamp one fresh Now-Playing baseline (rate + elapsed +
                 // timestamp) so the lock screen can extrapolate the playhead on
                 // its own while we stop pushing per-tick updates.
                 self.refreshNowPlaying()
+                // If we are backgrounded while paused, release the session now
+                // (don't wait out the debounce, which suspension may cut off)
+                // so the app can suspend.
+                if !self.isPlaying { self.deactivateAudioSessionNow() }
             }
         }
         appForegroundObserver = nc.addObserver(
@@ -280,6 +292,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.isAppBackgrounded = false
+                // Restore the fast foreground time-observer cadence.
+                self.installPeriodicTimeObserver()
                 // Resync the scrubber + Now-Playing after a stretch of
                 // throttled background ticks.
                 self.currentTime = self.playbackHead
@@ -308,6 +322,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
     private func activateAudioSession() {
         #if os(iOS)
+        audioSessionDeactivateTask?.cancel()
+        audioSessionDeactivateTask = nil
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(
             .playback,
@@ -315,6 +331,32 @@ final class PlaybackEngine: NSObject, ObservableObject {
             options: [.allowBluetoothA2DP, .allowAirPlay],
         )
         try? session.setActive(true, options: [])
+        #endif
+    }
+
+    /// Release the audio session a few seconds after going idle so iOS can
+    /// suspend the app (and power down the audio route) instead of keeping it
+    /// active indefinitely. Cancelled by ``activateAudioSession()`` if playback
+    /// resumes first. The session was previously never deactivated, so a paused
+    /// app stayed audio-active and never suspended.
+    private func scheduleAudioSessionDeactivation() {
+        #if os(iOS)
+        audioSessionDeactivateTask?.cancel()
+        audioSessionDeactivateTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            await MainActor.run { self?.deactivateAudioSessionNow() }
+        }
+        #endif
+    }
+
+    private func deactivateAudioSessionNow() {
+        #if os(iOS)
+        audioSessionDeactivateTask?.cancel()
+        audioSessionDeactivateTask = nil
+        guard !isPlaying else { return }
+        try? AVAudioSession.sharedInstance().setActive(
+            false, options: [.notifyOthersOnDeactivation])
         #endif
     }
 
@@ -716,7 +758,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
             if equalizedPlayer.isPlaying {
                 equalizedPlayer.pause()
                 isPlaying = false
+                scheduleAudioSessionDeactivation()
             } else {
+                activateAudioSession()
                 equalizedPlayer.play(rate: playbackRate)
                 isPlaying = true
             }
@@ -731,6 +775,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         if player.rate > 0.01 {
             player.pause()
             isPlaying = false
+            scheduleAudioSessionDeactivation()
         } else {
             // Track finished with nothing queued behind it (repeatMode .off, last track) →
             // AVPlayer is parked at duration; play() would be a no-op. Restart from 0.
@@ -784,6 +829,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
                 isPlaying = false
                 playbackHead = equalizedPlayer.currentPlaybackTime()
                 refreshNowPlaying()
+                scheduleAudioSessionDeactivation()
             }
             return
         }
@@ -793,6 +839,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             isPlaying = false
             playbackHead = player.currentTime().seconds
             refreshNowPlaying()
+            scheduleAudioSessionDeactivation()
         }
     }
 
@@ -2466,20 +2513,39 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// after an OS auto-advance, to rebind onto the now-current enqueued item
     /// without tearing the player down. The `timeControlStatus` KVO is per-player
     /// and set once in ``attachPlayer``, so it isn't touched here.
-    private func bindItemObservers(item: AVPlayerItem, track: Track, player p: AVPlayer) {
-        if let timeObserver { p.removeTimeObserver(timeObserver) }
-        let interval = CMTime(seconds: 0.35, preferredTimescale: 600)
+    /// Foreground cadence (0.35s) drives the smooth scrubber; backgrounded we
+    /// widen to 2.0s (~6x fewer main-thread wakeups) since nothing on screen
+    /// needs per-tick updates and the lock screen extrapolates the playhead
+    /// from the Now-Playing rate.
+    private func periodicTimeObserverInterval() -> Double {
+        #if os(iOS)
+        return isAppBackgrounded ? 2.0 : 0.35
+        #else
+        return 0.35
+        #endif
+    }
+
+    private func installPeriodicTimeObserver() {
+        guard let ctx = timeObserverContext else { return }
+        let p = ctx.player
+        if let obs = timeObserver { p.removeTimeObserver(obs); timeObserver = nil }
+        let interval = CMTime(seconds: periodicTimeObserverInterval(), preferredTimescale: 600)
         timeObserver = p.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             guard let self else { return }
             MainActor.assumeIsolated {
                 self.periodicTimeObserverTick(
                     elapsed: time.seconds,
-                    item: item,
-                    track: track,
+                    item: ctx.item,
+                    track: ctx.track,
                     player: p,
                 )
             }
         }
+    }
+
+    private func bindItemObservers(item: AVPlayerItem, track: Track, player p: AVPlayer) {
+        timeObserverContext = (item, track, p)
+        installPeriodicTimeObserver()
 
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         endObserver = NotificationCenter.default.addObserver(
