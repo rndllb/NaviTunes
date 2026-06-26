@@ -214,7 +214,15 @@ final class PlaybackEngine: NSObject, ObservableObject {
     #if os(iOS)
     private var audioSessionInterruptionObserver: NSObjectProtocol?
     private var audioSessionRouteObserver: NSObjectProtocol?
+    private var appBackgroundObserver: NSObjectProtocol?
+    private var appForegroundObserver: NSObjectProtocol?
     private var didInstallAudioSessionObservers = false
+    /// True while the app is in the background. The periodic time observer uses
+    /// this to skip Now-Playing rebuilds and published-progress writes that are
+    /// redundant/invisible in the background and burn battery during background
+    /// audio. Set by the app-lifecycle observers installed alongside the audio
+    /// session observers.
+    private var isAppBackgrounded = false
     /// Captures `isPlaying` when an interruption begins so we can decide on
     /// `.ended` whether to resume — `isPlaying` itself is flipped to `false`
     /// on `.began` to keep the transport button in sync with the system pause.
@@ -249,6 +257,34 @@ final class PlaybackEngine: NSObject, ObservableObject {
             queue: .main,
         ) { [weak self] note in
             Task { @MainActor in self?.handleAudioSessionRouteChange(note) }
+        }
+        appBackgroundObserver = nc.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main,
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.isAppBackgrounded = true
+                // Stamp one fresh Now-Playing baseline (rate + elapsed +
+                // timestamp) so the lock screen can extrapolate the playhead on
+                // its own while we stop pushing per-tick updates.
+                self.refreshNowPlaying()
+            }
+        }
+        appForegroundObserver = nc.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main,
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.isAppBackgrounded = false
+                // Resync the scrubber + Now-Playing after a stretch of
+                // throttled background ticks.
+                self.currentTime = self.playbackHead
+                self.refreshNowPlaying()
+            }
         }
     }
     #endif
@@ -2337,13 +2373,23 @@ final class PlaybackEngine: NSObject, ObservableObject {
         if playStateChanged { isPlaying = playing }
 
         maybeScrobble(track: track, position: elapsed)
+        // Background: the system extrapolates the lock-screen playhead from the
+        // rate + last timestamp, so only refresh Now-Playing on a real
+        // play/pause change. Foreground: keep the smooth cadence for the scrubber.
         if playStateChanged
-            || elapsed - lastNowPlayingInfoRefresh >= 0.55
-            || abs(elapsed - lastNowPlayingInfoRefresh) > 1.25
+            || (!isAppBackgrounded
+                && (elapsed - lastNowPlayingInfoRefresh >= 0.55
+                    || abs(elapsed - lastNowPlayingInfoRefresh) > 1.25))
         {
             lastNowPlayingInfoRefresh = elapsed
             refreshNowPlaying()
         }
+
+        // Nothing on screen in the background — skip the published-progress
+        // writes (and seek-settle bookkeeping) that only drive the UI scrubber.
+        // playbackHead stays current above; the foreground observer resyncs
+        // currentTime on return.
+        if isAppBackgrounded { return }
 
         guard !isSeeking else { return }
         if let deadline = seekSettleDeadline, ContinuousClock.now < deadline { return }

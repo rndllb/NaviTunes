@@ -1721,12 +1721,16 @@ public final class AppModel: ObservableObject {
             while !Task.isCancelled {
                 guard let self, self.isSignedIn else { return }
                 await self.refreshLibraryMembership()
-                try? await Task.sleep(for: .seconds(20))
+                // 60s convergence safety net (was 20s). Real membership edits
+                // refresh immediately via the change publisher + scene-active;
+                // this poll is only a backstop, so a slower cadence cuts
+                // background radio wake-ups with no UX cost.
+                try? await Task.sleep(for: .seconds(60))
             }
         }
     }
 
-    func stopLibraryMembershipAutoSync() {
+    public func stopLibraryMembershipAutoSync() {
         libraryMembershipSyncTask?.cancel()
         libraryMembershipSyncTask = nil
     }
@@ -2023,6 +2027,9 @@ public final class AppModel: ObservableObject {
         writeWidgetData()
         // Pick up any widget command that fired while the app wasn't running
         handleWidgetCommandFromNotification()
+        // Resume the library-membership poll paused on background. Guarded
+        // against double-start; the loop refreshes immediately on resume.
+        if isSignedIn { startLibraryMembershipAutoSync() }
     }
 
     public func handleWidgetDeepLink(_ url: URL) {
