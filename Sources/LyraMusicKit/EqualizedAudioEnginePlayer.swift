@@ -16,6 +16,10 @@ final class EqualizedAudioEnginePlayer {
     private var streamTask: Task<Void, Never>?
     private var streamPrepareContinuation: CheckedContinuation<Void, Error>?
     private var timeObserver: Timer?
+    /// Position captured at pause time while the engine still renders;
+    /// `playerNode.lastRenderTime` goes nil once the engine is suspended, so
+    /// ``currentPlaybackTime()`` returns this instead of the segment offset.
+    private var pausedPlaybackTime: TimeInterval?
     private var playbackStartOffset: TimeInterval = 0
     private var trackedDuration: TimeInterval = 0
     private var isConfigured = false
@@ -77,6 +81,7 @@ final class EqualizedAudioEnginePlayer {
         reloadToken = UUID()
         let token = reloadToken
         playbackStartOffset = max(0, startSeconds)
+        pausedPlaybackTime = nil
         finishedNotified = false
         didScheduleAudio = false
 
@@ -101,11 +106,19 @@ final class EqualizedAudioEnginePlayer {
         if !playerNode.isPlaying {
             playerNode.play()
         }
+        pausedPlaybackTime = nil
         startTimeObserver()
     }
 
     func pause() {
+        // Capture the position while the engine still renders.
+        pausedPlaybackTime = currentPlaybackTime()
         playerNode.pause()
+        // Suspend the engine so its real-time render thread + audio IO stop.
+        // Leaving it running burned ~1.6% CPU continuously while paused (vs
+        // ~0% suspended). The graph + scheduled buffers are retained, so
+        // play() resumes in place.
+        if engine.isRunning { engine.pause() }
         stopTimeObserver()
     }
 
@@ -128,6 +141,7 @@ final class EqualizedAudioEnginePlayer {
     }
 
     func currentPlaybackTime() -> TimeInterval {
+        if !engine.isRunning, let pausedPlaybackTime { return pausedPlaybackTime }
         guard let nodeTime = playerNode.lastRenderTime,
               let playerTime = playerNode.playerTime(forNodeTime: nodeTime),
               playerTime.sampleRate > 0
