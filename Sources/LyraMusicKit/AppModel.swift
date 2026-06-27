@@ -888,6 +888,15 @@ public final class AppModel: ObservableObject {
                 self?.writeWidgetData()
             }
             .store(in: &cancellables)
+        // Keep the home-screen widget's play/pause glyph in sync with actual
+        // playback. Pause/resume from the mini-player, lock screen, route change,
+        // or interruption flips isPlaying without changing the track, and the
+        // CombineLatest above only fires on track/queue change — so without this
+        // the widget showed a stale transport state until the next track.
+        player.$isPlaying
+            .removeDuplicates()
+            .sink { [weak self] _ in self?.writeWidgetData() }
+            .store(in: &cancellables)
         offline.$downloadedTrackIds
             .removeDuplicates()
             .sink { [weak self] _ in self?.objectWillChange.send() }
