@@ -106,6 +106,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private var advanceWork: Task<Void, Never>?
     /// Re-kicks AVPlayer when `playImmediately` doesn't stick (common after track handoff).
     private var autoplayVerifyTask: Task<Void, Never>?
+    /// Identity for the in-flight autoplay-verify task so it can clear its own
+    /// handle on completion without clobbering a newer task's handle.
+    private var autoplayVerifyToken = UUID()
     /// Captured at skip/jump/end before the async ``advance()`` task runs — avoids losing play intent.
     private var shouldAutoPlayAfterAdvance = false
     /// When a track is inserted via Play Next / Add to Queue from a playlist detail view, remember
@@ -1415,7 +1418,14 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// stream load or right after a handoff). Re-kick without churning the audio session.
     private func ensurePlaybackStarted(on player: AVPlayer, epoch: UInt) {
         autoplayVerifyTask?.cancel()
+        let token = UUID()
+        autoplayVerifyToken = token
         autoplayVerifyTask = Task { @MainActor [weak self] in
+            // Clear our own handle when the verify window ends (any exit path) so the
+            // timeControlStatus KVO stops ignoring genuine external pauses (headphone
+            // unplug, Control Center). The token guard stops a cancelled/older task
+            // from nil-ing a newer one's handle.
+            defer { if let self, self.autoplayVerifyToken == token { self.autoplayVerifyTask = nil } }
             var kicks = 0
             for _ in 0 ..< 12 {
                 try? await Task.sleep(for: .milliseconds(250))
