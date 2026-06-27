@@ -20,6 +20,12 @@ final class EqualizedAudioEnginePlayer {
     /// `playerNode.lastRenderTime` goes nil once the engine is suspended, so
     /// ``currentPlaybackTime()`` returns this instead of the segment offset.
     private var pausedPlaybackTime: TimeInterval?
+    /// Last live position computed while the engine was actually rendering. Used as
+    /// the fallback when the engine is stopped WITHOUT a pause() (e.g. a system
+    /// `.AVAudioEngineConfigurationChange` on a route change), where `lastRenderTime`
+    /// is nil and `pausedPlaybackTime` was never set — so a config-change rebuild
+    /// resumes in place instead of jumping to the start of the track.
+    private var lastObservedPlaybackTime: TimeInterval?
     private var playbackStartOffset: TimeInterval = 0
     private var trackedDuration: TimeInterval = 0
     private var isConfigured = false
@@ -82,6 +88,7 @@ final class EqualizedAudioEnginePlayer {
         let token = reloadToken
         playbackStartOffset = max(0, startSeconds)
         pausedPlaybackTime = nil
+        lastObservedPlaybackTime = nil
         finishedNotified = false
         didScheduleAudio = false
 
@@ -146,9 +153,11 @@ final class EqualizedAudioEnginePlayer {
               let playerTime = playerNode.playerTime(forNodeTime: nodeTime),
               playerTime.sampleRate > 0
         else {
-            return playbackStartOffset
+            return lastObservedPlaybackTime ?? playbackStartOffset
         }
-        return playbackStartOffset + Double(playerTime.sampleTime) / playerTime.sampleRate
+        let live = playbackStartOffset + Double(playerTime.sampleTime) / playerTime.sampleRate
+        lastObservedPlaybackTime = live
+        return live
     }
 
     // MARK: - Graph
