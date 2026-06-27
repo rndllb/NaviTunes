@@ -113,6 +113,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private var trackOriginPlaylistIds: [String: String] = [:]
     /// True while ``advance()`` is loading the next item — ignores stale `.paused` KVO during handoff.
     private var isAdvancingToNextItem = false
+    /// Brief window after an intentional play where `.paused` KVO must not flip ``isPlaying`` —
+    /// startup, handoff, and lock-screen resume report `.paused` before `playImmediately` sticks.
+    private var playIntentUntil: ContinuousClock.Instant?
 
     private var player: AVPlayer?
     /// Same instance as ``player`` (an `AVQueuePlayer`), typed for queue ops. The
@@ -372,10 +375,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
             // taking the audio session). Mirror that into ``isPlaying`` so the
             // transport button stops showing the pause glyph while playback
             // is silently halted.
-            wasPlayingBeforeInterruption = isPlaying
-            // The EQ engine is stopped by the system but its node still claims
-            // to be playing — without an explicit pause the EQ tick flips
-            // ``isPlaying`` straight back to true mid-interruption.
+            // Capture EQ-playing too; the EQ node still claims to be playing
+            // even though the system stopped the engine mid-interruption.
+            wasPlayingBeforeInterruption = isPlaying || (equalizedPlayer?.isPlaying ?? false)
+            clearPlayIntent()
             equalizedPlayer?.pause()
             isPlaying = false
             refreshNowPlaying()
@@ -385,14 +388,17 @@ final class PlaybackEngine: NSObject, ObservableObject {
             let shouldResume = wasPlayingBeforeInterruption && opts.contains(.shouldResume)
             wasPlayingBeforeInterruption = false
             guard shouldResume else { return }
+            markPlayIntent()
             activateAudioSession()
             if let equalizedPlayer {
                 // Restarts the (system-stopped) AVAudioEngine as part of play().
                 equalizedPlayer.play(rate: playbackRate)
             } else if let player {
                 beginPlayback(on: player)
+                ensurePlaybackStarted(on: player, epoch: playbackEpoch)
             }
             isPlaying = true
+            refreshNowPlaying()
         @unknown default:
             break
         }
@@ -564,6 +570,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             if let player, player.rate < 0.01 { beginPlayback(on: player) }
             else if let equalizedPlayer { equalizedPlayer.play(rate: playbackRate) }
             isPlaying = true
+            markPlayIntent()
         } catch {
             // If the restored stream can't be reached (offline, server moved), leave the queue
             // intact and paused — the user can still skip/jump or try again later.
@@ -761,6 +768,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
                 scheduleAudioSessionDeactivation()
             } else {
                 activateAudioSession()
+                markPlayIntent()
                 equalizedPlayer.play(rate: playbackRate)
                 isPlaying = true
             }
@@ -786,7 +794,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
                     player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
                 }
             }
+            markPlayIntent()
             beginPlayback(on: player)
+            ensurePlaybackStarted(on: player, epoch: playbackEpoch)
             isPlaying = true
         }
         playbackHead = player.currentTime().seconds
@@ -802,20 +812,41 @@ final class PlaybackEngine: NSObject, ObservableObject {
             return
         }
         activateAudioSession()
+        markPlayIntent()
         if let equalizedPlayer {
             if !equalizedPlayer.isPlaying {
                 equalizedPlayer.play(rate: playbackRate)
-                isPlaying = true
-                playbackHead = equalizedPlayer.currentPlaybackTime()
             }
+            isPlaying = true
+            playbackHead = equalizedPlayer.currentPlaybackTime()
+            currentTime = playbackHead
+            revealMiniPlayerChrome()
+            refreshNowPlaying()
             return
         }
-        guard player != nil else { return }
-        if player?.rate ?? 0 < 0.01, let player {
-            beginPlayback(on: player)
-            isPlaying = true
-            playbackHead = player.currentTime().seconds
+        if player == nil {
+            guard queue.indices.contains(currentIndex) else { return }
+            shouldAutoPlayAfterAdvance = true
+            scheduleAdvance()
+            return
         }
+        guard let player else { return }
+        if player.rate < 0.01 {
+            if let item = player.currentItem {
+                let cur = item.currentTime().seconds
+                let dur = item.duration.seconds
+                if dur.isFinite, dur > 0, cur >= dur - 0.25 {
+                    player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+                }
+            }
+            beginPlayback(on: player)
+            ensurePlaybackStarted(on: player, epoch: playbackEpoch)
+        }
+        isPlaying = true
+        playbackHead = player.currentTime().seconds
+        currentTime = playbackHead
+        revealMiniPlayerChrome()
+        refreshNowPlaying()
     }
 
     private func pausePlaybackFromRemoteCommand() {
@@ -823,24 +854,29 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     func pausePlayback() {
+        clearPlayIntent()
         if let equalizedPlayer {
             if equalizedPlayer.isPlaying {
                 equalizedPlayer.pause()
-                isPlaying = false
-                playbackHead = equalizedPlayer.currentPlaybackTime()
-                refreshNowPlaying()
-                scheduleAudioSessionDeactivation()
             }
-            return
-        }
-        guard let player else { return }
-        if player.rate > 0.01 {
-            player.pause()
             isPlaying = false
-            playbackHead = player.currentTime().seconds
+            playbackHead = equalizedPlayer.currentPlaybackTime()
             refreshNowPlaying()
             scheduleAudioSessionDeactivation()
+            return
         }
+        guard let player else {
+            isPlaying = false
+            refreshNowPlaying()
+            return
+        }
+        if player.rate > 0.01 {
+            player.pause()
+        }
+        isPlaying = false
+        playbackHead = player.currentTime().seconds
+        refreshNowPlaying()
+        scheduleAudioSessionDeactivation()
     }
 
     /// Resolved length for scrubbing — prefers live `AVPlayerItem` duration, then cached engine/track metadata.
@@ -1035,7 +1071,16 @@ final class PlaybackEngine: NSObject, ObservableObject {
     func skipNext() {
         pbLog("skipNext from idx=\(currentIndex)")
         // Shuffle is a queue-reordering action — advance sequentially regardless of mode.
-        guard currentIndex + 1 < queue.count else { return }
+        guard currentIndex + 1 < queue.count else {
+            guard repeatMode == .all, !queue.isEmpty else { return }
+            let outgoing = queue[currentIndex]
+            onTrackSkipped?(outgoing, playbackSource)
+            captureAutoPlayIntentForAdvance()
+            currentIndex = 0
+            resetUIProgressForTrackHandoff()
+            scheduleAdvance()
+            return
+        }
         let outgoing = queue[currentIndex]
         onTrackSkipped?(outgoing, playbackSource)
         captureAutoPlayIntentForAdvance()
@@ -1170,11 +1215,11 @@ final class PlaybackEngine: NSObject, ObservableObject {
             center.skipBackwardCommand.isEnabled = false
 
             nextTrackRemoteTarget = center.nextTrackCommand.addTarget { [weak self] _ in
-                Task { @MainActor in self?.skipNext() }
+                DispatchQueue.main.async { self?.skipNext() }
                 return .success
             }
             previousTrackRemoteTarget = center.previousTrackCommand.addTarget { [weak self] _ in
-                Task { @MainActor in self?.skipPrevious() }
+                DispatchQueue.main.async { self?.skipPrevious() }
                 return .success
             }
         case .skipInterval:
@@ -1188,13 +1233,13 @@ final class PlaybackEngine: NSObject, ObservableObject {
             skipForwardRemoteTarget = center.skipForwardCommand.addTarget { [weak self] event in
                 guard let self else { return .commandFailed }
                 let step = (event as? MPSkipIntervalCommandEvent)?.interval ?? self.skipForwardInterval
-                Task { @MainActor in self.skipForward(by: step) }
+                DispatchQueue.main.async { self.skipForward(by: step) }
                 return .success
             }
             skipBackwardRemoteTarget = center.skipBackwardCommand.addTarget { [weak self] event in
                 guard let self else { return .commandFailed }
                 let step = (event as? MPSkipIntervalCommandEvent)?.interval ?? self.skipBackwardInterval
-                Task { @MainActor in self.skipBackward(by: step) }
+                DispatchQueue.main.async { self.skipBackward(by: step) }
                 return .success
             }
         }
@@ -1345,6 +1390,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             return
         }
         if shouldAutoPlay {
+            markPlayIntent()
             if let player {
                 beginPlayback(on: player)
                 ensurePlaybackStarted(on: player, epoch: epoch)
@@ -1387,9 +1433,49 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
     /// Starts AVPlayer and updates lock screen / Dynamic Island playback rate.
     private func beginPlayback(on player: AVPlayer) {
+        markPlayIntent()
         activateAudioSession()
         player.playImmediately(atRate: playbackRate)
         refreshNowPlaying()
+    }
+
+    private func markPlayIntent() {
+        playIntentUntil = ContinuousClock.now + .milliseconds(1800)
+    }
+
+    private func clearPlayIntent() {
+        playIntentUntil = nil
+    }
+
+    private var shouldIgnoreTransientPausedObservation: Bool {
+        guard let until = playIntentUntil else { return false }
+        if ContinuousClock.now < until { return true }
+        playIntentUntil = nil
+        return false
+    }
+
+    private func handleTimeControlStatusChange(player: AVPlayer) {
+        let status = player.timeControlStatus
+        if status == .paused, isPlaying, !isAdvancingToNextItem {
+            // Startup/handoff can report `.paused` briefly before `playImmediately` sticks.
+            if autoplayVerifyTask != nil { return }
+            if shouldIgnoreTransientPausedObservation { return }
+            isPlaying = false
+            refreshNowPlaying()
+        } else if status == .playing, !isPlaying {
+            isPlaying = true
+            refreshNowPlaying()
+        }
+        // `.waitingToPlayAtSpecifiedRate` = buffering — the user still
+        // intends to play, so keep ``isPlaying`` but surface the stall
+        // through ``isBuffering`` and arm the stall watchdog.
+        if status == .waitingToPlayAtSpecifiedRate {
+            setBuffering(player.reasonForWaitingToPlay != .noItemToPlay, debounced: true)
+            scheduleStallRecoveryIfNeeded()
+        } else {
+            cancelStallRecovery()
+            setBuffering(false)
+        }
     }
 
     private func applyPlaybackRateToPlayer() {
@@ -2479,28 +2565,16 @@ final class PlaybackEngine: NSObject, ObservableObject {
         // steal, end of item), so this keeps ``isPlaying`` in sync without
         // having to enumerate every cause individually.
         timeControlStatusObservation = p.observe(\.timeControlStatus, options: [.new, .initial]) { [weak self] player, _ in
-            Task { @MainActor in
-                guard let self else { return }
-                let status = player.timeControlStatus
-                if status == .paused, self.isPlaying, !self.isAdvancingToNextItem {
-                    // Startup/handoff can report `.paused` briefly before `playImmediately` sticks.
-                    if self.autoplayVerifyTask != nil { return }
-                    self.isPlaying = false
-                    self.refreshNowPlaying()
-                } else if status == .playing, !self.isPlaying {
-                    self.isPlaying = true
-                    self.refreshNowPlaying()
+            guard let self else { return }
+            let apply = {
+                MainActor.assumeIsolated {
+                    self.handleTimeControlStatusChange(player: player)
                 }
-                // `.waitingToPlayAtSpecifiedRate` = buffering — the user still
-                // intends to play, so keep ``isPlaying`` but surface the stall
-                // through ``isBuffering`` and arm the stall watchdog.
-                if status == .waitingToPlayAtSpecifiedRate {
-                    self.setBuffering(player.reasonForWaitingToPlay != .noItemToPlay, debounced: true)
-                    self.scheduleStallRecoveryIfNeeded()
-                } else {
-                    self.cancelStallRecovery()
-                    self.setBuffering(false)
-                }
+            }
+            if Thread.isMainThread {
+                apply()
+            } else {
+                DispatchQueue.main.async(execute: apply)
             }
         }
 
@@ -2796,7 +2870,14 @@ final class PlaybackEngine: NSObject, ObservableObject {
             bindItemObservers(item: item, track: track, player: p)
         }
 
-        isPlaying = (player?.rate ?? 0) > 0.01
+        markPlayIntent()
+        if let p = player, p.rate < 0.01 {
+            beginPlayback(on: p)
+            ensurePlaybackStarted(on: p, epoch: epoch)
+            isPlaying = true
+        } else {
+            isPlaying = (player?.rate ?? 0) > 0.01
+        }
         scheduleLyricsLoad()
         refreshNowPlaying()
         revealMiniPlayerChrome()
@@ -3074,11 +3155,11 @@ final class PlaybackEngine: NSObject, ObservableObject {
         center.changePlaybackPositionCommand.removeTarget(nil)
 
         center.playCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.resumePlaybackFromRemoteCommand() }
+            DispatchQueue.main.async { self?.resumePlaybackFromRemoteCommand() }
             return .success
         }
         center.pauseCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.pausePlaybackFromRemoteCommand() }
+            DispatchQueue.main.async { self?.pausePlaybackFromRemoteCommand() }
             return .success
         }
         center.changePlaybackPositionCommand.isEnabled = true
@@ -3088,7 +3169,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
                 let positionEvent = event as? MPChangePlaybackPositionCommandEvent,
                 positionEvent.positionTime.isFinite
             else { return .commandFailed }
-            Task { @MainActor in self.seek(toSeconds: positionEvent.positionTime) }
+            DispatchQueue.main.async { self.seek(toSeconds: positionEvent.positionTime) }
             return .success
         }
         updateRemoteCommands()

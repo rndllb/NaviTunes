@@ -18,7 +18,7 @@ struct SettingsView: View {
         .musicNavigationBarTitleDisplayMode(.inline)
         .musicNavigationBarVisibleWhenPushed()
         .scrollContentBackground(.hidden)
-        .background(MusicDesign.background)
+        .background(MusicDesign.settingsBackground)
         .musicNavigationChrome()
         .onAppear {
             app.prefetchAccountAvatar()
@@ -201,12 +201,13 @@ struct SettingsView: View {
 /// Download backend picker, server credentials, and live activity for the active plugin.
 struct AcquisitionPluginSettingsView: View {
     @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var acquisition: AcquisitionManager
     @State private var drafts: [String: String] = [:]
     @State private var validateMessage: String?
     @State private var validateSucceeded = false
     @State private var isValidating = false
 
-    private var activeKind: AcquisitionPluginKind { app.acquisition.activePlugin }
+    private var activeKind: AcquisitionPluginKind { acquisition.activePlugin }
     private var capabilities: AcquisitionCapabilities { app.acquisitionCapabilities }
 
     private var hasMinimumDraft: Bool {
@@ -228,25 +229,25 @@ struct AcquisitionPluginSettingsView: View {
         }
         .onAppear {
             reloadDrafts()
-            app.acquisition.beginLiveRefresh()
+            acquisition.beginLiveRefresh()
         }
         .onDisappear {
             saveDrafts()
-            app.acquisition.endLiveRefresh()
+            acquisition.endLiveRefresh()
         }
-        .onChange(of: app.acquisition.activePlugin) { _, _ in
+        .onChange(of: acquisition.activePlugin) { _, _ in
             saveDrafts()
             reloadDrafts()
             validateMessage = nil
             validateSucceeded = false
-            Task { await app.acquisition.refreshFromServer() }
+            Task { await acquisition.refreshFromServer() }
         }
-        .navigationTitle("Downloads")
+        .navigationTitle("Music Requests")
         .settingsSubpageChrome()
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    Task { await app.acquisition.refreshFromServer() }
+                    Task { await acquisition.refreshFromServer() }
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
@@ -353,7 +354,7 @@ struct AcquisitionPluginSettingsView: View {
 
     @ViewBuilder
     private var activitySection: some View {
-        let jobs = app.acquisition.displayJobs
+        let jobs = acquisition.displayJobs
         if jobs.isEmpty {
             if app.acquisitionConfigured {
                 Section {
@@ -509,8 +510,8 @@ struct AcquisitionPluginSettingsView: View {
 
     private var pluginBinding: Binding<AcquisitionPluginKind> {
         Binding(
-            get: { app.acquisition.activePlugin },
-            set: { app.acquisition.activePlugin = $0 }
+            get: { acquisition.activePlugin },
+            set: { acquisition.activePlugin = $0 }
         )
     }
 

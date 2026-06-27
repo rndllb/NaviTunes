@@ -65,7 +65,9 @@ enum AppAlternateIconSync {
         UIApplication.shared.setAlternateIconName(target) { error in
             if let error {
                 let message = error.localizedDescription
+                #if DEBUG
                 print("Lyra: alternate icon \(target ?? "primary") failed: \(message)")
+                #endif
                 completion?(false, message)
             } else {
                 completion?(true, nil)

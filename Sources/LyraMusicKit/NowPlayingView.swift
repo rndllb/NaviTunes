@@ -355,14 +355,18 @@ struct NowPlayingView: View {
                     return
                 }
                 if let url = artworkURL(for: player.activeTrack) {
-                    let p = await ArtworkDynamicGradient.analyzeBackdrop(from: url, style: .nowPlaying)
+                    if let cached = ArtworkDynamicGradient.cachedBackdrop(for: url) {
+                        backdropPalette = cached
+                        return
+                    }
+                    let p = await ArtworkDynamicGradient.analyzeBackdrop(from: url)
                     await MainActor.run { backdropPalette = p }
                     return
                 }
                 if let track = player.activeTrack,
                    isLiveRadio(track),
                    let seedKey = RadioStationMeshArtwork.seedKey(for: track) {
-                    let p = await ArtworkDynamicGradient.analyzeBackdrop(fromMeshSeedKey: seedKey, style: .nowPlaying)
+                    let p = await ArtworkDynamicGradient.analyzeBackdrop(fromMeshSeedKey: seedKey, style: .detail)
                     await MainActor.run { backdropPalette = p }
                     return
                 }
@@ -871,6 +875,8 @@ struct NowPlayingView: View {
                         artist: track.artist,
                         albumSubtitle: albumSubtitle,
                         libraryAlbum: libraryAlbum,
+                        heroBackdropPalette: backdropPalette,
+                        accentOverride: usesAccentChrome ? MusicDesign.accent : nil,
                         sourcePlaylist: sourcePlaylistForActiveTrack(track),
                         compact: true,
                         goToAlbumDisabled: libraryAlbum == nil && catalogAlbumFallback(from: track) == nil,
@@ -1032,6 +1038,8 @@ struct NowPlayingView: View {
                 artist: track.artist,
                 albumSubtitle: albumSubtitle,
                 libraryAlbum: libraryAlbum,
+                heroBackdropPalette: backdropPalette,
+                accentOverride: usesAccentChrome ? MusicDesign.accent : nil,
                 sourcePlaylist: {
                     if case .playlist(let p) = player.playbackSource { return p }
                     return nil
@@ -2592,7 +2600,6 @@ private struct LyricsFocusScrollView: View {
             player.seek(toSeconds: start)
         }
         .animation(.easeInOut(duration: 0.28), value: activeIndex)
-        .animation(.easeInOut(duration: 0.45), value: progress)
     }
 
     /// Light each dot up in sequence (≈⅓, ⅔, 1.0 of the silence elapsed).

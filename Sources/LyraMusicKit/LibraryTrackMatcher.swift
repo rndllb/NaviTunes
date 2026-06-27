@@ -1,6 +1,6 @@
 import Foundation
 
-/// Fuzzy title / artist matching between external metadata (Downtify, chart browse, …) and Jellyfin/Navidrome `Track` rows.
+/// Fuzzy title / artist matching between external metadata (the request backend, chart browse, …) and Jellyfin/Navidrome `Track` rows.
 enum LibraryTrackMatcher {
     /// Split on punctuation while keeping words with apostrophes / hyphens intact.
     private static let tokenBoundary =
@@ -9,7 +9,7 @@ enum LibraryTrackMatcher {
             .inverted
 
     /// Lowercase, strip diacritics, drop apostrophes inside tokens (so "Whats" and
-    /// "What's" collapse to the same key — Downtify and the server frequently disagree
+    /// "What's" collapse to the same key — the request backend and the server frequently disagree
     /// on apostrophes), drop other punctuation, collapse whitespace. Hyphens inside
     /// tokens stay so "well-known" remains a single token.
     static func normalize(_ raw: String) -> String {
@@ -54,8 +54,8 @@ enum LibraryTrackMatcher {
         return out
     }
 
-    /// Normalized artist tokens from Downtify’s `artists` array.
-    static func normalizedDowntifyArtists(_ artists: [String]) -> Set<String> {
+    /// Normalized artist tokens from the request backend’s `artists` array.
+    static func normalizedArtistTokens(_ artists: [String]) -> Set<String> {
         Set(artists.map { normalize($0) }.filter { !$0.isEmpty })
     }
 
@@ -73,9 +73,9 @@ enum LibraryTrackMatcher {
         return map
     }
 
-    /// True when this Downtify hit corresponds to at least one library track (same normalized title + overlapping artists).
-    static func matchesLibrary(_ song: DowntifySong, titleIndex: [String: Set<String>]) -> Bool {
-        let songArtists = normalizedDowntifyArtists(song.artists)
+    /// True when this the request backend hit corresponds to at least one library track (same normalized title + overlapping artists).
+    static func matchesLibrary(_ song: MatchableSong, titleIndex: [String: Set<String>]) -> Bool {
+        let songArtists = normalizedArtistTokens(song.artists)
         guard !songArtists.isEmpty else { return false }
 
         let titleKeys = normalizedTitleKeys(from: song.name)
@@ -89,12 +89,12 @@ enum LibraryTrackMatcher {
     }
 
     /// Same rules as ``matchesLibrary``, returning the first catalog row (stable order follows `tracks`).
-    static func firstLibraryTrack(matching song: DowntifySong, in tracks: [Track]) -> Track? {
-        tracks.first { trackMatchesDowntifySong($0, song: song) }
+    static func firstLibraryTrack(matching song: MatchableSong, in tracks: [Track]) -> Track? {
+        tracks.first { trackMatchesMatchableSong($0, song: song) }
     }
 
-    static func trackMatchesDowntifySong(_ track: Track, song: DowntifySong) -> Bool {
-        let songArtists = normalizedDowntifyArtists(song.artists)
+    static func trackMatchesMatchableSong(_ track: Track, song: MatchableSong) -> Bool {
+        let songArtists = normalizedArtistTokens(song.artists)
         guard !songArtists.isEmpty else { return false }
         let songKeys = Set(normalizedTitleKeys(from: song.name))
         let trackKeys = Set(normalizedTitleKeys(from: track.title))
@@ -137,7 +137,7 @@ enum LibraryTrackMatcher {
 
     // MARK: - External chart tracks
 
-    /// True when this chart row matches a library track (same rules as Downtify).
+    /// True when this chart row matches a library track (same rules as the request backend).
     static func matchesLibrary(_ chart: ChartTrack, titleIndex: [String: Set<String>]) -> Bool {
         let songArtists = normalizedChartArtists(chart.artistName)
         guard !songArtists.isEmpty else { return false }
@@ -165,6 +165,47 @@ enum LibraryTrackMatcher {
         let libArtist = normalize(track.artist)
         guard !libArtist.isEmpty else { return false }
         return artistsOverlap(songArtists, Set([libArtist]))
+    }
+
+    /// Album-style **New** tab rows (`browseKind == Album`) vs a server track's album tags.
+    static func trackMatchesChartAlbum(_ track: Track, chart: ChartTrack) -> Bool {
+        guard chart.browseKind.caseInsensitiveCompare("Album") == .orderedSame else { return false }
+        let chartArtists = normalizedChartArtists(chart.artistName)
+        guard !chartArtists.isEmpty else { return false }
+        guard trackMatchesChartAlbumTitle(track.albumTitle, chartAlbumTitle: chart.name, chartArtists: chartArtists, trackArtist: track.artist) else {
+            return false
+        }
+        return true
+    }
+
+    static func trackMatchesChartAlbumTitle(
+        _ trackAlbumTitle: String,
+        chartAlbumTitle: String,
+        chartArtists: Set<String>,
+        trackArtist: String
+    ) -> Bool {
+        let chartKeys = Set(normalizedTitleKeys(from: chartAlbumTitle))
+        let looseChart = AlbumSummary.normalizedAlbumTitleLoose(chartAlbumTitle)
+        var wantKeys = chartKeys
+        if !looseChart.isEmpty { wantKeys.insert(looseChart) }
+
+        var trackKeys = Set(normalizedTitleKeys(from: trackAlbumTitle))
+        let looseTrack = AlbumSummary.normalizedAlbumTitleLoose(trackAlbumTitle)
+        if !looseTrack.isEmpty { trackKeys.insert(looseTrack) }
+        guard !wantKeys.isDisjoint(with: trackKeys) else { return false }
+
+        let libArtist = normalize(trackArtist)
+        guard !libArtist.isEmpty else { return false }
+        return artistsOverlap(chartArtists, Set([libArtist]))
+    }
+
+    static func normalizedAlbumTitleLookupKeys(from raw: String) -> [String] {
+        var keys = normalizedTitleKeys(from: raw)
+        let loose = AlbumSummary.normalizedAlbumTitleLoose(raw)
+        if !loose.isEmpty, !keys.contains(loose) {
+            keys.append(loose)
+        }
+        return keys
     }
 
     /// Split chart artist lines like ``A & B`` or ``A + B`` so either name can match the library’s primary artist.
@@ -216,20 +257,27 @@ struct LibraryChartTrackIndex {
     /// Normalized title key → entries. A track is inserted under every key its
     /// title produces (strict + featured-stripped) so chart variants line up.
     private let byTitleKey: [String: [Entry]]
+    /// Normalized **album** title keys — for chart rows whose `name` is a release title.
+    private let byAlbumTitleKey: [String: [Entry]]
 
     static let empty = LibraryChartTrackIndex(tracks: [])
 
     init(tracks: [Track]) {
-        var map: [String: [Entry]] = [:]
+        var titleMap: [String: [Entry]] = [:]
+        var albumMap: [String: [Entry]] = [:]
         for track in tracks {
             let artistKey = LibraryTrackMatcher.normalize(track.artist)
             guard !artistKey.isEmpty else { continue }
             let entry = Entry(track: track, artistKey: artistKey)
             for titleKey in LibraryTrackMatcher.normalizedTitleKeys(from: track.title) {
-                map[titleKey, default: []].append(entry)
+                titleMap[titleKey, default: []].append(entry)
+            }
+            for albumKey in LibraryTrackMatcher.normalizedAlbumTitleLookupKeys(from: track.albumTitle) {
+                albumMap[albumKey, default: []].append(entry)
             }
         }
-        self.byTitleKey = map
+        self.byTitleKey = titleMap
+        self.byAlbumTitleKey = albumMap
     }
 
     /// Mirrors ``LibraryTrackMatcher.trackMatchesChart``: title-key overlap +
@@ -237,24 +285,43 @@ struct LibraryChartTrackIndex {
     func firstMatch(chart: ChartTrack) -> Track? {
         let chartArtists = LibraryTrackMatcher.normalizedChartArtistTokens(chart.artistName)
         guard !chartArtists.isEmpty else { return nil }
+
+        let isReleaseRow = chart.browseKind.caseInsensitiveCompare("Album") == .orderedSame
+            || chart.browseKind.caseInsensitiveCompare("Single") == .orderedSame
+
+        if isReleaseRow {
+            for title in AlbumSummary.browseReleaseTitleLookupVariants(chart.name) {
+                let albumKeys = LibraryTrackMatcher.normalizedAlbumTitleLookupKeys(from: title)
+                if let albumHit = firstMatch(titleKeys: albumKeys, artistTokens: chartArtists, in: byAlbumTitleKey) {
+                    return albumHit
+                }
+                if chart.browseKind.caseInsensitiveCompare("Single") == .orderedSame {
+                    let songKeys = LibraryTrackMatcher.normalizedTitleKeys(from: title)
+                    if let songHit = firstMatch(titleKeys: songKeys, artistTokens: chartArtists, in: byTitleKey) {
+                        return songHit
+                    }
+                }
+            }
+        }
+
         let titleKeys = LibraryTrackMatcher.normalizedTitleKeys(from: chart.name)
         guard !titleKeys.isEmpty else { return nil }
-        return firstMatch(titleKeys: titleKeys, artistTokens: chartArtists)
+        return firstMatch(titleKeys: titleKeys, artistTokens: chartArtists, in: byTitleKey)
     }
 
-    /// Same rules as ``LibraryTrackMatcher.firstLibraryTrack(matching:in:)`` for Downtify / browse preview rows.
-    func firstMatch(song: DowntifySong) -> Track? {
-        let songArtists = LibraryTrackMatcher.normalizedDowntifyArtists(song.artists)
+    /// Same rules as ``LibraryTrackMatcher.firstLibraryTrack(matching:in:)`` for the request backend / browse preview rows.
+    func firstMatch(song: MatchableSong) -> Track? {
+        let songArtists = LibraryTrackMatcher.normalizedArtistTokens(song.artists)
         guard !songArtists.isEmpty else { return nil }
         let titleKeys = LibraryTrackMatcher.normalizedTitleKeys(from: song.name)
         guard !titleKeys.isEmpty else { return nil }
-        return firstMatch(titleKeys: titleKeys, artistTokens: songArtists)
+        return firstMatch(titleKeys: titleKeys, artistTokens: songArtists, in: byTitleKey)
     }
 
-    private func firstMatch(titleKeys: [String], artistTokens: Set<String>) -> Track? {
+    private func firstMatch(titleKeys: [String], artistTokens: Set<String>, in map: [String: [Entry]]) -> Track? {
         var seenTrackIds = Set<String>()
         for titleKey in titleKeys {
-            guard let entries = byTitleKey[titleKey] else { continue }
+            guard let entries = map[titleKey] else { continue }
             for entry in entries where seenTrackIds.insert(entry.track.id).inserted {
                 if LibraryTrackMatcher.artistsOverlap(artistTokens, Set([entry.artistKey])) {
                     return entry.track
@@ -262,5 +329,9 @@ struct LibraryChartTrackIndex {
             }
         }
         return nil
+    }
+
+    private func firstMatch(titleKeys: [String], artistTokens: Set<String>) -> Track? {
+        firstMatch(titleKeys: titleKeys, artistTokens: artistTokens, in: byTitleKey)
     }
 }

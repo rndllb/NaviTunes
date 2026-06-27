@@ -1,7 +1,7 @@
 import Foundation
 
 /// In-memory, per-session cache for the artist page's enrichment payloads
-/// (TheAudioDB details, Last.fm top tracks + similar artists, MusicBrainz
+/// (TheAudioDB details, Last.fm top tracks + similar artists, iTunes
 /// discography). Keyed by the normalized artist name so cross-source matches
 /// (the same artist as `Slipknot` vs `slipknot`) hit the same slot.
 ///
@@ -16,7 +16,7 @@ actor ArtistEnrichmentCache {
         let details: TheAudioDBClient.ArtistDetails?
         let topTracks: [LastFmTopTrack]
         let similarArtists: [LastFmSimilarArtist]
-        let releases: [MusicBrainzArtistRelease]
+        let releases: [ITunesArtistAlbum]
         let savedAt: Date
     }
 
@@ -42,7 +42,7 @@ actor ArtistEnrichmentCache {
         details: TheAudioDBClient.ArtistDetails?,
         topTracks: [LastFmTopTrack],
         similarArtists: [LastFmSimilarArtist],
-        releases: [MusicBrainzArtistRelease]
+        releases: [ITunesArtistAlbum]
     ) {
         let k = key(forArtistName: name)
         guard !k.isEmpty else { return }

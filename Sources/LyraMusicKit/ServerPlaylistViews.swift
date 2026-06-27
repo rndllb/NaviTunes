@@ -34,7 +34,6 @@ private enum AddToPlaylistSort: String, CaseIterable {
 /// (New Playlist / New Folder) and multi-select toggle.
 struct AddToPlaylistSheet: View {
     @EnvironmentObject private var app: AppModel
-    @Environment(\.dismiss) private var dismiss
 
     let tracks: [Track]
 
@@ -121,7 +120,6 @@ struct AddToPlaylistSheet: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button {
                         app.dismissPlaylistPicker()
-                        dismiss()
                     } label: {
                         Image(systemName: "xmark")
                             .font(.headline.weight(.semibold))
@@ -208,7 +206,6 @@ struct AddToPlaylistSheet: View {
                 NewPlaylistNameSheet(seedTracks: tracks) { created in
                     app.noteAddedToPlaylist(playlistId: created.id)
                     app.dismissPlaylistPicker()
-                    dismiss()
                     app.showTransientToast(addedToastContent(songCount: tracks.count, playlist: created))
                 }
                 .environmentObject(app)
@@ -343,7 +340,6 @@ struct AddToPlaylistSheet: View {
             let added = try await app.addTracksToPlaylist(playlistId: playlist.id, tracks: tracks)
             app.noteAddedToPlaylist(playlistId: playlist.id)
             app.dismissPlaylistPicker()
-            dismiss()
             if added > 0 {
                 app.showTransientToast(addedToastContent(songCount: added, playlist: playlist))
             } else {
@@ -373,7 +369,6 @@ struct AddToPlaylistSheet: View {
         }
         guard !succeeded.isEmpty else { return }
         app.dismissPlaylistPicker()
-        dismiss()
         if succeeded.count == 1, let only = succeeded.first {
             app.showTransientToast(addedToastContent(songCount: tracks.count, playlist: only))
         } else {
@@ -382,6 +377,34 @@ struct AddToPlaylistSheet: View {
                 subtitle: "\(succeeded.count) playlists",
             ))
         }
+    }
+}
+
+/// Presents ``AddToPlaylistSheet`` when ``AppModel/playlistPickerPayload`` is set.
+/// Pass `isEnabled: false` on the tab shell while Now Playing is up so the sheet
+/// stacks on the full-screen player instead of dismissing it.
+private struct AddToPlaylistSheetPresentation: ViewModifier {
+    @EnvironmentObject private var app: AppModel
+    let isEnabled: Bool
+
+    func body(content: Content) -> some View {
+        content.sheet(item: pickerBinding) { payload in
+            AddToPlaylistSheet(tracks: payload.tracks)
+                .environmentObject(app)
+        }
+    }
+
+    private var pickerBinding: Binding<PlaylistPickerPayload?> {
+        Binding(
+            get: { isEnabled ? app.playlistPickerPayload : nil },
+            set: { app.playlistPickerPayload = $0 }
+        )
+    }
+}
+
+extension View {
+    func addToPlaylistSheet(when isEnabled: Bool) -> some View {
+        modifier(AddToPlaylistSheetPresentation(isEnabled: isEnabled))
     }
 }
 
@@ -479,34 +502,25 @@ private enum PlaylistTrackSortOrder: String, CaseIterable, Identifiable {
 /// and playlist contents through one List-based layout; the source enum drives the
 /// branch points (hero subtitle, track-row type, overflow menu, etc.).
 #if DEBUG
-/// A/B switch for on-simulator verification: launching with
-/// `LYRA_DEBUG_DISABLE_DISMISS_FIXES=1` restores the pre-fix behavior
-/// (hydrate mid-dismiss, zoom gesture recognizers active) so the same binary
-/// can reproduce the bug and prove the fix. Always false in Release.
-let lyraDismissFixesDisabledForAB =
-    ProcessInfo.processInfo.environment["LYRA_DEBUG_DISABLE_DISMISS_FIXES"] != nil
 @MainActor
 private func detailDebugLog(_ message: String) { DebugUIRemote.log(message) }
 #else
-let lyraDismissFixesDisabledForAB = false
 @MainActor
 private func detailDebugLog(_ message: String) {}
 #endif
 
-/// Flags a pushed detail view the moment its pop begins. Extracted as a
-/// modifier (not an inline `.onChange`) to keep the detail view's modifier
-/// chain type-checkable.
-private struct DetailDismissTracker: ViewModifier {
-    @Environment(\.isPresented) private var isPresented
-    @Binding var isBeingDismissed: Bool
-
-    func body(content: Content) -> some View {
-        content.onChange(of: isPresented) { _, presented in
-            if !presented {
-                detailDebugLog("POP-START isPresented->false")
-                if !lyraDismissFixesDisabledForAB { isBeingDismissed = true }
-            }
+/// Programmatic artist push from album detail — avoids nested ``NavigationLink``,
+/// which can leave a stale path entry so re-opening the same album jumps to the
+/// artist page instead of the detail view.
+@MainActor
+private func pushAlbumDetailNavigation(_ album: AlbumSummary, into binding: Binding<AlbumSummary?>) {
+    if binding.wrappedValue?.id == album.id {
+        binding.wrappedValue = nil
+        DispatchQueue.main.async {
+            binding.wrappedValue = album
         }
+    } else {
+        binding.wrappedValue = album
     }
 }
 
@@ -588,18 +602,21 @@ struct ServerPlaylistDetailView: View {
         _rows = State(initialValue: cached)
         _isLoading = State(initialValue: cached.isEmpty)
         _displayedRows = State(initialValue: cached)
+        _backdropPalette = State(initialValue: ArtworkDynamicGradient.seededBackdrop(for: playlist.artworkURL))
     }
 
     init(album: AlbumSummary, librarySource: Bool = false, scrollToTrackId: String? = nil, tracksVisibility: Bool = true) {
         self.source = .album(album, librarySource: librarySource)
         self.scrollToTrackId = scrollToTrackId
         self.tracksVisibility = tracksVisibility
+        _backdropPalette = State(initialValue: ArtworkDynamicGradient.seededBackdrop(for: album.artworkURL))
     }
 
     init(homeMixId: String, tracksVisibility: Bool = true) {
         self.source = .homeMix(mixId: homeMixId)
         self.scrollToTrackId = nil
         self.tracksVisibility = tracksVisibility
+        _backdropPalette = State(initialValue: .fallback)
     }
 
     /// Legacy accessor — the playlist-mode payload. Force-unwrap is safe at every
@@ -666,13 +683,14 @@ struct ServerPlaylistDetailView: View {
     @State private var dismissalPhase: CoverZoomTransitionPhase = .idle
     @State private var rows: [PlaylistRowItem] = []
     @State private var previewTracks: [BrowseAlbumPreviewTrack] = []
-    /// Album mode only: held true while the MusicBrainz tracklist is in flight so the
+    /// Album mode only: held true while the iTunes catalog tracklist is in flight so the
     /// whole list stays in its loading state and the missing rows never pop in late.
     @State private var isLoadingPreviewTracks: Bool = false
     @State private var isLoading = true
     @State private var loadError: String?
     @State private var searchText = ""
     @State private var navigateAlbum: AlbumSummary?
+    @State private var navigateArtist: ArtistNameNavigation?
     @State private var showPlaylistEditor = false
     @State private var showDeleteConfirm = false
     @State private var showKillModeIntro = false
@@ -705,8 +723,8 @@ struct ServerPlaylistDetailView: View {
     /// fold. The window grows ahead of scroll, so the cap is invisible.
     private static let rowRenderChunk = 60
 
-    /// Album-mode unified row: a real library track, or a MusicBrainz-only track the
-    /// user can request via Downtify.
+    /// Album-mode unified row: a real library track, or an iTunes-catalog track the
+    /// user can request via the request backend.
     private enum AlbumMergedRow: Identifiable {
         case library(PlaylistRowItem, displayIndex: Int)
         case missing(BrowseAlbumPreviewTrack, displayIndex: Int)
@@ -732,8 +750,8 @@ struct ServerPlaylistDetailView: View {
         return app.isAlbumInLibrary(album.id)
     }
 
-    /// MusicBrainz merge rows (missing / Request tracks) — only after Show Complete Album
-    /// for personal-library albums; always on for catalog browse where Downtify applies.
+    /// iTunes merge rows (missing / Request tracks) — only after Show Complete Album
+    /// for personal-library albums; always on for catalog browse where the request backend applies.
     private var shouldShowMergedAlbumTracklist: Bool {
         guard isAlbum, !previewTracks.isEmpty else { return false }
         if isPersonalLibraryAlbum { return showCompleteAlbum }
@@ -746,7 +764,7 @@ struct ServerPlaylistDetailView: View {
         return true
     }
 
-    /// Album-mode merged rows: MusicBrainz order, library tracks matched in, missing
+    /// Album-mode merged rows: iTunes order, library tracks matched in, missing
     /// tracks as Request rows, server orphans appended. Empty when not applicable.
     private var albumMergedRows: [AlbumMergedRow] {
         guard isAlbum, !previewTracks.isEmpty else { return [] }
@@ -757,12 +775,12 @@ struct ServerPlaylistDetailView: View {
 
         for (loopIdx, preview) in previewTracks.enumerated() {
             let displayIdx = preview.position > 0 ? preview.position : loopIdx + 1
-            let probe = DowntifySong(songId: "mb:\(preview.id)", name: preview.title,
+            let probe = MatchableSong(songId: "mb:\(preview.id)", name: preview.title,
                                      artists: [albumOrNil?.artist ?? ""], albumName: albumOrNil?.title ?? "",
                                      url: "", coverURL: nil, year: nil, explicit: false)
             if let match = libraryRows.first(where: {
                 !usedRowIds.contains($0.rowId) &&
-                LibraryTrackMatcher.trackMatchesDowntifySong($0.track, song: probe)
+                LibraryTrackMatcher.trackMatchesMatchableSong($0.track, song: probe)
             }) {
                 out.append(.library(match, displayIndex: displayIdx))
                 usedRowIds.insert(match.rowId)
@@ -770,7 +788,7 @@ struct ServerPlaylistDetailView: View {
                 out.append(.missing(preview, displayIndex: displayIdx))
             }
         }
-        // Append library orphans MusicBrainz didn't list.
+        // Append library orphans the iTunes tracklist didn't list.
         var nextIdx = (out.map(\.displayIndexValue).max() ?? 0) + 1
         for row in libraryRows where !usedRowIds.contains(row.rowId) {
             out.append(.library(row, displayIndex: nextIdx))
@@ -844,18 +862,13 @@ struct ServerPlaylistDetailView: View {
         displayedRows = next
     }
 
-    /// Album mode only: fetch the full MusicBrainz tracklist so missing tracks can be
+    /// Album mode only: fetch the full iTunes tracklist so missing tracks can be
     /// shown + requested. Best-effort; failure silently falls back to server-only rows.
-    /// Drives `isLoadingPreviewTracks` so the host view can keep its single loading
-    /// state up until previews resolve — owned + missing rows then appear together.
     private func loadPreviewTracksIfAlbum() async {
         guard let album = albumOrNil, previewTracks.isEmpty else { return }
         isLoadingPreviewTracks = true
         defer { isLoadingPreviewTracks = false }
-        guard let rgId = await MusicBrainzTracklistClient.findReleaseGroupId(
-            artist: album.artist, albumTitle: album.title
-        ) else { return }
-        let tracks = await MusicBrainzTracklistClient.tracksForReleaseGroup(rgId)
+        let tracks = await ITunesTracklistClient.tracks(artist: album.artist, albumTitle: album.title)
         guard !tracks.isEmpty else { return }
         guard await waitOutDismissalGesture() else { return }
         await MainActor.run {
@@ -877,6 +890,7 @@ struct ServerPlaylistDetailView: View {
 
     var body: some View {
         detailScrollContainer
+            .id(source.sourceId)
             .coverZoomDestination(id: coverZoomId, dismissalPhase: $dismissalPhase)
             .playlistTrackSearchable(enabled: !isAlbumStyleDetail, text: $searchText)
             .navigationTitle("")
@@ -885,6 +899,10 @@ struct ServerPlaylistDetailView: View {
             .musicNavigationBarVisibleWhenPushed()
             .navigationDestination(item: $navigateAlbum) { album in
                 ServerPlaylistDetailView(album: album, librarySource: true)
+                    .onDisappear { navigateAlbum = nil }
+            }
+            .navigationDestination(item: $navigateArtist) { item in
+                ArtistPageView(input: .named(item.id))
             }
             .onAppear(perform: detailOnAppear)
             .modifier(LibraryAlbumDismissObserver(
@@ -897,7 +915,7 @@ struct ServerPlaylistDetailView: View {
             .task(id: detailBackdropTaskID) {
                 await refreshDetailBackdropPalette()
             }
-            .modifier(DetailDismissTracker(isBeingDismissed: $isBeingDismissed))
+            .detailDismissTracker(isBeingDismissed: $isBeingDismissed)
             .onChange(of: app.libraryCatalogEpoch) { _, _ in
                 Task { await load() }
             }
@@ -982,17 +1000,25 @@ struct ServerPlaylistDetailView: View {
 
     private func refreshDetailBackdropPalette() async {
         guard app.playlistBackdropEnabled else {
-            await MainActor.run { backdropPalette = .listSurface(colorScheme: colorScheme) }
+            backdropPalette = .listSurface(colorScheme: colorScheme)
+            return
+        }
+        if let cached = ArtworkDynamicGradient.cachedBackdrop(for: resolvedDetailArtworkURL) {
+            backdropPalette = cached
             return
         }
         let palette = await ArtworkDynamicGradient.analyzeBackdrop(from: resolvedDetailArtworkURL)
-        // Same parking rules as row hydration — the palette write re-renders
-        // the whole backdrop and lands right in the rapid open→swipe window.
-        guard await waitOutDismissalGesture() else { return }
-        await MainActor.run { backdropPalette = palette }
+        // Backdrop is a single flat tint swap — unlike track-list hydration it does
+        // not re-render hundreds of rows, so apply immediately even during the push
+        // zoom instead of parking until `.appearing` clears (that caused a visible
+        // fallback → color flash after the transition finished).
+        guard !Task.isCancelled, dismissalPhase != .gone else { return }
+        backdropPalette = palette
     }
 
     private func detailOnAppear() {
+        isBeingDismissed = false
+        seedCachedBackdropPaletteIfNeeded()
         // Recover from a false `.gone`: NavigationStack can detach this view's
         // hosting controller while it's merely COVERED by a forward push (Kill
         // Mode list), which the cover-zoom observer reads as a committed pop.
@@ -1023,8 +1049,21 @@ struct ServerPlaylistDetailView: View {
         hydrateFromCacheIfNeeded()
     }
 
+    /// Synchronous cache hit before the backdrop `.task` runs — avoids one frame of
+    /// ``BackdropPalette/fallback`` when revisiting an album whose palette is warm.
+    private func seedCachedBackdropPaletteIfNeeded() {
+        guard app.playlistBackdropEnabled else { return }
+        if let cached = ArtworkDynamicGradient.cachedBackdrop(for: resolvedDetailArtworkURL) {
+            backdropPalette = cached
+            return
+        }
+        ArtworkDynamicGradient.prefetchBackdrop(for: resolvedDetailArtworkURL)
+    }
+
     private func detailOnDisappear() {
         scrollHighlightTask?.cancel()
+        navigateArtist = nil
+        navigateAlbum = nil
         if tracksVisibility {
             switch source {
             case .playlist(let p):
@@ -1063,6 +1102,7 @@ struct ServerPlaylistDetailView: View {
                 AlbumHeroBackdropView(artworkURL: resolvedDetailArtworkURL, palette: backdropPalette)
                 detailTrackList(scrollProxy: scrollProxy)
             }
+            .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
         }
     }
 
@@ -1244,6 +1284,7 @@ struct ServerPlaylistDetailView: View {
                     .menuOrder(.fixed)
                 }
                 .opacity(detailChromeIsLeaving ? 0 : 1)
+                .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
                 .transaction(value: detailChromeIsLeaving) { t in
                     t.animation = detailChromeIsLeaving ? .none : .easeOut(duration: 0.15)
                 }
@@ -1261,6 +1302,7 @@ struct ServerPlaylistDetailView: View {
                     .menuOrder(.fixed)
                 }
                 .opacity(detailChromeIsLeaving ? 0 : 1)
+                .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
                 .transaction(value: detailChromeIsLeaving) { t in
                     t.animation = detailChromeIsLeaving ? .none : .easeOut(duration: 0.15)
                 }
@@ -1357,23 +1399,18 @@ struct ServerPlaylistDetailView: View {
     /// page would surface a useless artist page (every collaboration on the server).
     /// Match Apple's behavior by treating it as non-tappable.
     private static func isTappableArtist(_ name: String) -> Bool {
-        name.lowercased() != "various artists"
+        ArtistNavigation.isTappable(name)
     }
 
-    /// Album hero subtitle line — artist name is a NavigationLink to ``ArtistPageView``
-    /// for album sources; playlists keep the existing static Text path.
-    ///
-    /// Suppresses the system's auto-disclosure chevron with
-    /// ``navigationLinkIndicatorVisibility(.hidden)`` — otherwise an extra `>`
-    /// glyph slots in between the artist name and the detail text and the link
-    /// claims a wider hit area than its label, pushing the metadata to the right.
+    /// Album hero subtitle line — artist name is a button that programmatically
+    /// pushes ``ArtistPageView`` for album sources; playlists keep the static Text path.
     @ViewBuilder
     private var heroSubtitleLine: some View {
         if let split = heroAlbumArtistSplit {
             HStack(spacing: 6) {
                 if Self.isTappableArtist(split.artist) {
-                    NavigationLink {
-                        ArtistPageView(input: .named(split.artist))
+                    Button {
+                        navigateArtist = ArtistNameNavigation(id: split.artist)
                     } label: {
                         Text(split.artist)
                             .font(.subheadline.weight(.medium))
@@ -1381,7 +1418,6 @@ struct ServerPlaylistDetailView: View {
                             .fixedSize(horizontal: true, vertical: false)
                     }
                     .buttonStyle(.plain)
-                    .navigationLinkIndicatorVisibility(.hidden)
                 } else {
                     Text(split.artist)
                         .font(.subheadline.weight(.medium))
@@ -1509,10 +1545,6 @@ struct ServerPlaylistDetailView: View {
             Button(action: beginRename) {
                 Label("Edit", systemImage: "pencil")
             }
-            Button {} label: {
-                Label("Start Collaboration", systemImage: "person.crop.circle.badge.plus")
-            }
-            .disabled(true)
             Menu {
                 ForEach(PlaylistTrackSortOrder.allCases) { order in
                     Button {
@@ -1529,10 +1561,6 @@ struct ServerPlaylistDetailView: View {
             } label: {
                 Label("Sort By", systemImage: "arrow.up.arrow.down")
             }
-            Button {} label: {
-                Label("Move to Folder", systemImage: "folder")
-            }
-            .disabled(true)
         }
         .tint(Color.primary)
 
@@ -1863,7 +1891,7 @@ struct ServerPlaylistDetailView: View {
         }
     }
 
-    /// MusicBrainz-only track row — same chrome as owned rows; tap (play affordance) requests via the active acquisition plugin.
+    /// iTunes-catalog track row — same chrome as owned rows; tap (play affordance) requests via the active acquisition plugin.
     @ViewBuilder
     private func missingAlbumRow(_ preview: BrowseAlbumPreviewTrack, displayIndex: Int, showsBottomDivider: Bool) -> some View {
         let previewJob = acquisitionJob(forPreview: preview)
@@ -1959,7 +1987,7 @@ struct ServerPlaylistDetailView: View {
                 }
             },
             hasActiveQueue: !app.player.queue.isEmpty,
-            onGoToAlbum: isAlbumStyleDetail ? nil : { navigateAlbum = app.albumSummary(for: row.track) },
+            onGoToAlbum: isAlbumStyleDetail ? nil : { pushAlbumDetailNavigation(app.albumSummary(for: row.track), into: $navigateAlbum) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [row.track]) },
             onRemoveFromPlaylist: removeFromPlaylist,
             onRemoveFromLibrary: app.isSongInLibrary(row.track.id)
@@ -1992,9 +2020,19 @@ struct ServerPlaylistDetailView: View {
     }
 
     private func hydrateFromCacheIfNeeded() {
-        guard case .playlist(let p) = source, rows.isEmpty,
-              let cached = app.cachedPlaylistRows(playlistId: p.id), !cached.isEmpty else { return }
-        rows = cached
+        guard rows.isEmpty else { return }
+        switch source {
+        case .playlist(let p):
+            guard let cached = app.cachedPlaylistRows(playlistId: p.id), !cached.isEmpty else { return }
+            rows = cached
+        case .album(let album, _):
+            guard let cached = app.cachedAlbumTracks(albumId: album.id), !cached.isEmpty else { return }
+            rows = cached.enumerated().map { idx, track in
+                PlaylistRowItem(rowId: "album-\(album.id)-\(idx)-\(track.id)", track: track)
+            }
+        case .homeMix:
+            return
+        }
         isLoading = false
         recomputeDisplayedRows()
     }
@@ -2042,6 +2080,7 @@ struct ServerPlaylistDetailView: View {
                     }
                 } else if let lib = app.activeLibrary {
                     let tracks = try await lib.tracks(forAlbumId: album.id)
+                    app.cacheAlbumTracks(albumId: album.id, tracks: tracks)
                     guard await waitOutDismissalGesture() else {
                         detailDebugLog("HYDRATION-DROPPED rows=\(tracks.count)")
                         return

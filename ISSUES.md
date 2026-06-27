@@ -21,3 +21,21 @@
 - Drop `.searchable` for this view; embed a custom inline search field in the `ScrollView` content positioned above the natural top (e.g., via `safeAreaInset` with a negative inset, or `contentMargins(.top, -h)`), so the search field is only visible when overscrolled. Requires updating `PlaylistHeroOrPillsHeader` to take an explicit `isSearching` bool instead of reading `\.isSearching`.
 - Wrap the whole detail view in a `UIViewController`-based representable that owns its own `UIScrollView` + non-navigation-drawer `UISearchBar` header, giving full control over the reveal behavior.
 - Live with the current behavior and instead change placement to `.toolbar` so search is a tap-to-expand toolbar button (different UX but no auto-reveal).
+
+## Search tab: detached search button vs scroll-collapse (mutually exclusive)
+
+**Where:** `Sources/LyraMusicKit/RootView.swift` — the Search `Tab(role: .search)` and `.tabBarMinimizeBehavior(...)`.
+
+**Limitation:** A `Tab(role: .search)` renders as a detached search button in the tab bar but does **not** participate in `tabBarMinimizeBehavior(.onScrollDown)`. So under Search the tab bar and the bottom mini-player accessory (`tabViewBottomAccessoryPlacement`, system-driven) do not collapse on scroll. Removing `role: .search` enables the collapse but collapses all five tabs into one inline pill (no detached search button). iOS provides no way to get both.
+
+**Current choice:** keep the detached button — `.tabBarMinimizeBehavior(app.selectedTab == .search ? .never : .onScrollDown)`. The mini-player collapse can't be driven independently because its layout reads the read-only system `\.tabViewBottomAccessoryPlacement`.
+
+**Also tried (reverted):** a custom Liquid-Glass search header that collapsed on scroll via height-squeeze — not the native `.searchable` sandwich animation, so it was reverted. A full switch to native `.searchable` + `.searchScopes` would give the exact native collapse but replaces the custom header and renders via the nav bar instead of the floating-header style the other tabs use.
+
+## Home taste shelves empty until data loads
+
+**Where:** `AppModel.applyHomeDiscoveryShelvesRanking()` / `HomeView` — Top Picks, New Releases, genre rows, New Artists Added.
+
+**Behavior:** Shelves only show **server catalog** albums **not** in the user's magic playlist (`isEligibleForHomeTopPick`). Until `recentlyAddedAlbums`, taste genres, and/or scrobble signals load, rows can be empty or fall back to server **New Releases**. This is expected, not a fetch failure.
+
+**Removed (2026-06):** MusicBrainz browse clients and Settings toggle — New/Discover/Following metadata now comes from iTunes Search API only.

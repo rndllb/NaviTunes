@@ -404,6 +404,18 @@ enum MusicDesign {
         #endif
     }
 
+    /// Grouped-list background for Settings (light gray in light mode, like iOS Settings) so the
+    /// white grouped cells/sections stand out. `systemBackground` flattened everything to white.
+    static var settingsBackground: Color {
+        #if os(iOS)
+        Color(UIColor.systemGroupedBackground)
+        #elseif os(macOS)
+        Color(nsColor: .windowBackgroundColor)
+        #else
+        Color.gray.opacity(0.06)
+        #endif
+    }
+
     static var secondaryLabel: Color {
         #if os(iOS)
         Color(UIColor.secondaryLabel)
@@ -482,6 +494,27 @@ enum MusicDesign {
     static let gridMinCell: CGFloat = 158
     static let shelfCardWidth: CGFloat = 168
     static let shelfCardHeight: CGFloat = 168
+    /// Circular artist avatar in horizontal shelves (Home “New Artists Added”, New tab “Artists You're Into”).
+    static let artistCircleTileSize: CGFloat = 110
+    static let artistCircleTileLabelWidth: CGFloat = 120
+
+    // MARK: - Home Top Picks editorial card
+    static let homeTopPickCardWidth: CGFloat = 250
+    static let homeTopPickCardHeight: CGFloat = 325
+    /// Square cover — full card width, flush to the top edge.
+    static let homeTopPickArtworkSize: CGFloat = homeTopPickCardWidth
+    static let homeTopPickBleedBandHeight: CGFloat = homeTopPickCardHeight - homeTopPickArtworkSize
+    /// Bottom strip of cover art sampled for the vertical stretch bleed.
+    static let homeTopPickBleedSourceRatio: CGFloat = 0.05
+    /// Soft blur at the bleed top — eases the seam with cover art.
+    static let homeTopPickBleedBlurRadiusTop: CGFloat = 2.5
+    /// Stronger blur from ~mid-band downward.
+    static let homeTopPickBleedBlurRadiusBottom: CGFloat = 11
+    /// Bleed draws upward under the cover bottom for a seamless blend.
+    static let homeTopPickBleedSeamOverlap: CGFloat = 44
+    /// Cover art fades out over this height at its bottom edge.
+    static let homeTopPickArtSeamFadeHeight: CGFloat = 48
+    static let homeTopPickCardCorner: CGFloat = 14
 
     // MARK: - New tab (Apple Music Browse-style)
     /// Leading inset for hero labels, shelves, and section headers (aligned with large navigation title).
@@ -506,6 +539,10 @@ enum MusicDesign {
     static let albumHeroPrimaryCapsuleWidth: CGFloat = 158
     /// Icon–title gap inside the primary Play capsule (``ServerPlaylistDetailView`` hero).
     static let albumHeroPlayLabelSpacing: CGFloat = 5
+    /// Tighter icon–title gap for library section Play / Shuffle capsules.
+    static let libraryPlayShuffleLabelSpacing: CGFloat = 2
+    /// Icon–title gap for **Request** actions (overflow menus + browse hero capsule).
+    static let requestActionLabelSpacing: CGFloat = 2
 
     /// Hairline around song-list artwork (Apple Music–style, barely visible).
     static func songRowArtworkBorder(for colorScheme: ColorScheme) -> Color {
@@ -598,6 +635,7 @@ struct AlbumArtworkView: View {
                 loadFailed = false
                 loadedArtworkID = loadKey
             }
+            ArtworkDynamicGradient.prefetchBackdrop(for: url)
             return
         }
         withTransaction(Transaction(animation: nil)) {
@@ -612,6 +650,9 @@ struct AlbumArtworkView: View {
                 decoded = cg
                 loadFailed = cg == nil
                 loadedArtworkID = loadKey
+            }
+            if cg != nil {
+                ArtworkDynamicGradient.prefetchBackdrop(for: url)
             }
         }
     }
@@ -1027,6 +1068,41 @@ extension View {
     }
 }
 
+/// Liquid Glass segmented pill — selected segment is a darker inset capsule (Discover / Library, Jellyfin / Navidrome, …).
+struct MusicGlassSegmentPillBar<Selection: Hashable>: View {
+    let options: [Selection]
+    @Binding var selection: Selection
+    let title: (Selection) -> String
+    @Namespace private var ns
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(options, id: \.self) { option in
+                Button {
+                    withAnimation(.smooth(duration: 0.22)) { selection = option }
+                } label: {
+                    Text(title(option))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(selection == option ? Color.primary : MusicDesign.secondaryLabel)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 5)
+                        .background {
+                            if selection == option {
+                                Capsule(style: .continuous)
+                                    .fill(Color.black.opacity(0.28))
+                                    .matchedGeometryEffect(id: "pillSelection", in: ns)
+                            }
+                        }
+                        .contentShape(Capsule(style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(3)
+        .musicGlassEffect(in: Capsule(style: .continuous))
+    }
+}
+
 enum MusicToolbar {
     /// Replaces `.topBarTrailing`, which is unavailable when compiling `LyraMusicKit` for macOS.
     static var trailingItemPlacement: ToolbarItemPlacement {
@@ -1357,6 +1433,19 @@ struct LibrarySearchPill: View {
     }
 }
 
+/// Request pill / menu label — tighter icon–title gap than stock ``Label``.
+struct RequestActionLabel: View {
+    var font: Font = .body
+
+    var body: some View {
+        HStack(spacing: MusicDesign.requestActionLabelSpacing) {
+            Image(systemName: "arrow.down.circle.fill")
+            Text("Request")
+        }
+        .font(font)
+    }
+}
+
 /// Play + Shuffle capsules — monochrome hero styling (``FavoritePlaylistView`` search pills).
 struct AlbumHeroPlayShuffleCluster: View {
     let palette: ArtworkDynamicGradient.BackdropPalette
@@ -1382,7 +1471,7 @@ struct AlbumHeroPlayShuffleCluster: View {
 
     private func heroCapsuleButton(systemImage: String, title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: MusicDesign.albumHeroPlayLabelSpacing) {
+            HStack(spacing: MusicDesign.libraryPlayShuffleLabelSpacing) {
                 Image(systemName: systemImage)
                 Text(title)
             }
@@ -1406,23 +1495,29 @@ struct LibraryPlayShuffleRow: View {
     var body: some View {
         HStack(spacing: 12) {
             Button(action: onPlay) {
-                Label("Play", systemImage: "play.fill")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(MusicDesign.accent)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 13)
-                    .background(Capsule(style: .continuous).fill(MusicDesign.chromeCapsuleFill))
+                HStack(spacing: MusicDesign.libraryPlayShuffleLabelSpacing) {
+                    Image(systemName: "play.fill")
+                    Text("Play")
+                }
+                .font(.body.weight(.semibold))
+                .foregroundStyle(MusicDesign.accent)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 13)
+                .background(Capsule(style: .continuous).fill(MusicDesign.chromeCapsuleFill))
             }
             .buttonStyle(.plain)
             .disabled(isDisabled)
 
             Button(action: onShuffle) {
-                Label("Shuffle", systemImage: "shuffle")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(MusicDesign.accent)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 13)
-                    .background(Capsule(style: .continuous).fill(MusicDesign.chromeCapsuleFill))
+                HStack(spacing: MusicDesign.libraryPlayShuffleLabelSpacing) {
+                    Image(systemName: "shuffle")
+                    Text("Shuffle")
+                }
+                .font(.body.weight(.semibold))
+                .foregroundStyle(MusicDesign.accent)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 13)
+                .background(Capsule(style: .continuous).fill(MusicDesign.chromeCapsuleFill))
             }
             .buttonStyle(.plain)
             .disabled(isDisabled)

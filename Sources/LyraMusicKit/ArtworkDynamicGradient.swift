@@ -12,10 +12,54 @@ import AppKit
 enum ArtworkDynamicGradient {
     /// How the flat backdrop tint is sampled from cover art.
     enum BackdropAnalysisStyle: Sendable {
-        /// Album / playlist detail — literal most frequent sRGB on the cover.
+        /// Album / playlist detail + Now Playing — literal most frequent sRGB on the cover.
         case detail
-        /// Now Playing — atmospheric hue wash (legacy).
+        /// Legacy atmospheric hue wash (unused; kept for cache-key compatibility).
         case nowPlaying
+    }
+
+    // MARK: - Palette cache
+
+    private final class PaletteBox { let palette: BackdropPalette; init(_ p: BackdropPalette) { palette = p } }
+    /// Memoizes computed palettes per (artwork URL, style) so reopening an album shows its
+    /// backdrop instantly instead of re-downloading + re-analyzing the cover every time.
+    private static let paletteCache = NSCache<NSString, PaletteBox>()
+
+    /// Stable cache key: artwork URLs carry volatile auth (Subsonic salted `u`/`t`/`s`, Jellyfin
+    /// `api_key`) that changes every request, so keying by the full URL never hits. Key by the
+    /// path plus only the identity params (cover id / size / tag) instead.
+    private static func cacheKey(_ url: URL, _ style: BackdropAnalysisStyle) -> NSString {
+        if url.isFileURL { return "\(url.path)|\(style)" as NSString }
+        var parts = [url.path]
+        if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false), let items = comps.queryItems {
+            let identityNames: Set<String> = ["id", "coverart", "size", "tag"]
+            for item in items where identityNames.contains(item.name.lowercased()) {
+                parts.append("\(item.name.lowercased())=\(item.value ?? "")")
+            }
+        }
+        return "\(parts.joined(separator: "&"))|\(style)" as NSString
+    }
+
+    /// Synchronous cache lookup so a view can seed its backdrop with no async hop / no pop-in
+    /// when the artwork has been analyzed before this session.
+    static func cachedBackdrop(for artworkURL: URL?, style: BackdropAnalysisStyle = .detail) -> BackdropPalette? {
+        guard let artworkURL else { return nil }
+        return paletteCache.object(forKey: cacheKey(artworkURL, style))?.palette
+    }
+
+    /// First paint value for detail heroes — uses the memoized palette when available.
+    static func seededBackdrop(for artworkURL: URL?) -> BackdropPalette {
+        cachedBackdrop(for: artworkURL) ?? .fallback
+    }
+
+    /// Warms the palette cache while cover art is on screen so the pushed detail can
+    /// show its backdrop on frame one instead of after decode + analysis.
+    static func prefetchBackdrop(for artworkURL: URL?, style: BackdropAnalysisStyle = .detail) {
+        guard let artworkURL else { return }
+        if cachedBackdrop(for: artworkURL, style: style) != nil { return }
+        Task(priority: .utility) {
+            _ = await analyzeBackdrop(from: artworkURL, style: style)
+        }
     }
     private static let fallbackHeroSolid = Color(red: 54 / 255, green: 48 / 255, blue: 62 / 255)
 
@@ -62,6 +106,7 @@ enum ArtworkDynamicGradient {
         style: BackdropAnalysisStyle = .detail,
     ) async -> BackdropPalette {
         guard let url = artworkURL else { return .fallback }
+        if let cached = paletteCache.object(forKey: cacheKey(url, style))?.palette { return cached }
         let data: Data?
         if url.isFileURL {
             data = try? Data(contentsOf: url)
@@ -71,13 +116,15 @@ enum ArtworkDynamicGradient {
             data = await ArtworkURLCache.data(for: url)
         }
         guard let data, !data.isEmpty, let cgImage = cgImage(fromImageData: data) else { return .fallback }
-        return await analyzeBackdrop(from: cgImage, style: style)
+        let palette = await analyzeBackdrop(from: cgImage, style: style)
+        paletteCache.setObject(PaletteBox(palette), forKey: cacheKey(url, style))
+        return palette
     }
 
     /// Internet radio mesh artwork → same backdrop analysis path as cover art.
     static func analyzeBackdrop(
         fromMeshSeedKey seedKey: String,
-        style: BackdropAnalysisStyle = .nowPlaying,
+        style: BackdropAnalysisStyle = .detail,
     ) async -> BackdropPalette {
         #if os(iOS)
         let cgImage = await MainActor.run { RadioStationMeshArtwork.renderCGImage(seedKey: seedKey) }

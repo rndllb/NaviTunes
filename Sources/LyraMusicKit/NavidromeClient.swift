@@ -441,6 +441,30 @@ final class NavidromeClient: MusicLibraryProviding {
     }
 
     func libraryGenres(limit: Int) async throws -> [LibraryGenreSummary] {
+        let cap = max(1, min(limit, 5000))
+        let maxAlbums = min(15_000, max(cap * 80, 2000))
+        let (albums, _) = try await fetchAllAlbumsForStatistics(maxAlbums: maxAlbums)
+        let derived = LibraryGenreCatalog.summarize(from: albums, limit: cap)
+        if !derived.isEmpty {
+            return derived
+        }
+
+        // Fallback when album list payloads omit genre tags.
+        return try await navidromeIndexedGenres(limit: cap)
+    }
+
+    func browseGenreCategories(limit: Int) async throws -> [LibraryGenreSummary] {
+        let cap = max(1, min(limit, 500))
+        let indexed = try await navidromeIndexedGenres(limit: cap)
+        if !indexed.isEmpty {
+            return indexed
+        }
+        let maxAlbums = min(800, max(cap * 8, 200))
+        let (albums, _) = try await fetchAllAlbumsForStatistics(maxAlbums: maxAlbums)
+        return LibraryGenreCatalog.summarize(from: albums, limit: cap)
+    }
+
+    private func navidromeIndexedGenres(limit: Int) async throws -> [LibraryGenreSummary] {
         let items = try await subsonicRequest(path: "getGenres", query: [:])
         let rows: [[String: Any]]
 
@@ -463,7 +487,6 @@ final class NavidromeClient: MusicLibraryProviding {
             rows = []
         }
 
-        let cap = max(1, min(limit, 5000))
         let mapped: [LibraryGenreSummary] = rows.compactMap { dict in
             let name =
                 (dict["value"] as? String)
@@ -471,10 +494,11 @@ final class NavidromeClient: MusicLibraryProviding {
                     ?? (dict["genre"] as? String)
             guard let name, !name.isEmpty else { return nil }
             let albumCount = navidromeInt(dict["albumCount"])
+            if let albumCount, albumCount <= 0 { return nil }
             return LibraryGenreSummary(id: name, name: name, albumCount: albumCount)
         }
         .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        return Array(mapped.prefix(cap))
+        return Array(mapped.filter(\.hasAlbums).prefix(limit))
     }
 
     func albums(forLibraryArtistId artistId: String, limit: Int) async throws -> [AlbumSummary] {
@@ -1352,7 +1376,7 @@ final class NavidromeClient: MusicLibraryProviding {
         throw NavidromeClientError.libraryTrackDeleteUnsupported
     }
 
-    /// Subsonic `startScan`. Fires the server's media scan so files Downtify just
+    /// Subsonic `startScan`. Fires the server's media scan so files the request backend just
     /// dropped on disk surface in the catalog. The Subsonic spec returns a
     /// `scanStatus` envelope; we don't await completion here — callers poll for
     /// the new track via `searchCatalog` instead.
@@ -1498,11 +1522,15 @@ final class NavidromeClient: MusicLibraryProviding {
         let items = try await subsonicRequest(path: "getPlaylists", query: [:])
         guard let root = navidromeDict(items["playlists"]) else { return nil }
         let rows = childDictArray(from: root, key: "playlist")
-        for dict in rows {
-            guard let parsed = parsePlaylistDictSummary(dict) else { continue }
-            if parsed.name == name { return parsed }
+        let matches = rows.compactMap { parsePlaylistDictSummary($0) }.filter { $0.name == name }
+        // The server can hold duplicate playlists with the magic name (multi-device race).
+        // getPlaylists order isn't stable, so returning the first match made membership sync
+        // flap between duplicates and the Library shelf flicker. Deterministically pick the
+        // richest (most songs; tiebreak by id) so we always converge on the real one.
+        return matches.max { lhs, rhs in
+            let l = lhs.songCount ?? 0, r = rhs.songCount ?? 0
+            return l != r ? l < r : lhs.id > rhs.id
         }
-        return nil
     }
 
     /// One round-trip `getPlaylist` that returns enough to drive Lyra library state:

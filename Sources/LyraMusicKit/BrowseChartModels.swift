@@ -1,6 +1,6 @@
 import Foundation
 
-/// External chart / browse metadata (MusicBrainz new releases, etc.).
+/// External chart / browse metadata (iTunes new releases, etc.).
 struct ChartTrack: Identifiable, Hashable {
     let id: String
     let name: String
@@ -24,5 +24,35 @@ struct ChartAlbum: Identifiable {
     let id: String
     let name: String
     let artistName: String
-    let imageURL: URL?
+    var imageURL: URL?
+    /// First-release date when known (iTunes `releaseDate`); drives the
+    /// "New This Week" vs "Recent Releases" recency split on the New tab.
+    var releaseDate: Date? = nil
+}
+
+extension ChartTrack {
+    /// Unified acquisition request for **New** tab chart rows.
+    var acquisitionRequest: AcquisitionRequest {
+        let isAlbum = browseKind.caseInsensitiveCompare("Album") == .orderedSame
+        return AcquisitionRequest(
+            artist: artistName,
+            trackTitle: isAlbum ? nil : name,
+            albumTitle: isAlbum ? name : nil,
+            coverURL: imageURL
+        )
+    }
+}
+
+/// Resolved server/library state for a **New** tab chart row.
+enum NewTabChartRowState: Equatable {
+    case libraryTrack(Track)
+    case serverAlbum(AlbumSummary)
+    case missing
+
+    var isOnServer: Bool {
+        switch self {
+        case .missing: return false
+        case .libraryTrack, .serverAlbum: return true
+        }
+    }
 }

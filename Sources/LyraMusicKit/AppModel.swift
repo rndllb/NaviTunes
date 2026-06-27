@@ -28,7 +28,7 @@ enum ActiveServerURLRole: String, Equatable {
 
 enum NewTabBrowseBackend: Equatable {
     case none
-    case musicBrainz
+    case appleMusic
 }
 
 /// On-disk record of a recently-played item. Plays sourced from a playlist record the playlist;
@@ -71,10 +71,9 @@ public final class AppModel: ObservableObject {
     public static let defaultLibraryAlbumFetchLimit = 500
     @Published var accentPresetId: String = UserDefaults.standard.string(forKey: AppAccentPreset.accentPresetIdKey) ?? AppAccentPreset.defaultId {
         didSet {
+            // Accent color and app icon are independent — changing the accent must NOT change
+            // the home-screen icon. The icon is controlled solely by `appIconPresetId`.
             UserDefaults.standard.set(accentPresetId, forKey: AppAccentPreset.accentPresetIdKey)
-            if accentPresetId != AppAccentPreset.customId {
-                appIconPresetId = accentPresetId
-            }
         }
     }
 
@@ -100,10 +99,6 @@ public final class AppModel: ObservableObject {
             UserDefaults.standard.set(appIconPresetId, forKey: AppAccentPreset.appIconPresetIdKey)
             syncHomeScreenIconIfNeeded()
         }
-    }
-
-    @Published var musicBrainzEnabled: Bool = UserDefaults.standard.object(forKey: "musicBrainzEnabled") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(musicBrainzEnabled, forKey: "musicBrainzEnabled") }
     }
 
     @Published var backendKind: BackendKind = .jellyfin
@@ -174,11 +169,19 @@ public final class AppModel: ObservableObject {
     /// Stored separately from the local list so the merged Home shelf can update live as either side changes.
     @Published private(set) var homeRecentlyPlayedServerAlbums: [AlbumSummary] = []
     @Published private(set) var homeGenreShelves: [(genre: String, albums: [AlbumSummary])] = []
-    /// Sticky per-session random pick of which genres get a shelf on Home. Locked in on the
-    /// first successful ``refreshHome()`` of the session; subsequent refreshes reuse it so the
-    /// Home layout doesn't reshuffle on every tab visit or pull-to-refresh. Cleared on sign-out
-    /// and server-identity changes (alongside ``homeGenreShelves``), and reset by cold launch.
+    /// Sticky per-session pick of which genres get a shelf on Home — chosen from listening
+    /// taste on the first successful ``refreshHome()`` of the session; subsequent refreshes
+    /// reuse it so the layout doesn't reshuffle on every tab visit or pull-to-refresh.
+    /// Cleared on sign-out and server-identity changes (alongside ``homeGenreShelves``).
     private var homeSelectedGenres: [LibraryGenreSummary]?
+    private static let homeGenreShelfCount = 4
+    private static let homeGenreShelfAlbumLimit = 9
+    private static let homeTopPickCount = 8
+    private static let homeNewReleaseCount = 20
+    /// Taste-ranked server-catalog albums for Home → Top Picks (excludes personal library).
+    @Published private(set) var homeTopPickAlbums: [AlbumSummary] = []
+    /// Next taste-ranked server-catalog rows after Top Picks (same pool, excludes personal library).
+    @Published private(set) var homeNewReleaseAlbums: [AlbumSummary] = []
 
     /// Live merge of the local play log and the server's recently-played albums.
     @Published private(set) var homeRecentlyPlayed: [RecentPlayedItem] = []
@@ -186,9 +189,9 @@ public final class AppModel: ObservableObject {
     @Published private(set) var homeMixes: [HomeMix] = []
     @Published private(set) var libraryAlbumsLoadError: String?
 
-    /// Normalized track titles → normalized artist strings (for Downtify vs library matching).
+    /// Normalized track titles → normalized artist strings (for the request backend vs library matching).
     @Published private(set) var libraryTrackTitleIndex: [String: Set<String>] = [:]
-    /// Snapshot of tracks used to build ``libraryTrackTitleIndex`` (resolve Downtify rows → `Track`).
+    /// Snapshot of tracks used to build ``libraryTrackTitleIndex`` (resolve the request backend rows → `Track`).
     @Published private(set) var discoveryLibraryTracks: [Track] = [] {
         didSet { rebuildDiscoveryTrackIndices() }
     }
@@ -199,7 +202,7 @@ public final class AppModel: ObservableObject {
     @Published private(set) var isIndexingLibraryTracks = false
     @Published private(set) var libraryTrackIndexLoadError: String?
 
-    /// MusicBrainz / external browse shelves for the New tab.
+    /// External (iTunes) browse shelves for the New tab.
     @Published private(set) var newTabTopTracks: [ChartTrack] = []
     @Published private(set) var newTabTopAlbums: [ChartAlbum] = []
     @Published private(set) var newTabRecentReleases: [ChartAlbum] = []
@@ -208,9 +211,9 @@ public final class AppModel: ObservableObject {
     @Published private(set) var newTabArtistHighlights: [NewTabArtistHighlight] = []
     @Published private(set) var newTabIsPersonalized = false
     @Published private(set) var newTabBrowseLoading = false
-    /// Set when MusicBrainz browse fails so the New tab can show a concrete reason instead of an empty shelf.
+    /// Set when iTunes browse fails so the New tab can show a concrete reason instead of an empty shelf.
     @Published private(set) var newTabBrowseError: String?
-    /// Which catalog populated the **New** tab on the last successful refresh (drives labels like “MusicBrainz”).
+    /// Which catalog populated the **New** tab on the last successful refresh.
     @Published private(set) var newTabBrowseBackend: NewTabBrowseBackend = .none
 
     let player = PlaybackEngine()
@@ -218,7 +221,7 @@ public final class AppModel: ObservableObject {
     let acquisition = AcquisitionManager()
 
     /// Follow-artist / discography-completeness automation (the Lidarr-style "brain"),
-    /// backed by the always-available MusicBrainz floor so it works regardless of which
+    /// backed by the iTunes Search API floor so it works regardless of which
     /// acquisition/library plugins are configured. Assigned in `init`.
     private(set) var subscriptions: MusicSubscriptionEngine!
 
@@ -232,6 +235,19 @@ public final class AppModel: ObservableObject {
     private var trackIndexTask: Task<Void, Never>?
     /// In-memory playlist tracklists for instant detail hydration (Go to Playlist, revisit).
     private var playlistRowsCache: [String: [PlaylistRowItem]] = [:]
+    /// Instant album-detail hydration: read/write the existing ``albumTracksCache`` as plain
+    /// `[Track]` so reopening an album doesn't re-fetch from the server each time.
+    func cachedAlbumTracks(albumId: String) -> [Track]? {
+        let key = albumId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return nil }
+        return albumTracksCache[key]?.tracks
+    }
+
+    func cacheAlbumTracks(albumId: String, tracks: [Track]) {
+        let key = albumId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty, !tracks.isEmpty else { return }
+        albumTracksCache[key] = CachedAlbumTracks(tracks: tracks, retrievedAt: Date())
+    }
     /// In-flight playlist row fetches keyed by playlist id — see ``fetchPlaylistRows(playlistId:)``.
     private var playlistRowsFetchTasks: [String: Task<[PlaylistRowItem], Error>] = [:]
     /// Background sync-ahead of playlist tracklists — see ``warmPlaylistRowsCache()``.
@@ -295,6 +311,15 @@ public final class AppModel: ObservableObject {
     private static let playlistLastPlayedDatesKey = "LyraMusic.playlistLastPlayedDates"
     @Published private(set) var playlistLastPlayedDates: [String: Date] = [:]
 
+    /// Playlist id → when the user created it in this app. Used so a freshly-made playlist sorts
+    /// to the top of Library → Recently Added even before the server reports its `created` date.
+    private static let playlistCreatedDatesKey = "LyraMusic.playlistCreatedDates"
+    @Published private(set) var playlistCreatedDates: [String: Date] = [:]
+
+    func localPlaylistCreatedDate(_ id: String) -> Date? {
+        playlistCreatedDates[id.trimmingCharacters(in: .whitespacesAndNewlines)]
+    }
+
     /// Playlists the user most recently added songs to from the add-to-playlist
     /// sheet, newest first — drives its "Recents" section. Local-only.
     private static let recentAddToPlaylistIdsKey = "LyraMusic.recentAddToPlaylistIds"
@@ -327,8 +352,12 @@ public final class AppModel: ObservableObject {
     /// buttons to guard against double-tap reentrancy.
     @Published private(set) var isResolvingLibraryMembership = false
 
-    /// When non-nil, ``MainShellView`` presents ``AddToPlaylistSheet``.
+    /// When non-nil, presents ``AddToPlaylistSheet`` from the tab shell. While the
+    /// Now Playing cover is up, ``presentAddToPlaylist`` routes through UIKit instead
+    /// so a SwiftUI `.sheet` never enters the cover's zoom-transition tree.
     @Published var playlistPickerPayload: PlaylistPickerPayload?
+    /// Mirrored from ``MainShellView``'s `showNowPlaying` for add-to-playlist routing.
+    var isNowPlayingCoverPresented = false
 
     /// When non-nil, ``MainShellView`` asks for confirmation before ``deleteTrackFromLibrary(_:)``.
     @Published var libraryTrackPendingDeletion: Track?
@@ -860,18 +889,13 @@ public final class AppModel: ObservableObject {
             }
             .store(in: &cancellables)
         offline.$downloadedTrackIds
-            .sink { [weak self] _ in self?.objectWillChange.send() }
-            .store(in: &cancellables)
-        offline.$downloadQueue
+            .removeDuplicates()
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         acquisition.onJobFinished = { [weak self] job in
             guard let self else { return }
             Task { await self.handleAcquisitionJobFinished(job) }
         }
-        acquisition.objectWillChange
-            .sink { [weak self] _ in self?.objectWillChange.send() }
-            .store(in: &cancellables)
         subscriptions = MusicSubscriptionEngine(env: .init(
             serverAlbumsForArtist: { [weak self] name in
                 await self?.serverAlbums(forArtistName: name) ?? []
@@ -886,9 +910,6 @@ public final class AppModel: ObservableObject {
                 self?.acquisition.capabilities.granularity ?? .album
             }
         ))
-        subscriptions.objectWillChange
-            .sink { [weak self] _ in self?.objectWillChange.send() }
-            .store(in: &cancellables)
         loadPersistedSettings()
         wireOfflineDownloadManager()
         startNetworkMonitor()
@@ -897,6 +918,7 @@ public final class AppModel: ObservableObject {
         loadRecentlyPlayedEntriesFromDefaults()
         loadRecentlyPlayedTracksFromDefaults()
         loadPlaylistLastPlayedDatesFromDefaults()
+        loadPlaylistCreatedDatesFromDefaults()
         loadRecentAddToPlaylistIdsFromDefaults()
         reloadCustomRadioStations()
         killModeEnabledPlaylistIds = KillModeStore.loadEnabled()
@@ -1143,6 +1165,8 @@ public final class AppModel: ObservableObject {
         recentlyAddedAlbums = []
         homeRecentlyPlayedServerAlbums = []
         homeGenreShelves = []
+        homeTopPickAlbums = []
+        homeNewReleaseAlbums = []
         homeMixes = []
         homeSelectedGenres = nil
         recentlyPlayedEntries = []
@@ -1341,6 +1365,8 @@ public final class AppModel: ObservableObject {
         recentlyAddedAlbums = []
         homeRecentlyPlayedServerAlbums = []
         homeGenreShelves = []
+        homeTopPickAlbums = []
+        homeNewReleaseAlbums = []
         homeMixes = []
         homeSelectedGenres = nil
         discoveryLibraryTracks = []
@@ -1518,26 +1544,28 @@ public final class AppModel: ObservableObject {
         async let played = (try? await lib.recentlyPlayed(limit: 12)) ?? []
         async let genres: [LibraryGenreSummary] = {
             guard needsGenrePick else { return [] }
-            return (try? await lib.libraryGenres(limit: 20)) ?? []
+            return (try? await lib.libraryGenres(limit: 100)) ?? []
         }()
         let (playedResult, genresResult) = await (played, genres)
         homeRecentlyPlayedServerAlbums = playedResult
         rebuildHomeRecentlyPlayed()
+        rebuildHomeTopPicksFromMemory()
         let pickedGenres: [LibraryGenreSummary]
         if let locked = homeSelectedGenres {
             pickedGenres = locked
         } else {
-            pickedGenres = Array(genresResult.shuffled().prefix(4))
+            pickedGenres = homeTasteGenrePicks(from: genresResult, limit: Self.homeGenreShelfCount)
             if !pickedGenres.isEmpty {
                 homeSelectedGenres = pickedGenres
             }
         }
         let indexed = await withTaskGroup(of: (Int, (genre: String, albums: [AlbumSummary]))?.self) { group in
             for (idx, g) in pickedGenres.enumerated() {
-                group.addTask {
-                    let albums = (try? await lib.albums(inGenre: g, limit: 8)) ?? []
+                group.addTask { @MainActor in
+                    let raw = (try? await lib.albums(inGenre: g, limit: Self.homeGenreShelfAlbumLimit)) ?? []
+                    let albums = self.homeDiscoveryCatalogAlbums(from: raw)
                     guard !albums.isEmpty else { return nil }
-                    return (idx, (genre: g.name, albums: albums))
+                    return (idx, (genre: GenreCanonicalizer.canonical(for: g.name), albums: albums))
                 }
             }
             var rows: [(Int, (genre: String, albums: [AlbumSummary]))] = []
@@ -1547,6 +1575,8 @@ public final class AppModel: ObservableObject {
             return rows
         }
         homeGenreShelves = indexed.sorted { $0.0 < $1.0 }.map { $0.1 }
+        rebuildHomeTopPicksFromMemory()
+        await enrichHomeTopPicksWithGenreCatalog(using: lib, tasteGenres: pickedGenres)
         rebuildHomeMixes()
     }
 
@@ -1618,7 +1648,7 @@ public final class AppModel: ObservableObject {
             recordSuccessfulLibrarySync()
             // Only the surfaces visible at launch (Home shelves + personal-library
             // membership) run during bootstrap. Statistics (Settings) and the New tab's
-            // MusicBrainz browse are pulled when their views first appear — they were
+            // New-tab browse and discovery index are pulled when their views first appear — they were
             // contributing to the on-launch main-thread crunch without being on screen.
             async let home: Void = refreshHome()
             async let membership: Void = refreshLibraryMembership()
@@ -1667,11 +1697,18 @@ public final class AppModel: ObservableObject {
             libraryPlaylistEntries = []
             return
         }
-        isResolvingLibraryMembership = true
-        defer { isResolvingLibraryMembership = false }
+        // Only surface the resolving spinner on the *initial* resolve (nothing shown yet).
+        // Background polls already have content on screen — toggling this every cycle made
+        // the Recently Added section flash a spinner.
+        let isInitialResolve = libraryMagicPlaylistId == nil
+        if isInitialResolve { isResolvingLibraryMembership = true }
+        defer { if isInitialResolve { isResolvingLibraryMembership = false } }
         do {
             let resolvedId = try await resolveMagicPlaylistId(identity: identity)
             let fetch = try await fetchMagicPlaylistContents(playlistId: resolvedId)
+            #if DEBUG
+            print("[MAGIC-SYNC] resolved id=\(resolvedId) name=\(fetch.name) tracks=\(fetch.trackIds.count) commentLen=\(fetch.comment?.count ?? -1)")
+            #endif
             let expectedNames = Set(
                 LibraryMembership.candidateMagicPlaylistNames(
                     backend: backendKind,
@@ -1810,16 +1847,49 @@ public final class AppModel: ObservableObject {
 
     private func applyMagicPlaylistFetch(playlistId: String, fetch: LibraryPlaylistFetchShape) {
         let payload = LibraryMembershipPayload.decode(fetch.comment)
-        libraryMagicPlaylistId = playlistId
-        librarySongIds = Set(fetch.trackIds)
-        libraryAlbumEntries = payload.albums
-        libraryPlaylistEntries = payload.playlists
-        invalidatePlaylistRowsCache(playlistId: playlistId)
-        Task { await backfillMissingLibraryAlbumSummaries() }
-        if backendKind == .navidrome {
-            Task { await refreshMagicPlaylistAvatar(playlistId: playlistId) }
+        #if DEBUG
+        print("[MAGIC-SYNC] apply id=\(playlistId) tracks=\(fetch.trackIds.count) payloadAlbums=\(payload.albums.count) payloadPlaylists=\(payload.playlists.count) curEntries=\(libraryAlbumEntries.count) curCatalog=\(libraryAlbums.count)")
+        #endif
+        // The ~20s background poll runs this every cycle. Only mutate @Published state when it
+        // actually changed — otherwise each poll reassigns identical data, fires objectWillChange,
+        // and re-renders the Library, making the Recently Added shelf flicker out and back in.
+        // Only mutate @Published state when the poll actually changed something —
+        // otherwise each cycle re-captures the full library snapshot on the main thread.
+        var didMutate = false
+        if libraryMagicPlaylistId != playlistId {
+            libraryMagicPlaylistId = playlistId
+            didMutate = true
         }
-        persistLibrarySnapshot()
+        let newSongIds = Set(fetch.trackIds)
+        if librarySongIds != newSongIds {
+            librarySongIds = newSongIds
+            didMutate = true
+        }
+        // A poll can transiently return the playlist without its comment/Overview JSON
+        // (or with a garbled one), which decodes to an empty payload. Overwriting with that
+        // wiped the Recently Added shelf. Only replace entries when the payload actually has
+        // content, or when the library is genuinely empty (no tracks). Direct add/remove
+        // mutations still update these arrays immediately.
+        let payloadHasContent = !payload.albums.isEmpty || !payload.playlists.isEmpty
+        if payloadHasContent || fetch.trackIds.isEmpty {
+            if libraryAlbumEntries != payload.albums {
+                libraryAlbumEntries = payload.albums
+                didMutate = true
+            }
+            if libraryPlaylistEntries != payload.playlists {
+                libraryPlaylistEntries = payload.playlists
+                didMutate = true
+            }
+        }
+        invalidatePlaylistRowsCache(playlistId: playlistId)
+        if didMutate {
+            rebuildHomeTopPicksFromMemory()
+            Task { await backfillMissingLibraryAlbumSummaries() }
+            if backendKind == .navidrome {
+                Task { await refreshMagicPlaylistAvatar(playlistId: playlistId) }
+            }
+            persistLibrarySnapshot()
+        }
     }
 
     /// Asks Navidrome's native API whether the magic playlist has a user-uploaded /
@@ -1934,12 +2004,23 @@ public final class AppModel: ObservableObject {
             return results
         }
         guard !fetched.isEmpty else { return }
-        var merged = libraryAlbums
-        var byId = Dictionary(uniqueKeysWithValues: merged.map { ($0.id, $0) })
-        for album in fetched {
+        // Idempotent merge: only touch `libraryAlbums` when a fetched summary actually differs
+        // from what we already have. The ~20s poll re-runs this every cycle, and for Navidrome
+        // it re-fetches albums whose `coverArtId` stays nil forever — reassigning `libraryAlbums`
+        // (and reordering it) every poll re-rendered the Library and jolted the Recently Added
+        // grid. Preserve existing order; append only genuinely-new albums.
+        var byId = Dictionary(uniqueKeysWithValues: libraryAlbums.map { ($0.id, $0) })
+        var changed = false
+        for album in fetched where byId[album.id] != album {
             byId[album.id] = album
+            changed = true
         }
-        merged = Array(byId.values)
+        guard changed else { return }
+        let existingIds = Set(libraryAlbums.map(\.id))
+        var merged = libraryAlbums.map { byId[$0.id] ?? $0 }
+        for album in fetched where !existingIds.contains(album.id) {
+            merged.append(album)
+        }
         libraryAlbums = merged
         persistLibrarySnapshot()
     }
@@ -1988,10 +2069,28 @@ public final class AppModel: ObservableObject {
     /// `true` when the song is in the user's magic playlist (server-backed).
     func isSongInLibrary(_ id: String) -> Bool { librarySongIds.contains(id) }
 
-    /// `true` when the album appears in the user's library (any track present, or
-    /// the album was added as a unit via ``addAlbumToLibrary``).
+    /// `true` when the album appears in the user's library — explicit album entry
+    /// on the magic playlist, or any track from the album is in ``librarySongIds``.
     func isAlbumInLibrary(_ id: String) -> Bool {
-        libraryAlbumEntries.contains(where: { $0.id == id })
+        if libraryAlbumEntries.contains(where: { $0.id == id }) { return true }
+        guard !id.isEmpty, !librarySongIds.isEmpty else { return false }
+        return discoveryLibraryTracks.contains { $0.albumId == id && librarySongIds.contains($0.id) }
+    }
+
+    /// Server-catalog rows for Home discovery shelves (Top Picks, New Releases, genres, …).
+    func homeDiscoveryCatalogAlbums(from albums: [AlbumSummary]) -> [AlbumSummary] {
+        albums.filter { isEligibleForHomeTopPick($0) }
+    }
+
+    /// Server-catalog album the user has **not** added to their magic-playlist library.
+    func isEligibleForHomeTopPick(_ album: AlbumSummary) -> Bool {
+        if isAlbumInLibrary(album.id) { return false }
+        let releaseKey = album.catalogReleaseIdentityKey
+        for entry in libraryAlbumEntries {
+            guard let owned = libraryAlbumsById[entry.id] else { continue }
+            if owned.catalogReleaseIdentityKey == releaseKey { return false }
+        }
+        return true
     }
 
     /// Removes cached offline files for the given track IDs (no-op when not downloaded).
@@ -2077,6 +2176,15 @@ public final class AppModel: ObservableObject {
             let model = Unmanaged<AppModel>.fromOpaque(observer).takeUnretainedValue()
             Task { @MainActor in model.handleWidgetCommandFromNotification() }
         }, widgetCommandNotification, nil, .deliverImmediately)
+    }
+
+    deinit {
+        // The widget-command observer is registered with `passUnretained(self)`; remove it so
+        // a deallocated AppModel can never be invoked via a dangling pointer.
+        CFNotificationCenterRemoveEveryObserver(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            Unmanaged.passUnretained(self).toOpaque(),
+        )
     }
 
     private func handleWidgetCommandFromNotification() {
@@ -2263,6 +2371,179 @@ public final class AppModel: ObservableObject {
         libraryCatalogEpoch &+= 1
     }
 
+    /// Best-effort server `Track` for a **New** tab chart row (for library-style ⋯ menus).
+    func resolvedServerTrack(for chart: ChartTrack) -> Track? {
+        if case .libraryTrack(let track) = newTabChartRowState(for: chart) {
+            return track
+        }
+        return libraryChartTrackIndex.firstMatch(chart: chart)
+    }
+
+    /// Chart row on the **New** tab → a library track, a catalog album, or still missing.
+    func newTabChartRowState(for chart: ChartTrack) -> NewTabChartRowState {
+        if let album = resolvedNewTabServerAlbum(for: chart) {
+            return .serverAlbum(album)
+        }
+        if let track = libraryChartTrackIndex.firstMatch(chart: chart) {
+            return .libraryTrack(track)
+        }
+        return .missing
+    }
+
+    /// Catalog album for a chart row when the release is on the connected server.
+    private func resolvedNewTabServerAlbum(for chart: ChartTrack) -> AlbumSummary? {
+        if let album = libraryAlbumMatchingBrowseRelease(artist: chart.artistName, albumTitle: chart.name) {
+            return album
+        }
+        if let track = libraryChartTrackIndex.firstMatch(chart: chart),
+           let album = albumSummaryForNewTabChartTrack(track, chart: chart) {
+            return album
+        }
+        return nil
+    }
+
+    private func albumSummaryForNewTabChartTrack(_ track: Track, chart: ChartTrack) -> AlbumSummary? {
+        if let cached = libraryAlbumsById[track.albumId] {
+            return cached
+        }
+        return AlbumSummary(
+            id: track.albumId,
+            title: track.albumTitle.isEmpty ? chart.name : track.albumTitle,
+            artist: track.artist.isEmpty ? chart.artistName : track.artist,
+            artworkURL: track.artworkURL,
+            coverArtId: navidromeCoverArtId(for: track),
+            trackCount: nil,
+            libraryAddedDate: track.libraryAddedDate,
+            genres: track.genres,
+            releaseYear: track.releaseYear,
+        )
+    }
+
+    /// First matching server album for a chart / browse release title (handles `` - Single`` variants).
+    func libraryAlbumMatchingBrowseRelease(artist: String, albumTitle: String) -> AlbumSummary? {
+        for title in AlbumSummary.browseReleaseTitleLookupVariants(albumTitle) {
+            if let album = libraryAlbumReleaseIndex.firstMatch(artist: artist, albumTitle: title) {
+                return album
+            }
+        }
+        return nil
+    }
+
+    /// Search the connected server and merge a browse/chart release into local catalog indices.
+    func reconcileBrowseChartRelease(artist: String, albumTitle: String, kind: String) async {
+        let chart = ChartTrack(
+            id: "browse:\(artist):\(albumTitle)",
+            name: albumTitle,
+            artistName: artist,
+            imageURL: nil,
+            playcount: 0,
+            browseKind: kind
+        )
+        if newTabChartRowState(for: chart).isOnServer { return }
+        guard let lib = activeLibrary else { return }
+
+        for title in AlbumSummary.browseReleaseTitleLookupVariants(albumTitle) {
+            if Task.isCancelled { return }
+            let query = [artist, title].filter { !$0.isEmpty }.joined(separator: " ")
+            guard !query.isEmpty else { continue }
+            let results = (try? await lib.searchCatalog(query: query, limit: 30)) ?? .empty
+
+            for variant in AlbumSummary.browseReleaseTitleLookupVariants(albumTitle) {
+                if let album = results.albums.first(where: { $0.matchesNewTabRelease(artist: artist, albumTitle: variant) }) {
+                    ensureAlbumInCatalog(album)
+                    if let tracks = try? await lib.tracks(forAlbumId: album.id) {
+                        for track in tracks { retainTrackForLibraryPin(track) }
+                    }
+                    libraryCatalogEpoch &+= 1
+                    return
+                }
+            }
+
+            for track in results.songs where Self.serverTrackMatchesBrowseRelease(track, artist: artist, albumTitle: albumTitle, kind: kind) {
+                retainTrackForLibraryPin(track)
+                ensureAlbumInCatalog(albumIdOrFallback: track.albumId, derivedFrom: track)
+            }
+
+            if newTabChartRowState(for: chart).isOnServer {
+                libraryCatalogEpoch &+= 1
+                return
+            }
+        }
+    }
+
+    private static func serverTrackMatchesBrowseRelease(
+        _ track: Track,
+        artist: String,
+        albumTitle: String,
+        kind: String
+    ) -> Bool {
+        let chartArtists = LibraryTrackMatcher.normalizedChartArtistTokens(artist)
+        guard !chartArtists.isEmpty else { return false }
+        let libArtist = LibraryTrackMatcher.normalize(track.artist)
+        guard !libArtist.isEmpty,
+              LibraryTrackMatcher.artistsOverlap(chartArtists, Set([libArtist])) else { return false }
+
+        for variant in AlbumSummary.browseReleaseTitleLookupVariants(albumTitle) {
+            if LibraryTrackMatcher.trackMatchesChartAlbumTitle(
+                track.albumTitle,
+                chartAlbumTitle: variant,
+                chartArtists: chartArtists,
+                trackArtist: track.artist
+            ) {
+                return true
+            }
+            if kind.caseInsensitiveCompare("Single") == .orderedSame {
+                let wantKeys = Set(LibraryTrackMatcher.normalizedTitleKeys(from: variant))
+                let trackKeys = Set(LibraryTrackMatcher.normalizedTitleKeys(from: track.title))
+                if !wantKeys.isDisjoint(with: trackKeys) { return true }
+            }
+        }
+        return false
+    }
+
+    /// Probes the server catalog for **New** tab chart rows that still read as missing
+    /// (common when `libraryAlbums` is a capped page but tracks/albums exist on disk).
+    func reconcileNewTabChartServerPresence() async {
+        guard let lib = activeLibrary else { return }
+        let charts = newTabTopTracks.filter { !newTabChartRowState(for: $0).isOnServer }
+        guard !charts.isEmpty else { return }
+
+        for chart in charts {
+            if Task.isCancelled { return }
+            for title in AlbumSummary.browseReleaseTitleLookupVariants(chart.name) {
+                let query = [chart.artistName, title].filter { !$0.isEmpty }.joined(separator: " ")
+                guard !query.isEmpty else { continue }
+                let results = (try? await lib.searchCatalog(query: query, limit: 24)) ?? .empty
+
+                if chart.browseKind.caseInsensitiveCompare("Album") == .orderedSame
+                    || chart.browseKind.caseInsensitiveCompare("Single") == .orderedSame {
+                    for variant in AlbumSummary.browseReleaseTitleLookupVariants(chart.name) {
+                        if let album = results.albums.first(where: { $0.matchesNewTabRelease(artist: chart.artistName, albumTitle: variant) }) {
+                            ensureAlbumInCatalog(album)
+                        }
+                    }
+                    for track in results.songs where Self.serverTrackMatchesBrowseRelease(
+                        track,
+                        artist: chart.artistName,
+                        albumTitle: chart.name,
+                        kind: chart.browseKind
+                    ) {
+                        retainTrackForLibraryPin(track)
+                        ensureAlbumInCatalog(albumIdOrFallback: track.albumId, derivedFrom: track)
+                    }
+                } else {
+                    for track in results.songs where LibraryTrackMatcher.trackMatchesChart(track, chart: chart) {
+                        retainTrackForLibraryPin(track)
+                    }
+                }
+
+                if newTabChartRowState(for: chart).isOnServer { break }
+            }
+            if newTabChartRowState(for: chart).isOnServer { continue }
+        }
+        libraryCatalogEpoch &+= 1
+    }
+
     /// Called when an acquisition job finishes (any plugin). On success, ask the backend
     /// to scan (Subsonic `startScan` / Jellyfin `Library/Refresh`) and then keep retrying
     /// `searchCatalog` until the new file surfaces — typically within a few seconds of the
@@ -2280,28 +2561,58 @@ public final class AppModel: ObservableObject {
         let artist = job.artist ?? ""
         guard !title.isEmpty else { return }
 
+        let isAlbumJob = !(job.albumTitle?.isEmpty ?? true) && job.albumTitle == title
+
         // Kick off the server-side scan immediately so it can race the retry loop.
         Task { try? await lib.triggerLibraryScan() }
 
-        let probe = DowntifySong(songId: job.id, name: title,
+        let probe = MatchableSong(songId: job.id, name: title,
                                  artists: artist.isEmpty ? [] : [artist],
-                                 albumName: "", url: job.id, coverURL: nil, year: nil, explicit: false)
+                                 albumName: job.albumTitle ?? "", url: job.id, coverURL: nil, year: nil, explicit: false)
         // ~60s total budget: 20 attempts × 3s. The early attempts catch fast scans
         // (Navidrome typically), the later ones catch slow ones (Jellyfin libraries
         // with many items). First check fires immediately in case the file was
         // already scanned by a prior pass.
         for attempt in 0..<20 {
             if attempt > 0 { try? await Task.sleep(for: .seconds(3)) }
-            let results = (try? await lib.searchCatalog(query: "\(artist) \(title)", limit: 30)) ?? .empty
-            if let match = LibraryTrackMatcher.firstLibraryTrack(matching: probe, in: results.songs) {
-                await addSongToLibrary(match)
-                showTransientToast("Added “\(match.title)”")
+            let query = [artist, title].filter { !$0.isEmpty }.joined(separator: " ")
+            let results = (try? await lib.searchCatalog(query: query, limit: 30)) ?? .empty
+
+            if isAlbumJob, let albumTitle = job.albumTitle {
+                if let album = results.albums.first(where: { $0.matchesNewTabRelease(artist: artist, albumTitle: albumTitle) }) {
+                    await finalizeAcquisitionCatalogAlbum(album, library: lib)
+                    return
+                }
+                if let song = LibraryTrackMatcher.firstLibraryTrack(matching: probe, in: results.songs) {
+                    await finalizeAcquisitionCatalogTrack(song)
+                    return
+                }
+            } else if let match = LibraryTrackMatcher.firstLibraryTrack(matching: probe, in: results.songs) {
+                await finalizeAcquisitionCatalogTrack(match)
                 return
             }
         }
         // Downloaded but the backend hasn't surfaced it within the budget. The
         // file is on disk; the next scheduled scan will pick it up.
         showTransientToast("Downloaded “\(title)”")
+    }
+
+    private func finalizeAcquisitionCatalogTrack(_ track: Track) async {
+        retainTrackForLibraryPin(track)
+        await addSongToLibrary(track)
+        await reconcileNewTabChartServerPresence()
+        showTransientToast("Added “\(track.title)”")
+    }
+
+    private func finalizeAcquisitionCatalogAlbum(_ album: AlbumSummary, library: MusicLibraryProviding) async {
+        ensureAlbumInCatalog(album)
+        let tracks = (try? await library.tracks(forAlbumId: album.id)) ?? []
+        for track in tracks {
+            retainTrackForLibraryPin(track)
+        }
+        await addAlbumToLibrary(album, tracks: tracks.isEmpty ? nil : tracks)
+        await reconcileNewTabChartServerPresence()
+        showTransientToast("Added “\(album.title)”")
     }
 
     /// Adds every track of `album` to the magic playlist and records the album entry.
@@ -2335,6 +2646,7 @@ public final class AppModel: ObservableObject {
         await persistLibraryMembershipPayload()
         persistLibrarySnapshot()
         invalidatePlaylistRowsCache(playlistId: playlistId)
+        rebuildHomeTopPicksFromMemory()
     }
 
     /// Appends an album to `libraryAlbums` if it isn't already cached, so views that
@@ -2435,6 +2747,7 @@ public final class AppModel: ObservableObject {
         await persistLibraryMembershipPayload()
         persistLibrarySnapshot()
         invalidatePlaylistRowsCache(playlistId: playlistId)
+        rebuildHomeTopPicksFromMemory()
     }
 
     /// Registers a server playlist in the user's Lyra library. The playlist itself is
@@ -2491,9 +2804,28 @@ public final class AppModel: ObservableObject {
     }
 
     private func rebuildLibraryAlbumIndex() {
-        PerfLog.measure("rebuildLibraryAlbumIndex", details: "albums=\(libraryAlbums.count)") {
-            libraryAlbumsById = Dictionary(uniqueKeysWithValues: libraryAlbums.map { ($0.id, $0) })
-            libraryAlbumReleaseIndex = LibraryAlbumReleaseIndex(albums: libraryAlbums)
+        PerfLog.measure("rebuildLibraryAlbumIndex", details: "albums=\(libraryAlbums.count) tracks=\(discoveryLibraryTracks.count)") {
+            var merged = libraryAlbums
+            var seenIds = Set(libraryAlbums.map(\.id))
+            for track in discoveryLibraryTracks {
+                guard !track.albumId.isEmpty, !track.albumTitle.isEmpty else { continue }
+                guard seenIds.insert(track.albumId).inserted else { continue }
+                merged.append(
+                    AlbumSummary(
+                        id: track.albumId,
+                        title: track.albumTitle,
+                        artist: track.artist,
+                        artworkURL: track.artworkURL,
+                        coverArtId: navidromeCoverArtId(for: track),
+                        trackCount: nil,
+                        libraryAddedDate: track.libraryAddedDate,
+                        genres: track.genres,
+                        releaseYear: track.releaseYear,
+                    )
+                )
+            }
+            libraryAlbumsById = Dictionary(uniqueKeysWithValues: merged.map { ($0.id, $0) })
+            libraryAlbumReleaseIndex = LibraryAlbumReleaseIndex(albums: merged)
         }
     }
 
@@ -2502,7 +2834,7 @@ public final class AppModel: ObservableObject {
     /// rebuild that would otherwise duplicate the work in `didSet`.
     private var skipDiscoveryIndexRebuild = false
 
-    /// Rebuild both the title-index (used by Downtify match-Bool checks) and the
+    /// Rebuild both the title-index (used by the request backend match-Bool checks) and the
     /// chart-track index (used by New tab `Track` lookups) when the discovery
     /// snapshot is reassigned. Centralized so no caller can update one and forget
     /// the other.
@@ -2512,6 +2844,7 @@ public final class AppModel: ObservableObject {
             discoveryTrackById = Dictionary(uniqueKeysWithValues: discoveryLibraryTracks.map { ($0.id, $0) })
             libraryTrackTitleIndex = LibraryTrackMatcher.titleIndex(from: discoveryLibraryTracks)
             libraryChartTrackIndex = LibraryChartTrackIndex(tracks: discoveryLibraryTracks)
+            rebuildLibraryAlbumIndex()
         }
     }
 
@@ -2523,11 +2856,23 @@ public final class AppModel: ObservableObject {
             async let recent = lib.recentlyAdded(limit: 60)
             let fetched = try await all
             PerfLog.event("refreshLibraryAlbums.fetched", details: "count=\(fetched.count) limit=\(limit)")
-            libraryAlbums = fetched
+            // The server's paged listing caps at `limit`; personal-library albums that fall
+            // outside that page were previously dropped here and then re-added by
+            // `backfillMissingLibraryAlbumSummaries`, oscillating `libraryAlbums` and flickering
+            // the Recently Added shelf. Preserve summaries for personal-library album ids that
+            // aren't in the fresh fetch so they stay put.
+            let fetchedIds = Set(fetched.map(\.id))
+            let personalIds = Set(libraryAlbumEntries.map(\.id))
+            let preserved = libraryAlbums.filter { personalIds.contains($0.id) && !fetchedIds.contains($0.id) }
+            libraryAlbums = fetched + preserved
             recentlyAddedAlbums = (try? await recent) ?? []
+            rebuildHomeTopPicksFromMemory()
             mergeOfflineCatalog()
             persistLibrarySnapshot()
-            // Discovery / Downtify-match index is deferred — building it for tens of
+            if let lib = activeLibrary {
+                await enrichHomeTopPicksWithGenreCatalog(using: lib, tasteGenres: homeSelectedGenres ?? [])
+            }
+            // Discovery / the request backend-match index is deferred — building it for tens of
             // thousands of tracks blocked the main thread on first launch. Views that
             // need it (LibrarySongsView, MusicNewTabView, DiscoverySearchView) call
             // ``scheduleDiscoveryTrackIndexRefreshIfNeeded`` on appear.
@@ -2540,12 +2885,27 @@ public final class AppModel: ObservableObject {
     }
 
     func dismissPlaylistPicker() {
+        #if canImport(UIKit)
+        if isNowPlayingCoverPresented {
+            // UIKit sheet over the player — do not clear ``playlistPickerPayload``
+            // or call SwiftUI `dismiss()`; that can pop the full-screen cover too.
+            OverPlayerSheetPresenter.shared.dismiss()
+            return
+        }
+        #endif
         playlistPickerPayload = nil
     }
 
     func presentAddToPlaylist(tracks: [Track]) {
         guard !tracks.isEmpty, isSignedIn else { return }
-        playlistPickerPayload = PlaylistPickerPayload(tracks: tracks)
+        let payload = PlaylistPickerPayload(tracks: tracks)
+        #if canImport(UIKit)
+        if isNowPlayingCoverPresented {
+            OverPlayerSheetPresenter.shared.present(payload: payload, app: self)
+            return
+        }
+        #endif
+        playlistPickerPayload = payload
     }
 
     /// Shows a brief bottom toast (~1.8s) and fires a soft impact haptic. Replaces any
@@ -2718,6 +3078,7 @@ public final class AppModel: ObservableObject {
             }
             summary = try await client.createPlaylist(name: trimmed, trackIds: ids, isPublic: isPublic)
         }
+        recordPlaylistCreated(summary.id)
         await refreshLibraryPlaylists()
         return summary
     }
@@ -3200,40 +3561,119 @@ public final class AppModel: ObservableObject {
 
     public func refreshNewTabBrowse() async {
         newTabBrowseLoading = true
-
-        guard musicBrainzEnabled else {
-            clearNewTabBrowseGrid()
-            newTabBrowseBackend = .none
-            newTabIsPersonalized = false
-            newTabBrowseLoading = false
-            return
-        }
         newTabBrowseError = nil
 
-        // ── Phase 1: one global request (~500 ms). Surface content immediately. ──
-        let global: [ChartAlbum]
-        do {
-            global = try await MusicBrainzNewReleasesClient.fetchRecentAlbums(limit: 50)
-        } catch {
-            clearNewTabBrowseGrid()
-            newTabBrowseBackend = .none
-            newTabIsPersonalized = false
-            newTabBrowseLoading = false
-            newTabBrowseError = error.localizedDescription
-            return
-        }
-        // Only overwrite with the bare global feed if the page is still blank.
-        // On refresh the user already sees content — keep it until phase 2 lands.
-        let pageIsBlank = newTabRecentReleases.isEmpty && newTabFromYourArtists.isEmpty
-        if pageIsBlank {
-            applyPersonalizedNewTabFeed(NewTabPersonalizationEngine.globalFallbackFeed(from: global))
-            newTabBrowseBackend = .musicBrainz
-        }
+        // Single pass: build the user's personalized feed straight from iTunes (concurrent,
+        // no rate-limit pacing → ~1–2 s). No generic placeholder is shown first; the New tab
+        // displays a spinner until this lands, then paints the real "New for you" content.
+        let context = newTabPersonalizationContext()
+        let feed = await NewTabPersonalizationEngine.buildFeed(context: context)
+        applyPersonalizedNewTabFeed(feed)
+        newTabBrowseBackend = .appleMusic
+        newTabBrowseError = feed.isEmpty
+            ? "No new releases right now. Pull to refresh or check your connection."
+            : nil
         newTabBrowseLoading = false
+    }
 
-        // ── Phase 2: personalise. Per-artist MB requests with rate-limit pacing
-        //    (up to 5 artists × 1.1 s = ~5 s worst case). Content already visible. ──
-        let context = NewTabPersonalizationEngine.Context(
+    /// The user's top genres for the New tab — canonicalised and ranked from the data that's
+    /// reliably in memory: recently played tracks (strongest "what I listen to" signal),
+    /// favorites, completed scrobbles, and the genres tagged on their library albums. This
+    /// avoids the sparse discovery-track index, which is nearly empty at launch.
+    private func listeningTopGenres() -> [String] {
+        var scores: [String: (name: String, score: Double)] = [:]
+
+        func add(_ genres: [String], weight: Double) {
+            for raw in genres {
+                let canonical = GenreCanonicalizer.canonical(for: raw)
+                let key = canonical.lowercased()
+                guard !key.isEmpty else { continue }
+                if var existing = scores[key] {
+                    existing.score += weight
+                    scores[key] = existing
+                } else {
+                    scores[key] = (canonical, weight)
+                }
+            }
+        }
+
+        // Actual listening — recentlyPlayedTracks is newest-first, so weight by position.
+        for (index, track) in recentlyPlayedTracks.enumerated() {
+            add(track.genres, weight: max(0.4, 1.0 - Double(index) / 120.0))
+        }
+        // Favorites resolved against whatever tracks are in memory.
+        for trackId in favoriteTrackIds {
+            if let track = cachedLibraryTrack(id: trackId)
+                ?? recentlyPlayedTracks.first(where: { $0.id == trackId }) {
+                add(track.genres, weight: 1.5)
+            }
+        }
+        // Completed scrobbles that resolve to a known track.
+        for scrobble in scrobbleService.store.completed {
+            if let track = cachedLibraryTrack(id: scrobble.trackId) {
+                add(track.genres, weight: 0.5)
+            }
+        }
+        // Broad fallback: the genres tagged on the user's library albums.
+        for album in libraryAlbums where !album.genres.isEmpty {
+            add(album.genres, weight: 0.2)
+        }
+
+        return scores.values
+            .sorted { lhs, rhs in
+                if lhs.score != rhs.score { return lhs.score > rhs.score }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+            .prefix(10)
+            .map(\.name)
+    }
+
+    /// Maps listening-taste genres (same ranking as the New tab's ``listeningTopGenres()``) onto
+    /// server genre rows so Home shelves reflect what the user actually plays.
+    private func homeTasteGenrePicks(
+        from serverGenres: [LibraryGenreSummary],
+        limit: Int = homeGenreShelfCount,
+    ) -> [LibraryGenreSummary] {
+        let eligible = serverGenres.filter(\.hasAlbums)
+        guard !eligible.isEmpty else { return [] }
+
+        var bestByCanonical: [String: LibraryGenreSummary] = [:]
+        for genre in eligible {
+            let key = GenreCanonicalizer.canonical(for: genre.name).lowercased()
+            if let existing = bestByCanonical[key] {
+                if (genre.albumCount ?? 0) > (existing.albumCount ?? 0) {
+                    bestByCanonical[key] = genre
+                }
+            } else {
+                bestByCanonical[key] = genre
+            }
+        }
+
+        var picked: [LibraryGenreSummary] = []
+        var usedIDs = Set<String>()
+        for tasteName in listeningTopGenres() {
+            let key = tasteName.lowercased()
+            guard let match = bestByCanonical[key], usedIDs.insert(match.id).inserted else { continue }
+            picked.append(match)
+            if picked.count >= limit { return picked }
+        }
+
+        let fallback = eligible.sorted {
+            if ($0.albumCount ?? 0) != ($1.albumCount ?? 0) {
+                return ($0.albumCount ?? 0) > ($1.albumCount ?? 0)
+            }
+            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+        for genre in fallback where !usedIDs.contains(genre.id) {
+            picked.append(genre)
+            usedIDs.insert(genre.id)
+            if picked.count >= limit { break }
+        }
+        return picked
+    }
+
+    private func newTabPersonalizationContext() -> NewTabPersonalizationEngine.Context {
+        NewTabPersonalizationEngine.Context(
             completedScrobbles: scrobbleService.store.completed,
             favoriteTrackIds: favoriteTrackIds,
             followedArtists: subscriptions.followed,
@@ -3242,34 +3682,91 @@ public final class AppModel: ObservableObject {
             ownsAlbum: { [weak self] artist, title in
                 self?.libraryAlbumReleaseIndex.firstMatch(artist: artist, albumTitle: title) != nil
             },
+            ownsTrack: { [weak self] artist, title in
+                guard let self else { return false }
+                return LibraryTrackMatcher.matchesLibrary(
+                    title: title,
+                    artists: [artist],
+                    titleIndex: self.libraryTrackTitleIndex
+                )
+            },
+            topGenres: listeningTopGenres(),
         )
-        let feed = await NewTabPersonalizationEngine.buildFeed(globalAlbums: global, context: context)
-        applyPersonalizedNewTabFeed(feed)
-        newTabBrowseBackend = .musicBrainz
-        newTabBrowseError = feed.isEmpty
-            ? (feed.isPersonalized
-                ? "No new releases matched your listening yet. Keep playing and pull to refresh."
-                : "No recent albums from MusicBrainz in the last few months.")
-            : nil
+    }
+
+    /// Home → Top Picks + New Releases: taste-ranked **server catalog** not in the magic playlist.
+    private func rebuildHomeTopPicksFromMemory() {
+        applyHomeDiscoveryShelvesRanking(from: buildHomeTopPicksCandidatePool(extra: []))
+    }
+
+    private func enrichHomeTopPicksWithGenreCatalog(
+        using lib: MusicLibraryProviding,
+        tasteGenres: [LibraryGenreSummary],
+    ) async {
+        let genresForPool: [LibraryGenreSummary]
+        if tasteGenres.isEmpty {
+            genresForPool = homeTasteGenrePicks(from: (try? await lib.libraryGenres(limit: 100)) ?? [], limit: 3)
+        } else {
+            genresForPool = Array(tasteGenres.prefix(3))
+        }
+
+        var genreAlbums: [AlbumSummary] = []
+        for genre in genresForPool {
+            genreAlbums.append(contentsOf: (try? await lib.albums(inGenre: genre, limit: 24)) ?? [])
+        }
+        applyHomeDiscoveryShelvesRanking(from: buildHomeTopPicksCandidatePool(extra: genreAlbums))
+    }
+
+    private func buildHomeTopPicksCandidatePool(extra: [AlbumSummary]) -> [AlbumSummary] {
+        var pool: [AlbumSummary] = []
+        var seenIDs = Set<String>()
+        var seenReleases = Set<String>()
+
+        func append(_ albums: [AlbumSummary]) {
+            for album in albums {
+                guard isEligibleForHomeTopPick(album) else { continue }
+                guard seenIDs.insert(album.id).inserted else { continue }
+                guard seenReleases.insert(album.catalogReleaseIdentityKey).inserted else { continue }
+                pool.append(album)
+            }
+        }
+
+        append(recentlyAddedAlbums)
+        append(homeRecentlyPlayedServerAlbums)
+        append(extra)
+        return pool
+    }
+
+    private func applyHomeDiscoveryShelvesRanking(from pool: [AlbumSummary]) {
+        guard !pool.isEmpty else {
+            homeTopPickAlbums = []
+            homeNewReleaseAlbums = []
+            return
+        }
+
+        let recentOrder = Dictionary(uniqueKeysWithValues: recentlyAddedAlbums.enumerated().map { ($1.id, $0) })
+        let ranked = NewTabPersonalizationEngine.tasteRankedAlbumSummaries(
+            pool,
+            context: newTabPersonalizationContext(),
+            limit: Self.homeTopPickCount + Self.homeNewReleaseCount,
+            recentlyAddedOrder: recentOrder,
+        )
+        homeTopPickAlbums = Array(ranked.prefix(Self.homeTopPickCount))
+        homeNewReleaseAlbums = Array(ranked.dropFirst(homeTopPickAlbums.count).prefix(Self.homeNewReleaseCount))
     }
 
     private func applyPersonalizedNewTabFeed(_ feed: NewTabPersonalizedFeed) {
         newTabIsPersonalized = feed.isPersonalized
         newTabFromYourArtists = feed.fromYourArtists
-        newTabDiscoverReleases = feed.discoverAlbums
         newTabArtistHighlights = feed.artistHighlights
-        newTabRecentReleases = feed.isPersonalized ? feed.fromYourArtists : feed.forYouAlbums
+
+        // "New This Week" and "Recent Releases" are two recency slices of one taste-driven
+        // pool (releases connected to the user's listening), so they're always distinct.
+        let split = Self.splitRecentReleases(feed.recentTasteReleases)
+        newTabRecentReleases = split.thisWeek   // New This Week
+        newTabDiscoverReleases = split.recent   // Recent Releases
         newTabTopAlbums = feed.isPersonalized ? feed.discoverAlbums : []
-        newTabTopTracks = feed.forYouAlbums.map {
-            ChartTrack(
-                id: $0.id,
-                name: $0.name,
-                artistName: $0.artistName,
-                imageURL: $0.imageURL,
-                playcount: 0,
-                browseKind: "Album",
-            )
-        }
+        newTabTopTracks = feed.forYouTracks
     }
 
     private func clearNewTabBrowseGrid() {
@@ -3280,6 +3777,30 @@ public final class AppModel: ObservableObject {
         newTabDiscoverReleases = []
         newTabArtistHighlights = []
         newTabIsPersonalized = false
+    }
+
+    /// Split a newest-first release pool into two **disjoint** shelves: "New This Week"
+    /// (releases in the last few weeks) and "Recent Releases" (everything older). When too
+    /// few carry a fresh date, fall back to an even recency split so both shelves stay
+    /// populated and never show the same albums.
+    private static func splitRecentReleases(
+        _ pool: [ChartAlbum],
+    ) -> (thisWeek: [ChartAlbum], recent: [ChartAlbum]) {
+        let sorted = pool.sorted {
+            ($0.releaseDate ?? .distantPast) > ($1.releaseDate ?? .distantPast)
+        }
+        guard sorted.count > 1 else { return (sorted, []) }
+
+        let cutoff = Date().addingTimeInterval(-21 * 86_400)
+        let fresh = sorted.filter { ($0.releaseDate ?? .distantPast) >= cutoff }
+        if fresh.count >= 2, fresh.count < sorted.count {
+            let freshIds = Set(fresh.map(\.id))
+            let rest = sorted.filter { !freshIds.contains($0.id) }
+            return (Array(fresh.prefix(12)), Array(rest.prefix(12)))
+        }
+
+        let mid = (sorted.count + 1) / 2
+        return (Array(sorted.prefix(mid).prefix(12)), Array(sorted.dropFirst(mid).prefix(12)))
     }
 
     // MARK: - Playback helpers
@@ -3351,16 +3872,16 @@ public final class AppModel: ObservableObject {
         objectWillChange.send()
     }
 
-    /// Preview track listing for **New tab / browse** flows (MusicBrainz → release → recordings). Not used for ``AlbumDetailView``.
+    /// Preview track listing for **New tab / browse** flows. Not used for owned library albums in ``ServerPlaylistDetailView``.
     func resolveBrowseAlbumPreviewTracks(source: BrowseAlbumDetailSource) async -> [BrowseAlbumPreviewTrack] {
         switch source {
-        case .chartBrowse(let artist, let title, _, let kind):
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            if let rg = await MusicBrainzTracklistClient.findReleaseGroupId(artist: artist, albumTitle: title) {
-                try? await Task.sleep(nanoseconds: 350_000_000)
-                let mbTracks = await MusicBrainzTracklistClient.tracksForReleaseGroup(rg)
-                if !mbTracks.isEmpty { return mbTracks }
+        case .chartBrowse(let artist, let title, _, let kind, let albumId):
+            if let albumId, !albumId.isEmpty {
+                let tracks = await ITunesTracklistClient.tracks(forAlbumId: albumId)
+                if !tracks.isEmpty { return tracks }
             }
+            let tracks = await ITunesTracklistClient.tracks(artist: artist, albumTitle: title)
+            if !tracks.isEmpty { return tracks }
             if kind.lowercased() == "single" {
                 return [
                     BrowseAlbumPreviewTrack(
@@ -3557,6 +4078,21 @@ public final class AppModel: ObservableObject {
               let decoded = try? JSONDecoder().decode([String: Date].self, from: data)
         else { return }
         playlistLastPlayedDates = decoded
+    }
+
+    private func loadPlaylistCreatedDatesFromDefaults() {
+        guard let data = UserDefaults.standard.data(forKey: Self.playlistCreatedDatesKey),
+              let decoded = try? JSONDecoder().decode([String: Date].self, from: data)
+        else { return }
+        playlistCreatedDates = decoded
+    }
+
+    func recordPlaylistCreated(_ id: String) {
+        let key = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        playlistCreatedDates[key] = Date()
+        guard let data = try? JSONEncoder().encode(playlistCreatedDates) else { return }
+        UserDefaults.standard.set(data, forKey: Self.playlistCreatedDatesKey)
     }
 
     /// Bumps a playlist to the front of the add-to-playlist sheet's Recents.

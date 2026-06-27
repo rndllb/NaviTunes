@@ -29,7 +29,7 @@ extension View {
         musicNavigationBarTitleDisplayMode(.inline)
             .musicNavigationBarVisibleWhenPushed()
             .scrollContentBackground(.hidden)
-            .background(MusicDesign.background)
+            .background(MusicDesign.settingsBackground)
             .musicNavigationChrome()
     }
 }
@@ -395,26 +395,13 @@ struct SettingsPluginsView: View {
     var body: some View {
         Form {
             Section {
-                Toggle(isOn: $app.musicBrainzEnabled) {
-                    SettingsPluginRow(
-                        icon: "globe",
-                        title: "MusicBrainz",
-                        subtitle: "Recent releases in New tab",
-                    )
-                }
-                .onChange(of: app.musicBrainzEnabled) { _, _ in
-                    Task { await app.refreshNewTabBrowse() }
-                }
-            }
-
-            Section {
                 NavigationLink {
                     AcquisitionPluginSettingsView()
                         .environmentObject(app)
                 } label: {
                     SettingsPluginRow(
                         icon: app.acquisitionCapabilities.iconName,
-                        title: "Downloads",
+                        title: "Music Requests",
                         subtitle: app.acquisitionConfigured
                             ? app.acquisitionCapabilities.displayName
                             : "Set up \(app.acquisitionCapabilities.displayName)",

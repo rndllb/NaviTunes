@@ -144,6 +144,8 @@ enum StreamBitRateOption: Int, CaseIterable, Identifiable, Codable {
 }
 
 /// Subsonic stream `format=` presets (Navidrome). Jellyfin maps to container choices.
+/// Opus/Ogg are intentionally omitted — AVFoundation can't decode them on iOS, so streaming
+/// in those formats (Navidrome) fails to play.
 enum StreamFormatOption: String, CaseIterable, Identifiable, Codable {
     case raw
     case mp3
@@ -151,10 +153,6 @@ enum StreamFormatOption: String, CaseIterable, Identifiable, Codable {
     case mp3Car = "mp3_car"
     case aac
     case m4a
-    case opus
-    case opusRg = "opus_rg"
-    case opusCar = "opus_car"
-    case ogg
     case flac
 
     var id: String { rawValue }
@@ -167,10 +165,6 @@ enum StreamFormatOption: String, CaseIterable, Identifiable, Codable {
         case .mp3Car: return "MP3 (Car mode)"
         case .aac: return "AAC"
         case .m4a: return "M4A"
-        case .opus: return "Opus"
-        case .opusRg: return "Opus (ReplayGain)"
-        case .opusCar: return "Opus (Car mode)"
-        case .ogg: return "OGG Vorbis"
         case .flac: return "FLAC"
         }
     }
@@ -185,7 +179,6 @@ enum StreamFormatOption: String, CaseIterable, Identifiable, Codable {
     /// Default max bitrate when user picks "No limit" on a lossy format.
     var highDefaultBitRateBps: Int {
         switch self {
-        case .opusCar: return 192_000
         case .raw, .flac: return 0
         default: return 320_000
         }
@@ -199,17 +192,20 @@ enum StreamFormatOption: String, CaseIterable, Identifiable, Codable {
     var jellyfinPrimaryContainer: String? {
         switch self {
         case .raw: return nil
-        case .mp3, .mp3Rg, .mp3Car, .opus, .opusRg, .opusCar, .ogg: return "mp3"
+        case .mp3, .mp3Rg, .mp3Car: return "mp3"
         case .aac, .m4a: return "m4a"
         case .flac: return "flac"
         }
     }
 }
 
+// Note: Opus/Ogg are intentionally NOT offered for downloads — AVFoundation can't decode them
+// on iOS, so a downloaded Opus file fails at playback. "Original" can still yield such a file
+// when the source library is Opus/Ogg; that case is caught at download time (see
+// `OfflineDownloadError.unplayableFormat`).
 enum DownloadFormatOption: String, CaseIterable, Identifiable, Codable {
     case mp3
     case aac
-    case opus
     case flac
     case raw
 
@@ -219,7 +215,6 @@ enum DownloadFormatOption: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .mp3: return "MP3"
         case .aac: return "AAC"
-        case .opus: return "Opus"
         case .flac: return "FLAC"
         case .raw: return "Original"
         }
@@ -231,7 +226,7 @@ enum DownloadFormatOption: String, CaseIterable, Identifiable, Codable {
 
     var jellyfinContainer: String {
         switch self {
-        case .mp3, .opus: return "mp3"
+        case .mp3: return "mp3"
         case .aac: return "m4a"
         case .flac, .raw: return "flac"
         }
@@ -241,7 +236,6 @@ enum DownloadFormatOption: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .mp3: return .mp3
         case .aac: return .aac
-        case .opus: return .opus
         case .flac: return .flac
         case .raw: return .raw
         }
