@@ -3233,7 +3233,35 @@ public final class AppModel: ObservableObject {
     /// down to those whose track id is in the pending set).
     func commitKillModeRemovals(playlistId: String, rows: [PlaylistRowItem]) async throws {
         guard !rows.isEmpty else { return }
-        try await removePlaylistRows(playlistId: playlistId, rows: rows)
+        // The kill-list view holds a static row snapshot; its Navidrome positional
+        // indices go stale after each prior single removal (server positions shift
+        // down), which would delete the WRONG song on the 2nd+ swipe. Re-resolve each
+        // target against the LIVE playlist by stable track id right before removing.
+        // (Jellyfin removes by stable entry id and is unaffected.)
+        let resolved = try await resolveRowsForRemoval(playlistId: playlistId, rows: rows)
+        try await removePlaylistRows(playlistId: playlistId, rows: resolved)
+    }
+
+    /// Re-resolves removal targets against a fresh fetch of the playlist so positional
+    /// (Navidrome) indices are current. Maps by stable track id, consuming each matched
+    /// live row so duplicate ids resolve to distinct positions. Non-Navidrome backends
+    /// (stable entry ids) pass through unchanged.
+    private func resolveRowsForRemoval(playlistId: String, rows: [PlaylistRowItem]) async throws -> [PlaylistRowItem] {
+        guard backendKind == .navidrome, let client = navidrome else { return rows }
+        let live = try await client.fetchPlaylistRows(playlistId: playlistId)
+        var byId: [String: [PlaylistRowItem]] = [:]
+        for row in live { byId[row.track.id, default: []].append(row) }
+        var resolved: [PlaylistRowItem] = []
+        for row in rows {
+            guard var matches = byId[row.track.id], !matches.isEmpty else {
+                throw NSError(domain: "LyraMusic", code: 0, userInfo: [
+                    NSLocalizedDescriptionKey: "\u{201C}\(row.track.title)\u{201D} is no longer in this playlist.",
+                ])
+            }
+            resolved.append(matches.removeFirst())
+            byId[row.track.id] = matches
+        }
+        return resolved
     }
 
     /// Callback hook from `PlaybackEngine.onTrackSkipped`. Marks the outgoing track when:
