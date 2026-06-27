@@ -794,15 +794,27 @@ final class OfflineDownloadManager: ObservableObject {
     /// Backfills zero durations on existing downloads from the audio file on disk.
     func enrichCachedDurationsIfNeeded() async {
         guard let root = try? Self.downloadsFolder() else { return }
-        var payload = (try? Self.loadManifest()) ?? OfflineManifestPayload()
-        var dirty = false
-        for (trackId, rel) in payload.tracks {
-            guard var record = payload.records[trackId] else { continue }
-            guard record.track.duration <= 0 else { continue }
+        // Phase 1 (async): probe durations off a snapshot into a side map. Holding the
+        // whole manifest across these awaits and saving it back would clobber any track
+        // a concurrent download's cache() wrote during the await — silently dropping it
+        // from the offline library and orphaning its file on disk.
+        let snapshot = (try? Self.loadManifest()) ?? OfflineManifestPayload()
+        var probed: [String: TimeInterval] = [:]
+        for (trackId, rel) in snapshot.tracks {
+            guard let record = snapshot.records[trackId], record.track.duration <= 0 else { continue }
             let fileURL = root.appendingPathComponent(rel)
             guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
             let secs = await LocalMediaDuration.seconds(at: fileURL)
-            guard secs > 0 else { continue }
+            if secs > 0 { probed[trackId] = secs }
+        }
+        guard !probed.isEmpty else { return }
+        // Phase 2 (synchronous, atomic on the main actor): re-load the latest manifest
+        // and apply — no await between load and save, so tracks added during phase 1 are
+        // preserved.
+        var payload = (try? Self.loadManifest()) ?? OfflineManifestPayload()
+        var dirty = false
+        for (trackId, secs) in probed {
+            guard var record = payload.records[trackId], record.track.duration <= 0 else { continue }
             record.track = record.track.withDuration(secs)
             payload.records[trackId] = record
             dirty = true
@@ -974,15 +986,18 @@ final class OfflineDownloadManager: ObservableObject {
     /// Links on-disk cover art into manifest records and refreshes embedded local artwork URLs.
     func enrichCachedArtworkIfNeeded() async {
         guard let root = try? Self.downloadsFolder() else { return }
-        var payload = (try? Self.loadManifest()) ?? OfflineManifestPayload()
-        guard !payload.tracks.isEmpty else { return }
+        let snapshot = (try? Self.loadManifest()) ?? OfflineManifestPayload()
+        guard !snapshot.tracks.isEmpty else { return }
 
-        var dirty = false
         let headers = libraryProvider?()?.httpHeadersForMediaRequests() ?? [:]
         let online = networkPolicy().online
 
-        for (trackId, record) in payload.records {
-            guard payload.tracks[trackId] != nil else { continue }
+        // Phase 1 (async/IO): resolve a relative artwork path per track into a side map
+        // WITHOUT holding the manifest across awaits — saving the whole payload back
+        // after a network fetch would clobber any track a concurrent download wrote.
+        var resolved: [String: (relativePath: String, albumId: String)] = [:]
+        for (trackId, record) in snapshot.records {
+            guard snapshot.tracks[trackId] != nil else { continue }
             let track = record.track
 
             if let rel = record.artworkRelativePath,
@@ -991,28 +1006,33 @@ final class OfflineDownloadManager: ObservableObject {
             }
 
             if let rel = Self.existingArtworkRelativePath(for: track, downloadsRoot: root) {
-                Self.applyArtworkManifest(
-                    relativePath: rel,
-                    albumId: track.albumId,
-                    downloadsRoot: root,
-                    payload: &payload,
-                )
-                dirty = true
+                resolved[trackId] = (rel, track.albumId)
                 continue
             }
 
             guard online else { continue }
             if let rel = await cacheArtwork(for: track, headers: headers, downloadsRoot: root) {
-                Self.applyArtworkManifest(
-                    relativePath: rel,
-                    albumId: track.albumId,
-                    downloadsRoot: root,
-                    payload: &payload,
-                )
-                dirty = true
+                resolved[trackId] = (rel, track.albumId)
             }
         }
+        guard !resolved.isEmpty else { return }
 
+        // Phase 2 (synchronous, atomic on the main actor): re-load the latest manifest
+        // and link the artwork — no await between load and save, so tracks added during
+        // phase 1 survive.
+        var payload = (try? Self.loadManifest()) ?? OfflineManifestPayload()
+        var dirty = false
+        for (trackId, info) in resolved {
+            guard payload.tracks[trackId] != nil,
+                  Self.localFileArtworkURL(relative: info.relativePath, root: root) != nil else { continue }
+            Self.applyArtworkManifest(
+                relativePath: info.relativePath,
+                albumId: info.albumId,
+                downloadsRoot: root,
+                payload: &payload,
+            )
+            dirty = true
+        }
         if dirty {
             try? Self.saveManifest(payload)
         }
