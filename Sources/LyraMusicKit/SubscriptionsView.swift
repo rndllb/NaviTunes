@@ -20,7 +20,6 @@ struct ArtistFollowButton: View {
         } label: {
             Image(systemName: isFollowing ? "bell.fill" : "bell")
         }
-        .tint(MusicDesign.accent)
         .accessibilityLabel(isFollowing ? "Unfollow \(name)" : "Follow \(name)")
     }
 }

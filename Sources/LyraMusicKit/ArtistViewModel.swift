@@ -104,6 +104,7 @@ final class ArtistViewModel: ObservableObject {
     @Published private(set) var discography: [ArtistDiscographyBucket: [ArtistDiscographyItem]] = [:]
     @Published private(set) var similarArtists: [LastFmSimilarArtist] = []
     @Published private(set) var details: TheAudioDBClient.ArtistDetails?
+    @Published private(set) var artistProfile: ArtistProfile?
     @Published private(set) var jellyfinOverview: String?
 
     @Published private(set) var isLoadingServerCatalog = true
@@ -136,6 +137,35 @@ final class ArtistViewModel: ObservableObject {
 
     var hasPlayableTracks: Bool {
         !topSongs.compactMap(\.libraryTrack).isEmpty || !serverTracks.isEmpty
+    }
+
+    /// The artist's most recent release (newest dated album/EP/single from iTunes), shown as a
+    /// featured card under the hero. `remoteReleasesSnapshot` is already newest-first.
+    var latestRelease: ITunesArtistAlbum? {
+        remoteReleasesSnapshot.first(where: { $0.releaseDate != nil }) ?? remoteReleasesSnapshot.first
+    }
+
+    /// The server album matching a remote release by title, when the user already has it.
+    func serverAlbum(matching release: ITunesArtistAlbum) -> AlbumSummary? {
+        let key = LibraryTrackMatcher.normalize(release.title)
+        guard !key.isEmpty else { return nil }
+        return serverAlbums.first { LibraryTrackMatcher.normalize($0.title) == key }
+    }
+
+    var hasAboutSection: Bool {
+        if let bio = details?.biography, !bio.isEmpty { return true }
+        if let overview = jellyfinOverview, !overview.isEmpty { return true }
+        if let profile = artistProfile, !profile.isEmpty { return true }
+        guard let d = details else { return false }
+        return d.country != nil || d.formedYear != nil || d.genre != nil
+    }
+
+    /// Hero banner URL — wide artist photo when available, then thumb, album-cover fallback, then library input art.
+    var bannerArtworkURL: URL? {
+        details?.wideArtworkURL
+            ?? details?.thumbArtworkURL
+            ?? fallbackBannerArtworkURL
+            ?? input.serverArtworkURL
     }
 
     /// Banner fallback when TheAudioDB has no artist photo: the artist's top album cover
@@ -260,12 +290,33 @@ final class ArtistViewModel: ObservableObject {
         async let detailsTask = TheAudioDBClient.fetchArtistDetails(name: name)
         async let topTask = LastFmClient.topTracks(artist: name, limit: 12)
         async let similarTask = LastFmClient.similarArtists(artist: name, limit: 16)
+        async let profileTask = ArtistProfileClient.fetch(name: name)
         let (resolvedDetails, top, similar) = await (detailsTask, topTask, similarTask)
+        let profile = await profileTask
+        if let profile { self.artistProfile = profile }
         // Preserve previously-cached values when the live fetch returns nothing,
         // so a transient network failure on revisit doesn't wipe the banner/bio.
         self.details = resolvedDetails ?? self.details
         if !top.isEmpty { self.lastFmTopTracksSnapshot = top }
-        if !similar.isEmpty { self.similarArtists = similar }
+
+        // Similar artists: Last.fm when available, otherwise ListenBrainz (free, keyed by the
+        // MusicBrainz id from the profile). iTunes has no related-artists endpoint. Skip the
+        // (ListenBrainz + 16 iTunes avatar) work entirely when the per-session cache already
+        // warm-painted them.
+        if !similar.isEmpty {
+            self.similarArtists = similar
+        } else if self.similarArtists.isEmpty, let mbid = profile?.mbid {
+            let related = await ListenBrainzClient.similarArtists(mbid: mbid, limit: 16)
+            if !related.isEmpty {
+                // ListenBrainz has no photos — give each a circular avatar from an iTunes album
+                // cover (the same album-art-as-avatar approach the Home shelf uses).
+                let art = await ITunesArtistClient.artworkURLs(forArtists: related.map(\.name))
+                self.similarArtists = related.map { artist in
+                    guard let url = art[LibraryTrackMatcher.normalize(artist.name)] else { return artist }
+                    return LastFmSimilarArtist(name: artist.name, mbid: artist.mbid, imageURL: url, match: artist.match)
+                }
+            }
+        }
 
         // English-bio fallback: TheAudioDB often lacks `strBiographyEN` for niche
         // artists; if so, ask Last.fm (always English). Run sequentially after
@@ -310,6 +361,8 @@ final class ArtistViewModel: ObservableObject {
     }
 
     private func loadRemoteReleases() async {
+        // Already warm-painted from the per-session cache — skip the iTunes discography fetch.
+        guard remoteReleasesSnapshot.isEmpty else { return }
         self.remoteReleasesSnapshot = await ITunesArtistClient.discography(forArtist: input.displayName)
     }
 
