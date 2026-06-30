@@ -406,7 +406,6 @@ private struct RadioStationTileBody: View {
                     ? RadioStationMeshArtwork.seedKey(for: station)
                     : nil,
                 cornerRadius: 14,
-                showsSubtleBorder: false,
             )
             .aspectRatio(1, contentMode: .fill)
             .frame(maxWidth: .infinity, maxHeight: .infinity)

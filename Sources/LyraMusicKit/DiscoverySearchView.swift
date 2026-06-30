@@ -44,8 +44,7 @@ private struct SearchGenreTile: View {
         .aspectRatio(16.0 / 8.0, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(MusicDesign.songRowArtworkBorder(for: colorScheme), lineWidth: 0.5)
+            MusicDesign.artworkSubtleBorderOverlay(cornerRadius: 10, colorScheme: colorScheme)
         }
         .contentShape(Rectangle())
     }

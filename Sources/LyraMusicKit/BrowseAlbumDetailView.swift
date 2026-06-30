@@ -218,6 +218,26 @@ struct BrowseAlbumDetailView: View {
                     footerBlock
                 }
                 .albumTrackListRowStyle()
+
+                Section {
+                    AlbumDetailRelatedSectionsView(
+                        artist: displayArtist,
+                        title: displayTitle,
+                        excludingAlbumId: matchedLibraryAlbum?.id,
+                        backdropPalette: backdropPalette,
+                        onSelectAlbum: { album in
+                            if navigateLibraryAlbum?.id == album.id {
+                                navigateLibraryAlbum = nil
+                                DispatchQueue.main.async { navigateLibraryAlbum = album }
+                            } else {
+                                navigateLibraryAlbum = album
+                            }
+                        },
+                    )
+                }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets())
             }
             .listStyle(.plain)
             .listSectionSpacing(0)
@@ -246,6 +266,7 @@ struct BrowseAlbumDetailView: View {
         }
         .navigationDestination(item: $navigateLibraryAlbum) { album in
             ServerPlaylistDetailView(album: album)
+                .onDisappear { navigateLibraryAlbum = nil }
         }
         .navigationDestination(item: $navigateArtist) { item in
             ArtistPageView(input: .named(item.id))

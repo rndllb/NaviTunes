@@ -255,11 +255,11 @@ enum TheAudioDBClient {
         let wideKeys = ["strArtistFanart", "strArtistFanart2", "strArtistFanart3", "strArtistBanner", "strArtistWideThumb"]
         let thumbKeys = ["strArtistThumb", "strArtistCutout", "strArtistLogo"]
 
-        // English-only: TheAudioDB returns multi-language bios but the user
-        // wants English. If `strBiographyEN` is missing we leave bio nil here
-        // and let the caller fall back to another source (Last.fm artist.getInfo)
-        // rather than surfacing German / French text the user can't read.
+        // Prefer the explicit English bio; fall back to the default `strBiography`
+        // field, which TheAudioDB populates in English for most artists (the
+        // per-language fields are translations layered on top of it).
         let bio = (dict["strBiographyEN"] as? String).trimmedNonEmpty
+            ?? (dict["strBiography"] as? String).trimmedNonEmpty
 
         let formedYear: Int? = {
             if let s = (dict["intFormedYear"] as? String).trimmedNonEmpty, let n = Int(s), n > 0 { return n }

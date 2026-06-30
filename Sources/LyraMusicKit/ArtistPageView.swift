@@ -15,51 +15,102 @@ import UIKit
 /// render as their data resolves. Empty slices hide entirely.
 struct ArtistPageView: View {
     @EnvironmentObject private var app: AppModel
+    @Environment(\.colorScheme) private var colorScheme
     @StateObject private var model: ArtistViewModel
+    @State private var backdropPalette: ArtworkDynamicGradient.BackdropPalette
     /// Local push target for "Go to Album" menu actions fired from rows inside this
     /// artist page. Using `@State` here (not `app.presentedDeepLink`) keeps the push
     /// on **this** page's NavigationStack, so Back returns to this artist instead of
     /// the tab root.
     @State private var navigateAlbum: AlbumSummary?
+    @State private var navigateAbout = false
 
     init(input: ArtistPageInput) {
         _model = StateObject(wrappedValue: ArtistViewModel(input: input))
+        _backdropPalette = State(initialValue: ArtworkDynamicGradient.seededBackdrop(for: input.serverArtworkURL, style: .artistPage))
     }
 
     private static let scrollCoordinateSpace = "ArtistPageView.scroll"
 
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 0) {
-                ArtistHeroSection(model: model, scrollSpace: Self.scrollCoordinateSpace)
-                ArtistAcquisitionBanner(model: model)
+        ZStack(alignment: .top) {
+            AlbumHeroBackdropView(
+                artworkURL: model.bannerArtworkURL,
+                palette: backdropPalette,
+            )
 
-                ArtistTopSongsSection(model: model, onGoToAlbum: { navigateAlbum = $0 })
-                ArtistDiscographyCarousel(model: model, bucket: .albums, title: "Albums", layout: .prominent)
-                ArtistDiscographyCarousel(model: model, bucket: .singlesAndEPs, title: "Singles & EPs", layout: .compact)
-                ArtistDiscographyCarousel(model: model, bucket: .live, title: "Live Albums", layout: .compact)
-                ArtistDiscographyCarousel(model: model, bucket: .compilations, title: "Compilations", layout: .compact)
-                ArtistAboutSection(model: model)
-                ArtistSimilarSection(model: model)
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ArtistHeroSection(
+                        model: model,
+                        scrollSpace: Self.scrollCoordinateSpace,
+                        backdropPalette: backdropPalette,
+                        showsInfoButton: model.hasAboutSection,
+                        onInfo: { navigateAbout = true },
+                    )
+                    ArtistLatestReleaseCard(model: model, onGoToAlbum: { navigateAlbum = $0 })
+                    ArtistAcquisitionBanner(model: model)
 
-                Spacer(minLength: 32)
+                    ArtistTopSongsSection(model: model, onGoToAlbum: { navigateAlbum = $0 })
+                    ArtistDiscographyCarousel(model: model, bucket: .albums, title: "Albums", layout: .prominent)
+                    ArtistDiscographyCarousel(model: model, bucket: .singlesAndEPs, title: "Singles & EPs", layout: .prominent)
+                    ArtistDiscographyCarousel(model: model, bucket: .live, title: "Live Albums", layout: .compact)
+                    ArtistDiscographyCarousel(model: model, bucket: .compilations, title: "Compilations", layout: .compact)
+                    ArtistSimilarSection(model: model)
+
+                    Spacer(minLength: 32)
+                }
+            }
+            .coordinateSpace(name: Self.scrollCoordinateSpace)
+            .scrollIndicators(.hidden)
+            .scrollContentBackground(.hidden)
+            .environment(\.artistPageBackdropPalette, backdropPalette)
+        }
+        .ignoresSafeArea(edges: .top)
+        .navigationTitle("")
+        .musicNavigationBarTitleDisplayMode(.inline)
+        .musicNavigationBarVisibleWhenPushed()
+        .musicHeroAlbumNavigationChrome(palette: backdropPalette)
+        .toolbar {
+            ToolbarItemGroup(placement: MusicToolbar.trailingItemPlacement) {
+                ArtistFollowButton(name: model.displayName)
+                    .tint(backdropPalette.heroChromePrimary)
+
+                Menu {
+                    Button(action: toggleFavoriteArtist) {
+                        let favorited = app.isArtistFavorited(name: model.displayName)
+                        Label(
+                            favorited ? "Remove from Favorites" : "Add to Favorites",
+                            systemImage: favorited ? "star.fill" : "star",
+                        )
+                    }
+                    if let url = artistShareURL {
+                        ShareLink(item: url) {
+                            Label("Share", systemImage: "square.and.arrow.up")
+                        }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .tint(backdropPalette.heroChromePrimary)
             }
         }
-        .coordinateSpace(name: Self.scrollCoordinateSpace)
-        .scrollIndicators(.hidden)
-        .background(MusicDesign.background)
-        .ignoresSafeArea(edges: .top)
-        .navigationTitle(model.displayName)
-        .musicNavigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(.hidden, for: .navigationBar)
-        .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
-        .toolbarColorScheme(.dark, for: .navigationBar)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                ArtistFollowButton(name: model.displayName)
+        .onAppear(perform: seedCachedArtistBackdropIfNeeded)
+        .task(id: artistBackdropTaskKey) {
+            guard app.albumBackdropEnabled else {
+                backdropPalette = .listSurface(colorScheme: colorScheme)
+                return
             }
-            ToolbarItem(placement: .topBarTrailing) {
-                ArtistFavoriteStarButton(name: model.displayName)
+            if let url = model.bannerArtworkURL {
+                if let cached = ArtworkDynamicGradient.cachedBackdrop(for: url, style: .artistPage) {
+                    backdropPalette = cached
+                    return
+                }
+                backdropPalette = await ArtworkDynamicGradient.analyzeBackdrop(from: url, style: .artistPage)
+            } else {
+                // No photo yet: stay on the neutral surface instead of generating a random
+                // colored mesh gradient that flashes before the real artwork loads.
+                backdropPalette = .listSurface(colorScheme: colorScheme)
             }
         }
         .task(id: artistTaskKey) {
@@ -84,6 +135,9 @@ struct ArtistPageView: View {
         .navigationDestination(item: $navigateAlbum) { album in
             ServerPlaylistDetailView(album: album, librarySource: app.isAlbumInLibrary(album.id))
         }
+        .navigationDestination(isPresented: $navigateAbout) {
+            ArtistAboutPageView(model: model, palette: backdropPalette)
+        }
     }
 
     private var artistTaskKey: String {
@@ -92,104 +146,281 @@ struct ArtistPageView: View {
         case .named(let n): return "name:\(n)"
         }
     }
+
+    /// Shareable link for the artist — an Apple Music search URL that opens to this artist.
+    private var artistShareURL: URL? {
+        let q = model.displayName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        guard !q.isEmpty else { return nil }
+        return URL(string: "https://music.apple.com/search?term=\(q)")
+    }
+
+    private func toggleFavoriteArtist() {
+        let wasFavorited = app.isArtistFavorited(name: model.displayName)
+        app.toggleFavoriteArtist(name: model.displayName)
+        app.showTransientToast(wasFavorited ? "Removed from Favorites" : "Added to Favorites")
+    }
+
+    private var artistBackdropTaskKey: String {
+        let url = model.bannerArtworkURL?.absoluteString ?? ""
+        return "\(url)-\(app.albumBackdropEnabled)-\(colorScheme)"
+    }
+
+    private func seedCachedArtistBackdropIfNeeded() {
+        guard app.albumBackdropEnabled,
+              let url = model.bannerArtworkURL,
+              let cached = ArtworkDynamicGradient.cachedBackdrop(for: url, style: .artistPage)
+        else { return }
+        backdropPalette = cached
+    }
+}
+
+// MARK: - Artist page backdrop palette (section chrome)
+
+private struct ArtistPageBackdropPaletteKey: EnvironmentKey {
+    static let defaultValue: ArtworkDynamicGradient.BackdropPalette? = nil
+}
+
+extension EnvironmentValues {
+    fileprivate var artistPageBackdropPalette: ArtworkDynamicGradient.BackdropPalette? {
+        get { self[ArtistPageBackdropPaletteKey.self] }
+        set { self[ArtistPageBackdropPaletteKey.self] = newValue }
+    }
+}
+
+/// Adaptive label colors for artist-page content on the artwork backdrop.
+@MainActor
+private enum ArtistPageChrome {
+    static func primary(app: AppModel, palette: ArtworkDynamicGradient.BackdropPalette?) -> Color {
+        guard app.albumBackdropEnabled, let palette else { return .primary }
+        return palette.heroChromePrimary
+    }
+
+    static func secondary(app: AppModel, palette: ArtworkDynamicGradient.BackdropPalette?) -> Color {
+        guard app.albumBackdropEnabled, let palette else { return MusicDesign.secondaryLabel }
+        return palette.heroChromeSecondary
+    }
+
+    static func tertiary(app: AppModel, palette: ArtworkDynamicGradient.BackdropPalette?) -> Color {
+        guard app.albumBackdropEnabled, let palette else { return MusicDesign.secondaryLabel.opacity(0.85) }
+        return palette.heroChromeTertiary
+    }
 }
 
 // MARK: - Hero (stretchy banner that extends behind the nav bar and grows on overscroll)
 
 private struct ArtistHeroSection: View {
-    @EnvironmentObject private var app: AppModel
     @ObservedObject var model: ArtistViewModel
     let scrollSpace: String
+    let backdropPalette: ArtworkDynamicGradient.BackdropPalette
+    var showsInfoButton: Bool = false
+    var onInfo: () -> Void = {}
 
-    private var bannerURL: URL? {
-        model.details?.wideArtworkURL
-            ?? model.details?.thumbArtworkURL
-            ?? model.fallbackBannerArtworkURL
-            ?? model.input.serverArtworkURL
-    }
+    private var bannerURL: URL? { model.bannerArtworkURL }
 
     private var baseHeight: CGFloat {
         #if os(iOS)
-        return min(max(UIScreen.main.bounds.width * 0.95, 320), 460)
+        let screenH = UIScreen.main.bounds.height
+        return min(
+            max(screenH * MusicDesign.artistHeroHeightScreenFactor, MusicDesign.artistHeroMinHeight),
+            screenH * MusicDesign.artistHeroMaxHeightScreenFactor
+        )
         #else
-        return 380
+        return 440
         #endif
     }
 
     var body: some View {
-        StretchyHeaderContainer(scrollSpace: scrollSpace, baseHeight: baseHeight) {
-            ArtistBannerImage(url: bannerURL, seed: model.displayName)
-        } overlay: { _ in
-            ArtistHeroOverlay(model: model)
+        VStack(spacing: 0) {
+            StretchyHeaderContainer(
+                scrollSpace: scrollSpace,
+                baseHeight: baseHeight,
+                clipBanner: false,
+            ) {
+                ArtistHeroBannerStack(
+                    url: bannerURL,
+                    seed: model.displayName,
+                    backdropColor: backdropPalette.heroSolidBackdropColor,
+                )
+            } overlay: { _ in
+                ArtistHeroOverlay(
+                    model: model,
+                    showsInfoButton: showsInfoButton,
+                    onInfo: onInfo,
+                )
+            }
         }
+        .padding(.bottom, -MusicDesign.artistHeroBottomSeamOverlap)
+    }
+}
+
+/// Apple Music–style hero: sharp portrait on top, feathered blur melt into the page tint at the play row.
+private struct ArtistHeroBannerStack: View {
+    let url: URL?
+    let seed: String
+    let backdropColor: Color
+
+    @State private var cgImage: CGImage?
+
+    var body: some View {
+        GeometryReader { geo in
+            let height = geo.size.height
+            let width = geo.size.width
+
+            ZStack(alignment: .top) {
+                // Solid page tint under the photo so the bottom edge melts cleanly.
+                backdropColor
+
+                if let cgImage {
+                    let image = ArtworkPlatformImage.swiftUIImage(cgImage: cgImage)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: width, height: height)
+                        .clipped()
+
+                    // Sharp portrait.
+                    image
+
+                    // Soft-focus melt — a blurred copy of the same photo revealed only toward
+                    // the bottom third, ramping from sharp to fully soft behind the controls.
+                    // `opaque: true` keeps the blur sampling clean to the frame edges.
+                    image
+                        .blur(radius: MusicDesign.artistHeroImageBlurRadius, opaque: true)
+                        .frame(width: width, height: height)
+                        .clipped()
+                        .mask(
+                            LinearGradient(
+                                stops: [
+                                    .init(color: .clear, location: 0),
+                                    .init(color: .clear, location: 0.54),
+                                    .init(color: .white.opacity(0.5), location: 0.70),
+                                    .init(color: .white, location: 0.84),
+                                    .init(color: .white, location: 1),
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom,
+                            )
+                        )
+                        .allowsHitTesting(false)
+
+                    // Colour melt into the page background behind the title + play controls.
+                    LinearGradient(
+                        stops: [
+                            .init(color: backdropColor.opacity(0), location: 0),
+                            .init(color: backdropColor.opacity(0), location: 0.58),
+                            .init(color: backdropColor.opacity(0.35), location: 0.78),
+                            .init(color: backdropColor.opacity(0.74), location: 0.92),
+                            .init(color: backdropColor, location: 1),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom,
+                    )
+                    .allowsHitTesting(false)
+                } else {
+                    // Neutral placeholder while the photo loads (and when there is none) —
+                    // a flat page-tinted fill with a faint glyph, instead of a random colored
+                    // gradient that flashes before the real image arrives.
+                    backdropColor
+                        .frame(width: width, height: height)
+                        .overlay {
+                            Image(systemName: "music.mic")
+                                .font(.system(size: 52, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.10))
+                        }
+                }
+            }
+            .frame(width: width, height: height)
+        }
+        .task(id: url?.absoluteString ?? "gradient-\(seed)") {
+            await loadImage()
+        }
+    }
+
+    private func loadImage() async {
+        guard let url else {
+            await MainActor.run { cgImage = nil }
+            return
+        }
+        let loaded = await RemoteArtworkLoad.cgImage(from: url, maxPixelSize: 960)
+        await MainActor.run { cgImage = loaded }
     }
 }
 
 private struct ArtistHeroOverlay: View {
     @EnvironmentObject private var app: AppModel
     @ObservedObject var model: ArtistViewModel
+    var showsInfoButton: Bool
+    var onInfo: () -> Void
 
     var body: some View {
         ZStack {
-            // Dark scrim at the bottom so the artist name + buttons stay readable
-            // regardless of how light the banner is.
-            LinearGradient(
-                colors: [
-                    Color.black.opacity(0.0),
-                    Color.black.opacity(0.20),
-                    Color.black.opacity(0.55),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .allowsHitTesting(false)
-
-            // Title + play row pinned to the bottom.
             VStack {
                 Spacer()
-                HStack(alignment: .bottom) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(model.displayName)
-                            .font(.system(size: 34, weight: .heavy))
-                            .foregroundStyle(.white)
-                            .shadow(color: .black.opacity(0.6), radius: 8, y: 2)
-                            .lineLimit(2)
-                            .minimumScaleFactor(0.6)
-                            .multilineTextAlignment(.leading)
-                        if let line = metadataLine {
-                            Text(line)
-                                .font(.footnote.weight(.semibold))
-                                .foregroundStyle(.white.opacity(0.85))
-                                .shadow(color: .black.opacity(0.4), radius: 4, y: 1)
-                                .lineLimit(1)
+                VStack(spacing: 12) {
+                    Text(model.displayName)
+                        .font(.system(size: 34, weight: .heavy))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.6)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+
+                    ZStack {
+                        ArtistHeroPlayButton(model: model)
+                        if showsInfoButton {
+                            ArtistHeroSideIconButton(
+                                systemImage: "info",
+                                foreground: .white,
+                                accessibilityLabel: "About \(model.displayName)",
+                                action: onInfo,
+                            )
+                            .offset(x: -ArtistHeroControlButton.sideOffsetFromPlayCenter)
                         }
+                        ArtistHeroFavoriteButton(name: model.displayName)
+                            .offset(x: ArtistHeroControlButton.sideOffsetFromPlayCenter)
                     }
-                    .padding(.leading, 20)
-
-                    Spacer(minLength: 12)
-
-                    ArtistHeroPlayButton(model: model)
-                        .padding(.trailing, 20)
+                    .frame(maxWidth: .infinity)
                 }
-                .padding(.bottom, 22)
+                .padding(.horizontal, 20)
+                .padding(.bottom, MusicDesign.artistHeroControlsBottomInset)
             }
         }
     }
+}
 
-    private var metadataLine: String? {
-        guard let d = model.details else { return nil }
-        var parts: [String] = []
-        if let g = d.genre { parts.append(g) }
-        if let y = d.formedYear { parts.append("Formed \(y)") }
-        if let c = d.country { parts.append(c) }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+/// Apple Music–style dark circular side control (info / favorite).
+private struct ArtistHeroSideIconButton: View {
+    let systemImage: String
+    let foreground: Color
+    let accessibilityLabel: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(foreground)
+                .frame(width: ArtistHeroControlButton.sideDiameter, height: ArtistHeroControlButton.sideDiameter)
+                .background(Circle().fill(.white.opacity(0.08)))
+                .overlay(Circle().strokeBorder(.white.opacity(0.22), lineWidth: 0.75))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
     }
 }
 
-/// Top-right toolbar action — just the star glyph. The toolbar already wraps
-/// items in its own chrome on iOS 26 (Liquid Glass), so we deliberately don't
-/// add a background or border here — doing so produces a visible double-layer.
-private struct ArtistFavoriteStarButton: View {
+/// Shared hero control sizing (play + side glass buttons).
+private enum ArtistHeroControlButton {
+    static let playDiameter: CGFloat = 68
+    static let sideDiameter: CGFloat = 46
+    static let sideSpacing: CGFloat = 16
+
+    /// Horizontal offset for info / favorite so play stays at the true screen center.
+    static var sideOffsetFromPlayCenter: CGFloat {
+        playDiameter / 2 + sideSpacing + sideDiameter / 2
+    }
+}
+
+private struct ArtistHeroFavoriteButton: View {
     @EnvironmentObject private var app: AppModel
     let name: String
 
@@ -198,16 +429,15 @@ private struct ArtistFavoriteStarButton: View {
     }
 
     var body: some View {
-        Button {
+        ArtistHeroSideIconButton(
+            systemImage: isFavorited ? "star.fill" : "star",
+            foreground: isFavorited ? MusicDesign.accent : .white,
+            accessibilityLabel: isFavorited ? "Remove from favorites" : "Add to favorites",
+        ) {
             let wasFavorited = isFavorited
             app.toggleFavoriteArtist(name: name)
             app.showTransientToast(wasFavorited ? "Removed from Favorites" : "Added to Favorites")
-        } label: {
-            Image(systemName: isFavorited ? "star.fill" : "star")
-                .font(.body.weight(.semibold))
-                .foregroundStyle(isFavorited ? MusicDesign.accent : .white)
         }
-        .accessibilityLabel(isFavorited ? "Remove from favorites" : "Add to favorites")
     }
 }
 
@@ -220,14 +450,16 @@ private struct ArtistHeroPlayButton: View {
             Task { await playAll(mode: app.artistPlayMode) }
         } label: {
             Image(systemName: "play.fill")
-                .font(.title3.weight(.bold))
-                .foregroundStyle(.white)
-                .frame(width: 50, height: 50)
-                .background(Circle().fill(MusicDesign.accent))
-                .shadow(color: .black.opacity(0.45), radius: 8, y: 4)
+                .font(.system(size: 30, weight: .bold))
+                .foregroundStyle(Color.black.opacity(0.88))
+                .offset(x: 2.5)
+                .frame(width: ArtistHeroControlButton.playDiameter, height: ArtistHeroControlButton.playDiameter)
+                .background(Circle().fill(.white))
+                .shadow(color: .black.opacity(0.45), radius: 10, y: 4)
         }
         .buttonStyle(.plain)
         .disabled(!model.hasPlayableTracks)
+        .opacity(model.hasPlayableTracks ? 1 : 0.45)
         .contextMenu {
             ForEach(ArtistPlayMode.allCases) { mode in
                 Button {
@@ -254,6 +486,7 @@ private struct ArtistHeroPlayButton: View {
 private struct StretchyHeaderContainer<Banner: View, Overlay: View>: View {
     let scrollSpace: String
     let baseHeight: CGFloat
+    var clipBanner: Bool = true
     @ViewBuilder var banner: () -> Banner
     @ViewBuilder var overlay: (CGFloat) -> Overlay
 
@@ -262,16 +495,24 @@ private struct StretchyHeaderContainer<Banner: View, Overlay: View>: View {
             let yOffset = proxy.frame(in: .named(scrollSpace)).minY
             let extra = max(yOffset, 0)
             let safeAreaTop = proxy.safeAreaInsets.top
+            let bannerHeight = baseHeight + extra + safeAreaTop
 
             ZStack(alignment: .bottom) {
-                banner()
-                    .frame(width: proxy.size.width, height: baseHeight + extra + safeAreaTop)
-                    .clipped()
+                Group {
+                    if clipBanner {
+                        banner()
+                            .frame(width: proxy.size.width, height: bannerHeight)
+                            .clipped()
+                    } else {
+                        banner()
+                            .frame(width: proxy.size.width, height: bannerHeight)
+                    }
+                }
 
                 overlay(baseHeight + extra)
                     .frame(width: proxy.size.width, height: baseHeight + extra)
             }
-            .frame(width: proxy.size.width, height: baseHeight + extra + safeAreaTop)
+            .frame(width: proxy.size.width, height: bannerHeight)
             .offset(y: -extra - safeAreaTop)
         }
         .frame(height: baseHeight)
@@ -280,29 +521,6 @@ private struct StretchyHeaderContainer<Banner: View, Overlay: View>: View {
 
 /// Banner image: AsyncImage when a remote URL exists, otherwise a deterministic
 /// gradient seeded by the artist name (Apple Music–style premium fallback).
-private struct ArtistBannerImage: View {
-    let url: URL?
-    let seed: String
-
-    var body: some View {
-        Group {
-            if let url {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFill()
-                    case .empty, .failure:
-                        ArtistGradientFallback(seed: seed)
-                    @unknown default:
-                        ArtistGradientFallback(seed: seed)
-                    }
-                }
-            } else {
-                ArtistGradientFallback(seed: seed)
-            }
-        }
-    }
-}
 
 /// Smart fallback for missing artwork: deterministic 2-stop gradient seeded by
 /// the artist name. Replaces the flat gray placeholder that breaks the premium
@@ -349,16 +567,141 @@ private struct ArtistGradientFallback: View {
 // MARK: - Section header
 
 private struct ArtistSectionHeader: View {
+    @EnvironmentObject private var app: AppModel
+    @Environment(\.artistPageBackdropPalette) private var backdropPalette
+
     let title: String
+
+    private var titleColor: Color {
+        ArtistPageChrome.primary(app: app, palette: backdropPalette)
+    }
 
     var body: some View {
         Text(title)
             .font(.title3.bold())
-            .foregroundStyle(.primary)
+            .foregroundStyle(titleColor)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 20)
             .padding(.top, 18)
             .padding(.bottom, 10)
+    }
+}
+
+// MARK: - Latest release (featured card under the hero)
+
+private struct ArtistLatestReleaseCard: View {
+    @EnvironmentObject private var app: AppModel
+    @ObservedObject var model: ArtistViewModel
+    @Environment(\.artistPageBackdropPalette) private var backdropPalette
+    @Environment(\.colorScheme) private var colorScheme
+    let onGoToAlbum: (AlbumSummary) -> Void
+
+    private let cornerRadius: CGFloat = 20
+
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        return f
+    }()
+
+    private var titleColor: Color { ArtistPageChrome.primary(app: app, palette: backdropPalette) }
+    private var subtitleColor: Color { ArtistPageChrome.secondary(app: app, palette: backdropPalette) }
+
+    var body: some View {
+        if let release = model.latestRelease {
+            let serverAlbum = model.serverAlbum(matching: release)
+            HStack(spacing: 12) {
+                NavigationLink {
+                    destination(release: release, serverAlbum: serverAlbum)
+                } label: {
+                    rowContent(release: release)
+                }
+                .buttonStyle(.plain)
+
+                addButton(release: release, serverAlbum: serverAlbum)
+                    .padding(.trailing, 4)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 16)
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(.white.opacity(0.08)),
+            )
+            .overlay(MusicDesign.artworkSubtleBorderOverlay(cornerRadius: cornerRadius, colorScheme: colorScheme))
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+        }
+    }
+
+    private func rowContent(release: ITunesArtistAlbum) -> some View {
+        HStack(spacing: 12) {
+            AlbumArtworkView(url: release.artworkURL, cornerRadius: MusicDesign.albumCorner)
+                .frame(width: 88, height: 88)
+
+            VStack(alignment: .leading, spacing: 2) {
+                if let date = release.releaseDate {
+                    Text(Self.dateFormatter.string(from: date))
+                        .font(.caption)
+                        .foregroundStyle(subtitleColor)
+                }
+                Text(release.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(titleColor)
+                    .lineLimit(2)
+                if let count = release.trackCount {
+                    Text(count == 1 ? "1 song" : "\(count) songs")
+                        .font(.caption)
+                        .foregroundStyle(subtitleColor)
+                }
+            }
+            .frame(maxHeight: .infinity, alignment: .center)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func destination(release: ITunesArtistAlbum, serverAlbum: AlbumSummary?) -> some View {
+        if let serverAlbum {
+            ServerPlaylistDetailView(album: serverAlbum, librarySource: app.isAlbumInLibrary(serverAlbum.id))
+        } else {
+            BrowseAlbumDetailView(source: .chartBrowse(
+                artistName: release.artist,
+                title: release.title,
+                imageURL: release.artworkURL,
+                kind: release.bucket == .singlesAndEPs ? "EP" : "Album",
+                albumId: release.id,
+            ))
+        }
+    }
+
+    @ViewBuilder
+    private func addButton(release: ITunesArtistAlbum, serverAlbum: AlbumSummary?) -> some View {
+        let inLibrary = serverAlbum.map { app.isAlbumInLibrary($0.id) } ?? false
+        Button {
+            Task { await addOrRequest(release: release, serverAlbum: serverAlbum) }
+        } label: {
+            Image(systemName: inLibrary ? "checkmark" : "plus")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(inLibrary ? subtitleColor : titleColor)
+                .frame(width: 30, height: 30)
+                .background(Circle().fill(.white.opacity(0.12)))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(inLibrary ? "In library" : (serverAlbum == nil ? "Request album" : "Add to library"))
+    }
+
+    private func addOrRequest(release: ITunesArtistAlbum, serverAlbum: AlbumSummary?) async {
+        if let serverAlbum {
+            guard !app.isAlbumInLibrary(serverAlbum.id) else { return }
+            await app.addAlbumToLibrary(serverAlbum)
+        } else {
+            _ = await app.requestAcquisition(AcquisitionRequest(
+                artist: release.artist,
+                albumTitle: release.title,
+                coverURL: release.artworkURL,
+            ))
+        }
     }
 }
 
@@ -477,6 +820,7 @@ private struct ArtistTopSongsPage: View {
 
 private struct ArtistTopSongRowView: View {
     @EnvironmentObject private var app: AppModel
+    @Environment(\.artistPageBackdropPalette) private var backdropPalette
     let row: ArtistTopSongRow
     let canRequest: Bool
     let onRequest: (ArtistTopSongRow) -> Void
@@ -495,7 +839,11 @@ private struct ArtistTopSongRowView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     Text(row.title)
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(row.libraryTrack == nil ? MusicDesign.secondaryLabel : Color.primary)
+                        .foregroundStyle(
+                            row.libraryTrack == nil
+                                ? ArtistPageChrome.secondary(app: app, palette: backdropPalette)
+                                : ArtistPageChrome.primary(app: app, palette: backdropPalette)
+                        )
                         .lineLimit(1)
                         .fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 4) {
@@ -505,14 +853,14 @@ private struct ArtistTopSongRowView: View {
                         }
                         if let year = row.releaseYear, year > 1900 {
                             if row.albumTitle != nil {
-                                Text("·").foregroundStyle(MusicDesign.secondaryLabel.opacity(0.6))
+                                Text("·").foregroundStyle(ArtistPageChrome.tertiary(app: app, palette: backdropPalette).opacity(0.6))
                             }
                             Text(String(year))
-                                .foregroundStyle(MusicDesign.secondaryLabel.opacity(0.85))
+                                .foregroundStyle(ArtistPageChrome.tertiary(app: app, palette: backdropPalette))
                         }
                     }
                     .font(.caption)
-                    .foregroundStyle(MusicDesign.secondaryLabel)
+                    .foregroundStyle(ArtistPageChrome.secondary(app: app, palette: backdropPalette))
                     // Pull the subtitle baseline up so it sits tight under the
                     // title's descender (Apple Music's compact row rhythm). The
                     // default `Text` line-box leaves ~3pt of slack between
@@ -553,6 +901,7 @@ private struct ArtistTopSongRowView: View {
 /// chart-style menu whose primary action is Request via the request backend.
 private struct ArtistTopSongOverflowMenu: View {
     @EnvironmentObject private var app: AppModel
+    @Environment(\.artistPageBackdropPalette) private var backdropPalette
     let row: ArtistTopSongRow
     let canRequest: Bool
     let onRequest: (ArtistTopSongRow) -> Void
@@ -603,7 +952,7 @@ private struct ArtistTopSongOverflowMenu: View {
         } label: {
             Image(systemName: "ellipsis")
                 .font(.body.weight(.semibold))
-                .foregroundStyle(MusicDesign.secondaryLabel.opacity(0.65))
+                .foregroundStyle(ArtistPageChrome.secondary(app: app, palette: backdropPalette).opacity(0.65))
                 .frame(width: 32, height: 32)
                 .contentShape(Rectangle())
         }
@@ -687,6 +1036,8 @@ private struct ArtistDiscographyCarousel: View {
 }
 
 private struct ArtistDiscographyCard: View {
+    @EnvironmentObject private var app: AppModel
+    @Environment(\.artistPageBackdropPalette) private var backdropPalette
     let item: ArtistDiscographyItem
     let layout: DiscographyLayout
     let canRequest: Bool
@@ -719,7 +1070,7 @@ private struct ArtistDiscographyCard: View {
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
                         Text(item.title)
                             .font(layout.titleFont)
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(ArtistPageChrome.primary(app: app, palette: backdropPalette))
                             .lineLimit(2)
                             .multilineTextAlignment(.leading)
                             .fixedSize(horizontal: false, vertical: true)
@@ -731,7 +1082,7 @@ private struct ArtistDiscographyCard: View {
                     }
                     Text(subtitle)
                         .font(layout.subtitleFont)
-                        .foregroundStyle(MusicDesign.secondaryLabel)
+                        .foregroundStyle(ArtistPageChrome.secondary(app: app, palette: backdropPalette))
                         .lineLimit(1)
                 }
                 .frame(
@@ -836,112 +1187,126 @@ private struct ArtistAlbumCardArtwork: View {
 
 // MARK: - About (inline MORE expansion + tight key-value rows)
 
-private struct ArtistAboutSection: View {
+/// Dedicated full-screen "About" page (Apple Music style): hero photo melting into the page,
+/// the artist name, a From / Born / Genre block, and the complete biography.
+private struct ArtistAboutPageView: View {
+    @EnvironmentObject private var app: AppModel
     @ObservedObject var model: ArtistViewModel
-    @State private var expanded = false
+    let palette: ArtworkDynamicGradient.BackdropPalette
+
+    private var details: TheAudioDBClient.ArtistDetails? { model.details }
 
     private var bio: String? {
-        if let b = model.details?.biography, !b.isEmpty { return b }
+        if let b = details?.biography, !b.isEmpty { return b }
         if let o = model.jellyfinOverview, !o.isEmpty { return o }
         return nil
     }
 
-    var body: some View {
-        if bio != nil || hasMetadataRows {
-            VStack(alignment: .leading, spacing: 14) {
-                ArtistSectionHeader(title: "About \(model.displayName)")
+    private var primaryColor: Color { palette.heroChromePrimary }
+    private var secondaryColor: Color { palette.heroChromeSecondary }
 
-                if let bio {
-                    ArtistInlineMoreText(text: bio, expanded: $expanded)
-                        .padding(.horizontal, 20)
-                }
-
-                if hasMetadataRows, let details = model.details {
-                    metadataStack(details)
-                        .padding(.horizontal, 20)
-                        .padding(.top, 2)
-                }
-            }
-            .padding(.bottom, 18)
-        }
+    private var heroHeight: CGFloat {
+        #if os(iOS)
+        UIScreen.main.bounds.height * 0.5
+        #else
+        420
+        #endif
     }
 
-    private var hasMetadataRows: Bool {
-        guard let d = model.details else { return false }
-        return d.country != nil || d.formedYear != nil || d.genre != nil
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ArtistHeroBannerStack(
+                    url: model.bannerArtworkURL,
+                    seed: model.displayName,
+                    backdropColor: palette.heroSolidBackdropColor,
+                )
+                .frame(height: heroHeight)
+
+                VStack(alignment: .leading, spacing: 24) {
+                    Text(model.displayName)
+                        .font(.system(size: 34, weight: .heavy))
+                        .foregroundStyle(primaryColor)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    metadataBlock
+
+                    if let bio {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("About")
+                                .font(.title2.bold())
+                                .foregroundStyle(primaryColor)
+                            Text(bio)
+                                .font(.callout)
+                                .foregroundStyle(primaryColor)
+                                .lineSpacing(3)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 2)
+                .padding(.bottom, 48)
+            }
+        }
+        .background(palette.heroSolidBackdropColor.ignoresSafeArea())
+        .ignoresSafeArea(edges: .top)
+        .scrollIndicators(.hidden)
+        .navigationTitle(model.displayName)
+        .musicNavigationBarTitleDisplayMode(.inline)
+        .musicHeroAlbumNavigationChrome(palette: palette)
     }
 
     @ViewBuilder
-    private func metadataStack(_ details: TheAudioDBClient.ArtistDetails) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if let country = details.country {
-                ArtistMetadataRow(key: "Origin", value: country)
+    private var metadataBlock: some View {
+        // Prefer the richer MusicBrainz profile (birthplace city + full date), fall back to
+        // TheAudioDB's coarser country + formed-year.
+        let from = model.artistProfile?.origin ?? details?.country
+        let born = model.artistProfile?.born ?? details?.formedYear.map(String.init)
+        let genre = model.artistProfile?.genre ?? details?.genre
+
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .top, spacing: 16) {
+                if let from {
+                    metaColumn(label: "From", value: from)
+                }
+                if let born {
+                    metaColumn(label: "Born", value: born)
+                }
             }
-            if let year = details.formedYear {
-                ArtistMetadataRow(key: "Formed", value: String(year))
-            }
-            if let genre = details.genre {
-                ArtistMetadataRow(key: "Genre", value: genre)
+
+            if let genre {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Genre")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(secondaryColor)
+                        .textCase(.uppercase)
+                        .tracking(0.5)
+                    Text(genre)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(primaryColor)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Capsule().fill(.white.opacity(0.08)))
+                        .overlay(Capsule().strokeBorder(.white.opacity(0.14), lineWidth: 0.75))
+                }
             }
         }
     }
-}
 
-/// Bold value · muted key on the same line — Apple Music's About-section pattern.
-private struct ArtistMetadataRow: View {
-    let key: String
-    let value: String
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(value)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-            Text(key)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(MusicDesign.secondaryLabel)
+    private func metaColumn(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(label)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(secondaryColor)
                 .textCase(.uppercase)
-                .tracking(0.4)
+                .tracking(0.5)
+            Text(value)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(primaryColor)
+                .fixedSize(horizontal: false, vertical: true)
         }
-    }
-}
-
-/// Truncated bio with an inline "MORE" expansion trigger anchored to the end of
-/// the visible copy (not a separate button on a new line). When expanded, swaps
-/// in the full text with an inline "Less" trigger at the very end.
-private struct ArtistInlineMoreText: View {
-    let text: String
-    @Binding var expanded: Bool
-
-    private let truncationLength = 220
-
-    var body: some View {
-        if expanded || text.count <= truncationLength {
-            (Text(text) + actionText(label: text.count > truncationLength ? " Less" : ""))
-                .font(.callout)
-                .foregroundStyle(.primary)
-                .lineSpacing(2)
-                .onTapGesture {
-                    guard text.count > truncationLength else { return }
-                    withAnimation(.easeInOut(duration: 0.18)) { expanded = false }
-                }
-        } else {
-            let truncated = String(text.prefix(truncationLength).trimmingCharacters(in: .whitespacesAndNewlines)) + "…"
-            (Text(truncated) + actionText(label: "  MORE"))
-                .font(.callout)
-                .foregroundStyle(.primary)
-                .lineSpacing(2)
-                .onTapGesture {
-                    withAnimation(.easeInOut(duration: 0.18)) { expanded = true }
-                }
-        }
-    }
-
-    private func actionText(label: String) -> Text {
-        Text(label)
-            .font(.caption.weight(.heavy))
-            .foregroundColor(MusicDesign.accent)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -974,21 +1339,17 @@ private struct ArtistSimilarSection: View {
 }
 
 private struct SimilarArtistCard: View {
+    @EnvironmentObject private var app: AppModel
+    @Environment(\.artistPageBackdropPalette) private var backdropPalette
+
     let similar: LastFmSimilarArtist
-    private let side: CGFloat = 88
+    private let side: CGFloat = 112
 
     var body: some View {
         VStack(spacing: 8) {
             Group {
                 if let url = similar.imageURL {
-                    AsyncImage(url: url) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image.resizable().scaledToFill()
-                        default:
-                            ArtistGradientFallback(seed: similar.name)
-                        }
-                    }
+                    AlbumArtworkView(url: url, cornerRadius: side / 2)
                 } else {
                     ArtistGradientFallback(seed: similar.name)
                 }
@@ -998,7 +1359,7 @@ private struct SimilarArtistCard: View {
 
             Text(similar.name)
                 .font(.caption2.weight(.semibold))
-                .foregroundStyle(.primary)
+                .foregroundStyle(ArtistPageChrome.primary(app: app, palette: backdropPalette))
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
                 .frame(
