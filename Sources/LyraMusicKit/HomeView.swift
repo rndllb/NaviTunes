@@ -18,26 +18,11 @@ struct HomeView: View {
     private let inset: CGFloat = MusicDesign.newTabHorizontalInset
 
     private var topPicksAlbums: [AlbumSummary] {
-        if !app.homeTopPickAlbums.isEmpty {
-            return app.homeTopPickAlbums
-        }
-        return Array(app.recentlyAddedAlbums.filter { app.isEligibleForHomeTopPick($0) }.prefix(8))
+        app.homeTopPickAlbums
     }
 
     private var newReleasesAlbums: [AlbumSummary] {
-        if !app.homeNewReleaseAlbums.isEmpty {
-            return app.homeNewReleaseAlbums
-        }
-        let topPickIds = Set(topPicksAlbums.map(\.id))
-        let topPickReleases = Set(topPicksAlbums.map(\.catalogReleaseIdentityKey))
-        return Array(
-            app.recentlyAddedAlbums.filter {
-                app.isEligibleForHomeTopPick($0)
-                    && !topPickIds.contains($0.id)
-                    && !topPickReleases.contains($0.catalogReleaseIdentityKey)
-            }
-            .prefix(20)
-        )
+        app.homeNewReleaseAlbums
     }
 
     /// Unique artists from server recently-added albums the user has **not** added to their library.
@@ -156,7 +141,7 @@ struct HomeView: View {
             }
             .refreshable {
                 await app.refreshLibraryAlbums()
-                await app.refreshHome()
+                await app.refreshHome(forceDiscoveryReshuffle: true)
             }
             .deepLinkPush(tab: .home, path: $navigationPath)
         }
@@ -179,7 +164,7 @@ struct HomeView: View {
             sectionHeader(title: title)
 
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 16) {
+                HStack(spacing: 16) {
                     ForEach(albums) { album in
                         NavigationLink {
                             ServerPlaylistDetailView(album: album)
@@ -193,7 +178,6 @@ struct HomeView: View {
                 }
                 .padding(.horizontal, inset)
             }
-            .scrollTargetBehavior(.viewAligned)
         }
     }
 
@@ -413,6 +397,7 @@ struct HomeView: View {
 private struct HomeTopPickCard: View {
     let album: AlbumSummary
 
+    @Environment(\.colorScheme) private var colorScheme
     @State private var palette: ArtworkDynamicGradient.BackdropPalette
 
     init(album: AlbumSummary) {
@@ -444,6 +429,12 @@ private struct HomeTopPickCard: View {
         }
         .frame(width: cardWidth, height: cardHeight)
         .clipShape(RoundedRectangle(cornerRadius: cardCorner, style: .continuous))
+        .overlay {
+            MusicDesign.artworkSubtleBorderOverlay(
+                cornerRadius: cardCorner,
+                colorScheme: colorScheme,
+            )
+        }
         .onAppear {
             ArtworkDynamicGradient.prefetchBackdrop(for: album.artworkURL)
         }

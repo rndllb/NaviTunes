@@ -17,7 +17,7 @@ Built in SwiftUI for iOS 26, with an Apple Music–style layout: Home / New / Ra
 
 ### Home
 
-- **Top Picks for You** — taste-ranked **server catalog** albums you have **not** added to your personal library; editorial **250×325** cards (full-width cover + color-bleed band + metadata).
+- **Top Picks for You** — taste-ranked **server catalog** albums you have **not** added to your personal library; editorial **250×325** cards (full-width cover + color-bleed band + metadata). Shelf order **stabilizes** after first paint so background refreshes don't reshuffle visible cards; pull-to-refresh forces a full re-rank.
 - **New Releases for You** — next taste-ranked server-catalog rows after Top Picks (same eligibility rules; no overlap).
 - **New Artists Added** — unique artists from recent server adds, excluding albums already in your library.
 - **Recently Played** — local play log merged with server recently-played albums.
@@ -43,6 +43,8 @@ Built in SwiftUI for iOS 26, with an Apple Music–style layout: Home / New / Ra
 - **Personal library** (“My Library”) synced via a server-side magic playlist (`__lyra_*`) with accurate per-item “Recently Added (yours)” dates.
 - Configurable sections, pins, server playlist CRUD where supported.
 - Per-album hero artwork with dynamic gradients; **tappable artist names** navigate to the artist page (except “Various Artists”).
+- **Album detail shelves** — horizontal carousels below metadata on library and browse album detail: **Other Versions**, **More By [Artist]**, **You Might Also Like** (memory-first, then full artist discography fetch).
+- **Artist page** — Apple Music–style stretchy portrait hero with **soft blur melt** into a dark charcoal backdrop (`.artistPage` palette analysis); centered play / info / favorite controls; adaptive section chrome.
 - **Kill mode** for playlist editing (batch remove + commit).
 
 ### Discovery & search
@@ -51,6 +53,7 @@ Built in SwiftUI for iOS 26, with an Apple Music–style layout: Home / New / Ra
 - **Library search** — personal library only (songs in your magic playlist / indexed discovery cache).
 - **Acquisition plugins** — request missing music through Lidarr (a music collection manager); optional auto-add to personal library after server scan. Request any artist via Discover search or Settings → Following.
 - **Artist following** — follow artists from the artist page; Settings → Plugins → Following keeps discographies complete via **iTunes discography** + the active acquisition plugin (wishlist when no album-level plugin is configured).
+- **Artist enrichment** — TheAudioDB (top songs, wide banner when available), **MusicBrainz** profile facts for About (`ArtistProfileClient`), **ListenBrainz** similar-artist recommendations (`ListenBrainzClient`).
 - Off-server album detail uses **iTunes catalog tracklists** (`ITunesTracklistClient`) for “complete album” / request rows.
 
 ### Playback
@@ -120,6 +123,11 @@ Lyra Music IOS/
 │       ├── ITunesArtistClient.swift    # Artist search + discography (New/Discover/Following)
 │       ├── ITunesTracklistClient.swift # Off-server album tracklists
 │       ├── ITunesNewReleasesClient.swift
+│       ├── AlbumDetailRelatedSectionsView.swift
+│       ├── AlbumDetailArtistCatalogCache.swift
+│       ├── ArtistPageView.swift          # Apple Music–style artist hero + discography
+│       ├── ArtistProfileClient.swift     # MusicBrainz About metadata
+│       ├── ListenBrainzClient.swift      # Similar-artist recommendations
 │       ├── PlaybackEngine.swift
 │       ├── HomeView.swift              # Taste-based Home shelves + editorial Top Picks cards
 │       ├── NewTabPersonalizationEngine.swift

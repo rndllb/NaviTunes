@@ -510,6 +510,25 @@ enum MusicDesign {
     static let homeTopPickBleedBlurRadiusTop: CGFloat = 2.5
     /// Stronger blur from ~mid-band downward.
     static let homeTopPickBleedBlurRadiusBottom: CGFloat = 11
+
+    // MARK: - Artist page hero (Apple Music artist portrait + blur melt)
+    /// Total hero height as a fraction of screen height — controls pin to the bottom (~mid-screen).
+    static let artistHeroHeightScreenFactor: CGFloat = 0.60
+    static let artistHeroMaxHeightScreenFactor: CGFloat = 0.62
+    static let artistHeroMinHeight: CGFloat = 440
+    /// Core blur band at the bottom (play row).
+    static let artistHeroBlurBandHeight: CGFloat = 72
+    /// Long soft feather above the play row — gradual sharp → blur melt.
+    static let artistHeroBlurBlendFeatherHeight: CGFloat = 112
+    /// Pixels overlapped below the hero to hide the banner clip seam.
+    static let artistHeroBottomSeamOverlap: CGFloat = 28
+    static let artistHeroControlsBottomInset: CGFloat = 32
+    /// Soft Gaussian blur — kept moderate so the melt reads gentle, not smeared.
+    static let artistHeroImageBlurRadius: CGFloat = 30
+    /// Minimal overscale — large values make the wash look harsh.
+    static let artistHeroBlurScale: CGFloat = 1.04
+    /// Peak strength of the blur overlay (0…1) — capped so it never goes full mud.
+    static let artistHeroBlurPeakOpacity: CGFloat = 0.62
     /// Bleed draws upward under the cover bottom for a seamless blend.
     static let homeTopPickBleedSeamOverlap: CGFloat = 44
     /// Cover art fades out over this height at its bottom edge.
@@ -544,9 +563,21 @@ enum MusicDesign {
     /// Icon–title gap for **Request** actions (overflow menus + browse hero capsule).
     static let requestActionLabelSpacing: CGFloat = 2
 
+    /// Hairline around cover art (Apple Music–style liquid-glass edge).
+    static let artworkSubtleBorderLineWidth: CGFloat = 0.75
+
     /// Hairline around song-list artwork (Apple Music–style, barely visible).
     static func songRowArtworkBorder(for colorScheme: ColorScheme) -> Color {
         Color.primary.opacity(colorScheme == .dark ? 0.10 : 0.07)
+    }
+
+    /// Shared cover-art outline used by ``AlbumArtworkView``, mosaic tiles, and editorial cards.
+    static func artworkSubtleBorderOverlay(cornerRadius: CGFloat, colorScheme: ColorScheme) -> some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .strokeBorder(
+                songRowArtworkBorder(for: colorScheme),
+                lineWidth: artworkSubtleBorderLineWidth
+            )
     }
 }
 
@@ -583,11 +614,10 @@ struct AlbumArtworkView: View {
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .overlay {
                 if showsSubtleBorder {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .strokeBorder(
-                            MusicDesign.songRowArtworkBorder(for: colorScheme),
-                            lineWidth: 0.5
-                        )
+                    MusicDesign.artworkSubtleBorderOverlay(
+                        cornerRadius: cornerRadius,
+                        colorScheme: colorScheme,
+                    )
                 }
             }
     }
@@ -1064,6 +1094,15 @@ extension View {
         self.glassEffect(.regular.interactive(), in: Capsule())
         #else
         self.background(.ultraThinMaterial, in: Capsule(style: .continuous))
+        #endif
+    }
+
+    @ViewBuilder
+    func musicGlassCircleInteractiveChrome() -> some View {
+        #if os(iOS)
+        self.glassEffect(.regular.interactive(), in: Circle())
+        #else
+        self.background(.ultraThinMaterial, in: Circle())
         #endif
     }
 }

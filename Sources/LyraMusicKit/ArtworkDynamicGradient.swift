@@ -16,6 +16,8 @@ enum ArtworkDynamicGradient {
         case detail
         /// Legacy atmospheric hue wash (unused; kept for cache-key compatibility).
         case nowPlaying
+        /// Artist page — dark charcoal tint from lower image rows (Apple Music artist hero).
+        case artistPage
     }
 
     // MARK: - Palette cache
@@ -48,8 +50,8 @@ enum ArtworkDynamicGradient {
     }
 
     /// First paint value for detail heroes — uses the memoized palette when available.
-    static func seededBackdrop(for artworkURL: URL?) -> BackdropPalette {
-        cachedBackdrop(for: artworkURL) ?? .fallback
+    static func seededBackdrop(for artworkURL: URL?, style: BackdropAnalysisStyle = .detail) -> BackdropPalette {
+        cachedBackdrop(for: artworkURL, style: style) ?? .fallback
     }
 
     /// Warms the palette cache while cover art is on screen so the pushed detail can
@@ -145,6 +147,8 @@ enum ArtworkDynamicGradient {
                 makeDetailBackdropPalette(from: cgImage)
             case .nowPlaying:
                 makeNowPlayingBackdropPalette(from: cgImage)
+            case .artistPage:
+                makeArtistPageBackdropPalette(from: cgImage)
             }
         }.value
     }
@@ -271,6 +275,68 @@ enum ArtworkDynamicGradient {
             blue: bucketSumB[winIdx] / n,
         )
         return finalizeSolid(solid)
+    }
+
+    // MARK: - Artist page (dark charcoal + subtle image tint; ignores white studio backgrounds)
+
+    private static func makeArtistPageBackdropPalette(from cgImage: CGImage) -> BackdropPalette {
+        guard let sample = downsampleArtworkPixels(from: cgImage) else { return .fallback }
+        let (pixels, tw, th) = sample
+        let bytesPerPixel = 4
+
+        var sumR = 0.0, sumG = 0.0, sumB = 0.0
+        var weightSum = 0.0
+
+        for y in 0 ..< th {
+            let rowT = Double(y) / Double(max(th - 1, 1))
+            let rowWeight = 0.12 + rowT * 0.88
+
+            for x in 0 ..< tw {
+                let o = (y * tw + x) * bytesPerPixel
+                let pa = Double(pixels[o + 3]) / 255.0
+                guard pa > 0.12 else { continue }
+                let r = min(1, Double(pixels[o]) / 255.0 / pa)
+                let g = min(1, Double(pixels[o + 1]) / 255.0 / pa)
+                let b = min(1, Double(pixels[o + 2]) / 255.0 / pa)
+
+                let lum = 0.299 * r + 0.587 * g + 0.114 * b
+                guard lum < 0.93 else { continue }
+                let lumWeight = lum > 0.72 ? max(0.08, (0.93 - lum) / 0.21) : 1.0
+                let w = rowWeight * lumWeight
+
+                sumR += r * w
+                sumG += g * w
+                sumB += b * w
+                weightSum += w
+            }
+        }
+
+        let avgR = weightSum > 0 ? sumR / weightSum : 0.28
+        let avgG = weightSum > 0 ? sumG / weightSum : 0.27
+        let avgB = weightSum > 0 ? sumB / weightSum : 0.29
+
+        let baseR = 0.109, baseG = 0.109, baseB = 0.114
+        // Carry more of the artwork's actual hue into the backdrop (was a near-black 0.24 mix
+        // clamped to ~0.22, which flattened everything to grey) while staying dark enough for
+        // legible chrome and a clean melt.
+        let tint = 0.5
+        let solid = Color(
+            red: min(0.34, baseR + (avgR - baseR) * tint),
+            green: min(0.34, baseG + (avgG - baseG) * tint),
+            blue: min(0.36, baseB + (avgB - baseB) * tint),
+        )
+
+        let stops: [Gradient.Stop] = [
+            Gradient.Stop(color: solid, location: 0),
+            Gradient.Stop(color: solid, location: 1),
+        ]
+        let backdropLum = relativeLuminance(of: solid)
+        return BackdropPalette(
+            gradientStops: stops,
+            heroSolidBackdropColor: solid,
+            backdropRelativeLuminance: backdropLum,
+            prefersDarkHeroChrome: backdropLum >= BackdropPalette.backdropLuminanceDarkChromeThreshold,
+        )
     }
 
     // MARK: - Now Playing (atmospheric hue wash)

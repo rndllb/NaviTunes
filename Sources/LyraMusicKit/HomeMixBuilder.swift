@@ -193,11 +193,10 @@ struct MixCollageArtworkView: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(
-                        MusicDesign.songRowArtworkBorder(for: colorScheme),
-                        lineWidth: 0.5
-                    )
+                MusicDesign.artworkSubtleBorderOverlay(
+                    cornerRadius: cornerRadius,
+                    colorScheme: colorScheme,
+                )
             }
     }
 

@@ -104,6 +104,36 @@ The "Lidarr-style brain" — keep a followed artist's discography complete — b
 - `ArtistNowPlayingMenuButton` — UIKit menu on iOS; uses `heroChromeSecondary` from backdrop palette when a track is playing (fixes white-on-white artist text on light artwork).
 - `OverPlayerSheetPresenter` — presents `AddToPlaylistSheet` above the Now Playing `fullScreenCover` without entering SwiftUI’s sheet tree (preserves mini-player zoom transition). `RootView` mirrors `isNowPlayingCoverPresented` into `AppModel`.
 
+## Artist page (`ArtistPageView`)
+
+- **Hero** — stretchy portrait (`StretchyHeaderContainer`, `clipBanner: false` on artist pages). Sharp photo stays visible; a **single soft blur wash** (capped opacity, ~30pt radius) feathers in over a bottom band aligned with the play row. Bottom **seam overlap** + solid backdrop base prevent a visible clip line into the scroll content.
+- **Backdrop** — `ArtworkDynamicGradient.BackdropAnalysisStyle.artistPage`: samples lower image rows, ignores near-white studio backgrounds, produces **dark charcoal** page tint (not the dominant white bucket used by album detail). Cached separately from `.detail` palettes. Respects `albumBackdropEnabled`.
+- **Controls** — centered white play capsule; dark circular info / favorite side buttons; artist name above play. Toolbar uses `musicHeroAlbumNavigationChrome`.
+- **Content chrome** — `ArtistPageChrome` adaptive labels on backdrop (Top Songs, discography, About, Similar).
+- **Data** — `ArtistViewModel` loads server catalog + TheAudioDB + iTunes in parallel; `bannerArtworkURL` resolves wide → thumb → album-cover fallback → library input art.
+- **About metadata** — `ArtistProfileClient` (one MusicBrainz artist search → origin / born / genre).
+- **Similar artists** — `ListenBrainzClient` (MetaBrainz labs API, keyed by MusicBrainz id from profile fetch).
+
+## Album detail related shelves
+
+Footer carousels on **library album detail** (`ServerPlaylistDetailView`) and **browse/chart album detail** (`BrowseAlbumDetailView`):
+
+- **Other Versions** — same artist + normalized title family (`AlbumSummary.albumVersionBaseKey` / `isOtherVersion(of:)`).
+- **More By [Artist]** — other albums by the artist (excluding current + version siblings).
+- **You Might Also Like** — taste-ranked picks from the artist catalog pool.
+
+Implementation: `AlbumDetailRelatedSectionsView` (horizontal carousels, backdrop-adaptive shelf text). `AppModel.albumDetailShelvesFromMemory` paints instantly from `libraryAlbums`; `fetchAlbumDetailArtistCatalog` resolves artist id → `albums(forLibraryArtistId:)` with session cache (`AlbumDetailArtistCatalogCache`). Child album pushes must not clear parent navigation on forward navigation (`ServerPlaylistViews` detail lifecycle).
+
+## Home discovery shelf stability
+
+- `rebuildHomeDiscoveryShelves` / `stabilizeHomeDiscoveryShelf` — after first paint, Top Picks + New Releases keep visible album ids in place when the candidate pool grows (genre catalog landing no longer reshuffles the hero shelf).
+- `refreshHome(forceDiscoveryReshuffle:)` — pull-to-refresh passes `forceDiscoveryReshuffle: true` for a full re-rank.
+- Cold launch seeds the candidate pool from persisted `libraryAlbums` when recency sources are still empty.
+
+## Cover art chrome
+
+- Shared **liquid-glass hairline** on cover art via `MusicDesign.artworkSubtleBorderOverlay()` (`artworkSubtleBorderLineWidth: 0.75`) — album rows, mosaics, Home Top Picks cards, discovery shelves.
+
 ## Genres
 
 `GenreCanonicalizer` rolls server subgenres into ~20 main genres. **Lo-Fi** is its own bucket (includes boom bap / chillhop keywords); boom bap was removed from Hip-Hop.
@@ -150,7 +180,7 @@ If you wire a new action that ends in a queue/library/playlist mutation and a us
 
 **Genres** — `Library → Genres` (`LibraryGenresView`) rolls noisy server subgenres up into ~20 main genres via `GenreCanonicalizer` (e.g. "Acid Jazz" → Jazz, "Boom Bap" → Lo-Fi). Merged rows fetch albums across **all** source subgenres (`LibraryGenreAlbumsView(sourceGenres:)`), deduped. The keyword table in `GenreCanonicalizer` is first-match-wins and easy to tweak.
 
-**Backdrop / detail performance** — album/playlist detail backdrop palettes are memoized in `ArtworkDynamicGradient` keyed by the **stable** part of the artwork URL (path + cover-id/size/tag — auth params like Subsonic salt / Jellyfin `api_key` vary per request and would otherwise miss). Detail views seed the palette synchronously from that cache (no pop-in on revisit) and fade in on first compute. Album track lists hydrate instantly from `AppModel.albumTracksCache` (same as playlists).
+**Backdrop / detail performance** — album/playlist detail backdrop palettes are memoized in `ArtworkDynamicGradient` keyed by the **stable** part of the artwork URL (path + cover-id/size/tag — auth params like Subsonic salt / Jellyfin `api_key` vary per request and would otherwise miss). Styles: `.detail` (dominant cover color), `.artistPage` (dark charcoal, bottom-weighted sampling). Detail views seed the palette synchronously from that cache (no pop-in on revisit) and fade in on first compute. Album track lists hydrate instantly from `AppModel.albumTracksCache` (same as playlists).
 
 ## Sound & playback settings
 
@@ -228,7 +258,7 @@ Document for contributors — not an exhaustive bug list:
 | Plain unsynced lyrics | No auto-scroll by design. |
 | Jellyfin “similar tracks” | Uses `/Items/{id}/Similar` with artist-shuffle fallback. Navidrome has no equivalent. |
 | Home mixes | Minimum 3 tracks per mix; still needs enough scrobble/history signal for On Repeat / Rediscover. |
-| Home taste shelves | Empty until library/taste data loads; shelves omit albums already in your magic playlist. |
+| Home taste shelves | Empty until library/taste data loads; shelves omit albums already in your magic playlist. Top Picks order stabilizes after first paint (pull-to-refresh re-ranks). |
 | Navidrome Settings stats | Song totals sum album `trackCount` — may differ slightly from true track count on odd tagging. Very large libraries use paginated album/artist fetches but song sum still depends on indexed album metadata. |
 | EQ on live streams | Requires local cache or download; first uncached play is AVPlayer until background cache + handoff (or replay). |
 | Stream cache during AVPlayer | Opportunistic `CachingResourceLoaderDelegate` commits may not write on current iOS; EQ `ensureCached` / `prefetchInBackground` is the supported cache path. |

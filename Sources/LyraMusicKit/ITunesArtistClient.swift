@@ -134,6 +134,48 @@ enum ITunesArtistClient {
         return dedupedEditions(albums).sorted { ($0.releaseDate ?? .distantPast) > ($1.releaseDate ?? .distantPast) }
     }
 
+    /// A representative cover image for an artist — the artwork of one of their albums — used as
+    /// a circular avatar (the same album-art-as-avatar approach the Home shelf uses). One
+    /// lightweight iTunes album search per artist.
+    static func artworkURL(forArtist name: String, country: String = "us") async -> URL? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard var comps = URLComponents(string: "https://itunes.apple.com/search") else { return nil }
+        comps.queryItems = [
+            URLQueryItem(name: "term", value: trimmed),
+            URLQueryItem(name: "entity", value: "album"),
+            URLQueryItem(name: "attribute", value: "artistTerm"),
+            URLQueryItem(name: "country", value: country),
+            URLQueryItem(name: "limit", value: "1"),
+        ]
+        guard let url = comps.url,
+              let (data, resp) = try? await URLSession.shared.data(from: url),
+              let http = resp as? HTTPURLResponse, (200 ..< 300).contains(http.statusCode),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = (obj["results"] as? [[String: Any]])?.first?["artworkUrl100"] as? String
+        else { return nil }
+        return upscale(raw)
+    }
+
+    /// Resolve avatar artwork for many artist names → map of normalized name → URL. Runs in
+    /// small batches so a burst of iTunes Search requests doesn't trip Apple's rate limiting.
+    static func artworkURLs(forArtists names: [String], country: String = "us") async -> [String: URL] {
+        var result: [String: URL] = [:]
+        let batchSize = 5
+        for start in stride(from: 0, to: names.count, by: batchSize) {
+            let slice = Array(names[start ..< min(start + batchSize, names.count)])
+            await withTaskGroup(of: (String, URL?).self) { group in
+                for name in slice {
+                    group.addTask { (name, await artworkURL(forArtist: name, country: country)) }
+                }
+                for await (name, url) in group {
+                    if let url { result[LibraryTrackMatcher.normalize(name)] = url }
+                }
+            }
+        }
+        return result
+    }
+
     // MARK: - Helpers
 
     /// Collapse iTunes' multiple editions of the same release (standard / deluxe / remaster /
