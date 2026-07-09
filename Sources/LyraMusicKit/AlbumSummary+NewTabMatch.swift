@@ -28,6 +28,36 @@ extension AlbumSummary {
         return "\(artistKey)|\(titleKey)"
     }
 
+    /// Base title for matching alternate editions (single, EP, deluxe, reinvented, etc.).
+    static func albumVersionBaseKey(_ raw: String) -> String {
+        var t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return "" }
+
+        let suffixPattern = #"(?i)\s*[-–—]\s*(single|ep|album|deluxe edition|deluxe|expanded edition|remaster(ed)?(\s+\d{4})?)$"#
+        while let range = t.range(of: suffixPattern, options: .regularExpression) {
+            t = String(t[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        t = t.replacingOccurrences(of: #"\([^)]*\)"#, with: "", options: .regularExpression)
+        t = t.replacingOccurrences(of: #"\[[^\]]*\]"#, with: "", options: .regularExpression)
+        t = t.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return normalizedReleaseKey(t)
+    }
+
+    /// True when `other` is a different server row for the same underlying release family.
+    func isOtherVersion(of other: AlbumSummary) -> Bool {
+        guard id != other.id else { return false }
+        let artistNorm = LibraryTrackMatcher.normalize(artist)
+        let otherArtist = LibraryTrackMatcher.normalize(other.artist)
+        guard !artistNorm.isEmpty, artistNorm == otherArtist else { return false }
+        let base = Self.albumVersionBaseKey(title)
+        let otherBase = Self.albumVersionBaseKey(other.title)
+        guard base.count >= 3, otherBase.count >= 3, base == otherBase else { return false }
+        return catalogReleaseIdentityKey != other.catalogReleaseIdentityKey
+    }
+
     /// True when this catalog album is the same release as a **New** tab row (for showing Play).
     func matchesNewTabRelease(artist: String, albumTitle: String) -> Bool {
         let wantArtist = Self.normalizedReleaseKey(artist)

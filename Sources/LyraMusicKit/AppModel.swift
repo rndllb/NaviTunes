@@ -1212,6 +1212,7 @@ public final class AppModel: ObservableObject {
         playlistPickerPayload = nil
         libraryTrackPendingDeletion = nil
         libraryCatalogEpoch = 0
+        Task { await AlbumDetailArtistCatalogCache.shared.clear() }
         libraryStatistics = .empty
         lastLibrarySyncAt = nil
         UserDefaults.standard.removeObject(forKey: Self.lastLibrarySyncAtKey)
@@ -1547,7 +1548,7 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    public func refreshHome() async {
+    public func refreshHome(forceDiscoveryReshuffle: Bool = false) async {
         guard let lib = activeLibrary else { return }
         let needsGenrePick = homeSelectedGenres == nil
         async let played = (try? await lib.recentlyPlayed(limit: 12)) ?? []
@@ -1558,7 +1559,11 @@ public final class AppModel: ObservableObject {
         let (playedResult, genresResult) = await (played, genres)
         homeRecentlyPlayedServerAlbums = playedResult
         rebuildHomeRecentlyPlayed()
-        rebuildHomeTopPicksFromMemory()
+        // Paint from memory immediately so the shelf doesn't pop in empty, then enrich once below.
+        if homeTopPickAlbums.isEmpty {
+            rebuildHomeDiscoveryShelves()
+        }
+
         let pickedGenres: [LibraryGenreSummary]
         if let locked = homeSelectedGenres {
             pickedGenres = locked
@@ -1568,7 +1573,8 @@ public final class AppModel: ObservableObject {
                 homeSelectedGenres = pickedGenres
             }
         }
-        let indexed = await withTaskGroup(of: (Int, (genre: String, albums: [AlbumSummary]))?.self) { group in
+
+        async let genreShelfRows = withTaskGroup(of: (Int, (genre: String, albums: [AlbumSummary]))?.self) { group in
             for (idx, g) in pickedGenres.enumerated() {
                 group.addTask { @MainActor in
                     let raw = (try? await lib.albums(inGenre: g, limit: Self.homeGenreShelfAlbumLimit)) ?? []
@@ -1583,9 +1589,14 @@ public final class AppModel: ObservableObject {
             }
             return rows
         }
+        async let genrePoolAlbums = fetchHomeTopPicksGenreCandidates(using: lib, tasteGenres: pickedGenres)
+
+        let (indexed, poolAlbums) = await (genreShelfRows, genrePoolAlbums)
         homeGenreShelves = indexed.sorted { $0.0 < $1.0 }.map { $0.1 }
-        rebuildHomeTopPicksFromMemory()
-        await enrichHomeTopPicksWithGenreCatalog(using: lib, tasteGenres: pickedGenres)
+        rebuildHomeDiscoveryShelves(
+            extraGenreAlbums: poolAlbums,
+            forceReplace: forceDiscoveryReshuffle,
+        )
         rebuildHomeMixes()
     }
 
@@ -2875,11 +2886,16 @@ public final class AppModel: ObservableObject {
             let preserved = libraryAlbums.filter { personalIds.contains($0.id) && !fetchedIds.contains($0.id) }
             libraryAlbums = fetched + preserved
             recentlyAddedAlbums = (try? await recent) ?? []
-            rebuildHomeTopPicksFromMemory()
             mergeOfflineCatalog()
             persistLibrarySnapshot()
             if let lib = activeLibrary {
-                await enrichHomeTopPicksWithGenreCatalog(using: lib, tasteGenres: homeSelectedGenres ?? [])
+                let genreAlbums = await fetchHomeTopPicksGenreCandidates(
+                    using: lib,
+                    tasteGenres: homeSelectedGenres ?? [],
+                )
+                rebuildHomeDiscoveryShelves(extraGenreAlbums: genreAlbums)
+            } else {
+                rebuildHomeDiscoveryShelves()
             }
             // Discovery / the request backend-match index is deferred — building it for tens of
             // thousands of tracks blocked the main thread on first launch. Views that
@@ -3733,13 +3749,23 @@ public final class AppModel: ObservableObject {
 
     /// Home → Top Picks + New Releases: taste-ranked **server catalog** not in the magic playlist.
     private func rebuildHomeTopPicksFromMemory() {
-        applyHomeDiscoveryShelvesRanking(from: buildHomeTopPicksCandidatePool(extra: []))
+        rebuildHomeDiscoveryShelves()
     }
 
-    private func enrichHomeTopPicksWithGenreCatalog(
+    private func rebuildHomeDiscoveryShelves(
+        extraGenreAlbums: [AlbumSummary] = [],
+        forceReplace: Bool = false,
+    ) {
+        applyHomeDiscoveryShelvesRanking(
+            from: buildHomeTopPicksCandidatePool(extra: extraGenreAlbums),
+            forceReplace: forceReplace,
+        )
+    }
+
+    private func fetchHomeTopPicksGenreCandidates(
         using lib: MusicLibraryProviding,
         tasteGenres: [LibraryGenreSummary],
-    ) async {
+    ) async -> [AlbumSummary] {
         let genresForPool: [LibraryGenreSummary]
         if tasteGenres.isEmpty {
             genresForPool = homeTasteGenrePicks(from: (try? await lib.libraryGenres(limit: 100)) ?? [], limit: 3)
@@ -3751,7 +3777,7 @@ public final class AppModel: ObservableObject {
         for genre in genresForPool {
             genreAlbums.append(contentsOf: (try? await lib.albums(inGenre: genre, limit: 24)) ?? [])
         }
-        applyHomeDiscoveryShelvesRanking(from: buildHomeTopPicksCandidatePool(extra: genreAlbums))
+        return genreAlbums
     }
 
     private func buildHomeTopPicksCandidatePool(extra: [AlbumSummary]) -> [AlbumSummary] {
@@ -3771,13 +3797,22 @@ public final class AppModel: ObservableObject {
         append(recentlyAddedAlbums)
         append(homeRecentlyPlayedServerAlbums)
         append(extra)
+        // Cold-launch fallback: the recency sources aren't persisted, so on a fresh launch they
+        // are empty until the network responds. The catalog IS restored from the snapshot, so
+        // seed Top Picks from it to paint immediately instead of waiting; the network refresh
+        // re-ranks against the proper recency pool once it lands.
+        if pool.isEmpty {
+            append(libraryAlbums)
+        }
         return pool
     }
 
-    private func applyHomeDiscoveryShelvesRanking(from pool: [AlbumSummary]) {
+    private func applyHomeDiscoveryShelvesRanking(from pool: [AlbumSummary], forceReplace: Bool = false) {
         guard !pool.isEmpty else {
-            homeTopPickAlbums = []
-            homeNewReleaseAlbums = []
+            if forceReplace || homeTopPickAlbums.isEmpty {
+                homeTopPickAlbums = []
+                homeNewReleaseAlbums = []
+            }
             return
         }
 
@@ -3788,8 +3823,47 @@ public final class AppModel: ObservableObject {
             limit: Self.homeTopPickCount + Self.homeNewReleaseCount,
             recentlyAddedOrder: recentOrder,
         )
-        homeTopPickAlbums = Array(ranked.prefix(Self.homeTopPickCount))
-        homeNewReleaseAlbums = Array(ranked.dropFirst(homeTopPickAlbums.count).prefix(Self.homeNewReleaseCount))
+        let proposedTop = Array(ranked.prefix(Self.homeTopPickCount))
+        let proposedNew = Array(ranked.dropFirst(proposedTop.count).prefix(Self.homeNewReleaseCount))
+
+        if forceReplace || homeTopPickAlbums.isEmpty {
+            homeTopPickAlbums = proposedTop
+            homeNewReleaseAlbums = proposedNew
+        } else {
+            homeTopPickAlbums = stabilizeHomeDiscoveryShelf(
+                existing: homeTopPickAlbums,
+                proposed: proposedTop,
+                limit: Self.homeTopPickCount,
+            )
+            homeNewReleaseAlbums = stabilizeHomeDiscoveryShelf(
+                existing: homeNewReleaseAlbums,
+                proposed: proposedNew,
+                limit: Self.homeNewReleaseCount,
+            )
+        }
+    }
+
+    /// Keeps visible Top Picks / New Releases rows in place when background refreshes
+    /// expand the candidate pool — avoids the shelf reshuffling after first paint.
+    private func stabilizeHomeDiscoveryShelf(
+        existing: [AlbumSummary],
+        proposed: [AlbumSummary],
+        limit: Int,
+    ) -> [AlbumSummary] {
+        guard !existing.isEmpty else { return Array(proposed.prefix(limit)) }
+        let proposedByID = Dictionary(uniqueKeysWithValues: proposed.map { ($0.id, $0) })
+        var result: [AlbumSummary] = []
+        var usedIDs = Set<String>()
+
+        for album in existing where result.count < limit {
+            guard let fresh = proposedByID[album.id], usedIDs.insert(album.id).inserted else { continue }
+            result.append(fresh)
+        }
+        for album in proposed where result.count < limit {
+            guard usedIDs.insert(album.id).inserted else { continue }
+            result.append(album)
+        }
+        return result
     }
 
     private func applyPersonalizedNewTabFeed(_ feed: NewTabPersonalizedFeed) {
@@ -3890,6 +3964,202 @@ public final class AppModel: ObservableObject {
         let target = LibraryTrackMatcher.normalize(name)
         let results = (try? await lib.searchCatalog(query: name, limit: 60)) ?? .empty
         return results.albums.filter { LibraryTrackMatcher.normalize($0.artist) == target }
+    }
+
+    // MARK: - Album detail related shelves
+
+    /// Resolves a server artist id for album-detail shelves (discography fetch).
+    func resolveLibraryArtistId(forArtistName name: String) async -> String? {
+        guard let lib = activeLibrary else { return nil }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let wantExact = LibraryTrackMatcher.normalize(trimmed)
+        let wantTokens = LibraryTrackMatcher.normalizedChartArtistTokens(trimmed)
+
+        func matches(_ artistName: String) -> Bool {
+            if !wantExact.isEmpty, LibraryTrackMatcher.normalize(artistName) == wantExact { return true }
+            guard !wantTokens.isEmpty else { return false }
+            let have = LibraryTrackMatcher.normalizedChartArtistTokens(artistName)
+            return LibraryTrackMatcher.artistsOverlap(wantTokens, have)
+        }
+
+        // Fast path: targeted catalog search (one round trip vs paging all artists).
+        let searchHits = (try? await lib.searchCatalog(query: trimmed, limit: 12)) ?? .empty
+        if let hit = searchHits.artists.first(where: { matches($0.name) }) {
+            return hit.id
+        }
+
+        // Rare fallback when search indexing misses the artist.
+        let artists = (try? await lib.libraryArtists(limit: 4_000)) ?? []
+        return artists.first(where: { matches($0.name) })?.id
+    }
+
+    /// Instant album-detail shelves from the in-memory catalog page (no network).
+    func albumDetailShelvesFromMemory(
+        artist: String,
+        title: String,
+        excludingAlbumId: String?,
+    ) -> (otherVersions: [AlbumSummary], moreByArtist: [AlbumSummary], youMightAlsoLike: [AlbumSummary]) {
+        let catalog = libraryAlbums.filter { albumDetailArtistMatches($0.artist, referenceArtist: artist) }
+        let versions = albumDetailOtherVersions(
+            in: catalog,
+            artist: artist,
+            title: title,
+            excludingAlbumId: excludingAlbumId,
+        )
+        let versionIDs = Set(versions.map(\.id))
+        let more = albumDetailMoreByArtist(
+            in: catalog,
+            artist: artist,
+            excludingAlbumId: excludingAlbumId,
+            excludingVersionIDs: versionIDs,
+        )
+        let ymal = albumDetailYouMightAlsoLike(
+            artist: artist,
+            excludingAlbumId: excludingAlbumId,
+            excludingVersionIDs: versionIDs,
+        )
+        return (versions, more, ymal)
+    }
+
+    /// Full server discography for album-detail carousels — not limited to the cached ``libraryAlbums`` page.
+    func fetchAlbumDetailArtistCatalog(artist: String) async -> [AlbumSummary] {
+        guard let lib = activeLibrary else { return [] }
+        let trimmed = artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        let sessionKey = albumDetailCacheSessionKey()
+        if let cached = await AlbumDetailArtistCatalogCache.shared.load(artistName: trimmed, sessionKey: sessionKey) {
+            return cached
+        }
+
+        let memory = libraryAlbums.filter { albumDetailArtistMatches($0.artist, referenceArtist: trimmed) }
+
+        if let artistId = await resolveLibraryArtistId(forArtistName: trimmed) {
+            let albums = (try? await lib.albums(forLibraryArtistId: artistId, limit: 400)) ?? []
+            if !albums.isEmpty {
+                let sorted = sortAlbumDetailRelatedAlbums(albums)
+                await AlbumDetailArtistCatalogCache.shared.save(
+                    artistName: trimmed,
+                    sessionKey: sessionKey,
+                    albums: sorted,
+                )
+                return sorted
+            }
+        }
+
+        let searchHits = (try? await lib.searchCatalog(query: trimmed, limit: 80)) ?? .empty
+        let fromSearch = searchHits.albums.filter { albumDetailArtistMatches($0.artist, referenceArtist: trimmed) }
+        if !fromSearch.isEmpty {
+            let sorted = sortAlbumDetailRelatedAlbums(dedupeAlbumSummariesById(fromSearch))
+            await AlbumDetailArtistCatalogCache.shared.save(
+                artistName: trimmed,
+                sessionKey: sessionKey,
+                albums: sorted,
+            )
+            return sorted
+        }
+
+        let sorted = sortAlbumDetailRelatedAlbums(memory)
+        if !sorted.isEmpty {
+            await AlbumDetailArtistCatalogCache.shared.save(
+                artistName: trimmed,
+                sessionKey: sessionKey,
+                albums: sorted,
+            )
+        }
+        return sorted
+    }
+
+    private func albumDetailCacheSessionKey() -> String {
+        guard isSignedIn else { return "" }
+        return "\(backendKind.rawValue)|\(libraryCatalogEpoch)"
+    }
+
+    /// True when a catalog row's artist line refers to the same performer(s).
+    func albumDetailArtistMatches(_ albumArtistLine: String, referenceArtist: String) -> Bool {
+        let want = LibraryTrackMatcher.normalizedChartArtistTokens(referenceArtist)
+        let have = LibraryTrackMatcher.normalizedChartArtistTokens(albumArtistLine)
+        guard !want.isEmpty, !have.isEmpty else { return false }
+        return LibraryTrackMatcher.artistsOverlap(want, have)
+    }
+
+    /// Alternate editions on the server (single, EP, deluxe, reinvented, etc.).
+    func albumDetailOtherVersions(
+        in catalog: [AlbumSummary],
+        artist: String,
+        title: String,
+        excludingAlbumId: String?,
+    ) -> [AlbumSummary] {
+        let baseKey = AlbumSummary.albumVersionBaseKey(title)
+        guard baseKey.count >= 3 else { return [] }
+
+        let reference = AlbumSummary(
+            id: excludingAlbumId ?? "",
+            title: title,
+            artist: artist,
+            artworkURL: nil,
+        )
+
+        let matches = catalog.filter { album in
+            guard album.id != excludingAlbumId else { return false }
+            guard albumDetailArtistMatches(album.artist, referenceArtist: artist) else { return false }
+            return reference.isOtherVersion(of: album)
+        }
+        return sortAlbumDetailRelatedAlbums(matches)
+    }
+
+    /// More albums by the same artist from the server catalog.
+    func albumDetailMoreByArtist(
+        in catalog: [AlbumSummary],
+        artist: String,
+        excludingAlbumId: String?,
+        excludingVersionIDs: Set<String> = [],
+        limit: Int = 15,
+    ) -> [AlbumSummary] {
+        let matches = catalog.filter { album in
+            album.id != excludingAlbumId
+                && !excludingVersionIDs.contains(album.id)
+                && albumDetailArtistMatches(album.artist, referenceArtist: artist)
+        }
+        return Array(sortAlbumDetailRelatedAlbums(matches).prefix(limit))
+    }
+
+    /// Taste-ranked server albums by other artists (listening signal from scrobbles, favorites, genres).
+    func albumDetailYouMightAlsoLike(
+        artist: String,
+        excludingAlbumId: String?,
+        excludingVersionIDs: Set<String> = [],
+        limit: Int = 15,
+    ) -> [AlbumSummary] {
+        let excludeIDs = Set([excludingAlbumId].compactMap { $0 }).union(excludingVersionIDs)
+        let candidates = libraryAlbums.filter { album in
+            !excludeIDs.contains(album.id)
+                && !albumDetailArtistMatches(album.artist, referenceArtist: artist)
+        }
+        return NewTabPersonalizationEngine.tasteRankedAlbumSummaries(
+            candidates,
+            context: newTabPersonalizationContext(),
+            limit: limit,
+        )
+    }
+
+    private func dedupeAlbumSummariesById(_ albums: [AlbumSummary]) -> [AlbumSummary] {
+        var seen = Set<String>()
+        return albums.filter { seen.insert($0.id).inserted }
+    }
+
+    private func sortAlbumDetailRelatedAlbums(_ albums: [AlbumSummary]) -> [AlbumSummary] {
+        albums.sorted { lhs, rhs in
+            let ly = lhs.releaseYear ?? 0
+            let ry = rhs.releaseYear ?? 0
+            if ly != ry { return ly > ry }
+            if let ld = lhs.releaseDate, let rd = rhs.releaseDate, ld != rd {
+                return ld > rd
+            }
+            return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+        }
     }
 
     /// Re-run the follow-artist completeness pass (foreground / manual "Check now").

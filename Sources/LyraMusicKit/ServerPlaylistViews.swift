@@ -903,6 +903,7 @@ struct ServerPlaylistDetailView: View {
             }
             .navigationDestination(item: $navigateArtist) { item in
                 ArtistPageView(input: .named(item.id))
+                    .onDisappear { navigateArtist = nil }
             }
             .onAppear(perform: detailOnAppear)
             .modifier(LibraryAlbumDismissObserver(
@@ -1062,8 +1063,10 @@ struct ServerPlaylistDetailView: View {
 
     private func detailOnDisappear() {
         scrollHighlightTask?.cancel()
-        navigateArtist = nil
-        navigateAlbum = nil
+        // Do not clear `navigateAlbum` / `navigateArtist` here — onDisappear also
+        // fires when a forward push (related album, artist page) covers this view.
+        // Clearing those bindings pops the child immediately. Each destination
+        // clears its own binding in `.onDisappear` when the user pops back.
         if tracksVisibility {
             switch source {
             case .playlist(let p):
@@ -1208,6 +1211,18 @@ struct ServerPlaylistDetailView: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets())
+            if let album = albumOrNil {
+                AlbumDetailRelatedSectionsView(
+                    artist: album.artist,
+                    title: album.title,
+                    excludingAlbumId: album.id,
+                    backdropPalette: backdropPalette,
+                    onSelectAlbum: { pushAlbumDetailNavigation($0, into: $navigateAlbum) },
+                )
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets())
+            }
         } else {
             let windowed = visible.prefix(rowRenderLimit)
             // Hoist the Kill Mode sets once per render so per-row tinting is O(1).
@@ -1242,6 +1257,18 @@ struct ServerPlaylistDetailView: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets())
+                if let album = albumOrNil {
+                    AlbumDetailRelatedSectionsView(
+                        artist: album.artist,
+                        title: album.title,
+                        excludingAlbumId: album.id,
+                        backdropPalette: backdropPalette,
+                        onSelectAlbum: { pushAlbumDetailNavigation($0, into: $navigateAlbum) },
+                    )
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets())
+                }
             }
         }
     }

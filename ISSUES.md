@@ -32,10 +32,12 @@
 
 **Also tried (reverted):** a custom Liquid-Glass search header that collapsed on scroll via height-squeeze — not the native `.searchable` sandwich animation, so it was reverted. A full switch to native `.searchable` + `.searchScopes` would give the exact native collapse but replaces the custom header and renders via the nav bar instead of the floating-header style the other tabs use.
 
-## Home taste shelves empty until data loads
+## Home taste shelves
 
 **Where:** `AppModel.applyHomeDiscoveryShelvesRanking()` / `HomeView` — Top Picks, New Releases, genre rows, New Artists Added.
 
-**Behavior:** Shelves only show **server catalog** albums **not** in the user's magic playlist (`isEligibleForHomeTopPick`). Until `recentlyAddedAlbums`, taste genres, and/or scrobble signals load, rows can be empty or fall back to server **New Releases**. This is expected, not a fetch failure.
+**Behavior:** Shelves only show **server catalog** albums **not** in the user's magic playlist (`isEligibleForHomeTopPick`). Until `recentlyAddedAlbums`, taste genres, and/or scrobble signals load, rows can be empty or fall back to server **New Releases**. On cold launch the candidate pool can seed from persisted `libraryAlbums` until recency fetches land.
 
-**Removed (2026-06):** MusicBrainz browse clients and Settings toggle — New/Discover/Following metadata now comes from iTunes Search API only.
+**Stabilization (2026-06):** `stabilizeHomeDiscoveryShelf` keeps visible Top Picks / New Releases cards in place when background genre-catalog enrichment expands the pool — avoids the shelf jumping after first paint. Pull-to-refresh calls `refreshHome(forceDiscoveryReshuffle: true)` for a full re-rank.
+
+**Removed (2026-06):** MusicBrainz browse clients and Settings toggle — New/Discover/Following metadata now comes from iTunes Search API only. (MusicBrainz remains for **artist About** profile facts only; ListenBrainz for similar-artist recommendations.)
