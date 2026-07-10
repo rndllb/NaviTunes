@@ -1,4 +1,4 @@
-# Lyra Music
+# Vellum Music
 
 An iOS music client for self-hosted libraries. Connects to **Jellyfin** and **Navidrome** (Subsonic API), with discovery and browse metadata from the **iTunes Search API**, plus TheAudioDB enrichment where configured.
 
@@ -40,7 +40,7 @@ Built in SwiftUI for iOS 26, with an Apple Music–style layout: Home / New / Ra
 ### Library
 
 - Albums, Songs, Playlists, Artists, Genres, Favorites, Downloaded.
-- **Personal library** (“My Library”) synced via a server-side magic playlist (`__lyra_*`) with accurate per-item “Recently Added (yours)” dates.
+- **Personal library** (“My Library”) synced via a server-side magic playlist (`__vellum_*`) with accurate per-item “Recently Added (yours)” dates.
 - Configurable sections, pins, server playlist CRUD where supported.
 - Per-album hero artwork with dynamic gradients; **tappable artist names** navigate to the artist page (except “Various Artists”).
 - **Album detail shelves** — horizontal carousels below metadata on library and browse album detail: **Other Versions**, **More By [Artist]**, **You Might Also Like** (memory-first, then full artist discography fetch).
@@ -113,10 +113,10 @@ iOS Settings–style **hub** (`SettingsView`) with dedicated subpages (`Settings
 ## Project structure
 
 ```
-Lyra Music IOS/
+Vellum Music IOS/
 ├── Package.swift                       # SwiftPM root
 ├── Sources/
-│   └── LyraMusicKit/                   # All views, models, clients, playback engine
+│   └── VellumMusicKit/                   # All views, models, clients, playback engine
 │       ├── AppModel.swift              # App-wide state
 │       ├── JellyfinMusicClient.swift
 │       ├── NavidromeClient.swift
@@ -133,14 +133,14 @@ Lyra Music IOS/
 │       ├── NewTabPersonalizationEngine.swift
 │       ├── OverPlayerSheetPresenter.swift
 │       └── …
-├── LyraMusicHost/
-│   ├── LyraMusicHost.xcodeproj
-│   ├── LyraMusicHost/                  # iOS app target
-│   └── LyraWidgets/                    # Widget extension
-└── Sources/LyraWidgetSupport/          # Shared widget models + snapshot writer
+├── VellumMusicHost/
+│   ├── VellumMusicHost.xcodeproj
+│   ├── VellumMusicHost/                  # iOS app target
+│   └── VellumWidgets/                    # Widget extension
+└── Sources/VellumWidgetSupport/          # Shared widget models + snapshot writer
 ```
 
-Open **`LyraMusicHost/LyraMusicHost.xcodeproj`** only — opening `Package.swift` in a second Xcode window can cause package resolution conflicts.
+Open **`VellumMusicHost/VellumMusicHost.xcodeproj`** only — opening `Package.swift` in a second Xcode window can cause package resolution conflicts.
 
 ## Requirements
 
@@ -151,14 +151,14 @@ Open **`LyraMusicHost/LyraMusicHost.xcodeproj`** only — opening `Package.swift
 ## Building and running
 
 ```bash
-open LyraMusicHost/LyraMusicHost.xcodeproj
+open VellumMusicHost/VellumMusicHost.xcodeproj
 ```
 
 Or from the CLI (compile check only):
 
 ```bash
-xcodebuild -workspace LyraMusicHost/LyraMusicHost.xcodeproj/project.xcworkspace \
-  -scheme LyraMusicHost -destination 'generic/platform=iOS Simulator' build
+xcodebuild -workspace VellumMusicHost/VellumMusicHost.xcodeproj/project.xcworkspace \
+  -scheme VellumMusicHost -destination 'generic/platform=iOS Simulator' build
 ```
 
 ## Configuration
@@ -179,7 +179,7 @@ Settings → Plugins → **Music Requests**. Requesting missing music goes throu
 |---|---|---|---|
 | **Lidarr** (music collection manager) | Album | No | Server URL + API key |
 
-Every UI request builds one `AcquisitionRequest` and calls `app.requestAcquisition(_:)`. Lidarr still resolves releases via MusicBrainz internally; Lyra’s browse/artist surfaces use **iTunes** for metadata.
+Every UI request builds one `AcquisitionRequest` and calls `app.requestAcquisition(_:)`. Lidarr still resolves releases via MusicBrainz internally; Vellum’s browse/artist surfaces use **iTunes** for metadata.
 
 ### Discovery / browse metadata
 

@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "LyraMusic",
+    name: "VellumMusic",
     defaultLocalization: "en",
     platforms: [
         .iOS("26.1"),
@@ -10,20 +10,20 @@ let package = Package(
         .macOS(.v15),
     ],
     products: [
-        .library(name: "LyraMusicKit", targets: ["LyraMusicKit"]),
-        .executable(name: "LyraMusic", targets: ["LyraMusic"]),
+        .library(name: "VellumMusicKit", targets: ["VellumMusicKit"]),
+        .executable(name: "VellumMusic", targets: ["VellumMusic"]),
     ],
     targets: [
         .target(
-            name: "LyraMusicKit",
-            path: "Sources/LyraMusicKit",
+            name: "VellumMusicKit",
+            path: "Sources/VellumMusicKit",
             resources: [.process("Resources")],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .executableTarget(
-            name: "LyraMusic",
-            dependencies: ["LyraMusicKit"],
-            path: "Sources/LyraMusic",
+            name: "VellumMusic",
+            dependencies: ["VellumMusicKit"],
+            path: "Sources/VellumMusic",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
     ]

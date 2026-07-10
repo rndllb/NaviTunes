@@ -1,4 +1,4 @@
-# Lyra Music — Backend Notes
+# Vellum Music — Backend Notes
 
 This app talks to two pluggable music backends. The active one is chosen at login via `BackendKind` (`AppModel.swift`). Both implement `MusicLibraryProviding` (`MusicLibraryProviding.swift`) so feature code stays backend-agnostic; reach for the concrete client only when an endpoint or capability differs.
 
@@ -40,7 +40,7 @@ The app surfaces two distinct collections. The naming is a footgun — `AppModel
 
 - **Server catalog** — every album/track on the connected Navidrome / Jellyfin instance. Loaded via `MusicLibraryProviding.albums(limit:)` → Subsonic `getAlbumList2` / Jellyfin `Items?IncludeItemTypes=MusicAlbum`. Cached in `AppModel.libraryAlbums` / `recentlyAddedAlbums`. Server-wide search is `MusicLibraryProviding.searchCatalog(query:)` → Subsonic `search3` / Jellyfin `Items?searchTerm=…`.
 - **Home discovery shelves** (Top Picks, New Releases, genre rows, New Artists Added) surface **server catalog only** — albums the user has **not** added to their magic playlist (`AppModel.isEligibleForHomeTopPick`). Top Picks + New Releases are taste-ranked via `NewTabPersonalizationEngine.tasteRankedAlbumSummaries`; genre rows use `listeningTopGenres()`.
-- **Personal library (Lyra "My Library" magic playlist)** — a per-user opaquely-named playlist (`__lyra_<sha12>`) Lyra creates on the backend. Its contents are the canonical "what *I* added" set, synced across devices:
+- **Personal library (Vellum "My Library" magic playlist)** — a per-user opaquely-named playlist (`__vellum_<sha12>`) Vellum creates on the backend. Its contents are the canonical "what *I* added" set, synced across devices:
   - Playlist tracks → `AppModel.librarySongIds: Set<String>`
   - `comment` (Subsonic) / `Overview` (Jellyfin) JSON → `LibraryMembershipPayload` → `libraryAlbumEntries` + `libraryPlaylistEntries` (each entry carries a per-item `added` date so "Recently Added (yours)" is accurate).
   - Name is deterministic from `(backend, normalized server key, user id)` in `LibraryMembership` — same user + same server URL → same playlist on every device (legacy host-only names are still discovered).
@@ -58,7 +58,7 @@ All "request missing music" flows funnel through one swappable abstraction so ba
 - **Manager** (`AcquisitionManager.swift`, `@MainActor`): `enqueue(_:)` is the single entry point; jobs keyed by `requestKey`; a shared poll loop reconciles against `provider.activeJobs()`; `onJobFinished` fires once per terminal job. `AppModel.acquisition` owns it and forwards `objectWillChange`. Default plugin is **Lidarr**; an old persisted `"downtify"` value no longer decodes and falls back to Lidarr.
 - **Plugin** (conforms to `AcquisitionProviding`): `LidarrAcquisitionPlugin` (album; MusicBrainz → add with full artist profiles → force-monitor → `AlbumSearch`, the #5012 monitor-race fix; polls `/queue` + `/command`). Described to users as a **music collection manager**, not a downloader. The former Downtify plugin/client were deleted; the only surviving piece is `MatchableSong` (`MatchableSong.swift`, renamed from `DowntifySong`) — a generic fuzzy-match descriptor used by `LibraryTrackMatcher` / `BrowseAlbumDetailView`, unrelated to the plugin.
 - **Call sites**: UI never touches a concrete plugin. Build an `AcquisitionRequest` and call `AppModel.requestAcquisition(_:)` (`DiscoverySearchView`, `BrowseAlbumDetailView`, `ServerPlaylistViews`, `MusicNewTabView`). Gate affordances on `app.acquisitionCapabilities` (`supportsTrackSearch`, `granularity`). Album-level plugins request the whole release for missing-track rows.
-- **Settings**: `SettingsView` → Plugins → **Music Requests** (renamed from "Downloads") opens `AcquisitionPluginSettingsView` — active-plugin picker, capability-driven config fields, Test Connection (`provider.validate()`), and a unified Activity list (`acquisition.displayJobs`, includes server-side items started outside Lyra). (The offline-media "Downloads" section under Settings is a separate thing.)
+- **Settings**: `SettingsView` → Plugins → **Music Requests** (renamed from "Downloads") opens `AcquisitionPluginSettingsView` — active-plugin picker, capability-driven config fields, Test Connection (`provider.validate()`), and a unified Activity list (`acquisition.displayJobs`, includes server-side items started outside Vellum). (The offline-media "Downloads" section under Settings is a separate thing.)
 - **Completion**: `AppModel.handleAcquisitionJobFinished` (backend-agnostic) triggers a server scan and retries `searchCatalog` until the new file surfaces, then adds it to the personal library.
 - **Request an artist not in your library**: Discover search surfaces iTunes artist matches as normal artist rows (`ITunesArtistClient.searchArtists`), and Settings → Following has an "Add artist" entry. Both open `ArtistPageView(input: .named(...))`, which resolves the discography via iTunes and lets you request individual albums.
 
@@ -68,7 +68,7 @@ To add a backend: add a `case` to `AcquisitionPluginKind`, write one `*Acquisiti
 
 The "Lidarr-style brain" — keep a followed artist's discography complete — but it **lives in the app**, so it works with *any* subset of plugins. The only hard dependency is the always-available iTunes Search API floor (`ITunesArtistClient`); acquisition/library backends are optional accelerators.
 
-- **Models/store** (`MusicSubscriptionModels.swift`): `FollowedArtist` (persisted "wanted" intent; id = MBID or normalized-name fallback; tracks `requestedReleaseIds` so re-checks don't re-enqueue), `SubscriptionReleaseStatus` (`.have`/`.requested`/`.pending` UI status), and `MusicSubscriptionStore` (JSON in `Application Support/LyraMusic/subscriptions.json`, same layout as `LibrarySnapshotStore`).
+- **Models/store** (`MusicSubscriptionModels.swift`): `FollowedArtist` (persisted "wanted" intent; id = MBID or normalized-name fallback; tracks `requestedReleaseIds` so re-checks don't re-enqueue), `SubscriptionReleaseStatus` (`.have`/`.requested`/`.pending` UI status), and `MusicSubscriptionStore` (JSON in `Application Support/VellumMusic/subscriptions.json`, same layout as `LibrarySnapshotStore`).
 - **Engine** (`MusicSubscriptionEngine.swift`, `@MainActor`): env-injected (no `AppModel` internals) so it stays testable. `check(artistId:)` = canonical discography (iTunes) → diff against the connected server (`serverAlbumsForArtist`, normalized-title match, any backend) → enqueue missing albums/EPs through the **active acquisition plugin**. Graceful degradation: with no plugin (or a track-only one that can't pull whole albums) missing releases become `.pending` (wishlist) instead of disabling the feature. `checkAll()` paces iTunes artist fetches.
 - **AppModel** owns `subscriptions` (built in `init`, forwards `objectWillChange`); `serverAlbums(forArtistName:)` is the "have it?" probe; `refreshSubscriptions()` runs a pass. The engine calls `acquisition.enqueue` directly (not `requestAcquisition`) to avoid per-album toasts.
 - **UI**: `ArtistFollowButton` (bell toggle in the artist-page toolbar, always shown — following without a plugin is a valid wishlist) and `SubscriptionsView` (Settings → Plugins → **Following**: per-artist status, "Check now", unfollow; banner when no download plugin is configured).
@@ -80,7 +80,7 @@ The "Lidarr-style brain" — keep a followed artist's discography complete — b
 - Mix types: **On Repeat**, **Favorites**, **Rediscover**, **New in Your Library** — each needs **≥ 3 tracks** or it is omitted.
 - **On Repeat** / **Rediscover** read `ScrobbleService.store.completed` (successful **server** scrobbles), not `recentlyPlayedTracks` alone.
 - **Favorites** intersects `favoriteTrackIds` with `discoveryLibraryTracks` (partial until discovery index finishes).
-- Synthetic playlist IDs: `__lyra_home_mix:<mixId>` via `HomeMix.asPlaylistSummary()`.
+- Synthetic playlist IDs: `__vellum_home_mix:<mixId>` via `HomeMix.asPlaylistSummary()`.
 - Library → Playlists surfaces mixes when `AppModel.showHomeMixesInPlaylists` is true (Settings → Library & Data).
 - Mix detail: `ServerPlaylistDetailView(homeMixId:)` — album-style UI, mosaic hero, no remove-from-playlist.
 
@@ -188,7 +188,7 @@ User-facing settings live under **Settings → Sound & Playback** (`SettingsPlay
 
 - **Streaming** — separate Wi‑Fi / cellular max bitrate (`StreamBitRateOption`) and format (`StreamFormatOption`). Active pair follows `prefersCellularStreamingQuality`. Navidrome sends Subsonic `format` + `maxBitRate` query params; Jellyfin maps format to progressive stream containers.
 - **Downloads** — `DownloadQualityTier` + `DownloadFormatOption` (separate from streaming).
-- **Stream cache** — `streamingDiskCacheEnabled` (`UserDefaults`). `StreamingMediaDiskCache` stores fully-fetched progressive streams under `Caches/LyraMusic/stream-cache/` (512 MB LRU). `peekCachedFileURL` for cheap candidate scans; `markAccessed` bumps LRU on actual play. `CachingResourceLoaderDelegate` can commit during AVPlayer playback when enabled (limited on current iOS — EQ prefetch is the reliable writer).
+- **Stream cache** — `streamingDiskCacheEnabled` (`UserDefaults`). `StreamingMediaDiskCache` stores fully-fetched progressive streams under `Caches/VellumMusic/stream-cache/` (512 MB LRU). `peekCachedFileURL` for cheap candidate scans; `markAccessed` bumps LRU on actual play. `CachingResourceLoaderDelegate` can commit during AVPlayer playback when enabled (limited on current iOS — EQ prefetch is the reliable writer).
 - **Equalizer** — `EqualizerSettings.swift` + `SettingsEqualizerView`. Ten ISO bands (32 Hz–16 kHz), presets (Flat, Dance, Jazz, Bass Boost, Vocal), bypass, per-band gains in `UserDefaults`. `AppModel.equalizerEnabled` syncs to `PlaybackEngine` via `syncEqualizerToEngine()`; toggling enabled reloads the current item (`reloadForEqualizerSettingsChange()`). Live slider changes call `applyLiveEqualizerGains()` on the active EQ session only.
 - **Player** — skip interval buttons, sleep timer chrome, default playback speed, lock-screen remote mode (skip track vs skip interval). Wired through `PlaybackEngine` + `syncPlaybackPreferencesToEngine()`.
 - **Artist play mode** — top songs / shuffle album / full discography (`ArtistPlayMode` in settings + long-press override on artist page).
@@ -201,7 +201,7 @@ User-facing settings live under **Settings → Sound & Playback** (`SettingsPlay
 **EQ-eligible sources** (read via `AVAudioFile`, never live HTTP decode):
 
 1. **Offline downloads** — `OfflineDownloadManager.localFile(for:)`
-2. **Committed stream-cache files** — `StreamingMediaDiskCache` under `LyraMusic/stream-cache/`
+2. **Committed stream-cache files** — `StreamingMediaDiskCache` under `VellumMusic/stream-cache/`
 
 **Streams without a local file:**
 
@@ -216,7 +216,7 @@ User-facing settings live under **Settings → Sound & Playback** (`SettingsPlay
 
 ## Server listening history (scrobbling)
 
-Lyra submits **server** scrobbles separately from local Recently Played shelves:
+Vellum submits **server** scrobbles separately from local Recently Played shelves:
 
 - `PlaybackEngine.maybeScrobble` → `AppModel.recordRecentPlay` (local) **and** `ScrobbleService.recordCompletedScrobble` (server queue).
 - `PlaybackEngine.onTrackStarted` → `ScrobbleService.sendNowPlaying` (Subsonic `scrobble?submission=false`; Jellyfin `Sessions/Playing`).
@@ -233,7 +233,7 @@ Lyra submits **server** scrobbles separately from local Recently Played shelves:
 
 ## Client backup
 
-`LyraClientBackup` / `ClientBackupControlsView` — export/import scrobbles, scrobble exclusions, playback preferences. Does **not** include credentials, downloaded audio, or server magic-playlist contents.
+`VellumClientBackup` / `ClientBackupControlsView` — export/import scrobbles, scrobble exclusions, playback preferences. Does **not** include credentials, downloaded audio, or server magic-playlist contents.
 
 ## Navidrome shares
 
@@ -267,6 +267,6 @@ Document for contributors — not an exhaustive bug list:
 
 ## Build / run
 
-- iOS app target: `LyraMusicHost/LyraMusicHost.xcodeproj` (workspace at `LyraMusicHost/LyraMusicHost.xcodeproj/project.xcworkspace`).
-- Library code lives in the SPM package at `Sources/LyraMusicKit/` (`Package.swift`).
-- Standard build: `xcodebuild -workspace LyraMusicHost/LyraMusicHost.xcodeproj/project.xcworkspace -scheme LyraMusicHost -destination 'generic/platform=iOS Simulator' build`.
+- iOS app target: `VellumMusicHost/VellumMusicHost.xcodeproj` (workspace at `VellumMusicHost/VellumMusicHost.xcodeproj/project.xcworkspace`).
+- Library code lives in the SPM package at `Sources/VellumMusicKit/` (`Package.swift`).
+- Standard build: `xcodebuild -workspace VellumMusicHost/VellumMusicHost.xcodeproj/project.xcworkspace -scheme VellumMusicHost -destination 'generic/platform=iOS Simulator' build`.

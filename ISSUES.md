@@ -2,7 +2,7 @@
 
 ## Playlist search bar reveals on scroll-to-top (not pull-to-reveal only)
 
-**Where:** `Sources/LyraMusicKit/ServerPlaylistViews.swift` — `ServerPlaylistDetailView`, the `.searchable(...placement: .navigationBarDrawer(displayMode: .automatic))` modifier.
+**Where:** `Sources/VellumMusicKit/ServerPlaylistViews.swift` — `ServerPlaylistDetailView`, the `.searchable(...placement: .navigationBarDrawer(displayMode: .automatic))` modifier.
 
 **Desired behavior:**
 1. Playlist opens → search bar hidden.
@@ -24,7 +24,7 @@
 
 ## Search tab: detached search button vs scroll-collapse (mutually exclusive)
 
-**Where:** `Sources/LyraMusicKit/RootView.swift` — the Search `Tab(role: .search)` and `.tabBarMinimizeBehavior(...)`.
+**Where:** `Sources/VellumMusicKit/RootView.swift` — the Search `Tab(role: .search)` and `.tabBarMinimizeBehavior(...)`.
 
 **Limitation:** A `Tab(role: .search)` renders as a detached search button in the tab bar but does **not** participate in `tabBarMinimizeBehavior(.onScrollDown)`. So under Search the tab bar and the bottom mini-player accessory (`tabViewBottomAccessoryPlacement`, system-driven) do not collapse on scroll. Removing `role: .search` enables the collapse but collapses all five tabs into one inline pill (no detached search button). iOS provides no way to get both.
 
