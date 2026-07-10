@@ -1776,6 +1776,15 @@ public final class AppModel: ObservableObject {
                 return existing
             }
         }
+        // One-time Lyra → Vellum migration: no `__vellum_…` playlist exists yet, so look for the
+        // user's pre-rebrand `__lyra_…` playlist (same hash, old prefix) and rename it in place so
+        // their existing library carries over instead of starting empty.
+        if let migratedId = try await migrateLegacyLyraMagicPlaylistIfNeeded(identity: identity) {
+            LibraryMembership.cachePlaylistId(
+                migratedId, backend: backendKind, serverKey: identity.serverKey, userKey: identity.userKey,
+            )
+            return migratedId
+        }
         if let cached = LibraryMembership.cachedPlaylistId(
             backend: backendKind, serverKey: identity.serverKey, userKey: identity.userKey,
         ),
@@ -1788,6 +1797,32 @@ public final class AppModel: ObservableObject {
             created, backend: backendKind, serverKey: identity.serverKey, userKey: identity.userKey,
         )
         return created
+    }
+
+    /// Find the user's pre-rebrand `__lyra_…` magic playlist and rename it to the current
+    /// `__vellum_…` name so their existing "My Library" (albums, songs, playlists, add-dates)
+    /// carries over after the Lyra → Vellum rename. Returns the renamed playlist's id, or `nil`
+    /// when there's nothing to migrate. Safe to call every resolve — it only fires when a legacy
+    /// playlist exists and no new one does (the caller checks `__vellum_` names first).
+    private func migrateLegacyLyraMagicPlaylistIfNeeded(
+        identity: (name: String, serverKey: String?, userKey: String, baseURL: String),
+    ) async throws -> String? {
+        let legacyNames = LibraryMembership.legacyLyraMagicPlaylistNames(
+            backend: backendKind,
+            serverKey: identity.serverKey,
+            userKey: identity.userKey,
+            baseURLString: identity.baseURL,
+        )
+        for legacyName in legacyNames {
+            guard let legacyId = try await findMagicPlaylistByName(legacyName) else { continue }
+            // Rename the existing playlist in place to the new hidden name.
+            try await renamePlaylist(playlistId: legacyId, name: identity.name)
+            #if DEBUG
+            print("[MAGIC-SYNC] migrated legacy \(legacyName) → \(identity.name) (id=\(legacyId))")
+            #endif
+            return legacyId
+        }
+        return nil
     }
 
     private func findMagicPlaylistByName(_ name: String) async throws -> String? {
