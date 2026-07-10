@@ -63,6 +63,21 @@ enum LibraryMembership {
         return names
     }
 
+    /// Pre-rebrand equivalents of the current candidate names — same hash, old `__lyra_`
+    /// prefix. The magic-playlist hash never included the app name (only backend/server/user),
+    /// so the Lyra → Vellum rename only changed the prefix. A one-time migration uses these to
+    /// find the user's existing `__lyra_…` playlist and rename it to `__vellum_…`.
+    static func legacyLyraMagicPlaylistNames(
+        backend: BackendKind,
+        serverKey: String?,
+        userKey: String,
+        baseURLString: String,
+    ) -> [String] {
+        candidateMagicPlaylistNames(
+            backend: backend, serverKey: serverKey, userKey: userKey, baseURLString: baseURLString,
+        ).map { $0.replacingOccurrences(of: "__vellum_", with: "__lyra_") }
+    }
+
     /// True for names produced by ``magicPlaylistName(backend:serverKey:userKey:)``. Used to
     /// strip the magic playlist out of any user-facing playlist listing even when the
     /// cached id is stale.
