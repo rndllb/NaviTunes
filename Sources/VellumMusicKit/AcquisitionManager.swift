@@ -58,6 +58,7 @@ final class AcquisitionManager: ObservableObject {
     static func makeProvider(_ kind: AcquisitionPluginKind) -> AcquisitionProviding {
         switch kind {
         case .lidarr: return LidarrAcquisitionPlugin()
+        case .droppedNeedle: return DroppedNeedleAcquisitionPlugin()
         }
     }
 

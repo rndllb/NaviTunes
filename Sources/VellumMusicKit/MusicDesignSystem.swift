@@ -635,7 +635,7 @@ struct AlbumArtworkView: View {
                 } else if loadFailed {
                     placeholder
                 } else {
-                    Color.clear
+                    MusicShimmerSurface(cornerRadius: cornerRadius)
                 }
             }
             .task(id: url.absoluteString) {

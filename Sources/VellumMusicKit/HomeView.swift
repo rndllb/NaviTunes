@@ -48,16 +48,16 @@ struct HomeView: View {
         Array(app.libraryPlaylists.prefix(12))
     }
 
+    /// Home discovery shelves are still resolving — show skeleton rows instead of empty space.
+    private var homeDiscoveryPending: Bool {
+        app.homeRefreshInFlight
+    }
+
     var body: some View {
         NavigationStack(path: $navigationPath) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 32) {
-                    if app.libraryAlbums.isEmpty && app.libraryAlbumsLoadError == nil {
-                        ProgressView()
-                            .tint(MusicDesign.accent)
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 80)
-                    } else if let err = app.libraryAlbumsLoadError, app.libraryAlbums.isEmpty {
+                    if let err = app.libraryAlbumsLoadError, app.libraryAlbums.isEmpty {
                         ContentUnavailableView(
                             "Couldn't load library",
                             systemImage: "exclamationmark.triangle",
@@ -65,14 +65,28 @@ struct HomeView: View {
                         )
                         .padding(.top, 40)
                     } else {
-                        if !topPicksAlbums.isEmpty {
+                        if topPicksAlbums.isEmpty, homeDiscoveryPending {
+                            MusicHorizontalShelfSkeleton(
+                                title: "Top Picks for You",
+                                style: .topPickHero,
+                                count: 4,
+                                horizontalInset: inset,
+                            )
+                        } else if !topPicksAlbums.isEmpty {
                             heroShelf(
                                 title: "Top Picks for You",
                                 albums: topPicksAlbums
                             )
                         }
 
-                        if !newlyAddedArtists.isEmpty {
+                        if newlyAddedArtists.isEmpty, homeDiscoveryPending {
+                            MusicHorizontalShelfSkeleton(
+                                title: "New Artists Added",
+                                style: .artistCircle,
+                                count: 6,
+                                horizontalInset: inset,
+                            )
+                        } else if !newlyAddedArtists.isEmpty {
                             newArtistsShelf(title: "New Artists Added", artists: newlyAddedArtists)
                         }
 
@@ -94,11 +108,27 @@ struct HomeView: View {
                             )
                         }
 
-                        ForEach(app.homeGenreShelves, id: \.genre) { shelf in
-                            self.shelf(title: shelf.genre, albums: shelf.albums)
+                        if app.homeGenreShelves.isEmpty, homeDiscoveryPending {
+                            MusicHorizontalShelfSkeleton(
+                                title: "Browse by Genre",
+                                style: .album,
+                                count: 5,
+                                horizontalInset: inset,
+                            )
+                        } else {
+                            ForEach(app.homeGenreShelves, id: \.genre) { shelf in
+                                self.shelf(title: shelf.genre, albums: shelf.albums)
+                            }
                         }
 
-                        if !newReleasesAlbums.isEmpty {
+                        if newReleasesAlbums.isEmpty, homeDiscoveryPending {
+                            MusicHorizontalShelfSkeleton(
+                                title: "New Releases for You",
+                                style: .album,
+                                count: 5,
+                                horizontalInset: inset,
+                            )
+                        } else if !newReleasesAlbums.isEmpty {
                             shelf(
                                 title: "New Releases for You",
                                 albums: newReleasesAlbums

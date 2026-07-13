@@ -114,7 +114,13 @@ public final class AppModel: ObservableObject {
     @Published var isSignedIn: Bool = false
     /// True while ``signIn()`` is in flight (manual or keychain restore).
     @Published var isAuthenticating: Bool = false
-    @Published var selectedTab: AppTab = .home
+    @Published var selectedTab: AppTab = AppModel.loadLaunchTab().appTab
+    /// Tab opened after launch / sign-in. Search is not offered.
+    @Published var launchTabPreference: LaunchTabPreference = AppModel.loadLaunchTab() {
+        didSet {
+            UserDefaults.standard.set(launchTabPreference.rawValue, forKey: Self.launchTabPreferenceKey)
+        }
+    }
     /// "Go to Album / Playlist / Artist" deep link pushed onto the user's current tab after the
     /// Now Playing player dismisses. Set together with ``deepLinkTab`` so only the tab that was
     /// active at trigger time consumes the push (tab bar stays visible during the destination).
@@ -182,6 +188,8 @@ public final class AppModel: ObservableObject {
     @Published private(set) var homeTopPickAlbums: [AlbumSummary] = []
     /// Next taste-ranked server-catalog rows after Top Picks (same pool, excludes personal library).
     @Published private(set) var homeNewReleaseAlbums: [AlbumSummary] = []
+    /// True while ``refreshHome()`` is running — drives skeleton shelves on the Home tab.
+    @Published private(set) var homeRefreshInFlight = false
 
     /// Live merge of the local play log and the server's recently-played albums.
     @Published private(set) var homeRecentlyPlayed: [RecentPlayedItem] = []
@@ -360,6 +368,7 @@ public final class AppModel: ObservableObject {
     var acquisitionCapabilities: AcquisitionCapabilities { acquisition.capabilities }
 
     private static let themePreferenceKey = "vellumThemePreference"
+    private static let launchTabPreferenceKey = "vellumLaunchTabPreference"
     private static let wifiStreamQualityKey = "vellumWifiStreamQuality"
     private static let cellularStreamQualityKey = "vellumCellularStreamQuality"
     private static let downloadQualityKey = "vellumDownloadQuality"
@@ -1001,6 +1010,18 @@ public final class AppModel: ObservableObject {
         return AppAccentPreset.defaultId
     }
 
+    private static func loadLaunchTab() -> LaunchTabPreference {
+        guard let raw = UserDefaults.standard.string(forKey: launchTabPreferenceKey),
+              let value = LaunchTabPreference(rawValue: raw)
+        else { return .home }
+        return value
+    }
+
+    /// Applies the user's preferred landing tab (used after sign-in / cold launch).
+    func applyLaunchTab() {
+        selectedTab = launchTabPreference.appTab
+    }
+
     public func signIn() async {
         guard !isAuthenticating else { return }
         errorMessage = nil
@@ -1050,6 +1071,7 @@ public final class AppModel: ObservableObject {
             }
             // Enter the app immediately after auth — library refresh can take a long time on large servers.
             isSignedIn = true
+            applyLaunchTab()
             activeServerURLRole = .primary
             updateDeleteCapability()
             prefetchAccountAvatar()
@@ -1514,6 +1536,8 @@ public final class AppModel: ObservableObject {
 
     public func refreshHome(forceDiscoveryReshuffle: Bool = false) async {
         guard let lib = activeLibrary else { return }
+        homeRefreshInFlight = true
+        defer { homeRefreshInFlight = false }
         let needsGenrePick = homeSelectedGenres == nil
         async let played = (try? await lib.recentlyPlayed(limit: 12)) ?? []
         async let genres: [LibraryGenreSummary] = {
@@ -5328,6 +5352,7 @@ public final class AppModel: ObservableObject {
                 jellyfin = client
                 navidrome = nil
                 isSignedIn = true
+                applyLaunchTab()
                 updateDeleteCapability()
                 prefetchAccountAvatar()
                 pushQualitySettingsToClients()
@@ -5352,6 +5377,7 @@ public final class AppModel: ObservableObject {
                 navidrome = client
                 jellyfin = nil
                 isSignedIn = true
+                applyLaunchTab()
                 updateDeleteCapability()
                 prefetchAccountAvatar()
                 restoreLibraryFromDisk()
