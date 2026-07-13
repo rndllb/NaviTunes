@@ -28,6 +28,46 @@ enum AppThemePreference: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Launch tab
+
+/// First main tab after launch / sign-in (Search is excluded — it's a role:.search destination).
+enum LaunchTabPreference: String, CaseIterable, Identifiable {
+    case home
+    case new
+    case radio
+    case library
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .home: return "Home"
+        case .new: return "New"
+        case .radio: return "Radio"
+        case .library: return "Library"
+        }
+    }
+
+    var appTab: AppTab {
+        switch self {
+        case .home: return .home
+        case .new: return .new
+        case .radio: return .radio
+        case .library: return .library
+        }
+    }
+
+    static func from(appTab: AppTab) -> LaunchTabPreference {
+        switch appTab {
+        case .home: return .home
+        case .new: return .new
+        case .radio: return .radio
+        case .library: return .library
+        case .search: return .home
+        }
+    }
+}
+
 // MARK: - Stream / download quality
 
 /// Wi‑Fi / cellular streaming (320 capped vs server original).

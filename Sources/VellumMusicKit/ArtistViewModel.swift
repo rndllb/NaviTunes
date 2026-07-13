@@ -135,6 +135,12 @@ final class ArtistViewModel: ObservableObject {
             || (jellyfinOverview?.isEmpty == false)
     }
 
+    var hasRenderableBodyContent: Bool {
+        !topSongs.isEmpty
+            || discography.values.contains { !$0.isEmpty }
+            || !similarArtists.isEmpty
+    }
+
     var hasPlayableTracks: Bool {
         !topSongs.compactMap(\.libraryTrack).isEmpty || !serverTracks.isEmpty
     }

@@ -34,79 +34,6 @@ extension View {
     }
 }
 
-// MARK: - Library
-
-struct SettingsLibrarySectionView: View {
-    @EnvironmentObject private var app: AppModel
-    @State private var isRefreshingServerStats = false
-
-    var body: some View {
-        Form {
-            Section {
-                statRow(title: "Songs", value: app.librarySongIds.count)
-                statRow(title: "Albums", value: app.libraryAlbumEntries.count)
-                statRow(title: "Playlists", value: app.libraryPlaylistEntries.count)
-            } header: {
-                Text("Your Library")
-            } footer: {
-                Text("Music you've added in Vellum — synced via your personal library playlist.")
-            }
-
-            Section {
-                if isRefreshingServerStats {
-                    HStack {
-                        Text("Loading server totals…")
-                        Spacer()
-                        ProgressView()
-                            .tint(MusicDesign.accent)
-                    }
-                }
-                statRow(title: "Artists", value: app.libraryStatistics.artistCount)
-                statRow(title: "Albums", value: app.libraryStatistics.albumCount)
-                statRow(title: "Songs", value: app.libraryStatistics.songCount)
-                statRow(title: "Playlists", value: app.libraryStatistics.playlistCount)
-            } header: {
-                Text("Server Catalog")
-            } footer: {
-                serverCatalogFooter
-            }
-        }
-        .navigationTitle("Library")
-        .settingsSubpageChrome()
-        .task { await reloadServerStatistics() }
-    }
-
-    @ViewBuilder
-    private var serverCatalogFooter: some View {
-        if app.backendKind == .navidrome {
-            if app.libraryStatistics.songsMayBeApproximate {
-                Text("Navidrome song totals sum per-album track counts and may differ slightly from the true server count.")
-            } else {
-                Text("Everything on your connected Jellyfin or Navidrome server.")
-            }
-        } else {
-            Text("Everything on your connected Jellyfin or Navidrome server.")
-        }
-    }
-
-    private func reloadServerStatistics() async {
-        isRefreshingServerStats = true
-        defer { isRefreshingServerStats = false }
-        await app.refreshLibraryStatistics()
-    }
-
-    private func statRow(title: String, value: Int?) -> some View {
-        LabeledContent(title) {
-            Text(value.map { SettingsFormatting.decimalString($0) } ?? "—")
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func statRow(title: String, value: Int) -> some View {
-        statRow(title: title, value: Optional(value))
-    }
-}
-
 // MARK: - Sync
 
 struct SettingsSyncSectionView: View {
@@ -333,6 +260,13 @@ struct SettingsAppearanceView: View {
                 }
                 .tint(MusicDesign.accent)
 
+                Picker("Open app to", selection: $app.launchTabPreference) {
+                    ForEach(LaunchTabPreference.allCases) { tab in
+                        Text(tab.title).tag(tab)
+                    }
+                }
+                .tint(MusicDesign.accent)
+
                 Picker("Song list items", selection: $app.songListItemSize) {
                     ForEach(SongListItemSize.allCases) { size in
                         Text(size.title).tag(size)
@@ -346,6 +280,8 @@ struct SettingsAppearanceView: View {
                     .tint(MusicDesign.accent)
                 Toggle("Player color backdrop", isOn: $app.playerBackdropEnabled)
                     .tint(MusicDesign.accent)
+            } footer: {
+                Text("“Open app to” chooses which tab appears after launch or sign-in.")
             }
 
             Section {

@@ -120,10 +120,25 @@ struct MusicNewTabView: View {
     @ViewBuilder
     private var newTabMainScrollColumn: some View {
         if app.newTabBrowseLoading && !hasAnyNewTabContent {
-            ProgressView()
-                .tint(MusicDesign.accent)
-                .frame(maxWidth: .infinity)
-                .padding(.top, 72)
+            VStack(alignment: .leading, spacing: 32) {
+                MusicNewTabHeroSkeleton()
+                MusicHorizontalShelfSkeleton(
+                    title: "Best New Songs",
+                    style: .album,
+                    count: 5,
+                )
+                MusicHorizontalShelfSkeleton(
+                    title: "New This Week",
+                    style: .album,
+                    count: 5,
+                )
+                MusicHorizontalShelfSkeleton(
+                    title: "Artists You're Into",
+                    style: .artistCircle,
+                    count: 5,
+                )
+            }
+            .padding(.top, 8)
         } else if !hasAnyNewTabContent && !app.newTabBrowseLoading {
             if let browseErr = app.newTabBrowseError {
                 ContentUnavailableView(

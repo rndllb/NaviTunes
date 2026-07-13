@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// iOS Settings–style hub: each area opens its own detail page.
 struct SettingsView: View {
@@ -52,13 +55,10 @@ struct SettingsView: View {
     private var libraryDataSection: some View {
         Section {
             settingsRow("Library", systemImage: "music.note.list", subtitle: librarySubtitle) {
-                SettingsLibrarySectionView()
+                SettingsLibraryDataView()
             }
             settingsRow("Sync", systemImage: "arrow.triangle.2.circlepath", subtitle: syncSubtitle) {
                 SettingsSyncSectionView()
-            }
-            settingsRow("Library & Data", systemImage: "externaldrive") {
-                SettingsLibraryDataView()
             }
         }
     }
@@ -206,12 +206,48 @@ struct AcquisitionPluginSettingsView: View {
     @State private var validateMessage: String?
     @State private var validateSucceeded = false
     @State private var isValidating = false
+    @State private var isPlexSigningIn = false
+    @State private var plexSignInMessage: String?
+    @State private var loginMethodSelection = "local"
 
     private var activeKind: AcquisitionPluginKind { acquisition.activePlugin }
     private var capabilities: AcquisitionCapabilities { app.acquisitionCapabilities }
 
+    private var droppedNeedleLoginMethod: String {
+        if activeKind == .droppedNeedle {
+            return loginMethodSelection
+        }
+        let raw = (drafts["loginMethod"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return raw.isEmpty ? "local" : raw
+    }
+
+    private var visibleConfigFields: [AcquisitionConfigField] {
+        capabilities.configFields.filter { field in
+            if field.id == "sessionToken" { return false }
+            if activeKind == .droppedNeedle, field.id == "loginMethod" { return false }
+            if activeKind == .droppedNeedle, droppedNeedleLoginMethod == "plex" {
+                return field.id != "username" && field.id != "password"
+            }
+            return true
+        }
+    }
+
     private var hasMinimumDraft: Bool {
-        capabilities.configFields.allSatisfy { field in
+        if activeKind == .droppedNeedle {
+            let base = (drafts["baseURL"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !base.isEmpty else { return false }
+            switch droppedNeedleLoginMethod {
+            case "plex":
+                return !(drafts["sessionToken"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            case "jellyfin", "local":
+                let user = (drafts["username"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let pass = (drafts["password"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                return !user.isEmpty && !pass.isEmpty
+            default:
+                return false
+            }
+        }
+        return visibleConfigFields.allSatisfy { field in
             !field.required || !(drafts[field.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
@@ -221,6 +257,9 @@ struct AcquisitionPluginSettingsView: View {
             pluginSummarySection
             sourceSection
             serverSection
+            if activeKind == .droppedNeedle, droppedNeedleLoginMethod == "plex" {
+                plexSignInSection
+            }
             connectionSection
             if app.acquisitionConfigured {
                 disconnectSection
@@ -240,7 +279,23 @@ struct AcquisitionPluginSettingsView: View {
             reloadDrafts()
             validateMessage = nil
             validateSucceeded = false
+            plexSignInMessage = nil
+            isPlexSigningIn = false
             Task { await acquisition.refreshFromServer() }
+        }
+        .onChange(of: loginMethodSelection) { oldValue, newValue in
+            guard activeKind == .droppedNeedle else { return }
+            drafts["loginMethod"] = newValue
+            app.setAcquisitionConfig(newValue, for: .droppedNeedle, field: "loginMethod")
+            validateMessage = nil
+            validateSucceeded = false
+            guard oldValue != newValue else { return }
+            if oldValue == "plex" || newValue == "plex" {
+                (AcquisitionManager.makeProvider(.droppedNeedle) as? DroppedNeedleAcquisitionPlugin)?
+                    .clearStoredSessionToken()
+                drafts["sessionToken"] = ""
+                plexSignInMessage = nil
+            }
         }
         .navigationTitle("Music Requests")
         .settingsSubpageChrome()
@@ -296,12 +351,53 @@ struct AcquisitionPluginSettingsView: View {
 
     private var serverSection: some View {
         Section {
-            ForEach(capabilities.configFields) { field in
+            if activeKind == .droppedNeedle {
+                Picker("Sign-In Method", selection: $loginMethodSelection) {
+                    Text("DroppedNeedle Account").tag("local")
+                    Text("Jellyfin").tag("jellyfin")
+                    Text("Plex").tag("plex")
+                }
+                .pickerStyle(.navigationLink)
+            }
+            ForEach(visibleConfigFields) { field in
                 configField(field)
             }
         } header: {
             Text("Server")
         }
+    }
+
+    private var plexSignInSection: some View {
+        Section {
+            Button {
+                runPlexSignIn()
+            } label: {
+                HStack {
+                    Label("Sign in with Plex", systemImage: "play.rectangle")
+                    Spacer(minLength: 8)
+                    if isPlexSigningIn {
+                        ProgressView()
+                    } else if hasPlexSessionToken {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    }
+                }
+            }
+            .disabled(isPlexSigningIn || (drafts["baseURL"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } footer: {
+            if let plexSignInMessage {
+                Text(plexSignInMessage)
+                    .foregroundStyle(plexSignInMessage.contains("failed") || plexSignInMessage.contains("Couldn't") ? .red : .secondary)
+            } else if hasPlexSessionToken {
+                Text("Plex account linked. Test the connection to confirm.")
+            } else {
+                Text("Opens Plex in your browser. Return here after approving access.")
+            }
+        }
+    }
+
+    private var hasPlexSessionToken: Bool {
+        !(drafts["sessionToken"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var connectionSection: some View {
@@ -472,19 +568,28 @@ struct AcquisitionPluginSettingsView: View {
 
     @ViewBuilder
     private func configField(_ field: AcquisitionConfigField) -> some View {
-        switch field.kind {
-        case .apiKey, .password:
-            SecureField(field.label, text: binding(for: field), prompt: Text(field.placeholder))
-                .musicTextInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-        default:
-            TextField(field.label, text: binding(for: field), prompt: Text(field.placeholder))
-                .textContentType(field.kind == .url ? .URL : nil)
-                .musicTextInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                #if os(iOS)
-                .keyboardType(field.kind == .url ? .URL : .default)
-                #endif
+        if let options = field.pickerOptions, !options.isEmpty {
+            Picker(field.label, selection: binding(for: field)) {
+                ForEach(options, id: \.id) { option in
+                    Text(option.label).tag(option.id)
+                }
+            }
+            .pickerStyle(.navigationLink)
+        } else {
+            switch field.kind {
+            case .apiKey, .password:
+                SecureField(field.label, text: binding(for: field), prompt: Text(field.placeholder))
+                    .musicTextInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            default:
+                TextField(field.label, text: binding(for: field), prompt: Text(field.placeholder))
+                    .textContentType(field.kind == .url ? .URL : nil)
+                    .musicTextInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .keyboardType(field.kind == .url ? .URL : .default)
+                    #endif
+            }
         }
     }
 
@@ -527,12 +632,67 @@ struct AcquisitionPluginSettingsView: View {
         for field in capabilities.configFields {
             next[field.id] = AcquisitionConfigStore.value(activeKind, field.id)
         }
+        if activeKind == .droppedNeedle {
+            let stored = (next["loginMethod"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let resolved = stored.isEmpty ? "local" : stored
+            next["loginMethod"] = resolved
+            loginMethodSelection = resolved
+        }
         drafts = next
     }
 
     private func saveDrafts() {
+        if activeKind == .droppedNeedle {
+            drafts["loginMethod"] = loginMethodSelection
+        }
         for field in capabilities.configFields {
             app.setAcquisitionConfig(drafts[field.id] ?? "", for: activeKind, field: field.id)
+        }
+    }
+
+    private func runPlexSignIn() {
+        saveDrafts()
+        guard let plugin = AcquisitionManager.makeProvider(.droppedNeedle) as? DroppedNeedleAcquisitionPlugin else {
+            plexSignInMessage = "DroppedNeedle plugin unavailable."
+            return
+        }
+        isPlexSigningIn = true
+        plexSignInMessage = nil
+        validateMessage = nil
+        validateSucceeded = false
+        Task {
+            do {
+                let start = try await plugin.startPlexLogin()
+                await MainActor.run {
+                    #if canImport(UIKit)
+                    UIApplication.shared.open(start.authURL)
+                    #endif
+                    plexSignInMessage = "Approve access in Plex, then return here."
+                }
+                let deadline = Date().addingTimeInterval(120)
+                while Date() < deadline {
+                    try await Task.sleep(for: .seconds(2))
+                    if let token = try await plugin.pollPlexLogin(pinId: start.pinId) {
+                        await MainActor.run {
+                            plugin.persistSessionToken(token)
+                            drafts["sessionToken"] = token
+                            saveDrafts()
+                            isPlexSigningIn = false
+                            plexSignInMessage = "Signed in with Plex."
+                        }
+                        return
+                    }
+                }
+                await MainActor.run {
+                    isPlexSigningIn = false
+                    plexSignInMessage = "Plex sign-in timed out. Try again."
+                }
+            } catch {
+                await MainActor.run {
+                    isPlexSigningIn = false
+                    plexSignInMessage = error.localizedDescription
+                }
+            }
         }
     }
 

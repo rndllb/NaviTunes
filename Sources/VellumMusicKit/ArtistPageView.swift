@@ -6,7 +6,8 @@ import UIKit
 /// Apple Music–style artist page. Stretchy banner hero with transparent nav bar
 /// (banner extends through the safe area and stretches with overscroll), Top
 /// Songs as a paged horizontal carousel of 4-row columns, classified discography
-/// with size hierarchy (Albums prominent, Singles/EPs/Live/Compilations smaller),
+/// with size hierarchy (primary discography shelves share one card size; Live/Compilations
+/// use the same grid as Albums and Singles & EPs),
 /// iTunes releases the user's server doesn't have, About with inline MORE expansion,
 /// and Similar Artists.
 ///
@@ -51,20 +52,29 @@ struct ArtistPageView: View {
                     ArtistLatestReleaseCard(model: model, onGoToAlbum: { navigateAlbum = $0 })
                     ArtistAcquisitionBanner(model: model)
 
-                    ArtistTopSongsSection(model: model, onGoToAlbum: { navigateAlbum = $0 })
-                    ArtistDiscographyCarousel(model: model, bucket: .albums, title: "Albums", layout: .prominent)
-                    ArtistDiscographyCarousel(model: model, bucket: .singlesAndEPs, title: "Singles & EPs", layout: .prominent)
-                    ArtistDiscographyCarousel(model: model, bucket: .live, title: "Live Albums", layout: .compact)
-                    ArtistDiscographyCarousel(model: model, bucket: .compilations, title: "Compilations", layout: .compact)
-                    ArtistSimilarSection(model: model)
+                    if artistPageShowsSkeleton {
+                        ArtistPageLoadingSkeletonSections()
+                            .transition(.opacity)
+                    } else {
+                        Group {
+                            ArtistTopSongsSection(model: model, onGoToAlbum: { navigateAlbum = $0 })
+                            ArtistDiscographyCarousel(model: model, bucket: .albums, title: "Albums", layout: .prominent)
+                            ArtistDiscographyCarousel(model: model, bucket: .singlesAndEPs, title: "Singles & EPs", layout: .prominent)
+                            ArtistDiscographyCarousel(model: model, bucket: .live, title: "Live Albums", layout: .prominent)
+                            ArtistDiscographyCarousel(model: model, bucket: .compilations, title: "Compilations", layout: .prominent)
+                            ArtistSimilarSection(model: model)
+                        }
+                        .transition(.opacity)
+                    }
 
                     Spacer(minLength: 32)
                 }
+                .animation(.easeInOut(duration: 0.18), value: artistPageShowsSkeleton)
             }
-            .coordinateSpace(name: Self.scrollCoordinateSpace)
-            .scrollIndicators(.hidden)
-            .scrollContentBackground(.hidden)
-            .environment(\.artistPageBackdropPalette, backdropPalette)
+            .modifier(ArtistPageScrollChromeModifier(
+                scrollSpace: Self.scrollCoordinateSpace,
+                backdropPalette: backdropPalette,
+            ))
         }
         .ignoresSafeArea(edges: .top)
         .navigationTitle("")
@@ -120,16 +130,14 @@ struct ArtistPageView: View {
             await model.load(using: app)
         }
         .overlay(alignment: .center) {
-            if !model.hasAnyContent, !model.isLoadingServerCatalog, !model.isLoadingEnrichment {
+            if !model.hasAnyContent, !artistPageShowsSkeleton,
+               !model.isLoadingServerCatalog, !model.isLoadingEnrichment {
                 ContentUnavailableView(
                     "No info for this artist",
                     systemImage: "mic",
                     description: Text("We couldn't find any songs, releases, or biography for \(model.displayName).")
                 )
                 .padding(.horizontal, 24)
-            } else if !model.hasAnyContent, model.isLoadingServerCatalog || model.isLoadingEnrichment {
-                ProgressView()
-                    .tint(MusicDesign.accent)
             }
         }
         .navigationDestination(item: $navigateAlbum) { album in
@@ -145,6 +153,14 @@ struct ArtistPageView: View {
         case .libraryArtist(let a): return "lib:\(a.id)"
         case .named(let n): return "name:\(n)"
         }
+    }
+
+    private var artistPageShowsSkeleton: Bool {
+        !model.hasRenderableBodyContent
+            && (model.isLoadingServerCatalog
+                || model.isLoadingEnrichment
+                || model.isLoadingTopSongs
+                || model.isLoadingDiscography)
     }
 
     /// Shareable link for the artist — an Apple Music search URL that opens to this artist.
@@ -315,10 +331,10 @@ private struct ArtistHeroBannerStack: View {
                         endPoint: .bottom,
                     )
                     .allowsHitTesting(false)
+                } else if url != nil {
+                    MusicShimmerSurface(cornerRadius: 0)
+                        .frame(width: width, height: height)
                 } else {
-                    // Neutral placeholder while the photo loads (and when there is none) —
-                    // a flat page-tinted fill with a faint glyph, instead of a random colored
-                    // gradient that flashes before the real image arrives.
                     backdropColor
                         .frame(width: width, height: height)
                         .overlay {
@@ -967,40 +983,25 @@ private struct ArtistTopSongOverflowMenu: View {
 // MARK: - Discography carousels (variable card size)
 
 private enum DiscographyLayout {
-    case prominent  // Albums — large cards
-    case compact    // Singles & EPs / Live / Compilations / Other Releases
+    case prominent  // Albums, Singles & EPs, Live, Compilations
 
     var cardSide: CGFloat {
-        switch self {
-        case .prominent: return 172
-        case .compact: return 116
-        }
+        MusicDesign.shelfCardWidth
     }
 
     var titleFont: Font {
-        switch self {
-        case .prominent: return .subheadline.weight(.semibold)
-        case .compact: return .caption.weight(.semibold)
-        }
+        .subheadline.weight(.semibold)
     }
 
     var subtitleFont: Font {
-        switch self {
-        case .prominent: return .caption
-        case .compact: return .caption2
-        }
+        .caption
     }
 
     /// Reserved height for the combined `(title, subtitle)` block — two title
     /// lines + spacing + one subtitle line. Keeps cards in a row aligned while
     /// keeping the title and subtitle visually tight (any leftover space falls
     /// below the subtitle, not between title and subtitle).
-    var labelBlockMinHeight: CGFloat {
-        switch self {
-        case .prominent: return 52
-        case .compact: return 42
-        }
-    }
+    var labelBlockMinHeight: CGFloat { 52 }
 }
 
 private struct ArtistDiscographyCarousel: View {
@@ -1312,6 +1313,34 @@ private struct ArtistAboutPageView: View {
 
 // MARK: - Similar Artists
 
+private struct ArtistPageLoadingSkeletonSections: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            MusicHorizontalShelfSkeleton(
+                title: "Top Songs",
+                style: .album,
+                count: 3,
+                horizontalInset: 20,
+            )
+            .padding(.bottom, 24)
+            MusicHorizontalShelfSkeleton(
+                title: "Albums",
+                style: .album,
+                count: 4,
+                horizontalInset: 20,
+            )
+            .padding(.bottom, 24)
+            MusicHorizontalShelfSkeleton(
+                title: "Similar Artists",
+                style: .artistCircle,
+                count: 4,
+                horizontalInset: 20,
+            )
+            .padding(.bottom, 24)
+        }
+    }
+}
+
 private struct ArtistSimilarSection: View {
     @ObservedObject var model: ArtistViewModel
 
@@ -1368,5 +1397,18 @@ private struct SimilarArtistCard: View {
                 )
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+}
+
+private struct ArtistPageScrollChromeModifier: ViewModifier {
+    let scrollSpace: String
+    let backdropPalette: ArtworkDynamicGradient.BackdropPalette
+
+    func body(content: Content) -> some View {
+        content
+            .coordinateSpace(name: scrollSpace)
+            .scrollIndicators(.hidden)
+            .scrollContentBackground(.hidden)
+            .environment(\.artistPageBackdropPalette, backdropPalette)
     }
 }

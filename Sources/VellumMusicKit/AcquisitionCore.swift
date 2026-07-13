@@ -7,6 +7,7 @@ typealias AcquisitionProgress = @Sendable (Double) -> Void
 /// (`AcquisitionManager.activePlugin`); every request flows through the active one.
 enum AcquisitionPluginKind: String, CaseIterable, Identifiable, Sendable {
     case lidarr
+    case droppedNeedle
 
     var id: String { rawValue }
 }
@@ -172,6 +173,11 @@ struct AcquisitionConfigField: Identifiable, Hashable, Sendable {
         case text
     }
 
+    struct PickerOption: Hashable, Sendable {
+        let id: String
+        let label: String
+    }
+
     /// Storage suffix (unique within a plugin).
     let id: String
     let kind: Kind
@@ -179,13 +185,23 @@ struct AcquisitionConfigField: Identifiable, Hashable, Sendable {
     let placeholder: String
     /// Whether ``AcquisitionProviding/isConfigured`` requires this field.
     let required: Bool
+    /// When set, Settings renders a picker instead of a free-text field.
+    let pickerOptions: [PickerOption]?
 
-    init(id: String, kind: Kind, label: String, placeholder: String, required: Bool = true) {
+    init(
+        id: String,
+        kind: Kind,
+        label: String,
+        placeholder: String,
+        required: Bool = true,
+        pickerOptions: [PickerOption]? = nil,
+    ) {
         self.id = id
         self.kind = kind
         self.label = label
         self.placeholder = placeholder
         self.required = required
+        self.pickerOptions = pickerOptions
     }
 }
 
