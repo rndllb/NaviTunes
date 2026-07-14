@@ -74,7 +74,7 @@ The "Lidarr-style brain" — keep a followed artist's discography complete — b
 - **UI**: `ArtistFollowButton` (bell toggle in the artist-page toolbar, always shown — following without a plugin is a valid wishlist) and `SubscriptionsView` (Settings → Plugins → **Following**: per-artist status, "Check now", unfollow; banner when no download plugin is configured).
 - **Capability gating**: auto-fetch only when `acquisition.isConfigured` **and** `capabilities.granularity == .album`. Everything keys off capabilities, never a named plugin.
 
-## Home mixes (Tuned In)
+## Home mixes (Made for You)
 
 - Built in `HomeMixBuilder.swift`, cached on `AppModel.homeMixes`, refreshed via `rebuildHomeMixes()` / `refreshHomeMixes()`.
 - Mix types: **On Repeat**, **Favorites**, **Rediscover**, **New in Your Library** — each needs **≥ 3 tracks** or it is omitted.

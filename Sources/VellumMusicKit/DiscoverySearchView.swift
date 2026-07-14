@@ -213,6 +213,12 @@ struct DiscoverySearchView: View {
     @State private var genresLoadError: String?
     @State private var genresLoadedForKey: String?
 
+    // Library-tab server catalog search.
+    @State private var libraryServerResults: CatalogSearchResults = .empty
+    @State private var isLibraryFetching = false
+    @State private var librarySearchError: String?
+    @State private var librarySearchTask: Task<Void, Never>?
+
     // Per-row interaction state.
     @State private var addingAlbumIds: Set<String> = []
     @State private var toast: String?
@@ -255,14 +261,16 @@ struct DiscoverySearchView: View {
         .custom(leading: MusicChevronRowMetrics.artworkDividerLeading(side: rowArtworkSide, spacing: 12))
     }
 
-    private var personalResults: PersonalLibrarySearchResults {
-        app.searchPersonalLibrary(query: trimmedQuery)
+    /// User playlists on the server matching the Library-tab query (magic playlists excluded upstream).
+    private var libraryPlaylistMatches: [PlaylistSummary] {
+        let tokens = Self.librarySearchTokens(trimmedQuery)
+        guard !tokens.isEmpty else { return [] }
+        return app.libraryPlaylists.filter { matchesLibrarySearchTokens(tokens, in: $0.name) }
     }
 
-    /// Unified, relevance-sorted hybrid feed. Both the server catalog and
-    /// the request backend return their own internal relevance order; we score every row
-    /// against the query and merge-sort so the strongest match wins regardless
-    /// of source instead of always surfacing Navidrome/Jellyfin first.
+    /// Unified, relevance-sorted hybrid feed. Server catalog, iTunes, and acquisition
+    /// plugin hits are scored against the query and merge-sorted so the strongest match
+    /// wins regardless of source.
     private var hybridRows: [HybridRow] {
         let personalAlbumIds = Set(app.libraryAlbumEntries.map(\.id))
         let personalSongIds = app.librarySongIds
@@ -360,10 +368,15 @@ struct DiscoverySearchView: View {
                 scheduleHybridSearch()
             } else {
                 hybridSearchTask?.cancel()
+                scheduleLibrarySearch()
             }
         }
         .onChange(of: searchText) { _, _ in
-            if scope == .discover { scheduleHybridSearch() }
+            if scope == .discover {
+                scheduleHybridSearch()
+            } else {
+                scheduleLibrarySearch()
+            }
         }
         .overlay(alignment: .bottom) {
             if let toast {
@@ -477,7 +490,7 @@ struct DiscoverySearchView: View {
             Section {
                 recentHeader
                 if recent.isEmpty {
-                    Text("Search your server, or grab something new with your download plugin.")
+                    Text("Search your server or Apple Music for songs, albums, and artists.")
                         .font(.subheadline)
                         .foregroundStyle(MusicDesign.secondaryLabel)
                         .listRowBackground(Color.clear)
@@ -832,10 +845,10 @@ struct DiscoverySearchView: View {
         )
     }
 
-    // MARK: - Hybrid: acquisition row (Download pill + tappable detail)
+    // MARK: - Hybrid: acquisition row (Request pill + tappable detail)
 
     private func acquireRow(_ result: AcquisitionResult) -> some View {
-        // Whole-row tap → acquisition detail view. The Download pill stays as a
+        // Whole-row tap → acquisition detail view. The Request pill stays as a
         // secondary action so users can kick off a request without first
         // opening the detail.
         let job = acquisition.job(forKey: result.request.requestKey)
@@ -874,8 +887,8 @@ struct DiscoverySearchView: View {
                     .frame(width: 56, alignment: .trailing)
             } else {
                 statePillButton(
-                    label: "Download",
-                    systemImage: "arrow.down",
+                    label: "Request",
+                    systemImage: "arrow.down.circle",
                     busy: false,
                     disabled: !app.acquisitionConfigured || acquisition.isActive(key: result.request.requestKey),
                 ) {
@@ -963,7 +976,7 @@ struct DiscoverySearchView: View {
         .disabled(busy || disabled)
     }
 
-    // MARK: - Library (personal)
+    // MARK: - Library (server catalog)
 
     private var libraryContent: some View {
         Group {
@@ -983,7 +996,7 @@ struct DiscoverySearchView: View {
     private var libraryIdleContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Search Your Library")
+                Text("Search Server Library")
                     .font(.title3.weight(.semibold))
                     .foregroundStyle(.primary)
                     .padding(.horizontal, 16)
@@ -998,13 +1011,10 @@ struct DiscoverySearchView: View {
     }
 
     private var libraryIdlePromptText: String {
-        if app.librarySongIds.isEmpty
-            && app.libraryAlbumEntries.isEmpty
-            && app.libraryPlaylistEntries.isEmpty
-        {
-            return "Your library is empty. Add songs, albums, and playlists from Discover to search them here."
+        if !app.isSignedIn {
+            return "Sign in to search everything on your music server."
         }
-        return "Find songs, albums, playlists, and artists you've added to your library."
+        return "Find any song, album, playlist, or artist on your server."
     }
 
     private var libraryRecentlySearchedList: some View {
@@ -1036,11 +1046,31 @@ struct DiscoverySearchView: View {
     }
 
     private var libraryResultsList: some View {
-        let results = personalResults
+        let results = libraryServerResults
+        let playlists = libraryPlaylistMatches
+        let hasResults = !results.isEmpty || !playlists.isEmpty
         return List {
-            if results.isEmpty {
+            if isLibraryFetching && !hasResults {
                 Section {
-                    Text("Nothing in your library matches \"\(trimmedQuery)\".")
+                    HStack {
+                        ProgressView().tint(MusicDesign.accent)
+                        Text("Searching…")
+                            .font(.subheadline)
+                            .foregroundStyle(MusicDesign.secondaryLabel)
+                            .padding(.leading, 8)
+                    }
+                    .listRowBackground(Color.clear)
+                }
+            } else if let err = librarySearchError, !hasResults {
+                Section {
+                    Text(err)
+                        .font(.subheadline)
+                        .foregroundStyle(MusicDesign.secondaryLabel)
+                        .listRowBackground(Color.clear)
+                }
+            } else if !hasResults {
+                Section {
+                    Text("Nothing on your server matches \"\(trimmedQuery)\".")
                         .font(.subheadline)
                         .foregroundStyle(MusicDesign.secondaryLabel)
                         .listRowBackground(Color.clear)
@@ -1107,9 +1137,9 @@ struct DiscoverySearchView: View {
                         }
                     }
                 }
-                if !results.playlists.isEmpty {
+                if !playlists.isEmpty {
                     Section("Playlists") {
-                        ForEach(Array(results.playlists.enumerated()), id: \.element.id) { index, playlist in
+                        ForEach(Array(playlists.enumerated()), id: \.element.id) { index, playlist in
                             Button {
                                 recordRecent(.init(
                                     kind: .playlist,
@@ -1133,7 +1163,7 @@ struct DiscoverySearchView: View {
                             .listRowBackground(libraryRowBackground)
                             .discoverySearchListRowChrome()
                             .libraryPlaylistContextMenu(playlist)
-                            .musicChevronRowDivider(searchArtworkDividerKind, shows: index < results.playlists.count - 1)
+                            .musicChevronRowDivider(searchArtworkDividerKind, shows: index < playlists.count - 1)
                         }
                     }
                 }
@@ -1342,7 +1372,11 @@ struct DiscoverySearchView: View {
     private func submitSearch() {
         let q = trimmedQuery
         guard !q.isEmpty else { return }
-        if scope == .discover { scheduleHybridSearch(debounce: false) }
+        if scope == .discover {
+            scheduleHybridSearch(debounce: false)
+        } else {
+            scheduleLibrarySearch(debounce: false)
+        }
     }
 
     /// Records a navigation-target entity into Recently Searched. Called from
@@ -1357,8 +1391,7 @@ struct DiscoverySearchView: View {
         }
     }
 
-    /// Debounced fan-out to server-catalog search + the request backend. Cancels prior in-flight
-    /// task on each call so rapid typing collapses to the last query.
+    /// Debounced fan-out to server-catalog search + iTunes + optional acquisition plugin.
     private func scheduleHybridSearch(debounce: Bool = true) {
         hybridSearchTask?.cancel()
         let q = trimmedQuery
@@ -1406,17 +1439,25 @@ struct DiscoverySearchView: View {
         if Task.isCancelled || trimmedQuery != query { return }
         serverResults = server
 
-        // Resolve artists not on the server via iTunes, concurrently with acquisition search.
         async let itunesArtists = ITunesArtistClient.searchArtists(name: query, limit: 5)
+        async let itunesCatalog = ITunesSearchClient.acquisitionResults(query: query)
 
-        let acquire: [AcquisitionResult]
+        let pluginAcquire: [AcquisitionResult]
         if acquireOK {
-            acquire = await acquisition.search(query: query)
+            pluginAcquire = await acquisition.search(query: query)
         } else {
-            acquire = []
+            pluginAcquire = []
         }
+        let itunesAcquire = await itunesCatalog
         if Task.isCancelled || trimmedQuery != query { return }
-        acquireResults = acquire
+
+        var seenAcquireKeys = Set<String>()
+        var mergedAcquire: [AcquisitionResult] = []
+        mergedAcquire.reserveCapacity(pluginAcquire.count + itunesAcquire.count)
+        for row in pluginAcquire + itunesAcquire where seenAcquireKeys.insert(row.request.requestKey).inserted {
+            mergedAcquire.append(row)
+        }
+        acquireResults = mergedAcquire
 
         let serverArtistNames = Set(server.artists.map { LibraryTrackMatcher.normalize($0.name) })
         var seenNames = Set<String>()
@@ -1428,6 +1469,72 @@ struct DiscoverySearchView: View {
         if Task.isCancelled || trimmedQuery != query { return }
         namedArtistMatches = Array(matches.prefix(3))
         isFetching = false
+    }
+
+    private func scheduleLibrarySearch(debounce: Bool = true) {
+        librarySearchTask?.cancel()
+        let q = trimmedQuery
+        guard !q.isEmpty else {
+            libraryServerResults = .empty
+            librarySearchError = nil
+            isLibraryFetching = false
+            return
+        }
+        isLibraryFetching = true
+        librarySearchError = nil
+        librarySearchTask = Task { @MainActor in
+            if debounce {
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                if Task.isCancelled { return }
+            }
+            await runLibrarySearch(query: q)
+        }
+    }
+
+    private func runLibrarySearch(query: String) async {
+        if app.effectiveOfflineMode {
+            let offline = app.searchOfflineCatalog(query: query, limit: 40)
+            if Task.isCancelled || trimmedQuery != query { return }
+            libraryServerResults = offline
+            librarySearchError = nil
+            isLibraryFetching = false
+            return
+        }
+
+        guard let lib = app.activeLibrary else {
+            if Task.isCancelled || trimmedQuery != query { return }
+            libraryServerResults = .empty
+            isLibraryFetching = false
+            return
+        }
+
+        do {
+            let results = try await lib.searchCatalog(query: query, limit: 40)
+            if Task.isCancelled || trimmedQuery != query { return }
+            libraryServerResults = results
+            librarySearchError = nil
+        } catch is CancellationError {
+            return
+        } catch {
+            if Task.isCancelled || trimmedQuery != query { return }
+            librarySearchError = error.localizedDescription
+            libraryServerResults = .empty
+        }
+        isLibraryFetching = false
+    }
+
+    private static func librarySearchTokens(_ raw: String) -> [String] {
+        raw.folding(options: .diacriticInsensitive, locale: .current)
+            .lowercased()
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init)
+            .filter { !$0.isEmpty }
+    }
+
+    private func matchesLibrarySearchTokens(_ tokens: [String], in haystack: String) -> Bool {
+        let normalized = haystack.folding(options: .diacriticInsensitive, locale: .current).lowercased()
+        for t in tokens where !normalized.contains(t) { return false }
+        return true
     }
 
     private func addAlbum(_ album: AlbumSummary) async {
@@ -1590,7 +1697,7 @@ struct AcquireResultDetailView: View {
                     .foregroundStyle(MusicDesign.secondaryLabel)
             }
         } else if let job, job.status == .failed {
-            Label("Download failed", systemImage: "exclamationmark.circle.fill")
+            Label("Request failed", systemImage: "exclamationmark.circle.fill")
                 .font(.headline)
                 .foregroundStyle(.red)
                 .padding(.horizontal, 28)
@@ -1600,8 +1707,7 @@ struct AcquireResultDetailView: View {
             Button {
                 Task { await runRequest() }
             } label: {
-                Label("Download", systemImage: "arrow.down.circle.fill")
-                    .font(.headline)
+                RequestActionLabel(font: .headline)
                     .padding(.horizontal, 28)
                     .padding(.vertical, 12)
                     .background(Capsule().fill(MusicDesign.accent))

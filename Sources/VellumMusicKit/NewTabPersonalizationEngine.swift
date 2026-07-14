@@ -40,7 +40,7 @@ struct NewTabPersonalizedFeed {
     }
 }
 
-/// Builds a listening-taste-aware New tab from scrobbles (Tuned In signal), favorites,
+/// Builds a listening-taste-aware New tab from scrobbles (Made for You / home-mix signal), favorites,
 /// followed artists, and the user's top genres — sourced entirely from Apple's free iTunes
 /// feeds (`ITunesNewReleasesClient`). All requests run concurrently with no rate-limit pacing,
 /// so the personalized feed is ready in ~1–2 s.

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// A personalized on-device mix for the Home → **Tuned In** shelf.
+/// A personalized on-device mix for the Home → **Made for You** shelf.
 struct HomeMix: Identifiable, Hashable {
     let id: String
     let title: String
@@ -175,7 +175,7 @@ enum HomeMixBuilder {
 
 // MARK: - Mix artwork
 
-/// 2×2 mosaic cover for Home → **Tuned In** mixes (Navidrome / Apple Music–style).
+/// 2×2 mosaic cover for Home → **Made for You** mixes (Navidrome / Apple Music–style).
 struct MixCollageArtworkView: View {
     let urls: [URL]
     var fallbackSeed: String

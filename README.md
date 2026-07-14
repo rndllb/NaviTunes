@@ -21,7 +21,7 @@ Built in SwiftUI for iOS 26, with an Apple Music–style layout: Home / New / Ra
 - **New Releases for You** — next taste-ranked server-catalog rows after Top Picks (same eligibility rules; no overlap).
 - **New Artists Added** — unique artists from recent server adds, excluding albums already in your library.
 - **Recently Played** — local play log merged with server recently-played albums.
-- **Tuned In** dynamic mixes — On Repeat, Favorites, Rediscover, New in Your Library (2×2 mosaic cover art).
+- **Made for You** dynamic mixes — On Repeat, Favorites, Rediscover, New in Your Library (2×2 mosaic cover art).
 - **Your Playlists**, **taste-based genre shelves** (4 genres × 9 albums from `listeningTopGenres()`), server **New Releases** fallback when taste shelves are still loading.
 - Mixes also appear under **Library → Playlists** (toggle in Settings); mix detail uses the same layout as album detail (no remove-from-playlist).
 
@@ -85,7 +85,7 @@ Built in SwiftUI for iOS 26, with an Apple Music–style layout: Home / New / Ra
 Home-screen widgets (app group snapshot from the main app):
 
 - **Recently Played** — small through extra large; play current/recent track.
-- **Top Picks / Tuned In** — recommendations from `homeMixes` with per-mix play actions.
+- **Top Picks / Made for You** — recommendations from `homeMixes` with per-mix play actions.
 
 ### Settings
 
@@ -205,7 +205,7 @@ See **CLAUDE.md** for backend capability differences, library semantics, lyrics 
 | **Subsonic clients** | Navidrome backend speaks Subsonic/OpenSubsonic; not marketed as a generic “any Subsonic server” client (some features use Navidrome-native `/api/`). |
 | **Some overflow rows** | A few chart-preview / menu stubs remain. |
 | **Server catalog vs personal library** | Home Top Picks / New Releases / genre shelves show **server catalog you don’t own**; Library “Recently Added” is your personal magic playlist. |
-| **Tuned In mixes** | Require ≥ 3 tracks per mix; On Repeat / Rediscover use **completed server scrobbles**. |
+| **Made for You mixes** | Require ≥ 3 tracks per mix; On Repeat / Rediscover use **completed server scrobbles**. |
 | **Lyrics** | Plain-text / unsynced sources do not auto-scroll. |
 | **Auto-offline** | Restricts Discovery search to downloaded content; does not fully gate Home/Library streaming. |
 | **Jellyfin radio** | No server internet-radio API — custom stations only. |

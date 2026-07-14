@@ -90,7 +90,7 @@ struct SettingsLibraryDataView: View {
         } header: {
             Text("Mixes")
         } footer: {
-            Text("Adds your personalized Tuned In mixes (On Repeat, Favorites Mix, and others) to Library → Playlists. They still appear on Home either way.")
+            Text("Adds your personalized Made for You mixes (On Repeat, Favorites Mix, and others) to Library → Playlists. They still appear on Home either way.")
         }
     }
 

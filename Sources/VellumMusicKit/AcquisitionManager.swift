@@ -37,8 +37,6 @@ final class AcquisitionManager: ObservableObject {
 
     init() {
         let stored = UserDefaults.standard.string(forKey: Self.activeKey)
-        // A previously-stored "downtify" no longer decodes (plugin removed) and falls through
-        // to the Lidarr default.
         if let stored, let kind = AcquisitionPluginKind(rawValue: stored) {
             activePlugin = kind
         } else {
@@ -58,6 +56,7 @@ final class AcquisitionManager: ObservableObject {
     static func makeProvider(_ kind: AcquisitionPluginKind) -> AcquisitionProviding {
         switch kind {
         case .lidarr: return LidarrAcquisitionPlugin()
+        case .downtify: return DowntifyAcquisitionPlugin()
         case .droppedNeedle: return DroppedNeedleAcquisitionPlugin()
         }
     }
