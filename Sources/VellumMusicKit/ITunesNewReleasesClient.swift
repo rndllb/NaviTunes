@@ -200,9 +200,12 @@ enum ITunesNewReleasesClient {
         return upscale(label)
     }
 
+    /// Compiled once: iTunes artwork URLs embed a `NNNxNNNbb` size token we swap for 512×512.
+    private static let artworkSizeRegex = try? NSRegularExpression(pattern: "[0-9]+x[0-9]+bb")
+
     /// Rewrite an `…/NxNbb.<ext>` artwork URL to a 512px edge (Apple serves any size).
     private static func upscale(_ raw: String) -> URL? {
-        guard let regex = try? NSRegularExpression(pattern: "[0-9]+x[0-9]+bb") else { return URL(string: raw) }
+        guard let regex = artworkSizeRegex else { return URL(string: raw) }
         let range = NSRange(raw.startIndex..., in: raw)
         let replaced = regex.stringByReplacingMatches(in: raw, range: range, withTemplate: "512x512bb")
         return URL(string: replaced)

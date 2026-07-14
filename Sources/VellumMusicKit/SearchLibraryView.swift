@@ -105,7 +105,7 @@ private struct SearchTabHeader: View {
                     TextField(
                         "",
                         text: $searchText,
-                        prompt: Text(scope == .discover ? "Artists, Songs, and More" : "Your Library")
+                        prompt: Text(scope == .discover ? "Artists, Songs, and More" : "Songs, Albums, Artists")
                             .foregroundStyle(MusicDesign.secondaryLabel),
                     )
                     .focused($searchFieldFocused)

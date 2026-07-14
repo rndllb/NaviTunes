@@ -193,7 +193,7 @@ public final class AppModel: ObservableObject {
 
     /// Live merge of the local play log and the server's recently-played albums.
     @Published private(set) var homeRecentlyPlayed: [RecentPlayedItem] = []
-    /// On-device personalized mixes for the Home → Tuned In shelf.
+    /// On-device personalized mixes for the Home → Made for You shelf.
     @Published private(set) var homeMixes: [HomeMix] = []
     @Published private(set) var libraryAlbumsLoadError: String?
 
@@ -514,7 +514,7 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    /// When on, personalized Tuned In mixes also appear in Library → Playlists (All).
+    /// When on, personalized Made for You mixes also appear in Library → Playlists (All).
     @Published var showHomeMixesInPlaylists = true {
         didSet {
             UserDefaults.standard.set(showHomeMixesInPlaylists, forKey: Self.showHomeMixesInPlaylistsKey)
@@ -1435,35 +1435,39 @@ public final class AppModel: ObservableObject {
     }
 
     private func applyRestoredSnapshotBody(_ snap: LibrarySnapshot?) {
-        if let snap {
-            if !snap.albums.isEmpty { libraryAlbums = snap.albums }
-            if !snap.tracks.isEmpty {
-                discoveryLibraryTracks = snap.tracks
+        // Coalesce the whole synchronous restore (album + track assignments and the inline
+        // offline merge) into a single index rebuild instead of one per assignment.
+        withCoalescedLibraryIndexRebuild {
+            if let snap {
+                if !snap.albums.isEmpty { libraryAlbums = snap.albums }
+                if !snap.tracks.isEmpty {
+                    discoveryLibraryTracks = snap.tracks
+                }
+                if !snap.playlists.isEmpty { libraryPlaylists = snap.playlists }
+                if !snap.favoriteTrackIds.isEmpty {
+                    favoriteTrackIds = Set(snap.favoriteTrackIds)
+                }
+                // Restore library-membership state so Library → Songs/Albums/Recently Added
+                // render the user's curated set on cold launch without waiting for the
+                // server round-trip in ``refreshLibraryMembership``.
+                if let id = snap.libraryMagicPlaylistId, !id.isEmpty {
+                    libraryMagicPlaylistId = id
+                }
+                if !snap.librarySongIds.isEmpty {
+                    librarySongIds = Set(snap.librarySongIds)
+                }
+                if !snap.libraryAlbumEntries.isEmpty {
+                    libraryAlbumEntries = snap.libraryAlbumEntries
+                }
+                if !snap.libraryPlaylistEntries.isEmpty {
+                    libraryPlaylistEntries = snap.libraryPlaylistEntries
+                }
+                offline.backfillRecordsIfMissing(knownTracks: snap.tracks)
+            } else {
+                offline.backfillRecordsIfMissing(knownTracks: [])
             }
-            if !snap.playlists.isEmpty { libraryPlaylists = snap.playlists }
-            if !snap.favoriteTrackIds.isEmpty {
-                favoriteTrackIds = Set(snap.favoriteTrackIds)
-            }
-            // Restore library-membership state so Library → Songs/Albums/Recently Added
-            // render the user's curated set on cold launch without waiting for the
-            // server round-trip in ``refreshLibraryMembership``.
-            if let id = snap.libraryMagicPlaylistId, !id.isEmpty {
-                libraryMagicPlaylistId = id
-            }
-            if !snap.librarySongIds.isEmpty {
-                librarySongIds = Set(snap.librarySongIds)
-            }
-            if !snap.libraryAlbumEntries.isEmpty {
-                libraryAlbumEntries = snap.libraryAlbumEntries
-            }
-            if !snap.libraryPlaylistEntries.isEmpty {
-                libraryPlaylistEntries = snap.libraryPlaylistEntries
-            }
-            offline.backfillRecordsIfMissing(knownTracks: snap.tracks)
-        } else {
-            offline.backfillRecordsIfMissing(knownTracks: [])
+            mergeOfflineCatalog()
         }
-        mergeOfflineCatalog()
         Task {
             await offline.enrichCachedDurationsIfNeeded()
             mergeOfflineCatalog()
@@ -1479,18 +1483,20 @@ public final class AppModel: ObservableObject {
             let offlineTracks = offline.cachedTracks()
             guard !offlineTracks.isEmpty else { return }
 
-            var trackById = Dictionary(uniqueKeysWithValues: discoveryLibraryTracks.map { ($0.id, $0) })
-            for t in offlineTracks {
-                trackById[t.id] = t
-            }
-            discoveryLibraryTracks = Array(trackById.values)
+            withCoalescedLibraryIndexRebuild {
+                var trackById = Dictionary(uniqueKeysWithValues: discoveryLibraryTracks.map { ($0.id, $0) })
+                for t in offlineTracks {
+                    trackById[t.id] = t
+                }
+                discoveryLibraryTracks = Array(trackById.values)
 
-            var albumById = Dictionary(uniqueKeysWithValues: libraryAlbums.map { ($0.id, $0) })
-            for album in offline.cachedAlbums() {
-                albumById[album.id] = album
-            }
-            libraryAlbums = albumById.values.sorted {
-                $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+                var albumById = Dictionary(uniqueKeysWithValues: libraryAlbums.map { ($0.id, $0) })
+                for album in offline.cachedAlbums() {
+                    albumById[album.id] = album
+                }
+                libraryAlbums = albumById.values.sorted {
+                    $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+                }
             }
             libraryCatalogEpoch &+= 1
         }
@@ -2840,6 +2846,7 @@ public final class AppModel: ObservableObject {
     }
 
     private func rebuildLibraryAlbumIndex() {
+        guard !skipAlbumIndexRebuild else { return }
         PerfLog.measure("rebuildLibraryAlbumIndex", details: "albums=\(libraryAlbums.count) tracks=\(discoveryLibraryTracks.count)") {
             var merged = libraryAlbums
             var seenIds = Set(libraryAlbums.map(\.id))
@@ -2869,6 +2876,35 @@ public final class AppModel: ObservableObject {
     /// and the resulting structures will be written directly. Suppresses the on-main
     /// rebuild that would otherwise duplicate the work in `didSet`.
     private var skipDiscoveryIndexRebuild = false
+    /// Companion to ``skipDiscoveryIndexRebuild`` for the album index. Suppresses the
+    /// ``libraryAlbums`` `didSet` rebuild while a coalesced batch is mutating state.
+    private var skipAlbumIndexRebuild = false
+    /// True while inside ``withCoalescedLibraryIndexRebuild`` so nested calls defer the
+    /// single settle-time rebuild to the outermost scope.
+    private var isCoalescingLibraryIndexRebuild = false
+
+    /// Runs `mutate` with the ``libraryAlbums`` / ``discoveryLibraryTracks`` `didSet`
+    /// index rebuilds suppressed, then rebuilds both indices exactly once. Bootstrap and
+    /// refresh reassign these arrays several times in a row (snapshot restore → offline
+    /// merges → server refresh); without this each assignment ran a full O(n) main-thread
+    /// rebuild, so a cold launch fired ~18 of them in bursts. Nested calls (e.g. a wrapped
+    /// ``mergeOfflineCatalog`` inside a wrapped restore) defer to the outermost scope.
+    private func withCoalescedLibraryIndexRebuild(_ mutate: () -> Void) {
+        let wasCoalescing = isCoalescingLibraryIndexRebuild
+        let prevSkipDiscovery = skipDiscoveryIndexRebuild
+        let prevSkipAlbum = skipAlbumIndexRebuild
+        isCoalescingLibraryIndexRebuild = true
+        skipDiscoveryIndexRebuild = true
+        skipAlbumIndexRebuild = true
+        mutate()
+        isCoalescingLibraryIndexRebuild = wasCoalescing
+        skipDiscoveryIndexRebuild = prevSkipDiscovery
+        skipAlbumIndexRebuild = prevSkipAlbum
+        // Only the outermost scope performs the settle-time rebuild; rebuilding the
+        // discovery indices also rebuilds the album index (see rebuildDiscoveryTrackIndices).
+        guard !wasCoalescing else { return }
+        rebuildDiscoveryTrackIndices()
+    }
 
     /// Rebuild both the title-index (used by the request backend match-Bool checks) and the
     /// chart-track index (used by New tab `Track` lookups) when the discovery
@@ -2900,9 +2936,11 @@ public final class AppModel: ObservableObject {
             let fetchedIds = Set(fetched.map(\.id))
             let personalIds = Set(libraryAlbumEntries.map(\.id))
             let preserved = libraryAlbums.filter { personalIds.contains($0.id) && !fetchedIds.contains($0.id) }
-            libraryAlbums = fetched + preserved
+            withCoalescedLibraryIndexRebuild {
+                libraryAlbums = fetched + preserved
+                mergeOfflineCatalog()
+            }
             recentlyAddedAlbums = (try? await recent) ?? []
-            mergeOfflineCatalog()
             persistLibrarySnapshot()
             if let lib = activeLibrary {
                 let genreAlbums = await fetchHomeTopPicksGenreCandidates(

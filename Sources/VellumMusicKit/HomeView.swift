@@ -98,7 +98,7 @@ struct HomeView: View {
                         }
 
                         if !app.homeMixes.isEmpty {
-                            tunedInShelf(title: "Tuned In", mixes: app.homeMixes)
+                            madeForYouShelf(title: "Made for You", mixes: app.homeMixes)
                         }
 
                         if !madeForYouPlaylists.isEmpty {
@@ -332,7 +332,7 @@ struct HomeView: View {
         }
     }
 
-    private func tunedInShelf(title: String, mixes: [HomeMix]) -> some View {
+    private func madeForYouShelf(title: String, mixes: [HomeMix]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             sectionHeader(title: title)
 

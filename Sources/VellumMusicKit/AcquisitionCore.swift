@@ -7,6 +7,7 @@ typealias AcquisitionProgress = @Sendable (Double) -> Void
 /// (`AcquisitionManager.activePlugin`); every request flows through the active one.
 enum AcquisitionPluginKind: String, CaseIterable, Identifiable, Sendable {
     case lidarr
+    case downtify
     case droppedNeedle
 
     var id: String { rawValue }
