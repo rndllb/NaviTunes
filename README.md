@@ -49,9 +49,9 @@ Built in SwiftUI for iOS 26, with an Apple Music–style layout: Home / New / Ra
 
 ### Discovery & search
 
-- **Discover** tab — server catalog search plus **iTunes artist matches** for artists not on your server (opens `ArtistPageView`).
-- **Library search** — personal library only (songs in your magic playlist / indexed discovery cache).
-- **Acquisition plugins** — request missing music through Lidarr (a music collection manager); optional auto-add to personal library after server scan. Request any artist via Discover search or Settings → Following.
+- **Discover** tab — server catalog search, **iTunes songs and albums** (Request rows for music not on your server), and **iTunes artist matches** for artists missing from your server (opens `ArtistPageView`).
+- **Library search** — full **server catalog** (`searchCatalog`) plus user playlists on the server; not limited to your personal magic-playlist membership.
+- **Acquisition plugins** — request missing music through **Lidarr**, **Downtify**, or **DroppedNeedle**; optional auto-add to personal library after server scan. Request any artist via Discover search or Settings → Following.
 - **Artist following** — follow artists from the artist page; Settings → Plugins → Following keeps discographies complete via **iTunes discography** + the active acquisition plugin (wishlist when no album-level plugin is configured).
 - **Artist enrichment** — TheAudioDB (top songs, wide banner when available), **MusicBrainz** profile facts for About (`ArtistProfileClient`), **ListenBrainz** similar-artist recommendations (`ListenBrainzClient`).
 - Off-server album detail uses **iTunes catalog tracklists** (`ITunesTracklistClient`) for “complete album” / request rows.
@@ -121,6 +121,7 @@ Vellum Music IOS/
 │       ├── JellyfinMusicClient.swift
 │       ├── NavidromeClient.swift
 │       ├── ITunesArtistClient.swift    # Artist search + discography (New/Discover/Following)
+│       ├── ITunesSearchClient.swift      # iTunes song/album search (Discover Request rows)
 │       ├── ITunesTracklistClient.swift # Off-server album tracklists
 │       ├── ITunesNewReleasesClient.swift
 │       ├── AlbumDetailRelatedSectionsView.swift
@@ -178,8 +179,10 @@ Settings → Plugins → **Music Requests**. Requesting missing music goes throu
 | Plugin | Granularity | Track search | Config |
 |---|---|---|---|
 | **Lidarr** (music collection manager) | Album | No | Server URL + API key |
+| **Downtify** | Track | Yes | Server URL |
+| **DroppedNeedle** | Album (optional per-track) | No | Server URL + local / Jellyfin / Plex sign-in |
 
-Every UI request builds one `AcquisitionRequest` and calls `app.requestAcquisition(_:)`. Lidarr still resolves releases via MusicBrainz internally; Vellum’s browse/artist surfaces use **iTunes** for metadata.
+Every UI request builds one `AcquisitionRequest` and calls `app.requestAcquisition(_:)`. Discover search also surfaces **iTunes catalog** matches as Request rows even when no plugin supports track search. Lidarr still resolves releases via MusicBrainz internally; Vellum’s browse/artist surfaces use **iTunes** for metadata.
 
 ### Discovery / browse metadata
 
@@ -196,7 +199,11 @@ Every UI request builds one `AcquisitionRequest` and calls `app.requestAcquisiti
 - `PlaybackEngine` — `AVPlayer` (default) or `EqualizedAudioEnginePlayer` (EQ on local files) + Now Playing + remote commands.
 - Personal library — magic playlist + JSON membership payload on server.
 
-See **CLAUDE.md** for backend capability differences, library semantics, lyrics parsing, and contributor conventions.
+See **CLAUDE.md** for backend capability differences, library semantics, and lyrics parsing.
+
+## Author
+
+Randall Brown
 
 ## Known limitations
 
