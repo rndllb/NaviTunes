@@ -102,7 +102,7 @@ Open the Xcode project file, not `Package.swift` on its own. Running both at onc
 
 ## Author
 
-Randall Brown
+rndllb
 
 ## License
 
