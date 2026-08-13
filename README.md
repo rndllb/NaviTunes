@@ -1,233 +1,109 @@
 # Vellum Music
 
-An iOS music client for self-hosted libraries. Connects to **Jellyfin** and **Navidrome** (Subsonic API), with discovery and browse metadata from the **iTunes Search API**, plus TheAudioDB enrichment where configured.
+Vellum Music is an iPhone app that looks and feels like Apple Music, but plays music from your own server.
 
-Built in SwiftUI for iOS 26, with an Apple Music–style layout: Home / New / Radio / Library / Search tabs, a full-screen Now Playing sheet, persistent mini player, home-screen widgets, and offline downloads.
+Sign in with Jellyfin or Navidrome. Browse, search, queue, download, and listen the way you would in Apple Music. The difference is simple: the library is yours. It lives on hardware you control, not on a streaming subscription.
 
-## Features
+## What it is
 
-### Backends & sign-in
+If you already run a home music server, Vellum gives you the Apple Music experience on top of it. Same kind of tabs, same kind of player, same kind of library screens. Your files, your server, your rules.
 
-- **Jellyfin** and **Navidrome** (Subsonic API) with a single URL + credentials.
-- **Test Connection** on login (`/System/Info/Public` or `/rest/ping.view`).
-- **Secondary server URL** with automatic/manual failover.
-- **Self-signed HTTPS** trust override for homelab servers.
-- **Subsonic salted-token auth** — password never travels in the URL.
-- Credentials stored in Keychain only.
+## The Magic Playlist
+
+This is the part that makes Vellum different from a normal server client.
+
+When you add a song or album in Vellum, it goes into a hidden playlist on your server. That playlist is your personal library. It syncs across your devices, keeps track of what you actually added (not just everything sitting on the server), and remembers when you added each item.
+
+On a shared Jellyfin or Navidrome box, your library stays separate from everyone else's. Your phone, your iPad, and your Mac all see the same "my library" list because the server holds it for you.
+
+You never manage that playlist by hand. Vellum creates it, updates it, and keeps it out of your normal playlist list. You just tap Add to Library and it works.
+
+## What you get
 
 ### Home
 
-- **Top Picks for You** — taste-ranked **server catalog** albums you have **not** added to your personal library; editorial **250×325** cards (full-width cover + color-bleed band + metadata). Shelf order **stabilizes** after first paint so background refreshes don't reshuffle visible cards; pull-to-refresh forces a full re-rank.
-- **New Releases for You** — next taste-ranked server-catalog rows after Top Picks (same eligibility rules; no overlap).
-- **New Artists Added** — unique artists from recent server adds, excluding albums already in your library.
-- **Recently Played** — local play log merged with server recently-played albums.
-- **Made for You** dynamic mixes — On Repeat, Favorites, Rediscover, New in Your Library (2×2 mosaic cover art).
-- **Your Playlists**, **taste-based genre shelves** (4 genres × 9 albums from `listeningTopGenres()`), server **New Releases** fallback when taste shelves are still loading.
-- Mixes also appear under **Library → Playlists** (toggle in Settings); mix detail uses the same layout as album detail (no remove-from-playlist).
+A personalized home screen with shelves like Top Picks, New Releases, Recently Played, Made for You mixes, playlists, and genre rows. Home helps you discover music on the server that you have not added yet.
 
-### New tab
+### New
 
-- Personalized browse feed built from the **iTunes Search API** (charts, recent releases, artist discographies) — no MusicBrainz toggle or MusicBrainz browse dependency.
-- Taste signals: scrobbles, favorites, followed artists, listening genres (`NewTabPersonalizationEngine`).
-- Shelves include **New For You**, **Picked For You**, **New This Week**, **Recent Releases**, artist highlights, and chart rows with acquisition/request affordances.
+A browse tab for charts, new releases, and artist pages. Good for finding albums you might want to request or add later.
 
 ### Radio
 
-- **Custom stations** — user-added stream URLs (persisted locally).
-- **Navidrome internet radio** — server stations when signed in to Navidrome (`getInternetRadioStations`).
-- Jellyfin sign-in shows custom stations only (no Subsonic radio API).
+Internet radio stations from Navidrome, plus your own custom stream URLs.
 
 ### Library
 
-- Albums, Songs, Playlists, Artists, Genres, Favorites, Downloaded.
-- **Personal library** (“My Library”) synced via a server-side magic playlist (`__vellum_*`) with accurate per-item “Recently Added (yours)” dates.
-- Configurable sections, pins, server playlist CRUD where supported.
-- Per-album hero artwork with dynamic gradients; **tappable artist names** navigate to the artist page (except “Various Artists”).
-- **Album detail shelves** — horizontal carousels below metadata on library and browse album detail: **Other Versions**, **More By [Artist]**, **You Might Also Like** (memory-first, then full artist discography fetch).
-- **Artist page** — Apple Music–style stretchy portrait hero with **soft blur melt** into a dark charcoal backdrop (`.artistPage` palette analysis); centered play / info / favorite controls; adaptive section chrome.
-- **Kill mode** for playlist editing (batch remove + commit).
+Albums, songs, playlists, artists, genres, favorites, and downloads. Album and artist pages use big artwork, dynamic colors, and the same kind of layout Apple Music users already know.
 
-### Discovery & search
+### Search
 
-- **Discover** tab — server catalog search, **iTunes songs and albums** (Request rows for music not on your server), and **iTunes artist matches** for artists missing from your server (opens `ArtistPageView`).
-- **Library search** — full **server catalog** (`searchCatalog`) plus user playlists on the server; not limited to your personal magic-playlist membership.
-- **Acquisition plugins** — request missing music through **Lidarr**, **Downtify**, or **DroppedNeedle**; optional auto-add to personal library after server scan. Request any artist via Discover search or Settings → Following.
-- **Artist following** — follow artists from the artist page; Settings → Plugins → Following keeps discographies complete via **iTunes discography** + the active acquisition plugin (wishlist when no album-level plugin is configured).
-- **Artist enrichment** — TheAudioDB (top songs, wide banner when available), **MusicBrainz** profile facts for About (`ArtistProfileClient`), **ListenBrainz** similar-artist recommendations (`ListenBrainzClient`).
-- Off-server album detail uses **iTunes catalog tracklists** (`ITunesTracklistClient`) for “complete album” / request rows.
+Two modes:
+
+- **Discover** searches your server, Apple Music catalog results for missing music, and artists you can follow or request.
+- **Library** searches everything on the server, not just what is in your personal library.
 
 ### Playback
 
-- Full queue, shuffle, repeat, play next, add to queue, reorder in Now Playing.
-- Mini player with cover **zoom transition** into full-screen Now Playing.
-- Persisted queue restore, playback speed, sleep timer, skip-interval buttons.
-- Lock-screen remote: skip track vs skip interval modes.
-- **Play more like this**, play artist (configurable: top songs / shuffle album / full discography), go to artist/album/playlist.
-- **Add to playlist** from Now Playing uses a **UIKit sheet over the player** so the zoom transition is not broken by SwiftUI `.sheet`.
-- **10-band graphic equalizer** — `AVAudioEngine` + `AVAudioUnitEQ` on local audio (downloads + stream cache); streams start immediately and auto-switch to EQ once cached locally.
-- **Stream disk cache** — optional replay cache for progressive streams; EQ mode also warms cache in the background.
-- **Synced lyrics** (Navidrome structured LRC / Jellyfin lyrics API) with Apple Music–style focus scroll; plain-text lyrics shown unsynced.
-- **Now Playing artist line** — adaptive light/dark text from artwork backdrop luminance (readable on white covers).
-- **My Listening** analytics — streaks, heatmap, top artists/tracks from completed server scrobbles.
-- Stale track ID recovery after server rescans (queue + downloads + personal library).
+Full queue, shuffle, repeat, play next, lyrics, sleep timer, playback speed, lock screen controls, and a mini player that opens into full Now Playing. There is a 10-band equalizer for downloads and cached streams.
 
-### Offline & downloads
+### Offline
 
-- Stream or save tracks/albums/playlists/favorites.
-- Structured `Artist/Album/track.ext` download layout with manifest.
-- Wi‑Fi-only downloads, storage cap, cache browser, download queue UI.
-- Manual **offline mode** + **auto-offline** (non-Wi‑Fi or away from home SSID).
-- Auto-download on favorite.
-- Separate **Wi‑Fi / cellular streaming** bitrate & format and **download** quality tiers.
+Download albums, playlists, or favorites. Turn on offline mode manually, or let the app switch when you leave Wi-Fi or your home network.
 
 ### Widgets
 
-Home-screen widgets (app group snapshot from the main app):
-
-- **Recently Played** — small through extra large; play current/recent track.
-- **Top Picks / Made for You** — recommendations from `homeMixes` with per-mix play actions.
+Home screen widgets for recently played music and Made for You mixes.
 
 ### Settings
 
-iOS Settings–style **hub** (`SettingsView`) with dedicated subpages (`SettingsSections.swift`):
+Account, library stats, playback quality, downloads, appearance, accent color, app icon, scrobbling, and optional plugins for requesting missing music.
 
-- **Account** — profile, server connection, sign out.
-- **Library** — **Your Library** (personal magic-playlist counts) vs **Server Catalog** (full-server totals). Navidrome catalog stats use paginated `getAlbumList2` + `x-total-count`.
-- **Sync** — library membership sync status.
-- **Library & Data** — show mixes in Playlists, scrobble browser/exclusions, **My Listening**, client backup/restore (scrobbles, exclusions, prefs — not credentials or server library), Navidrome share links, library scan controls.
-- **Offline** / **Downloads** — offline mode, auto-offline, download queue and storage browser.
-- **Sound & Playback** — Wi‑Fi/cellular streaming quality, download quality, stream cache toggle, **equalizer** (presets + per-band sliders), player controls, artist play mode.
-- **Appearance** — theme, song list size, backdrop toggles, **accent color** (presets + custom hex), **app icon** (independent from accent).
-- **Plugins** — **Music Requests** (acquisition plugin picker + activity), **Following** (subscription management).
-- **About** — app info.
-- **Server health** pill on the hub; library stats refresh on Settings appear.
+## Request missing music
 
-### Integrations
+If something is not on your server yet, Vellum can help you ask for it. Connect one request plugin in Settings:
 
-- **Server scrobbling** — now playing + completed plays with pending queue and retry.
-- **Artist following** — iTunes discography diff + acquisition enqueue (`MusicSubscriptionEngine`); works as a wishlist without a download plugin.
-- Transient toasts for queue/library confirmations.
-- Navidrome profile picture via magic-playlist cover upload.
-- Navidrome **share links** from album/track/playlist context menus.
+- **Lidarr** for full albums
+- **Downtify** for individual tracks
+- **DroppedNeedle** for album requests through its own service
 
-## Project structure
+You can also follow artists and keep an eye on their discography from the app.
 
-```
-Vellum Music IOS/
-├── Package.swift                       # SwiftPM root
-├── Sources/
-│   └── VellumMusicKit/                   # All views, models, clients, playback engine
-│       ├── AppModel.swift              # App-wide state
-│       ├── JellyfinMusicClient.swift
-│       ├── NavidromeClient.swift
-│       ├── ITunesArtistClient.swift    # Artist search + discography (New/Discover/Following)
-│       ├── ITunesSearchClient.swift      # iTunes song/album search (Discover Request rows)
-│       ├── ITunesTracklistClient.swift # Off-server album tracklists
-│       ├── ITunesNewReleasesClient.swift
-│       ├── AlbumDetailRelatedSectionsView.swift
-│       ├── AlbumDetailArtistCatalogCache.swift
-│       ├── ArtistPageView.swift          # Apple Music–style artist hero + discography
-│       ├── ArtistProfileClient.swift     # MusicBrainz About metadata
-│       ├── ListenBrainzClient.swift      # Similar-artist recommendations
-│       ├── PlaybackEngine.swift
-│       ├── HomeView.swift              # Taste-based Home shelves + editorial Top Picks cards
-│       ├── NewTabPersonalizationEngine.swift
-│       ├── OverPlayerSheetPresenter.swift
-│       └── …
-├── VellumMusicHost/
-│   ├── VellumMusicHost.xcodeproj
-│   ├── VellumMusicHost/                  # iOS app target
-│   └── VellumWidgets/                    # Widget extension
-└── Sources/VellumWidgetSupport/          # Shared widget models + snapshot writer
-```
+## Servers
 
-Open **`VellumMusicHost/VellumMusicHost.xcodeproj`** only — opening `Package.swift` in a second Xcode window can cause package resolution conflicts.
+Works with:
 
-## Requirements
+- **Jellyfin**
+- **Navidrome** (Subsonic API)
 
-- **Xcode 16** or later (Swift 6.2 toolchain)
-- **iOS 26** deployment target
-- macOS 15+ for CLI `swift build`
+Credentials stay in the Keychain. HTTP works for local networks. HTTPS is recommended when you can use it.
 
-## Building and running
+## Build and run
+
+Requirements:
+
+- Xcode 16 or later
+- iOS 26
+
+Open the project:
 
 ```bash
 open VellumMusicHost/VellumMusicHost.xcodeproj
 ```
 
-Or from the CLI (compile check only):
+Or build from the command line:
 
 ```bash
 xcodebuild -workspace VellumMusicHost/VellumMusicHost.xcodeproj/project.xcworkspace \
   -scheme VellumMusicHost -destination 'generic/platform=iOS Simulator' build
 ```
 
-## Configuration
-
-### Server URL
-
-Plain `http://` is allowed for LAN, Tailscale, and homelab setups (`NSAllowsArbitraryLoads` in Info.plist). HTTPS is preferred when available.
-
-### Media quality
-
-Settings → Sound & Playback: independent Wi‑Fi streaming, cellular streaming, and download quality/format pickers.
-
-### Acquisition plugins (requesting music)
-
-Settings → Plugins → **Music Requests**. Requesting missing music goes through a single swappable **acquisition plugin** — one is active at a time:
-
-| Plugin | Granularity | Track search | Config |
-|---|---|---|---|
-| **Lidarr** (music collection manager) | Album | No | Server URL + API key |
-| **Downtify** | Track | Yes | Server URL |
-| **DroppedNeedle** | Album (optional per-track) | No | Server URL + local / Jellyfin / Plex sign-in |
-
-Every UI request builds one `AcquisitionRequest` and calls `app.requestAcquisition(_:)`. Discover search also surfaces **iTunes catalog** matches as Request rows even when no plugin supports track search. Lidarr still resolves releases via MusicBrainz internally; Vellum’s browse/artist surfaces use **iTunes** for metadata.
-
-### Discovery / browse metadata
-
-- **iTunes Search API** — New tab feed, off-server artist pages, Discover artist matches, album tracklists for request flows.
-- **TheAudioDB** (demo key) — artist enrichment (top tracks, similar artists) where configured.
-
-**Removed from the app:** in-app MusicBrainz browse (`MusicBrainzArtistClient`, `MusicBrainzTracklistClient`, Cover Art Archive artwork helper, Settings → Plugins MusicBrainz toggle).
-
-## Architecture (short)
-
-- `AppModel` — active client, library snapshot, playback, offline manager, settings, Home taste shelves (`homeTopPickAlbums`, `homeNewReleaseAlbums`).
-- `MusicLibraryProviding` — cross-backend abstraction (`JellyfinMusicClient`, `NavidromeClient`).
-- `NewTabPersonalizationEngine` — taste ranking for New tab and Home discovery shelves.
-- `PlaybackEngine` — `AVPlayer` (default) or `EqualizedAudioEnginePlayer` (EQ on local files) + Now Playing + remote commands.
-- Personal library — magic playlist + JSON membership payload on server.
-
-See **CLAUDE.md** for backend capability differences, library semantics, and lyrics parsing.
+Open the Xcode project file, not `Package.swift` on its own. Running both at once can confuse Swift Package Manager.
 
 ## Author
 
 Randall Brown
 
-## Known limitations
-
-| Area | Limitation |
-|------|------------|
-| **Subsonic clients** | Navidrome backend speaks Subsonic/OpenSubsonic; not marketed as a generic “any Subsonic server” client (some features use Navidrome-native `/api/`). |
-| **Some overflow rows** | A few chart-preview / menu stubs remain. |
-| **Server catalog vs personal library** | Home Top Picks / New Releases / genre shelves show **server catalog you don’t own**; Library “Recently Added” is your personal magic playlist. |
-| **Made for You mixes** | Require ≥ 3 tracks per mix; On Repeat / Rediscover use **completed server scrobbles**. |
-| **Lyrics** | Plain-text / unsynced sources do not auto-scroll. |
-| **Auto-offline** | Restricts Discovery search to downloaded content; does not fully gate Home/Library streaming. |
-| **Jellyfin radio** | No server internet-radio API — custom stations only. |
-| **Navidrome library stats** | Song totals sum album `trackCount` — may differ slightly from true track count. |
-| **Equalizer on streams** | EQ requires a local file; first uncached play uses AVPlayer until cache handoff. |
-| **Search tab** | Detached search tab button vs tab-bar scroll-collapse are mutually exclusive on current iOS (see ISSUES.md). |
-
-## Security
-
-- Keychain credentials (`AfterFirstUnlockThisDeviceOnly`, not iCloud-synced).
-- Jellyfin: bearer token in headers, not URLs.
-- Navidrome: salted token per request.
-- Cold launch probes existing session before re-sending password.
-- Download paths sanitized and containment-checked.
-
 ## License
 
-No license declared. Treat as all rights reserved unless a license file is added.
+No license file yet. All rights reserved unless stated otherwise.
