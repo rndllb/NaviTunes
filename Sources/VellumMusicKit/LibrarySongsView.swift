@@ -357,7 +357,7 @@ struct LibrarySongsView: View {
     }
 
     private func albumSummary(for track: Track) -> AlbumSummary {
-        if let cached = app.libraryAlbums.first(where: { $0.id == track.albumId }) {
+        if let cached = app.catalogAlbum(id: track.albumId) {
             return cached
         }
         return AlbumSummary(

@@ -18,6 +18,8 @@ final class StreamingMediaDiskCache: @unchecked Sendable {
 
     /// Total on-disk budget. Oldest-accessed files are evicted past this.
     private let maxBytes: Int64 = 512 * 1024 * 1024
+    /// Tiny files are HTML/JSON error bodies or truncated commits — never playable audio.
+    private static let minimumUsableBytes: Int64 = 32_768
     private let lock = NSLock()
     private var inFlightPrefetches: [String: Task<URL, Error>] = [:]
 
@@ -45,20 +47,29 @@ final class StreamingMediaDiskCache: @unchecked Sendable {
         directory?.appendingPathComponent(key, isDirectory: false)
     }
 
-    /// Fast existence check — does not touch the file (safe during candidate scans).
+    /// Fast existence + size check. Evicts truncated or error-page files so playback
+    /// never prefers a dead cache entry over the live stream.
     func peekCachedFileURL(forKey key: String) -> URL? {
         lock.lock(); defer { lock.unlock() }
-        guard let url = fileURL(forKey: key),
-              FileManager.default.fileExists(atPath: url.path) else { return nil }
-        return url
+        return usableCachedFileURLLocked(forKey: key)
+    }
+
+    func evict(fileURL url: URL) {
+        lock.lock(); defer { lock.unlock() }
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    func evict(forKey key: String) {
+        lock.lock(); defer { lock.unlock() }
+        guard let url = fileURL(forKey: key) else { return }
+        try? FileManager.default.removeItem(at: url)
     }
 
     /// Returns the local file for a fully-cached stream, or nil. Bumps the file's
     /// modification date so it counts as recently used for LRU eviction.
     func cachedFileURL(forKey key: String) -> URL? {
         lock.lock(); defer { lock.unlock() }
-        guard let url = fileURL(forKey: key),
-              FileManager.default.fileExists(atPath: url.path) else { return nil }
+        guard let url = usableCachedFileURLLocked(forKey: key) else { return nil }
         try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
         return url
     }
@@ -201,10 +212,22 @@ final class StreamingMediaDiskCache: @unchecked Sendable {
 
         cache.commit(temporaryFileURL: tempDownloadURL, forKey: key)
         guard let cached = cache.peekCachedFileURL(forKey: key) else {
+            cache.evict(forKey: key)
             throw URLError(.cannotCreateFile)
         }
         cache.markAccessed(fileURL: cached)
         return cached
+    }
+
+    private func usableCachedFileURLLocked(forKey key: String) -> URL? {
+        guard let url = fileURL(forKey: key) else { return nil }
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value ?? 0
+        if size < Self.minimumUsableBytes {
+            try? FileManager.default.removeItem(at: url)
+            return nil
+        }
+        return url
     }
 
     /// Evict least-recently-modified files until under budget. Caller holds `lock`.

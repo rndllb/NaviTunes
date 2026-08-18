@@ -35,8 +35,7 @@ final class EqualizedAudioEnginePlayer {
     init() {
         configureBands()
         // Nodes stay attached for the life of this player — per-track loads only
-        // re-schedule audio (and reconnect when the file's format changes). Full
-        // detach/re-attach churn per song raced route-change rebuilds and crashed.
+        // re-schedule audio (and reconnect when the file's format changes).
         engine.attach(playerNode)
         engine.attach(timePitchNode)
         engine.attach(eqNode)
@@ -79,19 +78,16 @@ final class EqualizedAudioEnginePlayer {
         try startEngineIfNeeded()
     }
 
-    func play(rate: Float) {
-        guard isConfigured, didScheduleAudio else { return }
+    @discardableResult
+    func play(rate: Float) -> Bool {
+        guard isConfigured, didScheduleAudio else { return false }
         if !engine.isRunning {
             do {
                 try engine.start()
             } catch {
-                // playerNode.play() with a stopped engine raises an NSException
-                // ("required condition is false: _engine->IsRunning()") — a hard
-                // crash, not a Swift error. Report failure instead; the owner
-                // pauses without advancing the queue and a config-change rebuild
-                // or the next user tap retries through a fresh load.
+                // playerNode.play() with a stopped engine raises an NSException.
                 notifyPlaybackFailed()
-                return
+                return false
             }
         }
         timePitchNode.rate = rate
@@ -99,6 +95,7 @@ final class EqualizedAudioEnginePlayer {
             playerNode.play()
         }
         startTimeObserver()
+        return true
     }
 
     func pause() {
@@ -149,11 +146,13 @@ final class EqualizedAudioEnginePlayer {
     }
 
     private func attachGraph(format: AVAudioFormat) throws {
-        // Same format as the current connections → the graph is already right;
-        // leave the engine alone (it may still be running, giving an instant
-        // schedule-and-play handoff between tracks).
         if isConfigured, let connectedFormat, connectedFormat == format { return }
         if engine.isRunning { engine.stop() }
+        if isConfigured {
+            engine.disconnectNodeOutput(playerNode)
+            engine.disconnectNodeOutput(timePitchNode)
+            engine.disconnectNodeOutput(eqNode)
+        }
         engine.connect(playerNode, to: timePitchNode, format: format)
         engine.connect(timePitchNode, to: eqNode, format: format)
         engine.connect(eqNode, to: engine.mainMixerNode, format: format)
@@ -361,9 +360,9 @@ final class EqualizedAudioEnginePlayer {
         onPlaybackFailed?()
     }
 
-    /// Clears the previous track's schedule WITHOUT stopping the engine or
-    /// touching the graph — a same-format follow-up track schedules straight
-    /// into the running engine (instant handoff, no re-init).
+    /// Clears the previous track's schedule without stopping the engine or
+    /// tearing the graph down — a same-format follow-up track can schedule
+    /// straight into the running engine.
     private func resetForReload() {
         reloadToken = UUID()
         streamTask?.cancel()

@@ -1,4 +1,6 @@
 import CoreGraphics
+import CoreImage
+import CoreImage.CIFilterBuiltins
 import Foundation
 import ImageIO
 import SwiftUI
@@ -158,6 +160,29 @@ enum ArtworkVerticalBleed {
     }
 }
 
+/// Pre-renders SwiftUI-equivalent Gaussian blur so hero / shelf washes don't
+/// re-blur on every frame (mini-player transitions, stretchy headers).
+enum ArtworkGaussianBlur {
+    private static let context = CIContext(options: [.cacheIntermediates: false])
+
+    static func cgImage(from source: CGImage, radius: CGFloat) -> CGImage? {
+        guard radius > 0.5 else { return source }
+        let extent = CIImage(cgImage: source).extent
+        let filter = CIFilter.gaussianBlur()
+        filter.inputImage = CIImage(cgImage: source).clampedToExtent()
+        filter.radius = Float(radius)
+        guard let output = filter.outputImage?.cropped(to: extent) else { return nil }
+        return context.createCGImage(output, from: extent)
+    }
+
+    /// CI pixel radius that matches SwiftUI `blur(radius:)` in **points** when
+    /// `source` is later `scaledToFill` into `displayedWidth` points.
+    static func matchingSwiftUIRadius(_ pointRadius: CGFloat, sourceWidth: Int, displayedWidth: CGFloat) -> CGFloat {
+        guard sourceWidth > 0, displayedWidth > 1 else { return pointRadius }
+        return pointRadius * CGFloat(sourceWidth) / displayedWidth
+    }
+}
+
 /// Bottom-band fill for ``HomeTopPickCard`` — pixel-stretched artwork colors with progressive blur.
 struct HomeTopPickArtworkBleed: View {
     let url: URL?
@@ -214,6 +239,9 @@ struct HomeTopPickArtworkBleed: View {
         }
         .mask(bleedSeamFadeMask)
         .clipped()
+        // Flatten the two live Gaussian blurs into a bitmap so vertical Home
+        // scrolling doesn't re-blur eight hero cards every frame.
+        .drawingGroup(opaque: false)
     }
 
     /// Fades the whole bleed in from transparent so no hard line meets the cover.
@@ -232,7 +260,7 @@ struct HomeTopPickArtworkBleed: View {
     }
 
     private var taskKey: String {
-        "\(url?.absoluteString ?? "none")|\(width)|\(height)"
+        "\(url?.absoluteString ?? "none")|\(width)|\(height)|\(displayScale)"
     }
 
     private func loadBleed() async {
@@ -240,19 +268,50 @@ struct HomeTopPickArtworkBleed: View {
             bleedImage = nil
             return
         }
-        guard let source = await RemoteArtworkLoad.cgImage(from: url, maxPixelSize: 512) else { return }
         let scale = max(displayScale, 2)
         let pxW = max(1, Int((width * scale).rounded()))
         let pxH = max(1, Int((height * scale).rounded()))
-        let bleed = ArtworkVerticalBleed.cgImage(
-            from: source,
-            pixelWidth: pxW,
-            pixelHeight: pxH,
-            stripHeightRatio: MusicDesign.homeTopPickBleedSourceRatio,
-        )
+        let cacheKey = "\(DecodedArtworkCache.stableID(for: url, maxPixelSize: 512))|\(pxW)x\(pxH)"
+        if let cached = HomeTopPickBleedCache.image(for: cacheKey) {
+            bleedImage = cached
+            return
+        }
+        guard let source = await RemoteArtworkLoad.cgImage(from: url, maxPixelSize: 512) else { return }
+        let bleed = await Task.detached(priority: .utility) {
+            ArtworkVerticalBleed.cgImage(
+                from: source,
+                pixelWidth: pxW,
+                pixelHeight: pxH,
+                stripHeightRatio: MusicDesign.homeTopPickBleedSourceRatio,
+            )
+        }.value
+        guard let bleed else { return }
+        HomeTopPickBleedCache.store(bleed, for: cacheKey)
         await MainActor.run {
             bleedImage = bleed
         }
+    }
+}
+
+private final class CachedBleedImage: NSObject {
+    let cgImage: CGImage
+    init(_ cgImage: CGImage) { self.cgImage = cgImage }
+}
+
+enum HomeTopPickBleedCache {
+    private static let memory = NSCache<NSString, CachedBleedImage>()
+
+    static func image(for key: String) -> CGImage? {
+        memory.object(forKey: key as NSString)?.cgImage
+    }
+
+    static func store(_ image: CGImage, for key: String) {
+        let cost = max(1, image.width * image.height * 4)
+        memory.setObject(CachedBleedImage(image), forKey: key as NSString, cost: cost)
+    }
+
+    static func clear() {
+        memory.removeAllObjects()
     }
 }
 

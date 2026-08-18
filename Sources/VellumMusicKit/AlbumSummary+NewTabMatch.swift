@@ -1,5 +1,32 @@
 import Foundation
 
+/// Thread-safe memo for ``AlbumSummary/catalogReleaseIdentityKey``. Reached from the main
+/// actor (view bodies) and from detached ranking work, hence the lock.
+private enum ReleaseIdentityKeyCache {
+    private static let lock = NSLock()
+    private static var entries: [String: String] = [:]
+    /// Catalogs are large but bounded; drop everything rather than grow without limit.
+    private static let capacity = 20_000
+
+    static func key(artist: String, title: String) -> String {
+        let cacheKey = "\(artist)\u{1}\(title)"
+        lock.lock()
+        if let hit = entries[cacheKey] {
+            lock.unlock()
+            return hit
+        }
+        lock.unlock()
+
+        let computed = "\(AlbumSummary.normalizedReleaseKey(artist))|\(AlbumSummary.normalizedAlbumTitleLoose(title))"
+
+        lock.lock()
+        if entries.count >= capacity { entries.removeAll(keepingCapacity: true) }
+        entries[cacheKey] = computed
+        lock.unlock()
+        return computed
+    }
+}
+
 extension AlbumSummary {
     /// Normalize titles for comparing chart metadata to Jellyfin / Navidrome catalog rows.
     static func normalizedReleaseKey(_ raw: String) -> String {
@@ -22,10 +49,12 @@ extension AlbumSummary {
     }
 
     /// Stable artist + album identity for deduping catalog rows that share a release under different ids.
+    ///
+    /// Memoized: deriving this runs unicode folding plus two regex passes, and callers hit it
+    /// in tight loops (shelf candidate pools, taste ranking, per-album library-eligibility
+    /// checks reached from view bodies).
     var catalogReleaseIdentityKey: String {
-        let artistKey = Self.normalizedReleaseKey(artist)
-        let titleKey = Self.normalizedAlbumTitleLoose(title)
-        return "\(artistKey)|\(titleKey)"
+        ReleaseIdentityKeyCache.key(artist: artist, title: title)
     }
 
     /// Base title for matching alternate editions (single, EP, deluxe, reinvented, etc.).
@@ -44,6 +73,20 @@ extension AlbumSummary {
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
         return normalizedReleaseKey(t)
+    }
+
+    /// Title keys for matching plugin rows to server albums (exact normalize plus
+    /// ``albumVersionBaseKey`` so "Album - EP" matches a server album without the suffix).
+    static func discographyTitleKeys(for title: String) -> [String] {
+        var keys: [String] = []
+        var seen = Set<String>()
+        func append(_ key: String) {
+            guard !key.isEmpty, seen.insert(key).inserted else { return }
+            keys.append(key)
+        }
+        append(LibraryTrackMatcher.normalize(title))
+        append(albumVersionBaseKey(title))
+        return keys
     }
 
     /// True when `other` is a different server row for the same underlying release family.

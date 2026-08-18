@@ -18,6 +18,17 @@ struct ChartTrack: Identifiable, Hashable {
         self.playcount = playcount
         self.browseKind = browseKind
     }
+
+    init(track: Track, playcount: Int = 0) {
+        self.init(
+            id: track.id,
+            name: track.title,
+            artistName: track.artist,
+            imageURL: track.artworkURL,
+            playcount: playcount,
+            browseKind: "Single"
+        )
+    }
 }
 
 struct ChartAlbum: Identifiable {
@@ -25,9 +36,54 @@ struct ChartAlbum: Identifiable {
     let name: String
     let artistName: String
     var imageURL: URL?
-    /// First-release date when known (iTunes `releaseDate`); drives the
-    /// "New This Week" vs "Recent Releases" recency split on the New tab.
+    /// First-release date when known; drives the "New This Week" vs
+    /// "Recent Releases" recency split on the New tab.
     var releaseDate: Date? = nil
+    /// Plugin-native id for off-server tracklist fetches (`native:` / `mbid:`).
+    var pluginLookupId: String? = nil
+
+    init(
+        id: String,
+        name: String,
+        artistName: String,
+        imageURL: URL?,
+        releaseDate: Date? = nil,
+        pluginLookupId: String? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.artistName = artistName
+        self.imageURL = imageURL
+        self.releaseDate = releaseDate
+        self.pluginLookupId = pluginLookupId
+    }
+
+    init(serverAlbum album: AlbumSummary) {
+        self.init(
+            id: album.id,
+            name: album.title,
+            artistName: album.artist,
+            imageURL: album.artworkURL,
+            releaseDate: album.releaseDate ?? album.releaseYear.flatMap { year in
+                var comps = DateComponents()
+                comps.year = year
+                comps.month = 1
+                comps.day = 1
+                return Calendar(identifier: .gregorian).date(from: comps)
+            }
+        )
+    }
+
+    init(release: AcquisitionRelease) {
+        self.init(
+            id: release.id,
+            name: release.title,
+            artistName: release.artist,
+            imageURL: release.artworkURL,
+            releaseDate: release.releaseDate,
+            pluginLookupId: release.trackLookupId
+        )
+    }
 }
 
 extension ChartTrack {

@@ -8,6 +8,7 @@ enum ArtworkURLCache {
 
     static func clearAll() {
         memory.removeAllObjects()
+        URLCache.shared.removeAllCachedResponses()
         guard let dir = try? cacheDirectory() else { return }
         try? FileManager.default.removeItem(at: dir)
     }

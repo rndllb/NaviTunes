@@ -133,20 +133,19 @@ struct LibraryView: View {
         //   3. Owned playlists from `getPlaylists` → server `created` date (since making
         //      a playlist counts as adding it). Deduped against (2) by id; the explicit
         //      entry date wins when both exist.
-        let albumsById = Dictionary(uniqueKeysWithValues: app.libraryAlbums.map { ($0.id, $0) })
-        let playlistsById = Dictionary(uniqueKeysWithValues: app.libraryPlaylists.map { ($0.id, $0) })
-
+        // Resolve through AppModel's prebuilt id indexes. Mapping `libraryAlbums` (the whole
+        // server catalog) into a dictionary here used to run on every body pass.
         var dated: [(item: RecentLibraryItem, added: Date)] = []
 
         for entry in app.libraryAlbumEntries {
-            if let album = albumsById[entry.id] {
+            if let album = app.catalogAlbum(id: entry.id) {
                 dated.append((.album(album), entry.added))
             }
         }
 
         var seenPlaylistIds: Set<String> = []
         for entry in app.libraryPlaylistEntries {
-            if let playlist = playlistsById[entry.id] {
+            if let playlist = app.libraryPlaylist(id: entry.id) {
                 dated.append((.playlist(playlist), entry.added))
                 seenPlaylistIds.insert(entry.id)
             }
@@ -254,10 +253,14 @@ struct LibraryView: View {
     }
 
     private var libraryScrollMainContent: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if !pinnedItems.isEmpty {
+        // Resolved once per pass — `pinnedItems` and `orderedVisibleRows` each decode JSON,
+        // and the row list was previously decoded again per row by the divider check.
+        let pinned = pinnedItems
+        let rows = orderedVisibleRows
+        return VStack(alignment: .leading, spacing: 0) {
+            if !pinned.isEmpty {
                 LazyVGrid(columns: pinnedColumns, spacing: 20) {
-                    ForEach(pinnedItems) { item in
+                    ForEach(pinned) { item in
                         NavigationLink {
                             pinnedItemDestination(item)
                         } label: {
@@ -273,8 +276,8 @@ struct LibraryView: View {
                 .padding(.bottom, 28)
             }
 
-            ForEach(Array(orderedVisibleRows.enumerated()), id: \.element.id) { index, row in
-                libraryRowLink(row, showsDivider: showsLibraryHubRowDivider(at: index, row: row))
+            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                libraryRowLink(row, showsDivider: showsLibraryHubRowDivider(at: index, row: row, in: rows))
             }
 
             Text("Recently Added")
@@ -290,9 +293,9 @@ struct LibraryView: View {
     }
 
     /// Inset divider after each hub row; **Downloaded** always gets one before Recently Added.
-    private func showsLibraryHubRowDivider(at index: Int, row: LibraryRow) -> Bool {
+    private func showsLibraryHubRowDivider(at index: Int, row: LibraryRow, in rows: [LibraryRow]) -> Bool {
         if row == .downloaded { return true }
-        return index < orderedVisibleRows.count - 1
+        return index < rows.count - 1
     }
 
     @ViewBuilder
@@ -371,7 +374,8 @@ struct LibraryView: View {
     /// resolved but the user hasn't added anything → empty CTA, populated → grid.
     @ViewBuilder
     private var recentlyAddedSectionBody: some View {
-        if recentItems.isEmpty {
+        let items = recentItems
+        if items.isEmpty {
             if app.isResolvingLibraryMembership || app.libraryMagicPlaylistId == nil {
                 ProgressView()
                     .tint(MusicDesign.accent)
@@ -382,7 +386,7 @@ struct LibraryView: View {
             }
         } else {
             LazyVGrid(columns: recentColumns, spacing: 20) {
-                ForEach(recentItems) { item in
+                ForEach(items) { item in
                     recentItemLink(item)
                 }
             }
@@ -654,9 +658,13 @@ struct LibraryPlaylistsView: View {
     }
 
     private var searchFilteredPlaylists: [PlaylistSummary] {
+        searchFiltered(displayedPlaylists)
+    }
+
+    private func searchFiltered(_ playlists: [PlaylistSummary]) -> [PlaylistSummary] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !q.isEmpty else { return displayedPlaylists }
-        return displayedPlaylists.filter { $0.name.lowercased().contains(q) }
+        guard !q.isEmpty else { return playlists }
+        return playlists.filter { $0.name.lowercased().contains(q) }
     }
 
     private func sortPlaylists(_ playlists: [PlaylistSummary]) -> [PlaylistSummary] {
@@ -664,12 +672,17 @@ struct LibraryPlaylistsView: View {
         case .title:
             return playlists.sorted(by: pinnedFirstThenTitle)
         case .dateAdded:
-            return playlists.sorted { lhs, rhs in
-                let ld = playlistDateAdded(lhs)
-                let rd = playlistDateAdded(rhs)
-                if ld != rd { return ld > rd }
-                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-            }
+            // Resolve each date once up front. Calling `playlistDateAdded` from the
+            // comparator meant a linear scan of `libraryPlaylistEntries` per comparison.
+            var addedById: [String: Date] = [:]
+            for entry in app.libraryPlaylistEntries { addedById[entry.id] = entry.added }
+            return playlists
+                .map { ($0, addedById[$0.id] ?? $0.libraryAddedDate ?? .distantPast) }
+                .sorted { lhs, rhs in
+                    if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
+                    return lhs.0.name.localizedCaseInsensitiveCompare(rhs.0.name) == .orderedAscending
+                }
+                .map(\.0)
         case .updatedDate:
             return playlists.sorted { lhs, rhs in
                 let ld = playlistUpdatedDate(lhs)
@@ -741,12 +754,16 @@ struct LibraryPlaylistsView: View {
     }
 
     var body: some View {
-        ScrollView {
+        // Both of these filter and sort the whole playlist library. They were referenced
+        // half a dozen times across this body, re-sorting on each reference.
+        let all = displayedPlaylists
+        let visible = searchFiltered(all)
+        return ScrollView {
             // Lazy so a large playlist library only builds the rows on screen —
             // a plain VStack here instantiated every row (artwork, context menu,
             // NavigationLink) up front, which is what made the list lag.
             LazyVStack(spacing: 0) {
-                if displayedPlaylists.isEmpty {
+                if all.isEmpty {
                     ContentUnavailableView(
                         filter == .favorites ? "No Favorited Playlists"
                             : filter == .downloads ? "No Downloaded Playlists"
@@ -761,12 +778,12 @@ struct LibraryPlaylistsView: View {
                         )
                     )
                     .padding(.top, 40)
-                } else if searchFilteredPlaylists.isEmpty {
+                } else if visible.isEmpty {
                     ContentUnavailableView.search(text: query)
                         .padding(.top, 40)
                 } else if viewStyle == .grid {
                     LazyVGrid(columns: gridColumns, spacing: 16) {
-                        ForEach(searchFilteredPlaylists) { playlist in
+                        ForEach(visible) { playlist in
                             NavigationLink { destination(for: playlist) } label: {
                                 gridCell(playlist)
                                     .coverZoomSource(id: playlist.id)
@@ -779,20 +796,20 @@ struct LibraryPlaylistsView: View {
                     .padding(.top, 8)
                     .padding(.bottom, 16)
                 } else {
-                    ForEach(Array(searchFilteredPlaylists.enumerated()), id: \.element.id) { index, playlist in
+                    ForEach(Array(visible.enumerated()), id: \.element.id) { index, playlist in
                         NavigationLink { destination(for: playlist) } label: {
                             listRow(playlist)
                                 .coverZoomSource(id: playlist.id)
                         }
                         .buttonStyle(.plain)
                         .homeMixOrPlaylistContextMenu(playlist, app: app)
-                        .musicChevronRowDivider(.playlistArtwork, shows: index < searchFilteredPlaylists.count - 1)
+                        .musicChevronRowDivider(.playlistArtwork, shows: index < visible.count - 1)
                     }
                 }
             }
         }
         .scrollIndicators(.hidden)
-        .task(id: searchFilteredPlaylists.map(\.id)) {
+        .task(id: visible.map(\.id)) {
             await warmTopPlaylistRows()
         }
         .background(MusicDesign.background)
@@ -1825,13 +1842,10 @@ struct AlbumsGridView: View {
     /// Albums the user has added to their Vellum library, resolved against the cached
     /// catalog. Newest-added first (per the magic playlist's per-album timestamps).
     private var libraryAlbums: [AlbumSummary] {
-        let entriesById = Dictionary(uniqueKeysWithValues: app.libraryAlbumEntries.map { ($0.id, $0.added) })
-        let albumsById = Dictionary(uniqueKeysWithValues: app.libraryAlbums.map { ($0.id, $0) })
-        return app.libraryAlbumEntries
-            .compactMap { entry in albumsById[entry.id] }
-            .sorted { lhs, rhs in
-                (entriesById[lhs.id] ?? .distantPast) > (entriesById[rhs.id] ?? .distantPast)
-            }
+        app.libraryAlbumEntries
+            .compactMap { entry in app.catalogAlbum(id: entry.id).map { ($0, entry.added) } }
+            .sorted { $0.1 > $1.1 }
+            .map(\.0)
     }
 
     private var downloadedAlbums: [AlbumSummary] {
@@ -1858,8 +1872,11 @@ struct AlbumsGridView: View {
     }
 
     private func recomputeAlbumDisplay() {
-        PerfLog.measure("LibraryView.recomputeAlbumDisplay", details: "base=\(baseAlbums.count) sort=\(sort) q=\(query.count)c") {
-            recomputeAlbumDisplayBody()
+        // `baseAlbums` resolves the whole personal library against the catalog — evaluate it
+        // once and hand it to the body rather than also computing it for the log details.
+        let base = baseAlbums
+        PerfLog.measure("LibraryView.recomputeAlbumDisplay", details: "base=\(base.count) sort=\(sort) q=\(query.count)c") {
+            recomputeAlbumDisplayBody(base: base)
         }
     }
 
@@ -1872,8 +1889,7 @@ struct AlbumsGridView: View {
         }
     }
 
-    private func recomputeAlbumDisplayBody() {
-        let base = baseAlbums
+    private func recomputeAlbumDisplayBody(base: [AlbumSummary]) {
         displayedBaseAlbumCount = base.count
 
         let sorted: [AlbumSummary]
@@ -2293,10 +2309,17 @@ struct ArtistAlbumsView: View {
         [GridItem(.adaptive(minimum: MusicDesign.gridMinCell), spacing: 16, alignment: .top)]
     }
 
-    private var albums: [AlbumSummary] {
+    /// Cached so the whole server catalog isn't filtered and sorted on every ``AppModel``
+    /// publish while this screen is open.
+    @State private var albums: [AlbumSummary] = []
+
+    private func recomputeAlbums() {
         let key = artistName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else { return [] }
-        return app.libraryAlbums
+        guard !key.isEmpty else {
+            albums = []
+            return
+        }
+        albums = app.libraryAlbums
             .filter {
                 $0.artist.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(key) == .orderedSame
             }
@@ -2335,5 +2358,8 @@ struct ArtistAlbumsView: View {
         .musicNavigationChrome()
         .musicInlineNavigationTitleScreen()
         .musicNavigationBarVisibleWhenPushed()
+        .onAppear { recomputeAlbums() }
+        .onChange(of: app.libraryAlbums.count) { _, _ in recomputeAlbums() }
+        .onChange(of: artistName) { _, _ in recomputeAlbums() }
     }
 }

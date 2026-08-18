@@ -27,6 +27,10 @@ enum ArtworkDynamicGradient {
     /// backdrop instantly instead of re-downloading + re-analyzing the cover every time.
     private static let paletteCache = NSCache<NSString, PaletteBox>()
 
+    static func clearPaletteCache() {
+        paletteCache.removeAllObjects()
+    }
+
     /// Stable cache key: artwork URLs carry volatile auth (Subsonic salted `u`/`t`/`s`, Jellyfin
     /// `api_key`) that changes every request, so keying by the full URL never hits. Key by the
     /// path plus only the identity params (cover id / size / tag) instead.

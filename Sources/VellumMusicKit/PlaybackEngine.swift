@@ -132,7 +132,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// HanSJin-style ``AVAudioUnitEQ`` path — local files only (downloads + stream cache).
     private var equalizedPlayer: EqualizedAudioEnginePlayer?
     /// Detached-but-alive EQ session kept for reuse so consecutive tracks don't
-    /// each build (and start) a brand-new AVAudioEngine.
+    /// each build a brand-new AVAudioEngine.
     private var idleEqualizedSession: EqualizedAudioEnginePlayer?
     private var equalizedPlaybackURL: URL?
     private var equalizedPlaybackAsset: AVURLAsset?
@@ -153,9 +153,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// track is playing so a skip reuses a warm asset instead of doing the DNS /
     /// TLS / HTTP-header handshake cold on tap. ``makePlaybackAsset`` consumes it.
     private var prewarmedAssets: [String: AVURLAsset] = [:]
-    /// On-disk stream cache for instant replays of fully cached tracks. Off by
-    /// default. Live streams always use plain http(s) URLs — AVFoundation probes
-    /// custom-scheme asset URLs with URLSession and breaks playback.
+    /// On-disk stream cache for instant replays of fully cached tracks. Live
+    /// streams always use plain http(s) URLs — AVFoundation probes custom-scheme
+    /// asset URLs with URLSession and breaks playback.
     private var streamingDiskCacheEnabled: Bool {
         UserDefaults.standard.bool(forKey: "streamingDiskCacheEnabled")
     }
@@ -635,31 +635,48 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
     func reloadForEqualizerSettingsChange() async {
         guard hasActivePlaybackOutput, queue.indices.contains(currentIndex) else { return }
-        // Turning EQ OFF while the engine path is live: bypassing the EQ node is
-        // a real-time, gapless no-op sonically — no track reload needed. The
-        // next track loads through AVPlayer as usual.
-        if !equalizerEnabled, let equalizedPlayer {
-            equalizedPlayer.applyGains(equalizerBandGains, bypass: true)
-            return
-        }
-        // Turning EQ ON while a local-file-backed EQ session is already playing:
-        // the node applies gains live — nothing to reload either.
-        if equalizerEnabled, let equalizedPlayer {
+        // Already on the EQ engine: apply or bypass the node live. No reload,
+        // so the playhead and progress bar stay put.
+        if let equalizedPlayer {
             equalizedPlayer.applyGains(equalizerBandGains, bypass: effectiveEqualizerBypass)
             return
         }
+        // EQ off and already on AVPlayer — nothing to reload.
+        if !equalizerEnabled { return }
         let wasPlaying = isPlaying
         let pos = playbackHead
         let epoch = beginPlaybackSession()
         teardownPlayer()
         do {
             try await startCurrentItem(epoch: epoch, startSeconds: pos, autoPlay: wasPlaying)
+            syncProgressToActualPlaybackHead()
             if wasPlaying {
                 isPlaying = true
             }
         } catch {
-            isPlaying = false
+            stagePendingRestore(at: pos)
         }
+    }
+
+    /// After a same-track reload (EQ on/off), the requested `startSeconds` can
+    /// disagree with where audio actually started. Snap the scrubber / lock-screen
+    /// elapsed time to the live playhead so the bar does not keep running from
+    /// the old position.
+    private func syncProgressToActualPlaybackHead() {
+        let actual: TimeInterval
+        if let equalizedPlayer {
+            actual = max(0, equalizedPlayer.currentPlaybackTime())
+        } else if let player {
+            let t = player.currentTime().seconds
+            actual = t.isFinite ? max(0, t) : 0
+        } else {
+            actual = 0
+        }
+        playbackHead = actual
+        currentTime = actual
+        lastEmittedUIProgress = actual > 0.05 ? actual : -10_000
+        lastNowPlayingInfoRefresh = -10_000
+        refreshNowPlaying()
     }
 
     func togglePlayPause() {
@@ -1401,8 +1418,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     /// A live engine session can outlast an EQ-off toggle (kept playing with the
-    /// node bypassed instead of reloading the track) — every gain application
-    /// must honor that, not just the live-slider path.
+    /// node bypassed). Every gain application must honor that.
     private var effectiveEqualizerBypass: Bool { equalizerBypass || !equalizerEnabled }
 
     func applyLiveEqualizerGains() {
@@ -1456,9 +1472,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
         enqueuedNextTrack = nil
         if let equalizedPlayer {
             equalizedPlayer.stop()
-            // Keep the engine + node graph for the next EQ load — building a
-            // fresh AVAudioEngine per track re-inits audio IO every song and
-            // races route-change rebuilds.
             idleEqualizedSession = equalizedPlayer
         }
         equalizedPlayer = nil
@@ -1825,18 +1838,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
             throw library == nil ? PlaybackEngineError.missingLibrary : URLError(.cannotLoadFromNetwork)
         }
 
-        if equalizerEnabled,
-           isEqualizerEligible(for: activeTrack),
-           !candidates.contains(where: { isEqualizerEligibleLocalFile($0.url, for: activeTrack) }),
-           let remote = candidates.first(where: { !$0.url.isFileURL && CachingResourceLoaderDelegate.isCacheable($0.url) }) {
-            // Brief off-main wait for a cache hit — fast networks get EQ on first play.
-            if let cached = await tryQuickEqualizerCache(for: remote, maxWait: 2.5) {
-                guard isPlaybackEpochCurrent(epoch) else { return }
-                insertEqualizerCacheCandidate(cached, into: &candidates, seen: &seen, track: activeTrack)
-            }
-            StreamingMediaDiskCache.shared.prefetchInBackground(url: remote.url, headers: remote.headers)
-        }
-
         var lastError: Error?
         for candidate in candidates {
             guard isPlaybackEpochCurrent(epoch) else { return }
@@ -1854,6 +1855,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
                 lastError = URLError(.cannotParseResponse)
             } catch {
                 lastError = error
+                if isUnreadableStreamCacheError(error) {
+                    evictFailedStreamCacheCandidate(candidate.url)
+                }
             }
         }
 
@@ -1883,19 +1887,27 @@ final class PlaybackEngine: NSObject, ObservableObject {
         autoPlay: Bool,
     ) async throws -> Bool {
         guard isPlaybackEpochCurrent(epoch) else { return false }
-        if equalizerEnabled, isEqualizerEligible(for: track), isEqualizerEligibleLocalFile(candidate.url, for: track) {
-            do {
-                if try await loadEqualizedPlayerItem(
-                    epoch: epoch,
-                    candidate: candidate,
-                    track: track,
-                    startSeconds: startSeconds,
-                    autoPlay: autoPlay,
-                ) {
-                    return true
+        if equalizerEnabled,
+           isEqualizerEligible(for: track),
+           isEqualizerEligibleLocalFile(candidate.url, for: track) {
+            let fileURL = candidate.url
+            let canOpen = await Task.detached(priority: .userInitiated) {
+                (try? AVAudioFile(forReading: fileURL)) != nil
+            }.value
+            if canOpen {
+                do {
+                    if try await loadEqualizedPlayerItem(
+                        epoch: epoch,
+                        candidate: candidate,
+                        track: track,
+                        startSeconds: startSeconds,
+                        autoPlay: autoPlay,
+                    ) {
+                        return true
+                    }
+                } catch {
+                    // EQ decode failed — fall through to AVPlayer without EQ on the same file.
                 }
-            } catch {
-                // EQ decode failed — fall through to AVPlayer without EQ on the same file.
             }
         }
         return try await loadAVPlayerItem(
@@ -1913,10 +1925,13 @@ final class PlaybackEngine: NSObject, ObservableObject {
         track: Track,
         startSeconds: TimeInterval,
         autoPlay: Bool,
+        allowEqualizerHandoff: Bool = true,
     ) async throws -> Bool {
         guard isPlaybackEpochCurrent(epoch) else { return false }
         let asset = makePlaybackAsset(url: candidate.url, headers: candidate.headers)
-        if candidate.url.isFileURL, let urlAsset = asset as? AVURLAsset {
+        if candidate.url.isFileURL,
+           !isCommittedStreamCacheFile(candidate.url),
+           let urlAsset = asset as? AVURLAsset {
             _ = try? await urlAsset.load(.isPlayable, .duration)
         }
         var resolvedDuration = track.duration
@@ -1952,10 +1967,14 @@ final class PlaybackEngine: NSObject, ObservableObject {
         attachPlayer(p, item: item, track: track, initialTime: startSeconds, resolvedDuration: resolvedDuration)
 
         if startSeconds > 0.05 {
-            _ = await awaitPlayerSeek(p, to: startSeconds)
-            currentTime = startSeconds
-            playbackHead = startSeconds
-            lastEmittedUIProgress = startSeconds
+            let ok = await awaitPlayerSeek(p, to: startSeconds)
+            let playerTime = p.currentTime().seconds
+            let actual = ok && playerTime.isFinite && playerTime > 0.05
+                ? playerTime
+                : (playerTime.isFinite ? max(0, playerTime) : 0)
+            currentTime = actual
+            playbackHead = actual
+            lastEmittedUIProgress = actual > 0.05 ? actual : -10_000
         }
 
         if autoPlay {
@@ -2007,7 +2026,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
         // Stage the next track so the OS can pre-roll and transition to it without
         // any app work at the boundary.
         refreshEnqueuedNextItem()
-        if equalizerEnabled,
+        if allowEqualizerHandoff,
+           equalizerEnabled,
            isEqualizerEligible(for: track),
            !candidate.url.isFileURL,
            CachingResourceLoaderDelegate.isCacheable(candidate.url) {
@@ -2046,8 +2066,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
         guard isPlaybackEpochCurrent(epoch) else { return false }
 
         activateAudioSession()
-        // Reuse the pooled session (engine + graph already built); callbacks are
-        // reassigned below and stale ones are epoch-guarded.
         let session = idleEqualizedSession ?? EqualizedAudioEnginePlayer()
         idleEqualizedSession = nil
         equalizedEndEpoch = epoch
@@ -2070,9 +2088,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
         session.onPlaybackFailed = { [weak self] in
             Task { @MainActor in
                 guard let self, self.equalizedEndEpoch == epoch else { return }
+                let resumeAt = self.playbackHead
                 self.detachPlayerKeepingQueueState()
-                self.isPlaying = false
-                self.refreshNowPlaying()
+                self.stagePendingRestore(at: resumeAt)
             }
         }
 
@@ -2097,19 +2115,19 @@ final class PlaybackEngine: NSObject, ObservableObject {
             StreamingMediaDiskCache.shared.markAccessed(fileURL: candidate.url)
         }
         isSeeking = false
-        let head = max(0, startSeconds)
+        let live = session.currentPlaybackTime()
+        let head = live.isFinite ? max(0, live) : max(0, startSeconds)
         playbackHead = head
         currentTime = head
-        lastEmittedUIProgress = head > 0 ? head : -10_000
-        lastNowPlayingInfoRefresh = head > 0 ? head : -10_000
+        lastEmittedUIProgress = head > 0.05 ? head : -10_000
+        lastNowPlayingInfoRefresh = head > 0.05 ? head : -10_000
         duration = resolvedDuration > 0 ? resolvedDuration : duration
         if candidate.url.isFileURL, resolvedDuration > 0 {
             localFileDuration = resolvedDuration
         }
 
         if autoPlay {
-            session.play(rate: playbackRate)
-            isPlaying = true
+            isPlaying = session.play(rate: playbackRate)
         } else {
             isPlaying = false
         }
@@ -2274,48 +2292,35 @@ final class PlaybackEngine: NSObject, ObservableObject {
         return FileManager.default.fileExists(atPath: url.path)
     }
 
-    private func insertEqualizerCacheCandidate(
-        _ cached: URL,
-        into candidates: inout [(url: URL, headers: [String: String])],
-        seen: inout Set<String>,
-        track: Track,
-    ) {
-        let cacheKey = cached.absoluteString
-        guard !seen.contains(cacheKey) else { return }
-        seen.insert(cacheKey)
-        let insertAt: Int
-        if let first = candidates.first, isOfflineDownloadFile(first.url, for: track) {
-            insertAt = 1
-        } else {
-            insertAt = 0
-        }
-        candidates.insert((cached, [:]), at: insertAt)
+    private func evictFailedStreamCacheCandidate(_ url: URL) {
+        guard isCommittedStreamCacheFile(url) else { return }
+        StreamingMediaDiskCache.shared.evict(fileURL: url)
     }
 
-    /// Waits up to `maxWait` seconds for a cache file (network work stays off the main actor).
-    ///
-    /// Must never await the download itself: `ensureCached` waits on a shared
-    /// detached task whose `.value` ignores the waiter's cancellation, and a
-    /// task group awaits ALL children at scope exit — racing it against a sleep
-    /// still blocked track start for the entire file transfer (~1 min per song
-    /// with EQ on). Kick the shared background download and poll the cache.
-    private func tryQuickEqualizerCache(
-        for remote: (url: URL, headers: [String: String]),
-        maxWait: TimeInterval,
-    ) async -> URL? {
-        let key = StreamingMediaDiskCache.key(for: remote.url)
-        if let hit = StreamingMediaDiskCache.shared.peekCachedFileURL(forKey: key) {
-            return hit
+    /// Timeouts and stalls are not proof the file is bad — only decode/parse
+    /// failures are. Evicting on timeout deleted valid cache entries.
+    private func isUnreadableStreamCacheError(_ error: Error) -> Bool {
+        let ns = error as NSError
+        if ns.domain == NSOSStatusErrorDomain { return true }
+        if ns.domain == AVFoundationErrorDomain { return true }
+        guard let urlError = error as? URLError else { return false }
+        switch urlError.code {
+        case .cannotDecodeContentData, .cannotDecodeRawData, .cannotParseResponse:
+            return true
+        default:
+            return false
         }
-        StreamingMediaDiskCache.shared.prefetchInBackground(url: remote.url, headers: remote.headers)
-        let deadline = ContinuousClock.now + .seconds(maxWait)
-        while ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(150))
-            if let hit = StreamingMediaDiskCache.shared.peekCachedFileURL(forKey: key) {
-                return hit
-            }
-        }
-        return nil
+    }
+
+    private func stagePendingRestore(at seconds: TimeInterval) {
+        let resumeAt = max(0, seconds)
+        pendingRestoreSeconds = resumeAt
+        playbackHead = resumeAt
+        currentTime = resumeAt
+        lastEmittedUIProgress = resumeAt > 0.05 ? resumeAt : -10_000
+        isPlaying = false
+        setBuffering(false)
+        refreshNowPlaying()
     }
 
     private func scheduleEqualizerHandoffWhenCached(
@@ -2341,6 +2346,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
             guard !Task.isCancelled, let cached else { return }
             await swapActiveItemToEqualizerIfNeeded(
                 cachedURL: cached,
+                streamURL: streamURL,
+                headers: headers,
                 track: track,
                 trackId: trackId,
                 epoch: epoch,
@@ -2350,6 +2357,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
     private func swapActiveItemToEqualizerIfNeeded(
         cachedURL: URL,
+        streamURL: URL,
+        headers: [String: String],
         track: Track,
         trackId: String,
         epoch: UInt,
@@ -2362,28 +2371,92 @@ final class PlaybackEngine: NSObject, ObservableObject {
               isEqualizerEligibleLocalFile(cachedURL, for: track)
         else { return }
 
+        // Don't tear down AVPlayer for a file the EQ engine cannot decode.
+        let fileURL = cachedURL
+        let canOpen = await Task.detached(priority: .userInitiated) {
+            (try? AVAudioFile(forReading: fileURL)) != nil
+        }.value
+        guard canOpen else { return }
+
         let position = playbackHead
         let shouldPlay = isPlaying
         eqCacheHandoffTask = nil
         detachPlayerKeepingQueueState()
-        guard isPlaybackEpochCurrent(epoch) else { return }
+        guard isPlaybackEpochCurrent(epoch), currentTrack?.id == trackId else { return }
 
         do {
-            guard try await loadEqualizedPlayerItem(
+            if try await loadEqualizedPlayerItem(
                 epoch: epoch,
                 candidate: (cachedURL, [:]),
                 track: track,
                 startSeconds: position,
                 autoPlay: shouldPlay,
-            ) else { return }
-            if shouldPlay {
-                equalizedPlayer?.play(rate: playbackRate)
-                isPlaying = true
+            ) {
+                if shouldPlay {
+                    equalizedPlayer?.play(rate: playbackRate)
+                    isPlaying = true
+                }
+                refreshNowPlaying()
+                return
             }
-            refreshNowPlaying()
         } catch {
-            // Stay on whatever path the user had — handoff is best-effort.
+            // Fall through to AVPlayer restore — do not leave the user on silence.
         }
+
+        await restorePlaybackAfterFailedEqualizerHandoff(
+            cachedURL: cachedURL,
+            streamURL: streamURL,
+            headers: headers,
+            track: track,
+            trackId: trackId,
+            epoch: epoch,
+            position: position,
+            shouldPlay: shouldPlay,
+        )
+    }
+
+    /// EQ handoff already detached AVPlayer. Put audio back on AVPlayer so lock-screen
+    /// transport and the playhead stay live instead of sitting on a silent "playing" state.
+    private func restorePlaybackAfterFailedEqualizerHandoff(
+        cachedURL: URL,
+        streamURL: URL,
+        headers: [String: String],
+        track: Track,
+        trackId: String,
+        epoch: UInt,
+        position: TimeInterval,
+        shouldPlay: Bool,
+    ) async {
+        guard isPlaybackEpochCurrent(epoch), currentTrack?.id == trackId else { return }
+
+        let fallbacks: [(url: URL, headers: [String: String])] = [
+            (cachedURL, [:]),
+            (streamURL, headers),
+        ]
+        for candidate in fallbacks {
+            guard isPlaybackEpochCurrent(epoch), currentTrack?.id == trackId else { return }
+            do {
+                if try await loadAVPlayerItem(
+                    epoch: epoch,
+                    candidate: candidate,
+                    track: track,
+                    startSeconds: position,
+                    autoPlay: shouldPlay,
+                    allowEqualizerHandoff: false,
+                ) {
+                    if shouldPlay { isPlaying = true }
+                    refreshNowPlaying()
+                    return
+                }
+            } catch {
+                if isUnreadableStreamCacheError(error) {
+                    evictFailedStreamCacheCandidate(candidate.url)
+                }
+            }
+        }
+
+        guard isPlaybackEpochCurrent(epoch), currentTrack?.id == trackId else { return }
+        stagePendingRestore(at: position)
     }
 
     private func periodicEqualizedTimeObserverTick(

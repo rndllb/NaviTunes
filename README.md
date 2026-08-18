@@ -26,7 +26,7 @@ A personalized home screen with shelves like Top Picks, New Releases, Recently P
 
 ### New
 
-A browse tab for charts, new releases, and artist pages. Good for finding albums you might want to request or add later.
+A browse tab for new releases and artist pages, built from your own server catalog and ranked against your listening. If you connect Lidarr, it also folds in upcoming and wanted releases. Good for finding albums you might want to request or add later.
 
 ### Radio
 
@@ -34,18 +34,20 @@ Internet radio stations from Navidrome, plus your own custom stream URLs.
 
 ### Library
 
-Albums, songs, playlists, artists, genres, favorites, and downloads. Album and artist pages use big artwork, dynamic colors, and the same kind of layout Apple Music users already know.
+Albums, songs, playlists, artists, genres, favorites, and downloads. Album and artist pages use big artwork, dynamic colors, and the same kind of layout Apple Music users already know. This is where the app opens by default — you can change that under Settings → Appearance.
 
 ### Search
 
 Two modes:
 
-- **Discover** searches your server, Apple Music catalog results for missing music, and artists you can follow or request.
-- **Library** searches everything on the server, not just what is in your personal library.
+- **Library** searches your personal library: the songs, albums, and playlists you have actually added.
+- **Discover** searches the whole server catalog, plus music that is not on your server yet when a request plugin is connected, plus artists you can follow or request.
 
 ### Playback
 
-Full queue, shuffle, repeat, play next, lyrics, sleep timer, playback speed, lock screen controls, and a mini player that opens into full Now Playing. There is a 10-band equalizer for downloads and cached streams.
+Full queue, shuffle, repeat, play next, lyrics, sleep timer, playback speed, lock screen controls, and a mini player that opens into full Now Playing.
+
+There is also a 10-band equalizer. It needs a local copy of the audio to work, so it applies to downloads and to streams that have been cached. Caching streamed songs is **off** by default; turning the equalizer on enables it for you, or you can flip it yourself under Settings → Sound & Playback.
 
 ### Offline
 
@@ -57,17 +59,17 @@ Home screen widgets for recently played music and Made for You mixes.
 
 ### Settings
 
-Account, library stats, playback quality, downloads, appearance, accent color, app icon, scrobbling, and optional plugins for requesting missing music.
+Account, library stats, streaming and download quality, the equalizer, appearance, accent color, app icon, which tab the app opens to, scrobbling to your server, and optional plugins for requesting missing music.
 
 ## Request missing music
 
-If something is not on your server yet, Vellum can help you ask for it. Connect one request plugin in Settings:
+If something is not on your server yet, Vellum can help you ask for it. Pick one request plugin in Settings → Plugins → Music Requests (only one is active at a time):
 
 - **Lidarr** for full albums
 - **Downtify** for individual tracks
 - **DroppedNeedle** for album requests through its own service
 
-You can also follow artists and keep an eye on their discography from the app.
+You can also follow an artist to keep an eye on their discography. Vellum compares what the plugin knows about that artist against what is on your server and can request whatever is missing. Following works without a plugin too — it just becomes a wishlist.
 
 ## Servers
 

@@ -19,18 +19,19 @@ struct MusicShimmerSurface: View {
                     .fill(MusicDesign.tertiarySurfaceFill)
             }
         }
-        .overlay { shimmerBand.mask(shapeMask) }
-        .onAppear { startAnimation() }
+        // Clip the fill + band together instead of giving the band its own `.mask` layer.
+        // A mask forces an offscreen alpha composite per instance, and a loading grid can
+        // hold a few dozen of these animating at once.
+        .overlay { shimmerBand }
+        .clipShape(shapeMask)
+        .task(id: reduceMotion) { startAnimation() }
         .accessibilityHidden(true)
     }
 
-    @ViewBuilder
-    private var shapeMask: some View {
-        if isCircle {
-            Circle()
-        } else {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        }
+    private var shapeMask: AnyShape {
+        isCircle
+            ? AnyShape(Circle())
+            : AnyShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 
     private var shimmerBand: some View {

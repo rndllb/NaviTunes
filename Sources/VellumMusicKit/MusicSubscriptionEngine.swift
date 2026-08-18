@@ -4,14 +4,11 @@ import Foundation
 /// The "follow an artist → keep my collection complete" brain — the piece Lidarr owns
 /// when it's present, that Vellum supplies itself when it isn't.
 ///
-/// Design: the brain lives here (in the app), and every backend is an *optional
-/// accelerator*. The only hard dependency is the always-available iTunes catalog,
-/// which yields the canonical discography. From there:
+/// Design: the brain lives here (in the app). Canonical discography comes from
+/// the active acquisition plugin (Lidarr library, or DroppedNeedle search).
 ///   • "have it?"  → matched against the connected server catalog (any backend)
 ///   • "get it"    → handed to whatever acquisition plugin is active (if any)
-/// With no acquisition plugin configured (or a track-only one that can't fetch whole
-/// albums), missing releases degrade gracefully to a wishlist (`.pending`) instead of
-/// disabling the feature.
+/// With no catalog plugin configured, completeness is server-only (have vs wishlist).
 @MainActor
 final class MusicSubscriptionEngine: ObservableObject {
     /// Injected hooks so the engine stays decoupled from `AppModel` (and unit-testable).
@@ -21,6 +18,7 @@ final class MusicSubscriptionEngine: ObservableObject {
         var enqueue: (_ request: AcquisitionRequest) async -> AcquisitionEnqueueResult
         var isAcquisitionConfigured: () -> Bool
         var acquisitionGranularity: () -> AcquisitionCapabilities.Granularity
+        var artistReleases: (_ name: String) async -> [AcquisitionRelease]
     }
 
     @Published private(set) var followed: [FollowedArtist] = []
@@ -80,8 +78,7 @@ final class MusicSubscriptionEngine: ObservableObject {
         defer { isChecking = false }
         for artist in followed {
             await check(artistId: artist.id)
-            // Light spacing between artists to stay friendly to the iTunes API.
-            try? await Task.sleep(for: .milliseconds(300))
+            try? await Task.sleep(for: .milliseconds(150))
         }
     }
 
@@ -89,17 +86,15 @@ final class MusicSubscriptionEngine: ObservableObject {
     private func check(artistId: String) async {
         guard let artist = followed.first(where: { $0.id == artistId }) else { return }
 
-        // 1. Canonical discography — from iTunes (Apple's catalog).
-        let releases = await ITunesArtistClient.discography(forArtist: artist.name)
-        // Only full-length albums and EPs are auto-maintained; singles/live/comps are noisy.
-        // iTunes lumps singles + EPs together, so distinguish EPs by track count (≥ 4).
+        // 1. Canonical discography — from the active plugin (Lidarr / DroppedNeedle).
+        let releases = await env.artistReleases(artist.name)
         let maintained = releases.filter {
             $0.bucket == .albums || ($0.bucket == .singlesAndEPs && ($0.trackCount ?? 0) >= 4)
         }
 
         // 2. "Have it?" — match against whatever library backend is connected.
         let serverAlbums = await env.serverAlbumsForArtist(artist.name)
-        let haveTitles = Set(serverAlbums.map { LibraryTrackMatcher.normalize($0.title) })
+        let haveTitles = Set(serverAlbums.flatMap { AlbumSummary.discographyTitleKeys(for: $0.title) })
 
         // 3. Classify + request missing through the active plugin (graceful when absent).
         let configured = env.isAcquisitionConfigured()
@@ -107,9 +102,21 @@ final class MusicSubscriptionEngine: ObservableObject {
         var requested = artist.requestedReleaseIds
         var statuses: [SubscriptionReleaseStatus] = []
 
+        if maintained.isEmpty {
+            statuses = serverAlbums.map { album in
+                SubscriptionReleaseStatus(
+                    id: album.id,
+                    title: album.title,
+                    year: album.releaseYear,
+                    coverURL: album.artworkURL,
+                    state: .have
+                )
+            }
+        }
+
         for release in maintained {
-            let titleKey = LibraryTrackMatcher.normalize(release.title)
-            if haveTitles.contains(titleKey) {
+            let remoteKeys = Set(AlbumSummary.discographyTitleKeys(for: release.title))
+            if !remoteKeys.isDisjoint(with: haveTitles) {
                 statuses.append(.init(id: release.id, title: release.title,
                                       year: release.releaseYear, coverURL: release.artworkURL, state: .have))
                 continue
@@ -125,10 +132,11 @@ final class MusicSubscriptionEngine: ObservableObject {
                                       year: release.releaseYear, coverURL: release.artworkURL, state: .pending))
                 continue
             }
-            // Lidarr resolves by artist + album text (it does its own MusicBrainz lookup).
             let request = AcquisitionRequest(
                 artist: artist.name,
                 albumTitle: release.title,
+                artistMBID: release.artistMBID ?? artist.artistMBID,
+                releaseGroupMBID: release.releaseGroupMBID,
                 coverURL: release.artworkURL
             )
             let result = await env.enqueue(request)

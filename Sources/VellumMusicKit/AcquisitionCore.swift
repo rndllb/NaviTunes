@@ -219,7 +219,113 @@ struct AcquisitionCapabilities: Sendable {
     let granularity: Granularity
     /// True when the plugin can return concrete ``AcquisitionResult`` rows for a query.
     let supportsTrackSearch: Bool
+    /// True when the plugin exposes its own calendar / wanted / library catalog
+    /// (Lidarr). DroppedNeedle search is request-only and stays false.
+    let supportsReleaseCatalog: Bool
     let configFields: [AcquisitionConfigField]
+
+    init(
+        displayName: String,
+        iconName: String,
+        blurb: String,
+        granularity: Granularity,
+        supportsTrackSearch: Bool,
+        supportsReleaseCatalog: Bool = false,
+        configFields: [AcquisitionConfigField]
+    ) {
+        self.displayName = displayName
+        self.iconName = iconName
+        self.blurb = blurb
+        self.granularity = granularity
+        self.supportsTrackSearch = supportsTrackSearch
+        self.supportsReleaseCatalog = supportsReleaseCatalog
+        self.configFields = configFields
+    }
+}
+
+/// One release from the active acquisition plugin (Lidarr library/calendar, or
+/// DroppedNeedle search). Feature code never sees plugin-specific JSON.
+struct AcquisitionRelease: Identifiable, Hashable, Sendable {
+    let id: String
+    let title: String
+    let artist: String
+    let releaseDate: Date?
+    let artworkURL: URL?
+    let albumType: String?
+    let secondaryTypes: [String]
+    let trackCount: Int?
+    let releaseGroupMBID: String?
+    let artistMBID: String?
+    /// Plugin-native album id (Lidarr integer) for track-list fetches.
+    let nativeAlbumId: String?
+    let overview: String?
+    let artistOverview: String?
+    let artistArtworkURL: URL?
+    let monitored: Bool
+    let wanted: Bool
+
+    var releaseYear: Int? {
+        guard let releaseDate else { return nil }
+        return Calendar(identifier: .gregorian).component(.year, from: releaseDate)
+    }
+
+    /// Id passed through ``BrowseAlbumDetailSource`` so the plugin can reload tracks.
+    var trackLookupId: String {
+        if let nativeAlbumId, !nativeAlbumId.isEmpty { return "native:\(nativeAlbumId)" }
+        if let releaseGroupMBID, !releaseGroupMBID.isEmpty { return "mbid:\(releaseGroupMBID)" }
+        return id
+    }
+
+    var bucket: ArtistDiscographyBucket {
+        let type = (albumType ?? "").lowercased()
+        let secondary = secondaryTypes.map { $0.lowercased() }
+        if secondary.contains(where: { $0.contains("live") }) || type.contains("live") {
+            return .live
+        }
+        if secondary.contains(where: { $0.contains("compilation") })
+            || type.contains("compilation")
+            || type.contains("broadcast") {
+            return .compilations
+        }
+        if type.contains("ep") || type.contains("single") {
+            return .singlesAndEPs
+        }
+        let title = title.lowercased()
+        if title.range(of: #"\blive\b"#, options: .regularExpression) != nil { return .live }
+        if title.range(of: #"\bcompilation\b|\bgreatest hits\b|\bbest of\b|\banthology\b"#, options: .regularExpression) != nil {
+            return .compilations
+        }
+        if title.hasSuffix("- single") || title.hasSuffix("- ep") { return .singlesAndEPs }
+        if let n = trackCount, n <= 6 { return .singlesAndEPs }
+        return .albums
+    }
+
+    var acquisitionRequest: AcquisitionRequest {
+        AcquisitionRequest(
+            artist: artist,
+            albumTitle: title,
+            artistMBID: artistMBID,
+            releaseGroupMBID: releaseGroupMBID,
+            coverURL: artworkURL
+        )
+    }
+}
+
+/// Artist metadata the plugin already has (Lidarr overview / images).
+struct AcquisitionArtistProfile: Hashable, Sendable {
+    let name: String
+    let overview: String?
+    let artworkURL: URL?
+    let genres: [String]
+    let mbid: String?
+}
+
+/// Off-server artist row from a plugin search (Discover).
+struct AcquisitionArtist: Identifiable, Hashable, Sendable {
+    let id: String
+    let name: String
+    let artworkURL: URL?
+    let mbid: String?
 }
 
 /// The one protocol every acquisition backend implements. Feature code only ever
@@ -242,6 +348,24 @@ protocol AcquisitionProviding: Sendable {
     /// Snapshot of the plugin's server-side queue/activity, including items started
     /// outside this app. Default: empty.
     func activeJobs() async -> [AcquisitionJob]
+
+    /// Albums the plugin already knows for this artist (Lidarr library, or DN search).
+    func artistReleases(named name: String) async -> [AcquisitionRelease]
+
+    /// Calendar + wanted/missing window. Empty when the plugin has no catalog.
+    func upcomingAndWanted(since: Date, until: Date) async -> [AcquisitionRelease]
+
+    /// Overview / art the plugin already stores for this artist.
+    func artistProfile(named name: String) async -> AcquisitionArtistProfile?
+
+    /// Artist search for Discover (not iTunes).
+    func searchArtists(query: String) async -> [AcquisitionArtist]
+
+    /// Tracklist for an off-server release the plugin listed.
+    func tracks(forRelease release: AcquisitionRelease) async -> [BrowseAlbumPreviewTrack]
+
+    /// Resolve a tracklist by artist + album title (library album "complete album" rows).
+    func tracks(artist: String, albumTitle: String) async -> [BrowseAlbumPreviewTrack]
 }
 
 extension AcquisitionProviding {
@@ -249,6 +373,12 @@ extension AcquisitionProviding {
     func activeJobs() async -> [AcquisitionJob] { [] }
     /// Whether the active plugin's catalog (Lidarr → MusicBrainz) knows this artist.
     func canRequestArtist(named name: String) async -> Bool { true }
+    func artistReleases(named name: String) async -> [AcquisitionRelease] { [] }
+    func upcomingAndWanted(since: Date, until: Date) async -> [AcquisitionRelease] { [] }
+    func artistProfile(named name: String) async -> AcquisitionArtistProfile? { nil }
+    func searchArtists(query: String) async -> [AcquisitionArtist] { [] }
+    func tracks(forRelease release: AcquisitionRelease) async -> [BrowseAlbumPreviewTrack] { [] }
+    func tracks(artist: String, albumTitle: String) async -> [BrowseAlbumPreviewTrack] { [] }
 }
 
 /// Generic LocalizedError carrying a user-facing message.
@@ -378,4 +508,49 @@ enum AcquisitionHTTP {
         if let s = value as? String { return Double(s) }
         return nil
     }
+
+    static func bool(_ value: Any?) -> Bool? {
+        if let b = value as? Bool { return b }
+        if let n = value as? NSNumber { return n.boolValue }
+        if let s = value as? String {
+            switch s.lowercased() {
+            case "true", "1", "yes": return true
+            case "false", "0", "no": return false
+            default: return nil
+            }
+        }
+        return nil
+    }
+
+    static func date(_ value: Any?) -> Date? {
+        if let d = value as? Date { return d }
+        guard let raw = string(value), !raw.isEmpty else { return nil }
+        if let iso = iso8601.date(from: raw) { return iso }
+        if let isoFrac = iso8601Fractional.date(from: raw) { return isoFrac }
+        if raw.count >= 10 {
+            let day = String(raw.prefix(10))
+            return ymd.date(from: day)
+        }
+        return nil
+    }
+
+    private static let iso8601: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    private static let iso8601Fractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    private static let ymd: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
 }

@@ -14,6 +14,10 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
 
     var isConfigured: Bool { !base.isEmpty && !apiKey.isEmpty }
 
+    static func resetSessionCaches() async {
+        await LidarrArtistListCache.shared.reset()
+    }
+
     var capabilities: AcquisitionCapabilities {
         AcquisitionCapabilities(
             displayName: "Lidarr",
@@ -21,6 +25,7 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
             blurb: "A music collection manager. Vellum sends album requests to Lidarr, which adds them to your collection and keeps them monitored and complete.",
             granularity: .album,
             supportsTrackSearch: false,
+            supportsReleaseCatalog: true,
             configFields: [
                 AcquisitionConfigField(id: "baseURL", kind: .url, label: "Server URL", placeholder: "http://192.168.1.x:8686"),
                 AcquisitionConfigField(id: "apiKey", kind: .apiKey, label: "API Key", placeholder: "Settings -> General in Lidarr"),
@@ -124,13 +129,171 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
         guard !term.isEmpty else { return false }
         guard let rows = try? await artistLookup(term: term), !rows.isEmpty else { return false }
         let target = LibraryTrackMatcher.normalize(term)
-        return rows.contains { row in
-            let artistName = AcquisitionHTTP.string(row["artistName"])
+        return rows.contains { artistNameMatches($0, target: target) }
+    }
+
+    func artistReleases(named name: String) async -> [AcquisitionRelease] {
+        guard isConfigured else { return [] }
+        let target = LibraryTrackMatcher.normalize(name)
+        guard !target.isEmpty else { return [] }
+        let match = await resolvedArtist(named: name, target: target)
+        let overview = match.flatMap { AcquisitionHTTP.string($0["overview"]) }
+        let art = match.flatMap { imageURL(from: $0, preferred: ["poster", "fanart", "banner", "cover"]) }
+        let artistMBID = match.flatMap { AcquisitionHTTP.string($0["foreignArtistId"]) }
+
+        // Already in the user's Lidarr library — list exactly what Lidarr shows.
+        if let match, let artistId = AcquisitionHTTP.int(match["id"]) {
+            let rows = (try? await send(path: "album", query: ["artistId": String(artistId)])) as? [[String: Any]] ?? []
+            let mapped = rows.compactMap {
+                mapAlbum(
+                    $0,
+                    artistFallback: name,
+                    artistMBID: artistMBID,
+                    artistOverview: overview,
+                    artistArt: art
+                )
+            }
+            if !mapped.isEmpty { return mapped }
+        }
+
+        // Not in Lidarr yet (or library list was empty): same album search Lidarr's
+        // UI uses, so an off-server artist page can still request releases.
+        let lookups = (try? await albumLookup(term: name)) ?? []
+        return lookups.compactMap {
+            mapAlbum(
+                $0,
+                artistFallback: name,
+                artistMBID: artistMBID,
+                artistOverview: overview,
+                artistArt: art
+            )
+        }
+        .filter { release in
+            let key = LibraryTrackMatcher.normalize(release.artist)
+            return key == target || key.contains(target) || target.contains(key)
+        }
+    }
+
+    func upcomingAndWanted(since: Date, until: Date) async -> [AcquisitionRelease] {
+        guard isConfigured else { return [] }
+        let start = Self.ymd.string(from: since)
+        let end = Self.ymd.string(from: until)
+        async let calendarTask = send(
+            path: "calendar",
+            query: ["start": start, "end": end, "includeArtist": "true", "unmonitored": "false"]
+        )
+        async let wantedTask = send(
+            path: "wanted/missing",
+            query: [
+                "page": "1",
+                "pageSize": "100",
+                "sortKey": "releaseDate",
+                "sortDirection": "descending",
+            ]
+        )
+        var out: [AcquisitionRelease] = []
+        var seen = Set<String>()
+        if let rows = try? await calendarTask as? [[String: Any]] {
+            for row in rows {
+                guard let release = mapAlbum(row, artistFallback: "", wanted: false),
+                      seen.insert(release.id).inserted
+                else { continue }
+                out.append(release)
+            }
+        }
+        if let page = try? await wantedTask as? [String: Any],
+           let records = page["records"] as? [[String: Any]] {
+            for row in records {
+                guard let release = mapAlbum(row, artistFallback: "", wanted: true),
+                      seen.insert(release.id).inserted
+                else { continue }
+                out.append(release)
+            }
+        }
+        return out
+    }
+
+    func artistProfile(named name: String) async -> AcquisitionArtistProfile? {
+        guard isConfigured else { return nil }
+        let target = LibraryTrackMatcher.normalize(name)
+        guard !target.isEmpty else { return nil }
+        guard let row = await resolvedArtist(named: name, target: target) else { return nil }
+        let display = AcquisitionHTTP.string(row["artistName"])
+            ?? AcquisitionHTTP.string(row["name"])
+            ?? name
+        let genres = (row["genres"] as? [String]) ?? []
+        return AcquisitionArtistProfile(
+            name: display,
+            overview: AcquisitionHTTP.string(row["overview"]),
+            artworkURL: imageURL(from: row, preferred: ["poster", "fanart", "banner", "cover"]),
+            genres: genres,
+            mbid: AcquisitionHTTP.string(row["foreignArtistId"])
+        )
+    }
+
+    func searchArtists(query: String) async -> [AcquisitionArtist] {
+        guard isConfigured else { return [] }
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { return [] }
+        let rows = (try? await artistLookup(term: term)) ?? []
+        var seen = Set<String>()
+        var out: [AcquisitionArtist] = []
+        for row in rows {
+            let name = AcquisitionHTTP.string(row["artistName"])
                 ?? AcquisitionHTTP.string(row["name"])
                 ?? ""
-            let norm = LibraryTrackMatcher.normalize(artistName)
-            return !norm.isEmpty && (norm == target || norm.contains(target) || target.contains(norm))
+            let key = LibraryTrackMatcher.normalize(name)
+            guard !key.isEmpty, seen.insert(key).inserted else { continue }
+            let mbid = AcquisitionHTTP.string(row["foreignArtistId"])
+            out.append(AcquisitionArtist(
+                id: mbid ?? key,
+                name: name,
+                artworkURL: imageURL(from: row, preferred: ["poster", "fanart", "banner", "cover"]),
+                mbid: mbid
+            ))
+            if out.count >= 8 { break }
         }
+        return out
+    }
+
+    func tracks(forRelease release: AcquisitionRelease) async -> [BrowseAlbumPreviewTrack] {
+        guard isConfigured else { return [] }
+        var albumId = release.nativeAlbumId.flatMap(Int.init)
+        if albumId == nil {
+            let foreign = release.releaseGroupMBID
+                ?? release.id.replacingOccurrences(of: "mbid:", with: "")
+            if foreign.count >= 36, let row = await libraryAlbum(foreignAlbumId: foreign) {
+                albumId = AcquisitionHTTP.int(row["id"])
+            }
+        }
+        guard let albumId else { return [] }
+        let rows = (try? await send(path: "track", query: ["albumId": String(albumId)])) as? [[String: Any]] ?? []
+        return rows.enumerated().compactMap { index, row in
+            guard let title = AcquisitionHTTP.string(row["title"]), !title.isEmpty else { return nil }
+            let position = AcquisitionHTTP.int(row["trackNumber"]) ?? (index + 1)
+            let duration: TimeInterval?
+            if let ms = AcquisitionHTTP.double(row["duration"]) {
+                duration = ms > 1000 ? ms / 1000 : ms
+            } else {
+                duration = nil
+            }
+            let tid = AcquisitionHTTP.int(row["id"]).map(String.init) ?? "\(albumId)-\(position)"
+            return BrowseAlbumPreviewTrack(id: "lidarr-track:\(tid)", position: position, title: title, duration: duration)
+        }
+        .sorted { $0.position < $1.position }
+    }
+
+    func tracks(artist: String, albumTitle: String) async -> [BrowseAlbumPreviewTrack] {
+        guard isConfigured else { return [] }
+        let term = [artist, albumTitle].filter { !$0.isEmpty }.joined(separator: " ")
+        guard !term.isEmpty else { return [] }
+        let candidates = (try? await albumLookup(term: term)) ?? []
+        guard let pick = pickBestAlbum(from: candidates, artist: artist, albumTitle: albumTitle) else { return [] }
+        if let release = mapAlbum(pick, artistFallback: artist) {
+            let fromLibrary = await tracks(forRelease: release)
+            if !fromLibrary.isEmpty { return fromLibrary }
+        }
+        return parseEmbeddedTracks(from: pick, albumTitle: albumTitle)
     }
 
     private func artistLookup(term: String) async throws -> [[String: Any]] {
@@ -311,5 +474,209 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
         case "rsssync": return "Checking indexers"
         default: return name
         }
+    }
+
+    // MARK: - Catalog mapping
+
+    private static let ymd: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    private func libraryArtist(matching target: String) async -> [String: Any]? {
+        let rows = await libraryArtists()
+        return rows.first { artistNameMatches($0, target: target) }
+    }
+
+    private func libraryArtists() async -> [[String: Any]] {
+        let currentBase = base
+        let currentKey = apiKey
+        return (try? await LidarrArtistListCache.shared.artists(base: currentBase) {
+            let data = try await AcquisitionHTTP.requestJSON(
+                base: currentBase,
+                path: "/api/v1/artist",
+                headers: ["X-Api-Key": currentKey]
+            )
+            return data as? [[String: Any]] ?? []
+        }) ?? []
+    }
+
+    private func resolvedArtist(named name: String, target: String) async -> [String: Any]? {
+        if let match = await libraryArtist(matching: target) { return match }
+        return (try? await artistLookup(term: name))?.first { artistNameMatches($0, target: target) }
+    }
+
+    private func artistNameMatches(_ row: [String: Any], target: String) -> Bool {
+        let artistName = AcquisitionHTTP.string(row["artistName"])
+            ?? AcquisitionHTTP.string(row["name"])
+            ?? ""
+        let norm = LibraryTrackMatcher.normalize(artistName)
+        return !norm.isEmpty && (norm == target || norm.contains(target) || target.contains(norm))
+    }
+
+    private func mapAlbum(
+        _ row: [String: Any],
+        artistFallback: String,
+        artistMBID: String? = nil,
+        artistOverview: String? = nil,
+        artistArt: URL? = nil,
+        wanted: Bool = false
+    ) -> AcquisitionRelease? {
+        let title = AcquisitionHTTP.string(row["title"]) ?? ""
+        guard !title.isEmpty else { return nil }
+        let nested = row["artist"] as? [String: Any]
+        let artist = AcquisitionHTTP.string(nested?["artistName"])
+            ?? AcquisitionHTTP.string(nested?["name"])
+            ?? artistFallback
+        let foreignId = AcquisitionHTTP.string(row["foreignAlbumId"]) ?? ""
+        let nativeId = AcquisitionHTTP.int(row["id"]).map(String.init)
+        let id = foreignId.isEmpty ? (nativeId.map { "lidarr:\($0)" } ?? "lidarr:\(artist)|\(title)") : foreignId
+        let secondary = (row["secondaryTypes"] as? [String]) ?? []
+        let nestedMBID = AcquisitionHTTP.string(nested?["foreignArtistId"])
+        return AcquisitionRelease(
+            id: id,
+            title: title,
+            artist: artist,
+            releaseDate: AcquisitionHTTP.date(row["releaseDate"]),
+            artworkURL: imageURL(from: row, preferred: ["cover", "poster"]),
+            albumType: AcquisitionHTTP.string(row["albumType"]),
+            secondaryTypes: secondary,
+            trackCount: statisticsTrackCount(row),
+            releaseGroupMBID: foreignId.isEmpty ? nil : foreignId,
+            artistMBID: artistMBID ?? nestedMBID,
+            nativeAlbumId: nativeId,
+            overview: AcquisitionHTTP.string(row["overview"]),
+            artistOverview: artistOverview ?? AcquisitionHTTP.string(nested?["overview"]),
+            artistArtworkURL: artistArt ?? imageURL(from: nested ?? [:], preferred: ["poster", "fanart", "banner", "cover"]),
+            monitored: AcquisitionHTTP.bool(row["monitored"]) ?? false,
+            wanted: wanted
+        )
+    }
+
+    private func statisticsTrackCount(_ row: [String: Any]) -> Int? {
+        if let stats = row["statistics"] as? [String: Any] {
+            return AcquisitionHTTP.int(stats["trackCount"]) ?? AcquisitionHTTP.int(stats["totalTrackCount"])
+        }
+        return nil
+    }
+
+    private func imageURL(from row: [String: Any], preferred: [String]) -> URL? {
+        guard let images = row["images"] as? [[String: Any]], !images.isEmpty else { return nil }
+        func url(from image: [String: Any]) -> URL? {
+            if let remote = AcquisitionHTTP.string(image["remoteUrl"]), let url = URL(string: remote) {
+                return url
+            }
+            guard let raw = AcquisitionHTTP.string(image["url"]), !raw.isEmpty else { return nil }
+            if raw.hasPrefix("http"), let url = URL(string: raw) { return url }
+            guard let base = AcquisitionHTTP.normalizedBase(base) else { return nil }
+            let path = raw.hasPrefix("/") ? raw : "/\(raw)"
+            var comps = URLComponents(string: base + path)
+            var items = comps?.queryItems ?? []
+            if !items.contains(where: { $0.name.lowercased() == "apikey" }) {
+                items.append(URLQueryItem(name: "apikey", value: apiKey))
+            }
+            comps?.queryItems = items
+            return comps?.url
+        }
+        for type in preferred {
+            if let image = images.first(where: {
+                (AcquisitionHTTP.string($0["coverType"]) ?? "").lowercased() == type
+            }), let url = url(from: image) {
+                return url
+            }
+        }
+        return images.lazy.compactMap(url).first
+    }
+
+    /// Lookup payloads sometimes embed media/tracks before the album is in Lidarr.
+    private func parseEmbeddedTracks(from row: [String: Any], albumTitle: String) -> [BrowseAlbumPreviewTrack] {
+        var rawTracks: [[String: Any]] = []
+        if let media = row["media"] as? [[String: Any]] {
+            for medium in media {
+                if let tracks = medium["tracks"] as? [[String: Any]] {
+                    rawTracks.append(contentsOf: tracks)
+                }
+            }
+        }
+        if rawTracks.isEmpty, let releases = row["releases"] as? [[String: Any]] {
+            for release in releases {
+                if let media = release["media"] as? [[String: Any]] {
+                    for medium in media {
+                        if let tracks = medium["tracks"] as? [[String: Any]] {
+                            rawTracks.append(contentsOf: tracks)
+                        }
+                    }
+                }
+                if !rawTracks.isEmpty { break }
+            }
+        }
+        if rawTracks.isEmpty, let tracks = row["tracks"] as? [[String: Any]] {
+            rawTracks = tracks
+        }
+        return rawTracks.enumerated().compactMap { index, track in
+            guard let title = AcquisitionHTTP.string(track["title"])
+                ?? AcquisitionHTTP.string(track["trackName"]),
+                  !title.isEmpty
+            else { return nil }
+            let position = AcquisitionHTTP.int(track["trackNumber"])
+                ?? AcquisitionHTTP.int(track["absoluteTrackNumber"])
+                ?? (index + 1)
+            let duration: TimeInterval?
+            if let ms = AcquisitionHTTP.double(track["duration"]) {
+                duration = ms > 1000 ? ms / 1000 : ms
+            } else {
+                duration = nil
+            }
+            return BrowseAlbumPreviewTrack(
+                id: "lidarr-lookup:\(albumTitle):\(position):\(title)",
+                position: position,
+                title: title,
+                duration: duration
+            )
+        }
+        .sorted { $0.position < $1.position }
+    }
+}
+
+/// Session cache for `GET /api/v1/artist` so artist page + profile + Following
+/// don't each download the full Lidarr library.
+private actor LidarrArtistListCache {
+    static let shared = LidarrArtistListCache()
+
+    private var rows: [[String: Any]] = []
+    private var base = ""
+    private var savedAt = Date.distantPast
+    private var inFlight: Task<[[String: Any]], Error>?
+    private let ttl: TimeInterval = 5 * 60
+
+    func artists(
+        base: String,
+        fetch: @Sendable @escaping () async throws -> [[String: Any]]
+    ) async throws -> [[String: Any]] {
+        if self.base == base, Date().timeIntervalSince(savedAt) < ttl, !rows.isEmpty {
+            return rows
+        }
+        if let inFlight {
+            return try await inFlight.value
+        }
+        let task = Task { try await fetch() }
+        inFlight = task
+        defer { inFlight = nil }
+        let fresh = try await task.value
+        self.rows = fresh
+        self.base = base
+        self.savedAt = Date()
+        return fresh
+    }
+
+    func reset() {
+        inFlight?.cancel()
+        inFlight = nil
+        rows = []
+        base = ""
+        savedAt = Date.distantPast
     }
 }

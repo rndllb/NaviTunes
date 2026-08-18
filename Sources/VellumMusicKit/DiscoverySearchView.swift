@@ -276,7 +276,7 @@ struct DiscoverySearchView: View {
         let personalSongIds = app.librarySongIds
         let albumIdsInFeed = Set(serverResults.albums.map(\.id))
         let serverTracks = serverResults.songs
-        let q = trimmedQuery
+        let q = LibraryTrackMatcher.normalize(trimmedQuery)
 
         var scored: [(row: HybridRow, score: Double, kindPriority: Int)] = []
 
@@ -285,19 +285,19 @@ struct DiscoverySearchView: View {
         // — Apple Music does the same: tapping search for "Deftones" returns
         // the artist row first, then their albums, then their songs.
         for artist in serverResults.artists {
-            let s = Self.relevanceScore(title: artist.name, artist: artist.name, query: q)
+            let s = Self.relevanceScore(title: artist.name, artist: artist.name, normalizedQuery: q)
             scored.append((.serverArtist(artist), s + 1.0, -1))
         }
 
         // Artists not on the server (iTunes matches) get the same artist-row treatment
         // and priority, so a missing artist surfaces alongside server artists.
         for match in namedArtistMatches {
-            let s = Self.relevanceScore(title: match.name, artist: match.name, query: q)
+            let s = Self.relevanceScore(title: match.name, artist: match.name, normalizedQuery: q)
             scored.append((.namedArtist(match), s + 1.0, -1))
         }
 
         for album in serverResults.albums where !personalAlbumIds.contains(album.id) {
-            let s = Self.relevanceScore(title: album.title, artist: album.artist, query: q)
+            let s = Self.relevanceScore(title: album.title, artist: album.artist, normalizedQuery: q)
             // Slight bump for albums so when score ties with a single track,
             // the album surfaces first (matches Apple Music's Top Results bias).
             scored.append((.serverAlbum(album), s + 0.05, 0))
@@ -306,7 +306,7 @@ struct DiscoverySearchView: View {
         for song in serverResults.songs
             where !personalSongIds.contains(song.id) && !albumIdsInFeed.contains(song.albumId)
         {
-            let s = Self.relevanceScore(title: song.title, artist: song.artist, query: q)
+            let s = Self.relevanceScore(title: song.title, artist: song.artist, normalizedQuery: q)
             scored.append((.serverSong(song), s, 1))
         }
 
@@ -317,7 +317,7 @@ struct DiscoverySearchView: View {
             if LibraryTrackMatcher.firstLibraryTrack(matching: result, in: serverTracks) != nil { continue }
             if LibraryTrackMatcher.matchesLibrary(result, titleIndex: app.libraryTrackTitleIndex) { continue }
             let artist = result.artistLine
-            let s = Self.relevanceScore(title: result.title, artist: artist, query: q)
+            let s = Self.relevanceScore(title: result.title, artist: artist, normalizedQuery: q)
             scored.append((.acquire(result), s, 2))
         }
 
@@ -333,8 +333,9 @@ struct DiscoverySearchView: View {
     /// 0–1 relevance score for a candidate against `query`. Uses
     /// `LibraryTrackMatcher.normalize` so it's diacritic- and punctuation-
     /// insensitive. Title matches outweigh artist matches; exact > prefix > contains.
-    private static func relevanceScore(title: String, artist: String, query: String) -> Double {
-        let q = LibraryTrackMatcher.normalize(query)
+    /// Takes a pre-normalized query so a scoring pass over N candidates doesn't re-normalize
+    /// the same query string N times (``LibraryTrackMatcher/normalize`` is allocation-heavy).
+    private static func relevanceScore(title: String, artist: String, normalizedQuery q: String) -> Double {
         guard !q.isEmpty else { return 0 }
         let t = LibraryTrackMatcher.normalize(title)
         let a = LibraryTrackMatcher.normalize(artist)
@@ -652,8 +653,8 @@ struct DiscoverySearchView: View {
         .discoverySearchListRowChrome()
     }
 
-    /// Artist not on the server (iTunes match). Visually identical to ``serverArtistRow``
-    /// and navigates to the same artist page (resolved by name), so the flow is the same.
+    /// Artist not on the server (Lidarr / DroppedNeedle match). Visually identical
+    /// to ``serverArtistRow`` and navigates to the same artist page (resolved by name).
     private func namedArtistRow(_ match: NamedArtistMatch) -> some View {
         Button {
             recordRecent(.init(
@@ -1439,29 +1440,30 @@ struct DiscoverySearchView: View {
         if Task.isCancelled || trimmedQuery != query { return }
         serverResults = server
 
-        async let itunesArtists = ITunesArtistClient.searchArtists(name: query, limit: 5)
-        async let itunesCatalog = ITunesSearchClient.acquisitionResults(query: query)
-
         let pluginAcquire: [AcquisitionResult]
         if acquireOK {
             pluginAcquire = await acquisition.search(query: query)
         } else {
             pluginAcquire = []
         }
-        let itunesAcquire = await itunesCatalog
+        let pluginArtists: [AcquisitionArtist]
+        if app.acquisitionConfigured, !app.effectiveOfflineMode {
+            pluginArtists = await acquisition.searchArtists(query: query)
+        } else {
+            pluginArtists = []
+        }
         if Task.isCancelled || trimmedQuery != query { return }
 
         var seenAcquireKeys = Set<String>()
         var mergedAcquire: [AcquisitionResult] = []
-        mergedAcquire.reserveCapacity(pluginAcquire.count + itunesAcquire.count)
-        for row in pluginAcquire + itunesAcquire where seenAcquireKeys.insert(row.request.requestKey).inserted {
+        for row in pluginAcquire where seenAcquireKeys.insert(row.request.requestKey).inserted {
             mergedAcquire.append(row)
         }
         acquireResults = mergedAcquire
 
         let serverArtistNames = Set(server.artists.map { LibraryTrackMatcher.normalize($0.name) })
         var seenNames = Set<String>()
-        let matches = (await itunesArtists).compactMap { artist -> NamedArtistMatch? in
+        let matches = pluginArtists.compactMap { artist -> NamedArtistMatch? in
             let norm = LibraryTrackMatcher.normalize(artist.name)
             guard !serverArtistNames.contains(norm), seenNames.insert(norm).inserted else { return nil }
             return NamedArtistMatch(id: artist.id, name: artist.name, artworkURL: artist.artworkURL)

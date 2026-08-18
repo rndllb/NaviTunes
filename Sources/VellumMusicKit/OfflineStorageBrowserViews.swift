@@ -111,6 +111,7 @@ struct DownloadedTracksBrowserView: View {
 // MARK: - Image cache
 
 struct ImageCacheBrowserView: View {
+    @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var offline: OfflineDownloadManager
     @State private var entries: [CachedImageEntry] = []
     @State private var entryPendingDelete: CachedImageEntry?
@@ -141,6 +142,7 @@ struct ImageCacheBrowserView: View {
         .background(MusicDesign.background)
         .musicNavigationChrome()
         .onAppear(perform: reload)
+        .onChange(of: app.localCacheRevision) { _, _ in reload() }
         .alert("Delete cached image?", isPresented: Binding(
             get: { entryPendingDelete != nil },
             set: { if !$0 { entryPendingDelete = nil } }
@@ -218,6 +220,7 @@ struct ImageCacheBrowserView: View {
 // MARK: - Metadata cache (library snapshot)
 
 struct MetadataCacheBrowserView: View {
+    @EnvironmentObject private var app: AppModel
     @State private var entries: [LibraryMetadataEntry] = []
     @State private var entryPendingDelete: LibraryMetadataEntry?
 
@@ -254,6 +257,7 @@ struct MetadataCacheBrowserView: View {
         .background(MusicDesign.background)
         .musicNavigationChrome()
         .onAppear(perform: reload)
+        .onChange(of: app.localCacheRevision) { _, _ in reload() }
         .alert("Remove cached metadata?", isPresented: Binding(
             get: { entryPendingDelete != nil },
             set: { if !$0 { entryPendingDelete = nil } }
@@ -345,8 +349,10 @@ struct DangerousStorageActionsSection: View {
                 title: Text(alertTitle(action)),
                 message: Text(alertMessage(action)),
                 primaryButton: .destructive(Text("Clear")) {
-                    perform(action)
-                    Task { await refreshSummary() }
+                    Task {
+                        await perform(action)
+                        await refreshSummary()
+                    }
                 },
                 secondaryButton: .cancel()
             )
@@ -404,16 +410,16 @@ struct DangerousStorageActionsSection: View {
         }
     }
 
-    private func perform(_ action: DangerousCacheAction) {
+    private func perform(_ action: DangerousCacheAction) async {
         switch action {
         case .imageCache:
-            Task { await app.clearImageCaches() }
+            await app.clearImageCaches()
         case .downloadedMusic:
             app.clearDownloadedMusic()
         case .metadata:
             app.clearMetadataCache()
         case .all:
-            Task { await app.clearAllLocalCaches() }
+            await app.clearAllLocalCaches()
         }
     }
 }

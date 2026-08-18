@@ -149,6 +149,102 @@ struct DroppedNeedleAcquisitionPlugin: AcquisitionProviding {
         return items.compactMap(mapDownloadTask)
     }
 
+    func artistReleases(named name: String) async -> [AcquisitionRelease] {
+        guard isConfigured else { return [] }
+        let term = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { return [] }
+        let target = LibraryTrackMatcher.normalize(term)
+        let rows = (try? await searchAlbums(term: term)) ?? []
+        return rows.compactMap { mapSearchAlbum($0, artistFallback: name) }
+            .filter { release in
+                let artist = LibraryTrackMatcher.normalize(release.artist)
+                // Exact, or a more-specific result that still contains the full
+                // search name. Never the reverse — a short hit like "The" must
+                // not match "The Rolling Stones".
+                return !artist.isEmpty && (artist == target || artist.contains(target))
+            }
+    }
+
+    func artistProfile(named name: String) async -> AcquisitionArtistProfile? {
+        guard isConfigured else { return nil }
+        let term = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { return nil }
+        let target = LibraryTrackMatcher.normalize(term)
+        let artists = (try? await searchArtists(term: term)) ?? []
+        let row = artists.first(where: { artist in
+            LibraryTrackMatcher.normalize(AcquisitionHTTP.string(artist["title"]) ?? "") == target
+        }) ?? artists.first(where: { artist in
+            let norm = LibraryTrackMatcher.normalize(AcquisitionHTTP.string(artist["title"]) ?? "")
+            return !norm.isEmpty && norm.contains(target)
+        })
+        guard let row else { return nil }
+        let display = AcquisitionHTTP.string(row["title"]) ?? name
+        return AcquisitionArtistProfile(
+            name: display,
+            overview: nil,
+            artworkURL: droppedNeedleImageURL(row),
+            genres: [],
+            mbid: AcquisitionHTTP.string(row["musicbrainz_id"]) ?? AcquisitionHTTP.string(row["mbid"])
+        )
+    }
+
+    func searchArtists(query: String) async -> [AcquisitionArtist] {
+        guard isConfigured else { return [] }
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { return [] }
+        let rows = (try? await searchArtists(term: term)) ?? []
+        var seen = Set<String>()
+        var out: [AcquisitionArtist] = []
+        for row in rows {
+            let name = AcquisitionHTTP.string(row["title"]) ?? ""
+            let key = LibraryTrackMatcher.normalize(name)
+            guard !key.isEmpty, seen.insert(key).inserted else { continue }
+            let mbid = AcquisitionHTTP.string(row["musicbrainz_id"]) ?? AcquisitionHTTP.string(row["mbid"])
+            out.append(AcquisitionArtist(
+                id: mbid ?? key,
+                name: name,
+                artworkURL: droppedNeedleImageURL(row),
+                mbid: mbid
+            ))
+            if out.count >= 8 { break }
+        }
+        return out
+    }
+
+    func tracks(forRelease release: AcquisitionRelease) async -> [BrowseAlbumPreviewTrack] {
+        guard isConfigured else { return [] }
+        let mbid = release.releaseGroupMBID
+            ?? (release.id.hasPrefix("mbid:") ? String(release.id.dropFirst(5)) : nil)
+        guard let mbid, mbid.count >= 36 else { return [] }
+        let rows = (try? await albumTracks(releaseGroupMBID: mbid)) ?? []
+        return rows.enumerated().compactMap { index, row in
+            guard let title = AcquisitionHTTP.string(row["title"]), !title.isEmpty else { return nil }
+            let position = AcquisitionHTTP.int(row["position"])
+                ?? AcquisitionHTTP.int(row["track_number"])
+                ?? (index + 1)
+            let duration: TimeInterval?
+            if let ms = AcquisitionHTTP.double(row["duration_ms"]) ?? AcquisitionHTTP.double(row["duration"]) {
+                duration = ms > 1000 ? ms / 1000 : ms
+            } else {
+                duration = nil
+            }
+            let tid = AcquisitionHTTP.string(row["recording_id"]) ?? "\(mbid)-\(position)"
+            return BrowseAlbumPreviewTrack(id: "dn-track:\(tid)", position: position, title: title, duration: duration)
+        }
+        .sorted { $0.position < $1.position }
+    }
+
+    func tracks(artist: String, albumTitle: String) async -> [BrowseAlbumPreviewTrack] {
+        guard isConfigured else { return [] }
+        let term = [artist, albumTitle].filter { !$0.isEmpty }.joined(separator: " ")
+        guard !term.isEmpty else { return [] }
+        let candidates = (try? await searchAlbums(term: term)) ?? []
+        guard let pick = pickBestAlbum(from: candidates, artist: artist, albumTitle: albumTitle),
+              let release = mapSearchAlbum(pick, artistFallback: artist)
+        else { return [] }
+        return await tracks(forRelease: release)
+    }
+
     func canRequestArtist(named name: String) async -> Bool {
         guard isConfigured else { return false }
         let term = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -511,6 +607,53 @@ struct DroppedNeedleAcquisitionPlugin: AcquisitionProviding {
             (AcquisitionHTTP.string($0["title"])?.lowercased().contains(album) == true) && artistMatches($0)
         }) { return contains }
         return albums.first(where: { artistMatches($0) }) ?? albums.first
+    }
+
+    private func mapSearchAlbum(_ row: [String: Any], artistFallback: String) -> AcquisitionRelease? {
+        let title = AcquisitionHTTP.string(row["title"]) ?? ""
+        guard !title.isEmpty else { return nil }
+        let artist = AcquisitionHTTP.string(row["artist"])
+            ?? AcquisitionHTTP.string(row["artist_name"])
+            ?? artistFallback
+        let mbid = AcquisitionHTTP.string(row["musicbrainz_id"])
+            ?? AcquisitionHTTP.string(row["mbid"])
+            ?? ""
+        let year = AcquisitionHTTP.int(row["year"])
+        let date = AcquisitionHTTP.date(row["first_release_date"])
+            ?? AcquisitionHTTP.date(row["release_date"])
+            ?? year.flatMap { y -> Date? in
+                var comps = DateComponents()
+                comps.year = y
+                comps.month = 1
+                comps.day = 1
+                return Calendar(identifier: .gregorian).date(from: comps)
+            }
+        return AcquisitionRelease(
+            id: mbid.isEmpty ? "dn:\(artist)|\(title)" : mbid,
+            title: title,
+            artist: artist,
+            releaseDate: date,
+            artworkURL: droppedNeedleImageURL(row),
+            albumType: AcquisitionHTTP.string(row["type"]) ?? AcquisitionHTTP.string(row["album_type"]),
+            secondaryTypes: [],
+            trackCount: AcquisitionHTTP.int(row["track_count"]),
+            releaseGroupMBID: mbid.isEmpty ? nil : mbid,
+            artistMBID: AcquisitionHTTP.string(row["artist_mbid"]),
+            nativeAlbumId: nil,
+            overview: nil,
+            artistOverview: nil,
+            artistArtworkURL: nil,
+            monitored: false,
+            wanted: false
+        )
+    }
+
+    private func droppedNeedleImageURL(_ row: [String: Any]) -> URL? {
+        let raw = AcquisitionHTTP.string(row["cover"])
+            ?? AcquisitionHTTP.string(row["cover_url"])
+            ?? AcquisitionHTTP.string(row["image"])
+            ?? AcquisitionHTTP.string(row["image_url"])
+        return raw.flatMap(URL.init(string:))
     }
 
     private func mapDownloadTask(_ row: [String: Any]) -> AcquisitionJob? {

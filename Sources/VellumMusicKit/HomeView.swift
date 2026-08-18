@@ -4,7 +4,7 @@ import SwiftUI
 /// Every section is a single horizontal-scroll shelf — matches Apple Music's home layout.
 /// One circular tile in the Home → "New Artists Added" shelf. Synthesized
 /// in-memory from ``AppModel/recentlyAddedAlbums`` so there's no extra fetch.
-private struct HomeArtistTile: Identifiable {
+private struct HomeArtistTile: Identifiable, Hashable {
     let id: String
     let name: String
     let artworkURL: URL?
@@ -56,7 +56,7 @@ struct HomeView: View {
     var body: some View {
         NavigationStack(path: $navigationPath) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 32) {
+                LazyVStack(alignment: .leading, spacing: 32) {
                     if let err = app.libraryAlbumsLoadError, app.libraryAlbums.isEmpty {
                         ContentUnavailableView(
                             "Couldn't load library",
@@ -79,16 +79,7 @@ struct HomeView: View {
                             )
                         }
 
-                        if newlyAddedArtists.isEmpty, homeDiscoveryPending {
-                            MusicHorizontalShelfSkeleton(
-                                title: "New Artists Added",
-                                style: .artistCircle,
-                                count: 6,
-                                horizontalInset: inset,
-                            )
-                        } else if !newlyAddedArtists.isEmpty {
-                            newArtistsShelf(title: "New Artists Added", artists: newlyAddedArtists)
-                        }
+                        newArtistsSection
 
                         if !app.homeRecentlyPlayed.isEmpty {
                             recentlyPlayedShelf(
@@ -179,6 +170,25 @@ struct HomeView: View {
         .tint(MusicDesign.accent)
     }
 
+    /// ``newlyAddedArtists`` walks the recently-added albums and tests each for library
+    /// eligibility, so it is resolved once per pass rather than in both branch conditions.
+    @ViewBuilder
+    private var newArtistsSection: some View {
+        let artists = newlyAddedArtists
+        if artists.isEmpty {
+            if homeDiscoveryPending {
+                MusicHorizontalShelfSkeleton(
+                    title: "New Artists Added",
+                    style: .artistCircle,
+                    count: 6,
+                    horizontalInset: inset,
+                )
+            }
+        } else {
+            newArtistsShelf(title: "New Artists Added", artists: artists)
+        }
+    }
+
     // MARK: - Section builders
 
     private func sectionHeader(title: String) -> some View {
@@ -194,7 +204,7 @@ struct HomeView: View {
             sectionHeader(title: title)
 
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 16) {
+                LazyHStack(spacing: 16) {
                     ForEach(albums) { album in
                         NavigationLink {
                             ServerPlaylistDetailView(album: album)
@@ -208,6 +218,7 @@ struct HomeView: View {
                 }
                 .padding(.horizontal, inset)
             }
+            .frame(height: MusicDesign.homeTopPickCardHeight)
         }
     }
 
@@ -291,7 +302,11 @@ struct HomeView: View {
 
     private func newArtistCircleTile(artist: HomeArtistTile) -> some View {
         VStack(spacing: 8) {
-            AlbumArtworkView(url: artist.artworkURL, cornerRadius: MusicDesign.artistCircleTileSize / 2)
+            AlbumArtworkView(
+                url: artist.artworkURL,
+                cornerRadius: MusicDesign.artistCircleTileSize / 2,
+                maxDecodePixels: MusicDesign.artistCircleArtworkDecodePixels
+            )
                 .frame(width: MusicDesign.artistCircleTileSize, height: MusicDesign.artistCircleTileSize)
                 .clipShape(Circle())
             Text(artist.name)
@@ -356,11 +371,16 @@ struct HomeView: View {
 
     private func heroCard(album: AlbumSummary) -> some View {
         HomeTopPickCard(album: album)
+            .equatable()
     }
 
     private func shelfCard(album: AlbumSummary) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            AlbumArtworkView(url: album.artworkURL, cornerRadius: MusicDesign.heroCorner)
+            AlbumArtworkView(
+                url: album.artworkURL,
+                cornerRadius: MusicDesign.heroCorner,
+                maxDecodePixels: MusicDesign.shelfArtworkDecodePixels
+            )
                 .frame(width: MusicDesign.shelfCardWidth, height: MusicDesign.shelfCardHeight)
             shelfLabelBlock(title: album.title, subtitle: album.artist, width: MusicDesign.shelfCardWidth)
         }
@@ -368,7 +388,11 @@ struct HomeView: View {
 
     private func playlistShelfCard(playlist: PlaylistSummary) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            AlbumArtworkView(url: playlist.artworkURL, cornerRadius: MusicDesign.heroCorner)
+            AlbumArtworkView(
+                url: playlist.artworkURL,
+                cornerRadius: MusicDesign.heroCorner,
+                maxDecodePixels: MusicDesign.shelfArtworkDecodePixels
+            )
                 .frame(width: MusicDesign.shelfCardWidth, height: MusicDesign.shelfCardHeight)
             shelfLabelBlock(
                 title: playlist.name,
@@ -424,8 +448,12 @@ struct HomeView: View {
 // MARK: - Top Picks editorial card
 
 /// Apple Music–style Home shelf card: sharp cover on top, vertically stretched color bleed below, metadata at the bottom.
-private struct HomeTopPickCard: View {
+private struct HomeTopPickCard: View, Equatable {
     let album: AlbumSummary
+
+    static func == (lhs: HomeTopPickCard, rhs: HomeTopPickCard) -> Bool {
+        lhs.album == rhs.album
+    }
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var palette: ArtworkDynamicGradient.BackdropPalette
@@ -478,7 +506,12 @@ private struct HomeTopPickCard: View {
     }
 
     private var coverArtWithSeamFade: some View {
-        AlbumArtworkView(url: album.artworkURL, cornerRadius: 0, showsSubtleBorder: false)
+        AlbumArtworkView(
+            url: album.artworkURL,
+            cornerRadius: 0,
+            maxDecodePixels: MusicDesign.homeTopPickArtworkDecodePixels,
+            showsSubtleBorder: false
+        )
             .frame(width: artworkSize, height: artworkSize)
             .mask {
                 VStack(spacing: 0) {
