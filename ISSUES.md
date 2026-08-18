@@ -40,4 +40,14 @@
 
 **Stabilization (2026-06):** `stabilizeHomeDiscoveryShelf` keeps visible Top Picks / New Releases cards in place when background genre-catalog enrichment expands the pool — avoids the shelf jumping after first paint. Pull-to-refresh calls `refreshHome(forceDiscoveryReshuffle: true)` for a full re-rank.
 
-**Removed (2026-06):** MusicBrainz browse clients and Settings toggle — New/Discover/Following metadata now comes from iTunes Search API only. (MusicBrainz remains for **artist About** profile facts only; ListenBrainz for similar-artist recommendations.)
+**Removed (2026-06):** MusicBrainz browse clients and Settings toggle.
+
+**Superseded (2026-08):** there are no third-party metadata clients left on any browse path. New / Discover / Following / artist pages read the **server catalog plus the active acquisition plugin** (`artistReleases`, `tracks(forRelease:)`). Artist About comes from Lidarr's `overview` when present and is hidden otherwise; similar artists are hidden entirely. The `ITunes*Client.swift` files are still in the tree but are unreferenced dead code — they are safe to delete and should not be wired back in.
+
+## Dead code awaiting removal
+
+- `ITunes*Client.swift` (4 files: search / tracklist / new releases / artist) — no remaining references anywhere in `Sources/`.
+
+## Performance is a standing constraint, not a one-off cleanup
+
+Every view holds `@EnvironmentObject var app: AppModel`, and `AppModel` has ~100 `@Published` properties, so **any** publish re-runs **every** visible `body`. A single full-catalog scan or live `.blur` in a body path is enough to make scrolling and the mini-player transition visibly janky — this has regressed twice. Before adding UI, read `Rules/swiftui-body-cost.md` and `Rules/swiftui-render-cost.md`. `PerfLog` logs any main-actor block over 16 ms under subsystem `vellum.perf` and emits Instruments signposts; use it rather than guessing.

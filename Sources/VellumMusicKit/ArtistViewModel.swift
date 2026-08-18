@@ -30,8 +30,8 @@ enum ArtistPageInput: Hashable {
 }
 
 /// One row in the artist page's "Top Songs" section. Either matches a real track
-/// on the user's server (`libraryTrack` non-nil, fully playable) or surfaces a
-/// Last.fm-ranked title that isn't on the server yet (greyed row + request CTA).
+/// on the user's server (`libraryTrack` non-nil, fully playable) or a scrobbled
+/// title that isn't resolved locally yet.
 struct ArtistTopSongRow: Identifiable, Hashable {
     let id: String
     let title: String
@@ -51,12 +51,12 @@ enum ArtistDiscographyBucket: Hashable {
     case compilations
 }
 
-/// A discography card — either an album on the user's server (playable) or an
-/// iTunes album not present locally (links to BrowseAlbumDetailView for request).
+/// A discography card — either an album on the user's server (playable) or a
+/// plugin catalog album not present locally (links to BrowseAlbumDetailView for request).
 struct ArtistDiscographyItem: Identifiable, Hashable {
     enum Source: Hashable {
         case libraryAlbum(AlbumSummary)
-        case remote(ITunesArtistAlbum)
+        case remote(AcquisitionRelease)
     }
 
     let id: String
@@ -66,8 +66,8 @@ struct ArtistDiscographyItem: Identifiable, Hashable {
     let releaseYear: Int?
     /// Best-effort sort date — the most precise date the source exposes
     /// (Jellyfin/Subsonic ``AlbumSummary/releaseDate`` when present, otherwise
-    /// the first-of-year fallback derived from ``releaseYear``; for iTunes,
-    /// ``ITunesArtistAlbum/releaseDate`` when present).
+    /// the first-of-year fallback derived from ``releaseYear``; for a plugin
+    /// release, ``AcquisitionRelease/releaseDate`` when present).
     let releaseSortDate: Date?
     let artworkURL: URL?
     let source: Source
@@ -77,7 +77,7 @@ struct ArtistDiscographyItem: Identifiable, Hashable {
         return nil
     }
 
-    var remoteAlbum: ITunesArtistAlbum? {
+    var remoteAlbum: AcquisitionRelease? {
         if case .remote(let a) = source { return a }
         return nil
     }
@@ -103,8 +103,7 @@ final class ArtistViewModel: ObservableObject {
     @Published private(set) var topSongs: [ArtistTopSongRow] = []
     @Published private(set) var discography: [ArtistDiscographyBucket: [ArtistDiscographyItem]] = [:]
     @Published private(set) var similarArtists: [LastFmSimilarArtist] = []
-    @Published private(set) var details: TheAudioDBClient.ArtistDetails?
-    @Published private(set) var artistProfile: ArtistProfile?
+    @Published private(set) var pluginProfile: AcquisitionArtistProfile?
     @Published private(set) var jellyfinOverview: String?
 
     @Published private(set) var isLoadingServerCatalog = true
@@ -131,7 +130,7 @@ final class ArtistViewModel: ObservableObject {
             || !topSongs.isEmpty
             || !discography.isEmpty
             || !similarArtists.isEmpty
-            || (details?.biography?.isEmpty == false)
+            || (pluginProfile?.overview?.isEmpty == false)
             || (jellyfinOverview?.isEmpty == false)
     }
 
@@ -145,45 +144,44 @@ final class ArtistViewModel: ObservableObject {
         !topSongs.compactMap(\.libraryTrack).isEmpty || !serverTracks.isEmpty
     }
 
-    /// The artist's most recent release (newest dated album/EP/single from iTunes), shown as a
-    /// featured card under the hero. `remoteReleasesSnapshot` is already newest-first.
-    var latestRelease: ITunesArtistAlbum? {
+    /// The artist's most recent plugin/server-adjacent release, shown as a
+    /// featured card under the hero. `remoteReleasesSnapshot` is newest-first.
+    var latestRelease: AcquisitionRelease? {
         remoteReleasesSnapshot.first(where: { $0.releaseDate != nil }) ?? remoteReleasesSnapshot.first
     }
 
     /// The server album matching a remote release by title, when the user already has it.
-    func serverAlbum(matching release: ITunesArtistAlbum) -> AlbumSummary? {
-        let key = LibraryTrackMatcher.normalize(release.title)
-        guard !key.isEmpty else { return nil }
-        return serverAlbums.first { LibraryTrackMatcher.normalize($0.title) == key }
+    func serverAlbum(matching release: AcquisitionRelease) -> AlbumSummary? {
+        let keys = Set(discographyTitleKeys(for: release.title))
+        guard !keys.isEmpty else { return nil }
+        return serverAlbums.first { !Set(discographyTitleKeys(for: $0.title)).isDisjoint(with: keys) }
     }
 
     var hasAboutSection: Bool {
-        if let bio = details?.biography, !bio.isEmpty { return true }
+        if let overview = pluginProfile?.overview, !overview.isEmpty { return true }
         if let overview = jellyfinOverview, !overview.isEmpty { return true }
-        if let profile = artistProfile, !profile.isEmpty { return true }
-        guard let d = details else { return false }
-        return d.country != nil || d.formedYear != nil || d.genre != nil
+        if let genres = pluginProfile?.genres, !genres.isEmpty { return true }
+        return false
     }
 
     /// Hero banner URL — wide artist photo when available, then thumb, album-cover fallback, then library input art.
-    var bannerArtworkURL: URL? {
-        details?.wideArtworkURL
-            ?? details?.thumbArtworkURL
-            ?? fallbackBannerArtworkURL
-            ?? input.serverArtworkURL
+    /// True when this artist exists on the connected Navidrome/Jellyfin server.
+    /// On-server pages use only server-provided art — no TheAudioDB / iTunes covers.
+    var isOnServerArtist: Bool {
+        resolvedArtistId != nil
+            || input.libraryArtistId != nil
+            || input.serverArtworkURL != nil
+            || !serverAlbums.isEmpty
     }
 
-    /// Banner fallback when TheAudioDB has no artist photo: the artist's top album cover
-    /// (newest full album first), so the hero shows real artwork instead of a flat gradient.
-    var fallbackBannerArtworkURL: URL? {
-        let order: [ArtistDiscographyBucket] = [.albums, .singlesAndEPs, .compilations, .live]
-        for bucket in order {
-            if let url = discography[bucket]?.first(where: { $0.artworkURL != nil })?.artworkURL {
-                return url
-            }
+    var bannerArtworkURL: URL? {
+        if isOnServerArtist {
+            return input.serverArtworkURL
+                ?? serverAlbums.first(where: { $0.artworkURL != nil })?.artworkURL
         }
-        return serverAlbums.first(where: { $0.artworkURL != nil })?.artworkURL
+        return pluginProfile?.artworkURL
+            ?? remoteReleasesSnapshot.first(where: { $0.artistArtworkURL != nil })?.artistArtworkURL
+            ?? remoteReleasesSnapshot.first(where: { $0.artworkURL != nil })?.artworkURL
     }
 
     var hasOffServerCatalogContent: Bool {
@@ -214,38 +212,39 @@ final class ArtistViewModel: ObservableObject {
     }
 
     /// Drives the whole page: resolve the server artist id (when input was a bare name),
-    /// then kick off server catalog + Last.fm + TheAudioDB + iTunes discography in parallel.
+    /// then load the server catalog plus the active plugin's discography (if any).
     func load(using app: AppModel) async {
-        // Warm-paint from per-session cache so banner/bio/similar appear instantly
-        // on return visits. Top songs + discography still rebuild from the live
-        // server catalog once it loads (their row content depends on it).
         if let cached = await ArtistEnrichmentCache.shared.load(forArtistName: input.displayName) {
-            self.details = cached.details
-            self.similarArtists = cached.similarArtists
-            self.lastFmTopTracksSnapshot = cached.topTracks
+            self.pluginProfile = cached.profile
             self.remoteReleasesSnapshot = cached.releases
             self.isLoadingEnrichment = false
         }
 
         await resolveServerArtistIdIfNeeded(using: app)
-        // Load server catalog first so dependent sections (top songs + discography)
-        // can render against real album/track data. Enrichment runs concurrently.
-        async let enrichment: Void = loadEnrichment()
-        async let remoteDiscography: Void = loadRemoteReleases()
+
+        let pluginConfigured = app.acquisitionConfigured
+        async let remote: Void = {
+            if pluginConfigured {
+                await self.loadRemoteReleases(using: app)
+            }
+        }()
+
         await loadServerCatalog(using: app)
-        _ = await (enrichment, remoteDiscography)
-        rebuildTopSongs()
+        rebuildTopSongs(using: app)
         applyDiscography(releases: remoteReleasesSnapshot, serverAlbums: serverAlbums)
         isLoadingDiscography = false
-        await loadAcquisitionRequestability(using: app)
+        isLoadingEnrichment = false
 
-        await ArtistEnrichmentCache.shared.save(
-            forArtistName: input.displayName,
-            details: details,
-            topTracks: lastFmTopTracksSnapshot,
-            similarArtists: similarArtists,
-            releases: remoteReleasesSnapshot
-        )
+        await remote
+        if pluginConfigured {
+            applyDiscography(releases: remoteReleasesSnapshot, serverAlbums: serverAlbums)
+            await ArtistEnrichmentCache.shared.save(
+                forArtistName: input.displayName,
+                profile: pluginProfile,
+                releases: remoteReleasesSnapshot
+            )
+        }
+        await loadAcquisitionRequestability(using: app)
     }
 
     // MARK: - Subloads
@@ -288,88 +287,20 @@ final class ArtistViewModel: ObservableObject {
         isLoadingServerCatalog = false
     }
 
-    private var lastFmTopTracksSnapshot: [LastFmTopTrack] = []
-    private var remoteReleasesSnapshot: [ITunesArtistAlbum] = []
+    private var remoteReleasesSnapshot: [AcquisitionRelease] = []
 
-    private func loadEnrichment() async {
-        let name = input.displayName
-        async let detailsTask = TheAudioDBClient.fetchArtistDetails(name: name)
-        async let topTask = LastFmClient.topTracks(artist: name, limit: 12)
-        async let similarTask = LastFmClient.similarArtists(artist: name, limit: 16)
-        async let profileTask = ArtistProfileClient.fetch(name: name)
-        let (resolvedDetails, top, similar) = await (detailsTask, topTask, similarTask)
+    private func loadRemoteReleases(using app: AppModel) async {
+        guard app.acquisitionConfigured else {
+            remoteReleasesSnapshot = []
+            pluginProfile = nil
+            return
+        }
+        async let releasesTask = app.acquisition.artistReleases(named: input.displayName)
+        async let profileTask = app.acquisition.artistProfile(named: input.displayName)
+        let releases = await releasesTask
         let profile = await profileTask
-        if let profile { self.artistProfile = profile }
-        // Preserve previously-cached values when the live fetch returns nothing,
-        // so a transient network failure on revisit doesn't wipe the banner/bio.
-        self.details = resolvedDetails ?? self.details
-        if !top.isEmpty { self.lastFmTopTracksSnapshot = top }
-
-        // Similar artists: Last.fm when available, otherwise ListenBrainz (free, keyed by the
-        // MusicBrainz id from the profile). iTunes has no related-artists endpoint. Skip the
-        // (ListenBrainz + 16 iTunes avatar) work entirely when the per-session cache already
-        // warm-painted them.
-        if !similar.isEmpty {
-            self.similarArtists = similar
-        } else if self.similarArtists.isEmpty, let mbid = profile?.mbid {
-            let related = await ListenBrainzClient.similarArtists(mbid: mbid, limit: 16)
-            if !related.isEmpty {
-                // ListenBrainz has no photos — give each a circular avatar from an iTunes album
-                // cover (the same album-art-as-avatar approach the Home shelf uses).
-                let art = await ITunesArtistClient.artworkURLs(forArtists: related.map(\.name))
-                self.similarArtists = related.map { artist in
-                    guard let url = art[LibraryTrackMatcher.normalize(artist.name)] else { return artist }
-                    return LastFmSimilarArtist(name: artist.name, mbid: artist.mbid, imageURL: url, match: artist.match)
-                }
-            }
-        }
-
-        // English-bio fallback: TheAudioDB often lacks `strBiographyEN` for niche
-        // artists; if so, ask Last.fm (always English). Run sequentially after
-        // TheAudioDB resolves so we don't waste the request when EN is present.
-        if self.details?.biography == nil || self.details?.biography?.isEmpty == true {
-            if let englishBio = await LastFmClient.artistBio(artist: name) {
-                self.details = mergeBioIntoDetails(details: self.details, bio: englishBio, fallbackName: name)
-            }
-        }
-
-        isLoadingEnrichment = false
-    }
-
-    /// Returns a new `ArtistDetails` with `biography` set to `bio`. If we never
-    /// got a TheAudioDB payload, synthesize a minimal one so the About section
-    /// can still render the Last.fm bio.
-    private func mergeBioIntoDetails(
-        details: TheAudioDBClient.ArtistDetails?,
-        bio: String,
-        fallbackName: String
-    ) -> TheAudioDBClient.ArtistDetails {
-        guard let d = details else {
-            return TheAudioDBClient.ArtistDetails(
-                name: fallbackName,
-                wideArtworkURL: nil,
-                thumbArtworkURL: nil,
-                biography: bio,
-                country: nil,
-                formedYear: nil,
-                genre: nil
-            )
-        }
-        return TheAudioDBClient.ArtistDetails(
-            name: d.name,
-            wideArtworkURL: d.wideArtworkURL,
-            thumbArtworkURL: d.thumbArtworkURL,
-            biography: bio,
-            country: d.country,
-            formedYear: d.formedYear,
-            genre: d.genre
-        )
-    }
-
-    private func loadRemoteReleases() async {
-        // Already warm-painted from the per-session cache — skip the iTunes discography fetch.
-        guard remoteReleasesSnapshot.isEmpty else { return }
-        self.remoteReleasesSnapshot = await ITunesArtistClient.discography(forArtist: input.displayName)
+        remoteReleasesSnapshot = releases
+        if let profile { pluginProfile = profile }
     }
 
     private func loadAcquisitionRequestability(using app: AppModel) async {
@@ -386,48 +317,71 @@ final class ArtistViewModel: ObservableObject {
 
     // MARK: - Section composition
 
-    private func rebuildTopSongs() {
-        topSongs = mergeTopSongs(lastFm: lastFmTopTracksSnapshot, tracks: serverTracks)
+    private func rebuildTopSongs(using app: AppModel) {
+        topSongs = scrobbleTopSongs(using: app)
         if topSongs.isEmpty {
             topSongs = fallbackTopSongs(from: serverAlbums, tracks: serverTracks)
         }
         isLoadingTopSongs = false
     }
 
-    private func mergeTopSongs(lastFm: [LastFmTopTrack], tracks: [Track]) -> [ArtistTopSongRow] {
-        guard !lastFm.isEmpty else { return [] }
-        let titleIndex = Dictionary(grouping: tracks) { LibraryTrackMatcher.normalize($0.title) }
-        var rows: [ArtistTopSongRow] = []
-        rows.reserveCapacity(min(lastFm.count, 10))
-        for top in lastFm {
-            let keys = LibraryTrackMatcher.normalizedTitleKeys(from: top.title)
-            let match = keys.lazy.compactMap { titleIndex[$0]?.first }.first
-            if let match {
-                rows.append(ArtistTopSongRow(
-                    id: "lib-\(match.id)",
-                    title: match.title,
-                    artist: match.artist,
-                    albumTitle: match.albumTitle.isEmpty ? nil : match.albumTitle,
-                    releaseYear: match.releaseYear,
-                    artworkURL: match.artworkURL,
-                    libraryTrack: match,
-                    playcount: top.playcount
-                ))
+    private func scrobbleTopSongs(using app: AppModel) -> [ArtistTopSongRow] {
+        let artistKey = LibraryTrackMatcher.normalize(input.displayName)
+        guard !artistKey.isEmpty else { return [] }
+        var counts: [String: (track: Track?, title: String, artist: String, count: Int)] = [:]
+
+        func consider(trackId: String, title: String, artist: String) {
+            let key = LibraryTrackMatcher.normalize(title)
+            guard !key.isEmpty else { return }
+            let track = app.cachedLibraryTrack(id: trackId)
+                ?? serverTracks.first(where: { $0.id == trackId })
+            if var existing = counts[key] {
+                existing.count += 1
+                if existing.track == nil { existing.track = track }
+                counts[key] = existing
             } else {
-                rows.append(ArtistTopSongRow(
-                    id: "lfm-\(top.id)",
-                    title: top.title,
-                    artist: input.displayName,
+                counts[key] = (track, title, artist, 1)
+            }
+        }
+
+        for scrobble in app.scrobbleService.store.completed {
+            let key = LibraryTrackMatcher.normalize(scrobble.artist)
+            guard key == artistKey else { continue }
+            consider(trackId: scrobble.trackId, title: scrobble.title, artist: scrobble.artist)
+        }
+        for track in app.recentlyPlayedTracks {
+            let key = LibraryTrackMatcher.normalize(track.artist)
+            guard key == artistKey else { continue }
+            consider(trackId: track.id, title: track.title, artist: track.artist)
+        }
+
+        return counts.values
+            .sorted { $0.count > $1.count }
+            .prefix(10)
+            .map { entry in
+                if let track = entry.track {
+                    return ArtistTopSongRow(
+                        id: "lib-\(track.id)",
+                        title: track.title,
+                        artist: track.artist,
+                        albumTitle: track.albumTitle.isEmpty ? nil : track.albumTitle,
+                        releaseYear: track.releaseYear,
+                        artworkURL: track.artworkURL,
+                        libraryTrack: track,
+                        playcount: entry.count
+                    )
+                }
+                return ArtistTopSongRow(
+                    id: "scrobble-\(LibraryTrackMatcher.normalize(entry.title))",
+                    title: entry.title,
+                    artist: entry.artist,
                     albumTitle: nil,
                     releaseYear: nil,
                     artworkURL: nil,
                     libraryTrack: nil,
-                    playcount: top.playcount
-                ))
+                    playcount: entry.count
+                )
             }
-            if rows.count >= 10 { break }
-        }
-        return rows
     }
 
     private func fallbackTopSongs(from albums: [AlbumSummary], tracks: [Track]) -> [ArtistTopSongRow] {
@@ -457,35 +411,26 @@ final class ArtistViewModel: ObservableObject {
         return rows
     }
 
-    /// Build the four discography buckets by blending the user's server catalog with
-    /// the iTunes discography, then sorting each bucket newest-first.
-    ///
-    /// Blending rules:
-    /// - **Albums**: server albums + every iTunes album-type release
-    ///   that doesn't match a server album. Missing-on-server items are tagged
-    ///   `needsRequest = true` so the card renders a download glyph.
-    /// - **Singles & EPs**: server albums classified as Single/EP + iTunes
-    ///   Single/EP releases that aren't matched to a server album. **Strict
-    ///   dedupe**: an iTunes single titled e.g. "Wake Up" is dropped when the
-    ///   user already has a track titled "Wake Up" on any server album — the user
-    ///   effectively already has the song, so listing it again is noise.
-    /// - **Live** and **Compilations**: server-only (no iTunes blending).
-    ///   Apple Music does this too — the user asked for the blend behavior on
-    ///   the Albums section, with strict singles, and the other secondary
-    ///   buckets stay server-faithful.
-    private func applyDiscography(releases: [ITunesArtistAlbum], serverAlbums: [AlbumSummary]) {
-        let remoteByNormalizedTitle: [String: ITunesArtistAlbum] = Dictionary(releases.map {
-            (LibraryTrackMatcher.normalize($0.title), $0)
-        }, uniquingKeysWith: { first, _ in first })
+    /// Title keys for matching plugin rows to server albums. Exact normalize plus
+    /// ``AlbumSummary.albumVersionBaseKey`` so "hate that i made you love me - EP"
+    /// matches a server album tagged without the suffix.
+    private func discographyTitleKeys(for title: String) -> [String] {
+        AlbumSummary.discographyTitleKeys(for: title)
+    }
 
-        // 1. Place each server album into a bucket. Use the iTunes album's bucket when we can
-        //    match by title, otherwise fall back to a heuristic on title text and track count.
+    private func applyDiscography(releases: [AcquisitionRelease], serverAlbums: [AlbumSummary]) {
+        var remoteByTitleKey: [String: AcquisitionRelease] = [:]
+        for remote in releases {
+            for key in discographyTitleKeys(for: remote.title) {
+                if remoteByTitleKey[key] == nil { remoteByTitleKey[key] = remote }
+            }
+        }
+
         var bucketed: [ArtistDiscographyBucket: [ArtistDiscographyItem]] = [:]
         var matchedReleaseIds = Set<String>()
         for album in serverAlbums {
-            let key = LibraryTrackMatcher.normalize(album.title)
             let bucket: ArtistDiscographyBucket
-            if let remote = remoteByNormalizedTitle[key] {
+            if let remote = discographyTitleKeys(for: album.title).lazy.compactMap({ remoteByTitleKey[$0] }).first {
                 matchedReleaseIds.insert(remote.id)
                 bucket = remote.bucket
             } else {
@@ -503,18 +448,18 @@ final class ArtistViewModel: ObservableObject {
             ))
         }
 
-        // 2. Blend in iTunes releases that don't have a matching server album — only into
-        //    Albums and Singles & EPs (per the design rule).
-        let serverTrackTitles = Set(serverTracks.map { LibraryTrackMatcher.normalize($0.title) })
+        let serverAlbumTitleKeys = Set(serverAlbums.flatMap { discographyTitleKeys(for: $0.title) })
+        let serverTrackTitles = Set(serverTracks.flatMap { discographyTitleKeys(for: $0.title) })
         for remote in releases where !matchedReleaseIds.contains(remote.id) {
             let bucket = remote.bucket
             guard bucket == .albums || bucket == .singlesAndEPs else { continue }
-            if bucket == .singlesAndEPs {
-                let titleKey = LibraryTrackMatcher.normalize(remote.title)
-                if serverTrackTitles.contains(titleKey) { continue }
+            let remoteKeys = discographyTitleKeys(for: remote.title)
+            if remoteKeys.contains(where: { serverAlbumTitleKeys.contains($0) }) { continue }
+            if bucket == .singlesAndEPs, remoteKeys.contains(where: { serverTrackTitles.contains($0) }) {
+                continue
             }
             bucketed[bucket, default: []].append(ArtistDiscographyItem(
-                id: "itunes-\(remote.id)",
+                id: "acq-\(remote.id)",
                 title: remote.title,
                 artist: remote.artist.isEmpty ? input.displayName : remote.artist,
                 bucket: bucket,

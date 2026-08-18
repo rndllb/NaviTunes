@@ -47,8 +47,27 @@ struct AppAccentPreset: Identifiable, Equatable {
         return presets.first { $0.id == id } ?? presets[0]
     }
 
+    private struct ResolvedAccent {
+        let id: String
+        let hex: String
+        let preset: AppAccentPreset
+    }
+
+    /// Memoizes the last resolution. ``MusicDesign/accent`` is read from well over a hundred
+    /// view bodies (including per-row chrome), and each read otherwise rescanned ``presets``
+    /// and re-parsed the custom hex. Keyed on the raw defaults values so it can never go stale.
+    private static var resolvedAccent: ResolvedAccent?
+
     static var current: AppAccentPreset {
-        preset(id: UserDefaults.standard.string(forKey: accentPresetIdKey) ?? defaultId)
+        let defaults = UserDefaults.standard
+        let id = defaults.string(forKey: accentPresetIdKey) ?? defaultId
+        let hex = defaults.string(forKey: customAccentHexKey) ?? defaultCustomHex
+        if let cached = resolvedAccent, cached.id == id, cached.hex == hex {
+            return cached.preset
+        }
+        let resolved = preset(id: id)
+        resolvedAccent = ResolvedAccent(id: id, hex: hex, preset: resolved)
+        return resolved
     }
 
     static func color(fromHex hex: String) -> Color? {
@@ -494,9 +513,14 @@ enum MusicDesign {
     static let gridMinCell: CGFloat = 158
     static let shelfCardWidth: CGFloat = 168
     static let shelfCardHeight: CGFloat = 168
+    /// Decode cap for 168pt shelf covers (covers 3×).
+    static let shelfArtworkDecodePixels: CGFloat = 512
+    /// Decode cap for Home Top Picks covers (250pt).
+    static let homeTopPickArtworkDecodePixels: CGFloat = 640
     /// Circular artist avatar in horizontal shelves (Home “New Artists Added”, New tab “Artists You're Into”).
     static let artistCircleTileSize: CGFloat = 110
     static let artistCircleTileLabelWidth: CGFloat = 120
+    static let artistCircleArtworkDecodePixels: CGFloat = 384
 
     // MARK: - Home Top Picks editorial card
     static let homeTopPickCardWidth: CGFloat = 250
@@ -594,6 +618,7 @@ struct AlbumArtworkView: View {
     @State private var decoded: CGImage?
     @State private var loadFailed = false
     @State private var loadedArtworkID: String?
+    @State private var imageVisible = false
 
     private var artworkID: String {
         guard let url else { return "none" }
@@ -625,17 +650,31 @@ struct AlbumArtworkView: View {
     @ViewBuilder
     private var artworkContent: some View {
         if let url {
+            // Resolve out of the in-memory cache during this very body pass. Waiting on
+            // `.task` alone meant every recycled cell built a `MusicShimmerSurface`
+            // (GeometryReader + mask + repeating animation) for one frame before the
+            // already-decoded image landed — the dominant cost of fast grid scrolling.
+            let warm = decoded == nil ? DecodedArtworkCache.image(for: url, maxPixelSize: maxDecodePixels) : nil
+            let image = decoded ?? warm
+            // A warm hit paints opaque immediately; only network loads fade in.
+            let visible = warm != nil || imageVisible
             Group {
-                if let decoded {
-                    ArtworkPlatformImage.swiftUIImage(cgImage: decoded)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .clipped()
-                } else if loadFailed {
-                    placeholder
-                } else {
-                    MusicShimmerSurface(cornerRadius: cornerRadius)
+                ZStack {
+                    if !visible {
+                        if loadFailed {
+                            placeholder
+                        } else {
+                            MusicShimmerSurface(cornerRadius: cornerRadius)
+                        }
+                    }
+                    if let image {
+                        ArtworkPlatformImage.swiftUIImage(cgImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .clipped()
+                            .opacity(visible ? 1 : 0)
+                    }
                 }
             }
             .task(id: url.absoluteString) {
@@ -651,38 +690,43 @@ struct AlbumArtworkView: View {
 
     private func load(url: URL) async {
         let loadKey = url.absoluteString
-        if loadedArtworkID == loadKey, decoded != nil {
+        if loadedArtworkID == loadKey, decoded != nil, imageVisible {
             return
         }
-        // Suppress animation only for image-load state changes — the previous
-        // `.transaction { $0.animation = nil }` on the Image itself also blocked
-        // the Image from participating in the parent's frame morph, which made
-        // resizes look like the container was cropping a fixed-size image
-        // instead of scaling the image itself.
         if let cached = DecodedArtworkCache.image(for: url, maxPixelSize: maxDecodePixels) {
-            withTransaction(Transaction(animation: nil)) {
+            // Instant show on cache hits so scrolling recycled cells doesn't re-shimmer.
+            // Don't put `.transaction { $0.animation = nil }` on the Image itself —
+            // that blocked cover-zoom frame morphs.
+            var instant = Transaction()
+            instant.disablesAnimations = true
+            withTransaction(instant) {
                 decoded = cached
                 loadFailed = false
                 loadedArtworkID = loadKey
+                imageVisible = true
             }
             ArtworkDynamicGradient.prefetchBackdrop(for: url)
             return
         }
-        withTransaction(Transaction(animation: nil)) {
+        // Leave shimmer running — a no-op `animation: nil` transaction here was
+        // cancelling MusicShimmerSurface's highlight sweep.
+        if loadedArtworkID != loadKey {
+            decoded = nil
+            imageVisible = false
             loadFailed = false
-            if loadedArtworkID != loadKey {
-                decoded = nil
-            }
         }
         let cg = await RemoteArtworkLoad.cgImage(from: url, maxPixelSize: maxDecodePixels)
         await MainActor.run {
-            withTransaction(Transaction(animation: nil)) {
-                decoded = cg
-                loadFailed = cg == nil
-                loadedArtworkID = loadKey
-            }
+            decoded = cg
+            loadFailed = cg == nil
+            loadedArtworkID = loadKey
             if cg != nil {
+                withAnimation(.easeOut(duration: 0.28)) {
+                    imageVisible = true
+                }
                 ArtworkDynamicGradient.prefetchBackdrop(for: url)
+            } else {
+                imageVisible = false
             }
         }
     }

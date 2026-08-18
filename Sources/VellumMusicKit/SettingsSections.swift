@@ -226,11 +226,10 @@ struct SettingsDownloadsSectionView: View {
         .settingsSubpageChrome()
         .onAppear {
             app.offline.recalculateCacheBytes()
-            Task {
-                let summary = await app.localCacheUsageSummaryAsync()
-                imageCacheCount = summary.imageCacheCount
-                metadataCacheCount = summary.metadataEntryCount
-            }
+            Task { await reloadCacheCounts() }
+        }
+        .onChange(of: app.localCacheRevision) { _, _ in
+            Task { await reloadCacheCounts() }
         }
     }
 
@@ -242,6 +241,12 @@ struct SettingsDownloadsSectionView: View {
 
     private func cacheCountLabel(_ count: Int?) -> String {
         count.map(String.init) ?? "—"
+    }
+
+    private func reloadCacheCounts() async {
+        let summary = await app.localCacheUsageSummaryAsync()
+        imageCacheCount = summary.imageCacheCount
+        metadataCacheCount = summary.metadataEntryCount
     }
 }
 

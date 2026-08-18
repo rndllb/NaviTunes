@@ -11,9 +11,8 @@ import UIKit
 /// iTunes releases the user's server doesn't have, About with inline MORE expansion,
 /// and Similar Artists.
 ///
-/// Driven by ``ArtistViewModel`` which loads server catalog + Last.fm + TheAudioDB
-/// + iTunes in parallel and publishes each slice independently so sections
-/// render as their data resolves. Empty slices hide entirely.
+/// Driven by ``ArtistViewModel`` which loads the server catalog plus the active
+/// acquisition plugin's discography (Lidarr / DroppedNeedle) when configured.
 struct ArtistPageView: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.colorScheme) private var colorScheme
@@ -83,7 +82,11 @@ struct ArtistPageView: View {
         .musicHeroAlbumNavigationChrome(palette: backdropPalette)
         .toolbar {
             ToolbarItemGroup(placement: MusicToolbar.trailingItemPlacement) {
-                ArtistFollowButton(name: model.displayName)
+                ArtistFollowButton(
+                    name: model.displayName,
+                    mbid: model.pluginProfile?.mbid,
+                    coverURL: model.bannerArtworkURL
+                )
                     .tint(backdropPalette.heroChromePrimary)
 
                 Menu {
@@ -276,6 +279,7 @@ private struct ArtistHeroBannerStack: View {
     let backdropColor: Color
 
     @State private var cgImage: CGImage?
+    @State private var blurredImage: CGImage?
 
     var body: some View {
         GeometryReader { geo in
@@ -296,13 +300,10 @@ private struct ArtistHeroBannerStack: View {
                     // Sharp portrait.
                     image
 
-                    // Soft-focus melt — a blurred copy of the same photo revealed only toward
-                    // the bottom third, ramping from sharp to fully soft behind the controls.
-                    // `opaque: true` keeps the blur sampling clean to the frame edges.
-                    image
-                        .blur(radius: MusicDesign.artistHeroImageBlurRadius, opaque: true)
-                        .frame(width: width, height: height)
-                        .clipped()
+                    // Soft-focus melt — pre-blurred bitmap (same mask as before). Live
+                    // SwiftUI `.blur(radius: 30)` on this full-bleed hero re-ran whenever
+                    // the mini player opened/closed and AppModel republished.
+                    meltLayer(width: width, height: height)
                         .mask(
                             LinearGradient(
                                 stops: [
@@ -351,13 +352,48 @@ private struct ArtistHeroBannerStack: View {
         }
     }
 
+    @ViewBuilder
+    private func meltLayer(width: CGFloat, height: CGFloat) -> some View {
+        if let blurredImage {
+            ArtworkPlatformImage.swiftUIImage(cgImage: blurredImage)
+                .resizable()
+                .scaledToFill()
+                .frame(width: width, height: height)
+                .clipped()
+        }
+    }
+
     private func loadImage() async {
         guard let url else {
-            await MainActor.run { cgImage = nil }
+            await MainActor.run {
+                cgImage = nil
+                blurredImage = nil
+            }
             return
         }
         let loaded = await RemoteArtworkLoad.cgImage(from: url, maxPixelSize: 960)
-        await MainActor.run { cgImage = loaded }
+        #if os(iOS)
+        let displayedWidth = UIScreen.main.bounds.width
+        #else
+        let displayedWidth: CGFloat = 390
+        #endif
+        let blurred: CGImage?
+        if let loaded {
+            let radius = ArtworkGaussianBlur.matchingSwiftUIRadius(
+                MusicDesign.artistHeroImageBlurRadius,
+                sourceWidth: loaded.width,
+                displayedWidth: displayedWidth
+            )
+            blurred = await Task.detached(priority: .utility) {
+                ArtworkGaussianBlur.cgImage(from: loaded, radius: radius)
+            }.value
+        } else {
+            blurred = nil
+        }
+        await MainActor.run {
+            cgImage = loaded
+            blurredImage = blurred
+        }
     }
 }
 
@@ -649,7 +685,7 @@ private struct ArtistLatestReleaseCard: View {
         }
     }
 
-    private func rowContent(release: ITunesArtistAlbum) -> some View {
+    private func rowContent(release: AcquisitionRelease) -> some View {
         HStack(spacing: 12) {
             AlbumArtworkView(url: release.artworkURL, cornerRadius: MusicDesign.albumCorner)
                 .frame(width: 88, height: 88)
@@ -677,7 +713,7 @@ private struct ArtistLatestReleaseCard: View {
     }
 
     @ViewBuilder
-    private func destination(release: ITunesArtistAlbum, serverAlbum: AlbumSummary?) -> some View {
+    private func destination(release: AcquisitionRelease, serverAlbum: AlbumSummary?) -> some View {
         if let serverAlbum {
             ServerPlaylistDetailView(album: serverAlbum, librarySource: app.isAlbumInLibrary(serverAlbum.id))
         } else {
@@ -686,13 +722,13 @@ private struct ArtistLatestReleaseCard: View {
                 title: release.title,
                 imageURL: release.artworkURL,
                 kind: release.bucket == .singlesAndEPs ? "EP" : "Album",
-                albumId: release.id,
+                albumId: release.trackLookupId,
             ))
         }
     }
 
     @ViewBuilder
-    private func addButton(release: ITunesArtistAlbum, serverAlbum: AlbumSummary?) -> some View {
+    private func addButton(release: AcquisitionRelease, serverAlbum: AlbumSummary?) -> some View {
         let inLibrary = serverAlbum.map { app.isAlbumInLibrary($0.id) } ?? false
         Button {
             Task { await addOrRequest(release: release, serverAlbum: serverAlbum) }
@@ -707,16 +743,12 @@ private struct ArtistLatestReleaseCard: View {
         .accessibilityLabel(inLibrary ? "In library" : (serverAlbum == nil ? "Request album" : "Add to library"))
     }
 
-    private func addOrRequest(release: ITunesArtistAlbum, serverAlbum: AlbumSummary?) async {
+    private func addOrRequest(release: AcquisitionRelease, serverAlbum: AlbumSummary?) async {
         if let serverAlbum {
             guard !app.isAlbumInLibrary(serverAlbum.id) else { return }
             await app.addAlbumToLibrary(serverAlbum)
         } else {
-            _ = await app.requestAcquisition(AcquisitionRequest(
-                artist: release.artist,
-                albumTitle: release.title,
-                coverURL: release.artworkURL,
-            ))
+            _ = await app.requestAcquisition(release.acquisitionRequest)
         }
     }
 }
@@ -732,7 +764,7 @@ private struct ArtistAcquisitionBanner: View {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "exclamationmark.circle.fill")
                     .foregroundStyle(.orange)
-                Text("This artist is in Apple’s catalog but isn’t available in \(app.acquisitionCapabilities.displayName), so albums here can’t be requested.")
+                Text("This artist isn’t in \(app.acquisitionCapabilities.displayName), so albums here can’t be requested.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -766,7 +798,7 @@ private struct ArtistTopSongsSection: View {
             VStack(spacing: 0) {
                 ArtistSectionHeader(title: "Top Songs")
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(alignment: .top, spacing: 16) {
+                    LazyHStack(alignment: .top, spacing: 16) {
                         ForEach(Array(pages.enumerated()), id: \.offset) { _, page in
                             ArtistTopSongsPage(
                                 rows: page,
@@ -1019,7 +1051,9 @@ private struct ArtistDiscographyCarousel: View {
             VStack(spacing: 0) {
                 ArtistSectionHeader(title: title)
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(alignment: .top, spacing: 14) {
+                    // Lazy: a plugin discography can be 100+ releases per bucket, and each
+                    // card carries artwork plus a context menu.
+                    LazyHStack(alignment: .top, spacing: 14) {
                         ForEach(items) { item in
                             ArtistDiscographyCard(
                                 item: item,
@@ -1105,7 +1139,7 @@ private struct ArtistDiscographyCard: View {
             title: album.title,
             imageURL: album.artworkURL,
             kind: bucketLabel,
-            albumId: album.id
+            albumId: album.trackLookupId
         )
     }
 
@@ -1195,10 +1229,8 @@ private struct ArtistAboutPageView: View {
     @ObservedObject var model: ArtistViewModel
     let palette: ArtworkDynamicGradient.BackdropPalette
 
-    private var details: TheAudioDBClient.ArtistDetails? { model.details }
-
     private var bio: String? {
-        if let b = details?.biography, !b.isEmpty { return b }
+        if let b = model.pluginProfile?.overview, !b.isEmpty { return b }
         if let o = model.jellyfinOverview, !o.isEmpty { return o }
         return nil
     }
@@ -1260,22 +1292,9 @@ private struct ArtistAboutPageView: View {
 
     @ViewBuilder
     private var metadataBlock: some View {
-        // Prefer the richer MusicBrainz profile (birthplace city + full date), fall back to
-        // TheAudioDB's coarser country + formed-year.
-        let from = model.artistProfile?.origin ?? details?.country
-        let born = model.artistProfile?.born ?? details?.formedYear.map(String.init)
-        let genre = model.artistProfile?.genre ?? details?.genre
+        let genre = model.pluginProfile?.genres.first
 
         VStack(alignment: .leading, spacing: 20) {
-            HStack(alignment: .top, spacing: 16) {
-                if let from {
-                    metaColumn(label: "From", value: from)
-                }
-                if let born {
-                    metaColumn(label: "Born", value: born)
-                }
-            }
-
             if let genre {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Genre")
@@ -1295,20 +1314,6 @@ private struct ArtistAboutPageView: View {
         }
     }
 
-    private func metaColumn(label: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(label)
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(secondaryColor)
-                .textCase(.uppercase)
-                .tracking(0.5)
-            Text(value)
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(primaryColor)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
 }
 
 // MARK: - Similar Artists

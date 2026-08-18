@@ -3,7 +3,7 @@ import SwiftUI
 struct SettingsPlaybackView: View {
     @EnvironmentObject private var app: AppModel
     @State private var showResetConfirm = false
-    @AppStorage("streamingDiskCacheEnabled") private var streamingDiskCacheEnabled = true
+    @AppStorage("streamingDiskCacheEnabled") private var streamingDiskCacheEnabled = false
 
     private var isDefault: Bool {
         app.wifiStreamBitRate == .none

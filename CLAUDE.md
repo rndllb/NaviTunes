@@ -54,22 +54,22 @@ Rule of thumb: anything that means "things the *user* owns / has added" must rea
 
 All "request missing music" flows funnel through one swappable abstraction so backends are interchangeable. **Only one plugin is active at a time** (`AcquisitionManager.activePlugin`, persisted in `UserDefaults`).
 
-- **Core** (`AcquisitionCore.swift`): `AcquisitionPluginKind` (`lidarr`, `droppedNeedle`), the unified `AcquisitionRequest` (artist/track/album + optional MBIDs + `requestKey`), `AcquisitionJob`(+`AcquisitionJobStatus`), `AcquisitionResult` (a concrete searchable item carrying its own request), `AcquisitionCapabilities` (granularity track/album, `supportsTrackSearch`, `configFields`), and the `AcquisitionProviding` protocol. `AcquisitionConfigStore` persists per-plugin credentials under distinct keys (`acquisition.<kind>.<field>`). `AcquisitionHTTP` is the shared REST helper for the network plugins.
-- **Manager** (`AcquisitionManager.swift`, `@MainActor`): `enqueue(_:)` is the single entry point; jobs keyed by `requestKey`; a shared poll loop reconciles against `provider.activeJobs()`; `onJobFinished` fires once per terminal job. `AppModel.acquisition` owns it and forwards `objectWillChange`. Default plugin is **Lidarr**; an old persisted `"downtify"` value no longer decodes and falls back to Lidarr.
-- **Plugins** (conform to `AcquisitionProviding`): **Lidarr** (`LidarrAcquisitionPlugin`) — album-level; MusicBrainz lookup → add + monitor → `AlbumSearch` (#5012 monitor-race fix); polls `/queue` + `/command`. **DroppedNeedle** (`DroppedNeedleAcquisitionPlugin`) — album-level (optional per-track when `trackTitle` is set); native `/api/v1/*` auth via session tokens from one of: `POST /api/v1/auth/login` (local account), `POST /api/v1/auth/jellyfin/login` (imported Jellyfin user), or Plex pin (`POST /api/v1/auth/plex/pin` → browser → `GET /api/v1/auth/plex/poll`); Connect Apps app passwords are **not** valid for the native API; requests via `POST /api/v1/requests/new`; polls `/api/v1/downloads`.
+- **Core** (`AcquisitionCore.swift`): `AcquisitionPluginKind` (`lidarr`, `downtify`, `droppedNeedle`), the unified `AcquisitionRequest` (artist/track/album + optional MBIDs + `requestKey`), `AcquisitionJob`(+`AcquisitionJobStatus`), `AcquisitionResult` (a concrete searchable item carrying its own request), `AcquisitionRelease` / `AcquisitionArtist` catalog rows, `AcquisitionCapabilities` (granularity track/album, `supportsTrackSearch`, `supportsReleaseCatalog`, `configFields`), and the `AcquisitionProviding` protocol (`artistReleases`, `upcomingAndWanted`, `searchArtists`, `tracks(forRelease:)`). `AcquisitionConfigStore` persists per-plugin credentials under distinct keys (`acquisition.<kind>.<field>`). `AcquisitionHTTP` is the shared REST helper for the network plugins.
+- **Manager** (`AcquisitionManager.swift`, `@MainActor`): `enqueue(_:)` is the single entry point; jobs keyed by `requestKey`; a shared poll loop reconciles against `provider.activeJobs()`; `onJobFinished` fires once per terminal job. `AppModel.acquisition` owns it and forwards `objectWillChange`. Default plugin is **Lidarr**. The picker in `SettingsView` lists `AcquisitionPluginKind.allCases`, so every registered kind is user-selectable.
+- **Plugins** (conform to `AcquisitionProviding`): **Lidarr** (`LidarrAcquisitionPlugin`) — album-level; MusicBrainz lookup → add + monitor → `AlbumSearch` (#5012 monitor-race fix); polls `/queue` + `/command`; catalog reads `GET /artist`, `/album?artistId=`, `/calendar`, `/wanted/missing` (`supportsReleaseCatalog`). **DroppedNeedle** (`DroppedNeedleAcquisitionPlugin`) — album-level (optional per-track when `trackTitle` is set); native `/api/v1/*` auth via session tokens from one of: `POST /api/v1/auth/login` (local account), `POST /api/v1/auth/jellyfin/login` (imported Jellyfin user), or Plex pin (`POST /api/v1/auth/plex/pin` → browser → `GET /api/v1/auth/plex/poll`); Connect Apps app passwords are **not** valid for the native API; requests via `POST /api/v1/requests/new`; polls `/api/v1/downloads`; artist discography via `/search` (no calendar). **Downtify** (`DowntifyAcquisitionPlugin`) — the only **track**-granularity plugin (`supportsTrackSearch`, no release catalog); single `baseURL` config field.
 - **Call sites**: UI never touches a concrete plugin. Build an `AcquisitionRequest` and call `AppModel.requestAcquisition(_:)` (`DiscoverySearchView`, `BrowseAlbumDetailView`, `ServerPlaylistViews`, `MusicNewTabView`). Gate affordances on `app.acquisitionCapabilities` (`supportsTrackSearch`, `granularity`). Album-level plugins request the whole release for missing-track rows.
 - **Settings**: `SettingsView` → Plugins → **Music Requests** (renamed from "Downloads") opens `AcquisitionPluginSettingsView` — active-plugin picker, capability-driven config fields, Test Connection (`provider.validate()`), and a unified Activity list (`acquisition.displayJobs`, includes server-side items started outside Vellum). (The offline-media "Downloads" section under Settings is a separate thing.)
 - **Completion**: `AppModel.handleAcquisitionJobFinished` (backend-agnostic) triggers a server scan and retries `searchCatalog` until the new file surfaces, then adds it to the personal library.
-- **Request an artist not in your library**: Discover search surfaces iTunes artist matches as normal artist rows (`ITunesArtistClient.searchArtists`), and Settings → Following has an "Add artist" entry. Both open `ArtistPageView(input: .named(...))`, which resolves the discography via iTunes and lets you request individual albums.
+- **Request an artist not in your library**: Discover search surfaces plugin artist matches (`AcquisitionManager.searchArtists`) when Lidarr or DroppedNeedle is configured. Settings → Following has an "Add artist" entry. Both open `ArtistPageView(input: .named(...))`, which blends the server catalog with the plugin discography.
 
 To add a backend: add a `case` to `AcquisitionPluginKind`, write one `*AcquisitionPlugin.swift`, and register it in `AcquisitionManager.makeProvider`. No feature-code changes.
 
 ## Follow-artist completeness (subscriptions)
 
-The "Lidarr-style brain" — keep a followed artist's discography complete — but it **lives in the app**, so it works with *any* subset of plugins. The only hard dependency is the always-available iTunes Search API floor (`ITunesArtistClient`); acquisition/library backends are optional accelerators.
+The "Lidarr-style brain" — keep a followed artist's discography complete — but it **lives in the app**. Canonical releases come from the active plugin (`artistReleases`); there is no iTunes/TheAudioDB floor.
 
 - **Models/store** (`MusicSubscriptionModels.swift`): `FollowedArtist` (persisted "wanted" intent; id = MBID or normalized-name fallback; tracks `requestedReleaseIds` so re-checks don't re-enqueue), `SubscriptionReleaseStatus` (`.have`/`.requested`/`.pending` UI status), and `MusicSubscriptionStore` (JSON in `Application Support/VellumMusic/subscriptions.json`, same layout as `LibrarySnapshotStore`).
-- **Engine** (`MusicSubscriptionEngine.swift`, `@MainActor`): env-injected (no `AppModel` internals) so it stays testable. `check(artistId:)` = canonical discography (iTunes) → diff against the connected server (`serverAlbumsForArtist`, normalized-title match, any backend) → enqueue missing albums/EPs through the **active acquisition plugin**. Graceful degradation: with no plugin (or a track-only one that can't pull whole albums) missing releases become `.pending` (wishlist) instead of disabling the feature. `checkAll()` paces iTunes artist fetches.
+- **Engine** (`MusicSubscriptionEngine.swift`, `@MainActor`): env-injected (no `AppModel` internals) so it stays testable. `check(artistId:)` = plugin discography → diff against the connected server (`serverAlbumsForArtist`, normalized-title match, any backend) → enqueue missing albums/EPs through the **active acquisition plugin**. With no catalog plugin, completeness is server-only (have vs wishlist).
 - **AppModel** owns `subscriptions` (built in `init`, forwards `objectWillChange`); `serverAlbums(forArtistName:)` is the "have it?" probe; `refreshSubscriptions()` runs a pass. The engine calls `acquisition.enqueue` directly (not `requestAcquisition`) to avoid per-album toasts.
 - **UI**: `ArtistFollowButton` (bell toggle in the artist-page toolbar, always shown — following without a plugin is a valid wishlist) and `SubscriptionsView` (Settings → Plugins → **Following**: per-artist status, "Check now", unfollow; banner when no download plugin is configured).
 - **Capability gating**: auto-fetch only when `acquisition.isConfigured` **and** `capabilities.granularity == .album`. Everything keys off capabilities, never a named plugin.
@@ -92,11 +92,12 @@ The "Lidarr-style brain" — keep a followed artist's discography complete — b
 - **UI** — `HomeTopPickCard` editorial cards (250×325, vertical color bleed via `HomeTopPickArtworkBleed` / `ArtworkVerticalBleed`).
 - Rebuild hooks: `refreshHome()`, library refresh, magic-playlist membership changes (`addAlbumToLibrary` / `removeAlbumFromLibrary` / `applyMagicPlaylistFetch`).
 
-## New tab (iTunes browse)
+## New tab (server + Lidarr catalog)
 
-- **No MusicBrainz browse** — `refreshNewTabBrowse()` builds from `ITunesNewReleasesClient` + `NewTabPersonalizationEngine` only. `musicBrainzEnabled` and `MusicBrainzArtistClient` / `MusicBrainzTracklistClient` were removed.
-- `newTabBrowseBackend` is `.appleMusic` (iTunes) on success.
-- Off-server album rows use `ITunesTracklistClient`; artist pages use `ITunesArtistClient.discography`.
+- **No iTunes / TheAudioDB / MusicBrainz browse.** The `ITunes*Client.swift` files still exist but are **unreferenced dead code** — don't wire them back in. `refreshNewTabBrowse()` builds a taste-ranked feed from the server catalog (recently added + albums by scrobble/follow artists) plus, when Lidarr is configured, Lidarr calendar + wanted/missing.
+- `newTabBrowseBackend` is `.lidarr` or `.server`. Badge: "Based on your listening" / "From Lidarr" / "From your server".
+- Hero songs are recent scrobbles / recently played tracks, not chart singles.
+- Off-server album tracklists come from the active plugin (`tracks(forRelease:)`), not iTunes.
 
 ## Artist navigation & Now Playing chrome
 
@@ -110,9 +111,10 @@ The "Lidarr-style brain" — keep a followed artist's discography complete — b
 - **Backdrop** — `ArtworkDynamicGradient.BackdropAnalysisStyle.artistPage`: samples lower image rows, ignores near-white studio backgrounds, produces **dark charcoal** page tint (not the dominant white bucket used by album detail). Cached separately from `.detail` palettes. Respects `albumBackdropEnabled`.
 - **Controls** — centered white play capsule; dark circular info / favorite side buttons; artist name above play. Toolbar uses `musicHeroAlbumNavigationChrome`.
 - **Content chrome** — `ArtistPageChrome` adaptive labels on backdrop (Top Songs, discography, About, Similar).
-- **Data** — `ArtistViewModel` loads server catalog + TheAudioDB + iTunes in parallel; `bannerArtworkURL` resolves wide → thumb → album-cover fallback → library input art.
-- **About metadata** — `ArtistProfileClient` (one MusicBrainz artist search → origin / born / genre).
-- **Similar artists** — `ListenBrainzClient` (MetaBrainz labs API, keyed by MusicBrainz id from profile fetch).
+- **Data** — `ArtistViewModel` loads the server catalog, then the active plugin's discography (`artistReleases`) when Lidarr or DroppedNeedle is configured. No TheAudioDB / Last.fm / iTunes / MusicBrainz calls. On-server artists use Navidrome/Jellyfin art (`bannerArtworkURL` = library artist image, then a server album cover). Off-server art comes from the plugin.
+- **About** — Lidarr `overview` / genres when present; otherwise hidden.
+- **Top songs** — scrobbles + recently played for this artist, then server-track fallback.
+- **Similar artists** — hidden (no third-party related-artist fetch).
 
 ## Album detail related shelves
 
@@ -159,6 +161,7 @@ After server rescans, media file ids can change. `AppModel.recoverStaleTrackIfNe
 - Track/Album/Playlist models are `Codable` and persisted to disk via `LibrarySnapshotStore.swift` — adding non-optional fields needs a migration story.
 - Media URLs may be embedded in `AVURLAsset`; query-auth (not headers) is required so the player can reach them without a custom resource loader.
 - All UI-facing models cross main actor boundaries. New `Observable` view-state types should be `@MainActor`.
+- **UI performance is a correctness constraint here, not a polish pass.** Every view observes the whole of `AppModel`, so any publish re-runs every visible `body`. Before adding UI, read `Rules/swiftui-body-cost.md` (no catalog scans in a body; derived lists live in `@State`; O(1) lookups via `catalogAlbum(id:)` / `libraryPlaylist(id:)` / `indexedTrack(id:)`) and `Rules/swiftui-render-cost.md` (lazy containers, render windows, pre-rasterized blur).
 
 ## Transient toast (snackbar)
 
@@ -175,7 +178,7 @@ If you wire a new action that ends in a queue/library/playlist mutation and a us
 `SettingsView.swift` is an iOS Settings–style **hub** (account row + `NavigationLink` sections). Detail pages live in `SettingsSections.swift` (`SettingsLibrarySectionView`, `SettingsSyncSectionView`, `SettingsOfflineSectionView`, `SettingsDownloadsSectionView`, `SettingsAppearanceView`, `SettingsPluginsView`, `SettingsAboutView`) plus existing leaf views (`SettingsPlaybackView`, `SettingsLibraryDataView`, `AcquisitionPluginSettingsView`, `SubscriptionsView`, `SettingsEqualizerView`). Subpages use `.settingsSubpageChrome()`.
 
 - **Library** (`SettingsLibraryDataView`) — two stat groups: **Your Library** (`librarySongIds` / `libraryAlbumEntries` / `libraryPlaylistEntries`) vs **Server Catalog** (`AppModel.libraryStatistics`), plus mixes, cache, listening history, backup, and Navidrome shares. Stats refresh via `.task` on appear and when the hub appears (`refreshLibraryStatistics()`).
-- **Appearance** — `accentPresetId` + `customAccentHex` tint UI chrome (`MusicDesign.accent`); `appIconPresetId` is **independent** (home-screen icon via `AppAlternateIconSync`) — changing the accent does **not** change the icon and vice versa. Login logo uses `appIconPresetId`, not accent. `launchTabPreference` chooses the landing tab after launch/sign-in. Settings views use `MusicDesign.settingsBackground` (`systemGroupedBackground`) so light-mode cells stand out, not flat `systemBackground`.
+- **Appearance** — `accentPresetId` + `customAccentHex` tint UI chrome (`MusicDesign.accent`); `appIconPresetId` is **independent** (home-screen icon via `AppAlternateIconSync`) — changing the accent does **not** change the icon and vice versa. Login logo uses `appIconPresetId`, not accent. `launchTabPreference` chooses the landing tab after launch/sign-in (**defaults to Library**; `AppModel.loadLaunchTab`). Settings views use `MusicDesign.settingsBackground` (`systemGroupedBackground`) so light-mode cells stand out, not flat `systemBackground`.
 - **Plugins** — **Music Requests** (acquisition / Lidarr or DroppedNeedle), Following (subscriptions).
 
 **Genres** — `Library → Genres` (`LibraryGenresView`) rolls noisy server subgenres up into ~20 main genres via `GenreCanonicalizer` (e.g. "Acid Jazz" → Jazz, "Boom Bap" → Lo-Fi). Merged rows fetch albums across **all** source subgenres (`LibraryGenreAlbumsView(sourceGenres:)`), deduped. The keyword table in `GenreCanonicalizer` is first-match-wins and easy to tweak.
@@ -188,8 +191,8 @@ User-facing settings live under **Settings → Sound & Playback** (`SettingsPlay
 
 - **Streaming** — separate Wi‑Fi / cellular max bitrate (`StreamBitRateOption`) and format (`StreamFormatOption`). Active pair follows `prefersCellularStreamingQuality`. Navidrome sends Subsonic `format` + `maxBitRate` query params; Jellyfin maps format to progressive stream containers.
 - **Downloads** — `DownloadQualityTier` + `DownloadFormatOption` (separate from streaming).
-- **Stream cache** — `streamingDiskCacheEnabled` (`UserDefaults`). `StreamingMediaDiskCache` stores fully-fetched progressive streams under `Caches/VellumMusic/stream-cache/` (512 MB LRU). `peekCachedFileURL` for cheap candidate scans; `markAccessed` bumps LRU on actual play. `CachingResourceLoaderDelegate` can commit during AVPlayer playback when enabled (limited on current iOS — EQ prefetch is the reliable writer).
-- **Equalizer** — `EqualizerSettings.swift` + `SettingsEqualizerView`. Ten ISO bands (32 Hz–16 kHz), presets (Flat, Dance, Jazz, Bass Boost, Vocal), bypass, per-band gains in `UserDefaults`. `AppModel.equalizerEnabled` syncs to `PlaybackEngine` via `syncEqualizerToEngine()`; toggling enabled reloads the current item (`reloadForEqualizerSettingsChange()`). Live slider changes call `applyLiveEqualizerGains()` on the active EQ session only.
+- **Stream cache** — `streamingDiskCacheEnabled` (`UserDefaults`, **off by default** — registered in `AppModel.init`; turning the EQ on flips it true). `StreamingMediaDiskCache` stores fully-fetched progressive streams under `Caches/VellumMusic/stream-cache/` (512 MB LRU). `peekCachedFileURL` for cheap candidate scans; `markAccessed` bumps LRU on actual play. `CachingResourceLoaderDelegate` can commit during AVPlayer playback when enabled (limited on current iOS — EQ prefetch is the reliable writer).
+- **Equalizer** — `EqualizerSettings.swift` + `SettingsEqualizerView`. Ten ISO bands (32 Hz–16 kHz), presets (Flat, Dance, Jazz, Bass Boost, Vocal), bypass, per-band gains in `UserDefaults`. `AppModel.equalizerEnabled` syncs to `PlaybackEngine` via `syncEqualizerToEngine()`. Toggling EQ while the engine path is live bypasses/applies the EQ node in place (no track reload). Turning EQ on while streaming still reloads via `reloadForEqualizerSettingsChange()` so a cache/EQ path can take over. Live slider changes call `applyLiveEqualizerGains()` on the active EQ session only.
 - **Player** — skip interval buttons, sleep timer chrome, default playback speed, lock-screen remote mode (skip track vs skip interval). Wired through `PlaybackEngine` + `syncPlaybackPreferencesToEngine()`.
 - **Artist play mode** — top songs / shuffle album / full discography (`ArtistPlayMode` in settings + long-press override on artist page).
 - **Album cache refresh** — `metadataRefreshThreshold` triggers `refreshAlbumTracksIfNeeded(for:)` before playback to swap stale track IDs.
@@ -205,9 +208,10 @@ User-facing settings live under **Settings → Sound & Playback** (`SettingsPlay
 
 **Streams without a local file:**
 
-- Playback starts immediately on `AVPlayer` (no EQ yet).
-- `prefetchInBackground` + `scheduleEqualizerHandoffWhenCached` download the progressive stream off the main actor; when complete, `swapActiveItemToEqualizerIfNeeded` reloads at the current position through the EQ engine.
-- `tryQuickEqualizerCache` (≤2.5 s off-main wait) inserts a cache candidate when the network is fast enough for EQ on first play.
+- Playback starts immediately on `AVPlayer` (no EQ yet). Do **not** wait for a cache download before first audio.
+- `scheduleEqualizerHandoffWhenCached` downloads the progressive stream off the main actor; when complete, `swapActiveItemToEqualizerIfNeeded` reloads at the current position through the EQ engine.
+- If EQ setup/decode fails after detaching AVPlayer, restore AVPlayer on the cache file or live stream (`restorePlaybackAfterFailedEqualizerHandoff`). Never leave `isPlaying` true with no player.
+- Cache hits are size-checked (`StreamingMediaDiskCache.peekCachedFileURL`); truncated/error-page files are evicted. A cache file is deleted only on decode/parse failure, never on a ready timeout.
 - `equalizerEnabled` also treats stream cache as enabled for candidate ordering (`streamingDiskCacheEnabled || equalizerEnabled`).
 
 **Failure handling:** EQ decode failure on a local file falls back to `AVPlayer` on the same URL. Decode/setup failures must **not** call `handleEnded()` — `onPlaybackFailed` pauses without advancing the queue. `loadPlayerItem` tries EQ first for eligible locals, then `loadAVPlayerItem`.
@@ -247,6 +251,17 @@ Vellum submits **server** scrobbles separately from local Recently Played shelve
 - **Cache row labels** (image/metadata counts in Downloads): loaded once via `AppModel.localCacheUsageSummaryAsync()` → `OfflineDiskCacheMetrics` on a background task. Never decode `LibrarySnapshotStore` or walk download folders from a SwiftUI `body`.
 - **Download byte totals** — `OfflineDownloadManager.recalculateCacheBytes()` scans the downloads folder off the main actor; coalesces rapid calls via a generation counter.
 - **Snapshot I/O** — prefer `LibrarySnapshotStore.loadAsync()` / `saveAsync()` for startup and background work; synchronous `load()` is for small admin tools only.
+
+### Clearing caches actually has to clear everything
+
+"Clear cache" looked like a no-op because deleted bytes came straight back and the row counts never moved. A cache clear has to cover all four of these or it will appear broken:
+
+- **`URLCache.shared`** — `ArtworkURLCache.clearAll()` clears it too; `URLSession` would otherwise re-serve deleted artwork from the system HTTP cache.
+- **In-flight writes** — `LibrarySnapshotStore` / `PlaylistRowsCacheStore` guard on a `writeGeneration` (bumped on clear, checked under `writeLock`) so a debounced save started before the clear can't rewrite the file after it.
+- **In-memory derived caches** — `AppModel.clearMediaArtworkCaches()` is the one entry point (URL cache, `DecodedArtworkCache`, backdrop palettes, Top Pick bleeds, `MediaAuthHeaderRegistry`). Disk-only clears leave art and backdrops on screen.
+- **UI counts** — bump `AppModel.localCacheRevision`; the size/count rows are `@State` loaded off-main and won't recompute on their own.
+
+Clear entry points are `async` (`OfflineStorageBrowserViews.perform`) — never walk cache folders from a `body`.
 
 ## Known unfixed / partial issues
 

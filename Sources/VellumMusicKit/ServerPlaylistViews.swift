@@ -64,9 +64,7 @@ struct AddToPlaylistSheet: View {
 
     /// Playlists recently added-to from this sheet, newest first. Hidden while searching.
     private var recentPlaylists: [PlaylistSummary] {
-        app.recentAddToPlaylistIds.compactMap { id in
-            app.libraryPlaylists.first { $0.id == id }
-        }
+        app.recentAddToPlaylistIds.compactMap { app.libraryPlaylist(id: $0) }
     }
 
     /// True when every track being added is already in the playlist (per cached
@@ -281,12 +279,17 @@ struct AddToPlaylistSheet: View {
         case .title:
             return playlists.sorted { byTitle($0, $1) }
         case .dateAdded:
-            return playlists.sorted { lhs, rhs in
-                let ld = playlistDateAdded(lhs)
-                let rd = playlistDateAdded(rhs)
-                if ld != rd { return ld > rd }
-                return byTitle(lhs, rhs)
-            }
+            // Resolve each date once — `playlistDateAdded` scans `libraryPlaylistEntries`,
+            // and calling it from the comparator made this superlinear.
+            var addedById: [String: Date] = [:]
+            for entry in app.libraryPlaylistEntries { addedById[entry.id] = entry.added }
+            return playlists
+                .map { ($0, addedById[$0.id] ?? $0.libraryAddedDate ?? .distantPast) }
+                .sorted { lhs, rhs in
+                    if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
+                    return byTitle(lhs.0, rhs.0)
+                }
+                .map(\.0)
         case .lastPlayed:
             return playlists.sorted { lhs, rhs in
                 let ld = app.playlistLastPlayedDate(forPlaylistId: lhs.id) ?? .distantPast
@@ -709,6 +712,9 @@ struct ServerPlaylistDetailView: View {
     @State private var activeScrollTrackId: String? = nil
     @State private var scrollHighlightTask: Task<Void, Never>?
     @State private var displayedRows: [PlaylistRowItem] = []
+    /// Cached projection of ``displayedRows`` × ``previewTracks`` for album mode. Held in
+    /// state so the merge doesn't re-run on every unrelated ``AppModel`` publish.
+    @State private var mergedRows: [AlbumMergedRow] = []
     /// How many rows the List renders right now. Hydrating a very large playlist
     /// (1000+ songs) in full while the push/pop animation runs makes the
     /// transition stutter — so the first render is one comfortable screenful and
@@ -764,9 +770,18 @@ struct ServerPlaylistDetailView: View {
         return true
     }
 
+    /// Recomputes ``mergedRows``. The merge is O(previews × libraryRows) with per-pair title
+    /// normalization, so it must not run from `body` — it only changes when the tracklist,
+    /// the plugin preview list, or the complete-album toggle changes.
+    private func recomputeAlbumMergedRows() {
+        let next = computeAlbumMergedRows()
+        guard next.map(\.id) != mergedRows.map(\.id) else { return }
+        mergedRows = next
+    }
+
     /// Album-mode merged rows: iTunes order, library tracks matched in, missing
     /// tracks as Request rows, server orphans appended. Empty when not applicable.
-    private var albumMergedRows: [AlbumMergedRow] {
+    private func computeAlbumMergedRows() -> [AlbumMergedRow] {
         guard isAlbum, !previewTracks.isEmpty else { return [] }
         let libraryRows = displayedRows  // already sorted disc/index + complete-album filtered
         var usedRowIds = Set<String>()
@@ -857,18 +872,26 @@ struct ServerPlaylistDetailView: View {
         // forces SwiftUI to re-diff the entire tracklist, which is the dominant
         // main-thread cost on large playlists (load() recomputes unconditionally
         // after its background refresh, usually with identical rows).
-        guard next.map(\.rowId) != displayedRows.map(\.rowId) else { return }
+        guard next.map(\.rowId) != displayedRows.map(\.rowId) else {
+            recomputeAlbumMergedRows()
+            return
+        }
         detailDebugLog("DISPLAY-APPLY rows=\(next.count) window=\(rowRenderLimit)")
         displayedRows = next
+        recomputeAlbumMergedRows()
     }
 
-    /// Album mode only: fetch the full iTunes tracklist so missing tracks can be
+    /// Album mode only: fetch a plugin tracklist so missing tracks can be
     /// shown + requested. Best-effort; failure silently falls back to server-only rows.
     private func loadPreviewTracksIfAlbum() async {
         guard let album = albumOrNil, previewTracks.isEmpty else { return }
         isLoadingPreviewTracks = true
         defer { isLoadingPreviewTracks = false }
-        let tracks = await ITunesTracklistClient.tracks(artist: album.artist, albumTitle: album.title)
+        let tracks = await acquisition.tracks(
+            forBrowseAlbumId: nil,
+            artist: album.artist,
+            title: album.title
+        )
         guard !tracks.isEmpty else { return }
         guard await waitOutDismissalGesture() else { return }
         await MainActor.run {
@@ -1077,7 +1100,7 @@ struct ServerPlaylistDetailView: View {
     private var playlistEditorSheet: some View {
         if let p = source.playlistOrNil {
             PlaylistEditSheet(
-                playlist: app.libraryPlaylists.first(where: { $0.id == p.id }) ?? p,
+                playlist: app.libraryPlaylist(id: p.id) ?? p,
                 rows: rows,
                 onSaved: { newName in
                     if let newName {
@@ -1184,17 +1207,25 @@ struct ServerPlaylistDetailView: View {
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
         } else if shouldShowMergedAlbumTracklist {
-            let merged = albumMergedRows
-            ForEach(Array(merged.enumerated()), id: \.element.id) { index, mergedRow in
+            let merged = mergedRows
+            // Same growing window as the plain tracklist below — this path used to
+            // instantiate every row (artwork, menus, swipe actions) up front.
+            let windowed = merged.prefix(rowRenderLimit)
+            ForEach(Array(windowed.enumerated()), id: \.element.id) { index, mergedRow in
                 let showsBottomDivider = index < merged.count - 1
-                switch mergedRow {
-                case .library(let row, let displayIndex):
-                    let highlightOpacity: Double = row.rowId == highlightedRowId ? 0.28 : 0
-                    songRow(row, displayIndex: displayIndex, showsBottomDivider: showsBottomDivider)
-                        .albumTrackListRowStyle(highlightOpacity: highlightOpacity)
-                case .missing(let preview, let displayIndex):
-                    missingAlbumRow(preview, displayIndex: displayIndex, showsBottomDivider: showsBottomDivider)
-                        .albumTrackListRowStyle()
+                Group {
+                    switch mergedRow {
+                    case .library(let row, let displayIndex):
+                        let highlightOpacity: Double = row.rowId == highlightedRowId ? 0.28 : 0
+                        songRow(row, displayIndex: displayIndex, showsBottomDivider: showsBottomDivider)
+                            .albumTrackListRowStyle(highlightOpacity: highlightOpacity)
+                    case .missing(let preview, let displayIndex):
+                        missingAlbumRow(preview, displayIndex: displayIndex, showsBottomDivider: showsBottomDivider)
+                            .albumTrackListRowStyle()
+                    }
+                }
+                .onAppear {
+                    extendRowRenderWindow(afterRealizing: index, totalRows: merged.count)
                 }
             }
             showCompleteAlbumToggle
@@ -1368,6 +1399,14 @@ struct ServerPlaylistDetailView: View {
         return min(max(w - 52, 260), 320)
     }
 
+    /// Formatter construction is expensive and this is read from the hero, which sits in the
+    /// track list header and re-evaluates with the list.
+    private static let relativeDateFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter
+    }()
+
     private var heroSubtitle: String? {
         switch source {
         case .album(let album, _):
@@ -1387,9 +1426,7 @@ struct ServerPlaylistDetailView: View {
                 parts.append("\(count) song\(count == 1 ? "" : "s")")
             }
             if let date = p.libraryAddedDate {
-                let formatter = RelativeDateTimeFormatter()
-                formatter.unitsStyle = .short
-                parts.append("Updated \(formatter.localizedString(for: date, relativeTo: Date()))")
+                parts.append("Updated \(Self.relativeDateFormatter.localizedString(for: date, relativeTo: Date()))")
             }
             return parts.isEmpty ? nil : parts.joined(separator: " · ")
         case .homeMix:
@@ -2148,7 +2185,7 @@ struct ServerPlaylistDetailView: View {
         if isAlbumStyleDetail {
             return nil
         }
-        return .playlist(app.libraryPlaylists.first(where: { $0.id == playlist.id }) ?? playlist)
+        return .playlist(app.libraryPlaylist(id: playlist.id) ?? playlist)
     }
 
     private func playAll() async {

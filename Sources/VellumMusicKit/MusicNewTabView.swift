@@ -49,7 +49,8 @@ struct MusicNewTabView: View {
             return "Based on your listening"
         }
         switch app.newTabBrowseBackend {
-        case .appleMusic: return "New on Apple Music"
+        case .lidarr: return "From Lidarr"
+        case .server: return "From your server"
         case .none: return "Discover"
         }
     }
@@ -156,7 +157,9 @@ struct MusicNewTabView: View {
                 .padding(.top, 36)
             }
         } else {
-            VStack(alignment: .leading, spacing: 0) {
+            // Lazy so the hero and the shelves below the fold aren't all built up front —
+            // Home already does this; the New tab was eagerly composing every carousel.
+            LazyVStack(alignment: .leading, spacing: 0) {
                 if hasNewTabTracks {
                     heroCarousel(Array(app.newTabTopTracks.prefix(6)))
                     gap
@@ -652,7 +655,7 @@ struct MusicNewTabView: View {
                                 title: album.name,
                                 imageURL: album.imageURL,
                                 kind: "Album",
-                                albumId: album.id
+                                albumId: album.pluginLookupId ?? album.id
                             )
                             NavigationLink {
                                 BrowseAlbumDetailView(source: source)

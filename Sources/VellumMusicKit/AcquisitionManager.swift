@@ -114,6 +114,69 @@ final class AcquisitionManager: ObservableObject {
         return (try? await provider.search(query: query)) ?? []
     }
 
+    func artistReleases(named name: String) async -> [AcquisitionRelease] {
+        guard provider.isConfigured else { return [] }
+        return await provider.artistReleases(named: name)
+    }
+
+    func upcomingAndWanted(since: Date, until: Date) async -> [AcquisitionRelease] {
+        guard provider.isConfigured, provider.capabilities.supportsReleaseCatalog else { return [] }
+        return await provider.upcomingAndWanted(since: since, until: until)
+    }
+
+    func artistProfile(named name: String) async -> AcquisitionArtistProfile? {
+        guard provider.isConfigured else { return nil }
+        return await provider.artistProfile(named: name)
+    }
+
+    func searchArtists(query: String) async -> [AcquisitionArtist] {
+        guard provider.isConfigured else { return [] }
+        return await provider.searchArtists(query: query)
+    }
+
+    func tracks(forRelease release: AcquisitionRelease) async -> [BrowseAlbumPreviewTrack] {
+        guard provider.isConfigured else { return [] }
+        return await provider.tracks(forRelease: release)
+    }
+
+    func tracks(forBrowseAlbumId albumId: String?, artist: String, title: String) async -> [BrowseAlbumPreviewTrack] {
+        guard provider.isConfigured else { return [] }
+        var native: String?
+        var mbid: String?
+        if let albumId {
+            if albumId.hasPrefix("native:") {
+                native = String(albumId.dropFirst("native:".count))
+            } else if albumId.hasPrefix("mbid:") {
+                mbid = String(albumId.dropFirst("mbid:".count))
+            } else if albumId.count >= 36 {
+                mbid = albumId
+            } else if Int(albumId) != nil {
+                native = albumId
+            }
+        }
+        let release = AcquisitionRelease(
+            id: albumId ?? "\(artist)|\(title)",
+            title: title,
+            artist: artist,
+            releaseDate: nil,
+            artworkURL: nil,
+            albumType: nil,
+            secondaryTypes: [],
+            trackCount: nil,
+            releaseGroupMBID: mbid,
+            artistMBID: nil,
+            nativeAlbumId: native,
+            overview: nil,
+            artistOverview: nil,
+            artistArtworkURL: nil,
+            monitored: false,
+            wanted: false
+        )
+        let fromId = await provider.tracks(forRelease: release)
+        if !fromId.isEmpty { return fromId }
+        return await provider.tracks(artist: artist, albumTitle: title)
+    }
+
     // MARK: - Enqueue
 
     /// The one entry point every UI call site uses.
@@ -240,11 +303,13 @@ final class AcquisitionManager: ObservableObject {
     func refreshFromServer() async {
         let provider = self.provider
         guard provider.isConfigured else {
-            serverJobs = []
+            if !serverJobs.isEmpty { serverJobs = [] }
             return
         }
         let snapshot = await provider.activeJobs()
-        serverJobs = snapshot
+        // This loop runs at 1 Hz while the Activity list is open. Reassigning unconditionally
+        // republished the manager (and every view observing it) on every idle poll.
+        if snapshot != serverJobs { serverJobs = snapshot }
         reconcile(with: snapshot)
         if snapshot.contains(where: { !$0.status.isTerminal }) {
             startPollingIfNeeded()

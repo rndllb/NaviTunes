@@ -40,13 +40,10 @@ struct NewTabPersonalizedFeed {
     }
 }
 
-/// Builds a listening-taste-aware New tab from scrobbles (Made for You / home-mix signal), favorites,
-/// followed artists, and the user's top genres — sourced entirely from Apple's free iTunes
-/// feeds (`ITunesNewReleasesClient`). All requests run concurrently with no rate-limit pacing,
-/// so the personalized feed is ready in ~1–2 s.
+/// Builds a listening-taste-aware New tab from scrobbles, favorites, followed
+/// artists, and the user's top genres. Candidate albums come from the connected
+/// server catalog plus (when configured) the active plugin's calendar/wanted list.
 enum NewTabPersonalizationEngine {
-    private static let maxArtistFetches = 5
-
     struct Context {
         let completedScrobbles: [CompletedScrobble]
         let favoriteTrackIds: Set<String>
@@ -59,50 +56,85 @@ enum NewTabPersonalizationEngine {
         /// from reliably-loaded data — recently played, favorites, and library albums — so it
         /// doesn't depend on the sparse discovery-track index.
         let topGenres: [String]
+        /// Server albums to present as New (recently added + taste-artist catalog).
+        let serverAlbums: [AlbumSummary]
+        let recentlyPlayedTracks: [Track]
+        /// Lidarr calendar / wanted rows. Empty when no catalog plugin is connected.
+        let catalogReleases: [AcquisitionRelease]
     }
 
-    static func buildFeed(context: Context) async -> NewTabPersonalizedFeed {
+    static func serverCandidateAlbums(
+        recentlyAdded: [AlbumSummary],
+        libraryAlbums: [AlbumSummary],
+        tasteArtistNames: [String]
+    ) -> [AlbumSummary] {
+        var pool: [AlbumSummary] = []
+        var seen = Set<String>()
+        func append(_ albums: [AlbumSummary]) {
+            for album in albums {
+                guard seen.insert(album.id).inserted else { continue }
+                pool.append(album)
+            }
+        }
+        append(recentlyAdded)
+        let tasteArtists = Set(
+            tasteArtistNames
+                .map { LibraryTrackMatcher.normalize($0) }
+                .filter { !$0.isEmpty }
+        )
+        if !tasteArtists.isEmpty {
+            append(libraryAlbums.filter { tasteArtists.contains(LibraryTrackMatcher.normalize($0.artist)) })
+        }
+        if pool.isEmpty {
+            append(libraryAlbums)
+        }
+        return pool
+    }
+
+    static func buildFeed(context: Context) -> NewTabPersonalizedFeed {
         let taste = buildTasteProfile(context: context)
         let canPersonalize = taste.hasPersonalizationSignal
         let topGenres = context.topGenres
-
-        // Genre chart songs + per-artist recent singles, fetched concurrently from iTunes.
-        async let genreSongsTask = ITunesNewReleasesClient.topSongsForGenres(topGenres, perGenre: 20)
-        async let genreReleasesTask = ITunesNewReleasesClient.newReleasesForGenres(topGenres, perGenre: 20)
-        let artistReleases = canPersonalize
-            ? await fetchRecentFromTasteArtists(taste.artists)
-            : []
-        let artistSingles = canPersonalize
-            ? await fetchRecentSinglesFromTasteArtists(taste.artists)
-            : []
-        let genreReleases = await genreReleasesTask
-        let genreSongs = await genreSongsTask
+        let tasteKeys = Set(taste.artists.map(\.normalizedKey))
 
         let notOwnedAlbum: (ChartAlbum) -> Bool = { !context.ownsAlbum($0.artistName, $0.name) }
-        let notOwnedTrack: (ChartTrack) -> Bool = { !context.ownsTrack($0.artistName, $0.name) }
-        let fromYourArtists = artistReleases.filter(notOwnedAlbum)
-        var genrePool = genreReleases.filter(notOwnedAlbum)
-        var songPool = genreSongs.filter(notOwnedTrack)
 
-        // No personal signal at all → fall back to the global charts.
-        if genrePool.isEmpty, fromYourArtists.isEmpty {
-            genrePool = (await ITunesNewReleasesClient.topAlbums(genreId: nil, limit: 30)).filter(notOwnedAlbum)
+        let serverCharts = uniqueAlbums(context.serverAlbums.map { ChartAlbum(serverAlbum: $0) })
+        let catalogCharts = uniqueAlbums(
+            context.catalogReleases.map { ChartAlbum(release: $0) }.filter(notOwnedAlbum)
+        )
+
+        func isTasteArtist(_ artist: String) -> Bool {
+            let key = LibraryTrackMatcher.normalize(artist)
+            if key.isEmpty { return false }
+            if tasteKeys.contains(key) { return true }
+            return taste.artists.contains { artist in
+                key.contains(artist.normalizedKey) || artist.normalizedKey.contains(key)
+            }
         }
-        if songPool.isEmpty, artistSingles.isEmpty {
-            songPool = (await ITunesNewReleasesClient.topSongs(genreId: nil, limit: 30)).filter(notOwnedTrack)
+
+        let fromYourArtists = uniqueAlbums(
+            (catalogCharts + serverCharts).filter { isTasteArtist($0.artistName) }
+        )
+        // Server + Lidarr calendar/wanted share one pool so shelves stay populated
+        // when the server catalog is sparse or taste artists have no new rows.
+        var genrePool = uniqueAlbums(serverCharts + catalogCharts)
+        if genrePool.isEmpty {
+            genrePool = catalogCharts
         }
 
         let isPersonalized = canPersonalize || !topGenres.isEmpty
 
-        // Taste-rank pools, then put the user's own artists' releases first.
         let rankedGenre = rankAlbums(genrePool, taste: taste).map(\.album)
         let forYouPool = mergeUnique(fromYourArtists, rankedGenre)
-
         let forYouAlbums = Array(forYouPool.prefix(20))
-        let rankedSongs = rankTracks(songPool, taste: taste).map(\.track)
-        let forYouTrackPool = mergeUniqueTracks(artistSingles, rankedSongs)
-        let forYouTracks = diversifyTracks(forYouTrackPool, maxPerArtist: 2, totalLimit: 20)
-        // Newest-first pool the New tab splits into "New This Week" / "Recent Releases".
+
+        let songPool = listeningTracks(context: context)
+        let forYouTracks = diversifyTracks(
+            rankTracks(songPool, taste: taste).map(\.track),
+            maxPerArtist: 2,
+            totalLimit: 20
+        )
         let recentTasteReleases = forYouPool.sorted {
             ($0.releaseDate ?? .distantPast) > ($1.releaseDate ?? .distantPast)
         }
@@ -129,6 +161,45 @@ enum NewTabPersonalizationEngine {
             artistHighlights: highlights,
             recentTasteReleases: recentTasteReleases,
         )
+    }
+
+    private static func listeningTracks(context: Context) -> [ChartTrack] {
+        var seen = Set<String>()
+        var tracks: [ChartTrack] = []
+        func append(_ track: ChartTrack) {
+            guard seen.insert(track.id).inserted else { return }
+            tracks.append(track)
+        }
+        for track in context.recentlyPlayedTracks {
+            append(ChartTrack(track: track))
+        }
+        for scrobble in context.completedScrobbles.sorted(by: { $0.timestamp > $1.timestamp }) {
+            if let track = context.trackLookup(scrobble.trackId)
+                ?? context.indexedTracks.first(where: { $0.id == scrobble.trackId }) {
+                append(ChartTrack(track: track, playcount: 1))
+            } else {
+                append(ChartTrack(
+                    id: scrobble.trackId,
+                    name: scrobble.title,
+                    artistName: scrobble.artist,
+                    imageURL: nil,
+                    playcount: 1
+                ))
+            }
+        }
+        return tracks
+    }
+
+    private static func uniqueAlbums(_ albums: [ChartAlbum]) -> [ChartAlbum] {
+        var seenIDs = Set<String>()
+        var seenReleases = Set<String>()
+        var out: [ChartAlbum] = []
+        for album in albums {
+            let key = "\(LibraryTrackMatcher.normalize(album.artistName))|\(LibraryTrackMatcher.normalize(album.name))"
+            guard seenIDs.insert(album.id).inserted, seenReleases.insert(key).inserted else { continue }
+            out.append(album)
+        }
+        return out
     }
 
     // MARK: - Taste profile
@@ -223,54 +294,6 @@ enum NewTabPersonalizationEngine {
 
         let affinity = Dictionary(uniqueKeysWithValues: artists.map { ($0.normalizedKey, $0.score) })
         return TasteProfile(artists: artists, affinityByKey: affinity)
-    }
-
-    // MARK: - iTunes per-artist fetch
-
-    /// Recent albums from the user's top taste artists via iTunes, fetched concurrently and
-    /// biased toward the last few years so "From Artists You Play" feels current.
-    private static func fetchRecentFromTasteArtists(_ artists: [NewTabTasteArtist]) async -> [ChartAlbum] {
-        let candidates = Array(artists.prefix(maxArtistFetches))
-        guard !candidates.isEmpty else { return [] }
-
-        var collected: [ChartAlbum] = []
-        var seen = Set<String>()
-        await withTaskGroup(of: [ChartAlbum].self) { group in
-            for artist in candidates {
-                group.addTask { await ITunesNewReleasesClient.recentAlbums(forArtist: artist.name, limit: 6) }
-            }
-            for await albums in group {
-                for album in albums where seen.insert(album.id).inserted {
-                    collected.append(album)
-                }
-            }
-        }
-
-        let cutoff = Calendar.current.date(byAdding: .year, value: -3, to: Date()) ?? .distantPast
-        let recent = collected.filter { ($0.releaseDate ?? .distantPast) >= cutoff }
-        return (recent.isEmpty ? collected : recent).sorted {
-            ($0.releaseDate ?? .distantPast) > ($1.releaseDate ?? .distantPast)
-        }
-    }
-
-    /// Recent official singles from the user's top taste artists (iTunes discography, not Search).
-    private static func fetchRecentSinglesFromTasteArtists(_ artists: [NewTabTasteArtist]) async -> [ChartTrack] {
-        let candidates = Array(artists.prefix(maxArtistFetches))
-        guard !candidates.isEmpty else { return [] }
-
-        var collected: [ChartTrack] = []
-        var seen = Set<String>()
-        await withTaskGroup(of: [ChartTrack].self) { group in
-            for artist in candidates {
-                group.addTask { await ITunesNewReleasesClient.recentSingles(forArtist: artist.name, limit: 4) }
-            }
-            for await singles in group {
-                for track in singles where seen.insert(track.id).inserted {
-                    collected.append(track)
-                }
-            }
-        }
-        return collected
     }
 
     // MARK: - Ranking

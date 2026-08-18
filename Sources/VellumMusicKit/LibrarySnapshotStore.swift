@@ -22,6 +22,8 @@ struct LibrarySnapshot: Codable {
 
 enum LibrarySnapshotStore {
     private static let filename = "library-snapshot.json"
+    private static let writeLock = NSLock()
+    private static var writeGeneration: UInt64 = 0
 
     private static func fileURL() throws -> URL {
         let base = try FileManager.default.url(
@@ -51,20 +53,39 @@ enum LibrarySnapshotStore {
     }
 
     static func save(_ snapshot: LibrarySnapshot) {
+        writeLock.lock()
+        let generation = writeGeneration
+        writeLock.unlock()
         guard let url = try? fileURL() else { return }
         var snap = snapshot
         snap.savedAt = Date()
         guard let data = try? JSONEncoder().encode(snap) else { return }
+        writeLock.lock()
+        let stillCurrent = generation == writeGeneration
+        writeLock.unlock()
+        guard stillCurrent else { return }
         try? data.write(to: url, options: .atomic)
     }
 
     /// Off-main JSON encode + atomic write. Callers should hand off a value snapshot
     /// captured on the main actor; the encode happens on a background priority task.
     static func saveAsync(_ snapshot: LibrarySnapshot) {
-        Task.detached(priority: .utility) { save(snapshot) }
+        writeLock.lock()
+        let generation = writeGeneration
+        writeLock.unlock()
+        Task.detached(priority: .utility) {
+            writeLock.lock()
+            let stillCurrent = generation == writeGeneration
+            writeLock.unlock()
+            guard stillCurrent else { return }
+            save(snapshot)
+        }
     }
 
     static func clear() {
+        writeLock.lock()
+        writeGeneration &+= 1
+        writeLock.unlock()
         guard let url = try? fileURL(),
               FileManager.default.fileExists(atPath: url.path)
         else { return }

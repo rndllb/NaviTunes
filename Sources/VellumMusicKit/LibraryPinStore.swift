@@ -139,15 +139,16 @@ enum LibraryPinStore {
     }
 
     @MainActor
+    /// Resolves the (typically 1–6) pinned refs against the in-memory catalogs.
+    ///
+    /// Uses ``AppModel``'s prebuilt id indexes rather than mapping `libraryAlbums` /
+    /// `discoveryLibraryTracks` into fresh dictionaries — those arrays are the whole
+    /// server catalog and track index, and this runs from a SwiftUI `body`.
     static func resolvedItems(raw: String, app: AppModel) -> [LibraryPinnedItem] {
-        let albumsById = Dictionary(uniqueKeysWithValues: app.libraryAlbums.map { ($0.id, $0) })
-        let playlistsById = Dictionary(uniqueKeysWithValues: app.libraryPlaylists.map { ($0.id, $0) })
-        let tracksById = Dictionary(uniqueKeysWithValues: app.discoveryLibraryTracks.map { ($0.id, $0) })
-
-        return decode(raw).compactMap { ref in
+        decode(raw).compactMap { ref in
             switch ref.kind {
             case .album:
-                guard let album = albumsById[ref.itemId] else { return nil }
+                guard let album = app.catalogAlbum(id: ref.itemId) else { return nil }
                 return .album(album)
             case .playlist:
                 if ref.itemId == favoriteSongsPlaylistId {
@@ -162,10 +163,10 @@ enum LibraryPinStore {
                         )
                     )
                 }
-                guard let playlist = playlistsById[ref.itemId] else { return nil }
+                guard let playlist = app.libraryPlaylist(id: ref.itemId) else { return nil }
                 return .playlist(playlist)
             case .track:
-                guard let track = tracksById[ref.itemId] else { return nil }
+                guard let track = app.indexedTrack(id: ref.itemId) else { return nil }
                 return .track(track)
             }
         }

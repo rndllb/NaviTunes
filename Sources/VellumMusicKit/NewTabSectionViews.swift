@@ -228,7 +228,7 @@ struct NewTabChartAlbumsGridView: View {
                 title: album.name,
                 imageURL: album.imageURL,
                 kind: "Album",
-                albumId: album.id
+                albumId: album.pluginLookupId ?? album.id
             )
             NavigationLink {
                 BrowseAlbumDetailView(source: source)

@@ -48,6 +48,7 @@ enum PlaylistRowsCacheStore {
     private static let writeQueue = DispatchQueue(label: "VellumMusic.playlist-rows-write", qos: .utility)
     private static let writeLock = NSLock()
     private static var pendingWrite: DispatchWorkItem?
+    private static var writeGeneration: UInt64 = 0
 
     /// Off-main JSON encode + atomic write, debounced to the trailing edge —
     /// every save encodes the *whole* cache (megabytes once the sync-ahead
@@ -56,7 +57,16 @@ enum PlaylistRowsCacheStore {
     /// Worst case on force-quit is losing a few seconds of cache freshness;
     /// the next fetch simply re-fills it.
     static func saveAsync(_ rowsByPlaylistId: [String: [PlaylistRowItem]]) {
+        writeLock.lock()
+        pendingWrite?.cancel()
+        writeGeneration &+= 1
+        let generation = writeGeneration
+        writeLock.unlock()
         let work = DispatchWorkItem {
+            writeLock.lock()
+            let stillCurrent = generation == writeGeneration
+            writeLock.unlock()
+            guard stillCurrent else { return }
             guard let url = try? fileURL() else { return }
             var trimmed = rowsByPlaylistId
             if trimmed.count > maxPlaylists {
@@ -82,6 +92,11 @@ enum PlaylistRowsCacheStore {
     }
 
     static func clear() {
+        writeLock.lock()
+        writeGeneration &+= 1
+        pendingWrite?.cancel()
+        pendingWrite = nil
+        writeLock.unlock()
         guard let url = try? fileURL(),
               FileManager.default.fileExists(atPath: url.path)
         else { return }

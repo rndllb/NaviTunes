@@ -849,7 +849,7 @@ struct NowPlayingView: View {
 
     private func nowPlayingHeader(track: Track) -> some View {
         let artistKey = track.artist.trimmingCharacters(in: .whitespacesAndNewlines)
-        let libraryAlbum = app.libraryAlbums.first { $0.id == track.albumId }
+        let libraryAlbum = app.catalogAlbum(id: track.albumId)
         let albumSubtitle: String = {
             let t = track.albumTitle.trimmingCharacters(in: .whitespacesAndNewlines)
             if !t.isEmpty { return t }
@@ -1021,7 +1021,7 @@ struct NowPlayingView: View {
                 .lineLimit(1)
         } else {
         let artistKey = track.artist.trimmingCharacters(in: .whitespacesAndNewlines)
-        let libraryAlbum = app.libraryAlbums.first { $0.id == track.albumId }
+        let libraryAlbum = app.catalogAlbum(id: track.albumId)
         let albumSubtitle: String = {
             let t = track.albumTitle.trimmingCharacters(in: .whitespacesAndNewlines)
             if !t.isEmpty { return t }
@@ -1108,7 +1108,7 @@ struct NowPlayingView: View {
         let isInLibrary = app.isSongInLibrary(track.id)
         let isOfflineCached = app.offline.downloadedTrackIds.contains(track.id)
         let isFavorite = app.favoriteTrackIds.contains(track.id)
-        let albumForNav: AlbumSummary? = app.libraryAlbums.first(where: { $0.id == track.albumId })
+        let albumForNav: AlbumSummary? = app.catalogAlbum(id: track.albumId)
             ?? catalogAlbumFallback(from: track)
 
         ControlGroup {
@@ -1371,7 +1371,7 @@ struct NowPlayingView: View {
 
     private func metadataRow(track: Track) -> some View {
         let artistKey = track.artist.trimmingCharacters(in: .whitespacesAndNewlines)
-        let libraryAlbum = app.libraryAlbums.first { $0.id == track.albumId }
+        let libraryAlbum = app.catalogAlbum(id: track.albumId)
         let albumSubtitle: String = {
             let t = track.albumTitle.trimmingCharacters(in: .whitespacesAndNewlines)
             if !t.isEmpty { return t }
@@ -1535,7 +1535,7 @@ struct NowPlayingView: View {
 
 
     private func playlistForNavigation(id: String) -> PlaylistSummary? {
-        if let playlist = app.libraryPlaylists.first(where: { $0.id == id }) {
+        if let playlist = app.libraryPlaylist(id: id) {
             return playlist
         }
         if case .playlist(let playlist) = player.playbackSource, playlist.id == id {
