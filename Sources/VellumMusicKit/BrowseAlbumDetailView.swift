@@ -210,6 +210,11 @@ struct BrowseAlbumDetailView: View {
                     AppleMusicAlbumTrackDivider(palette: backdropPalette)
                         .padding(.top, 22)
                 }
+                // The transition gate is scoped to the hero alone. Wrapping the whole
+                // screen (as it used to) made scrolling and every track row dead for
+                // ~0.6s after each open; all it needs to stop is a finger still down from
+                // the list tap releasing onto Play / Request / +.
+                .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
                 .albumTrackListRowStyle()
 
                 tracklistSection
@@ -247,7 +252,6 @@ struct BrowseAlbumDetailView: View {
             .environment(\.defaultMinListRowHeight, 0)
             .padding(.bottom, 36)
         }
-        .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
         .coverZoomDestination(id: source.coverZoomId, dismissalPhase: $dismissalPhase)
         .detailDismissTracker(isBeingDismissed: $isBeingDismissed)
         .onAppear {

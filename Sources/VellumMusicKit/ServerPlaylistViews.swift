@@ -1036,7 +1036,18 @@ struct ServerPlaylistDetailView: View {
         // not re-render hundreds of rows, so apply immediately even during the push
         // zoom instead of parking until `.appearing` clears (that caused a visible
         // fallback → color flash after the transition finished).
-        guard !Task.isCancelled, dismissalPhase != .gone else { return }
+        //
+        // A *dismissal* is different: this analysis costs the same whatever the
+        // playlist's size (it downloads and samples the cover), so on a quick
+        // open→swipe-back it reliably lands mid-pop. Re-rendering the detail then —
+        // chrome included — derails the interactive pop, which is the "toolbar buttons
+        // stranded over the list, input dead until it resolves" state the phase enum
+        // documents. The view is on its way out, so there is no flash to avoid: drop it.
+        guard !Task.isCancelled,
+              dismissalPhase != .gone,
+              dismissalPhase != .dismissing,
+              !isBeingDismissed
+        else { return }
         backdropPalette = palette
     }
 
@@ -1128,7 +1139,12 @@ struct ServerPlaylistDetailView: View {
                 AlbumHeroBackdropView(artworkURL: resolvedDetailArtworkURL, palette: backdropPalette)
                 detailTrackList(scrollProxy: scrollProxy)
             }
-            .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
+            // NOTE: the transition gate deliberately does *not* wrap this container. It
+            // used to, which made the whole screen — scrolling and every track row —
+            // non-interactive for ~0.6s after each open (350ms arming hold + the push's
+            // main-thread stall + a render). The gate exists only to stop a finger still
+            // down from the list tap releasing onto Play / Shuffle, so it is applied to the
+            // hero header alone; see `PlaylistHeroOrPillsHeader` below.
         }
     }
 
@@ -1149,6 +1165,7 @@ struct ServerPlaylistDetailView: View {
                         .padding(.bottom, 14)
                     }
                 )
+                .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets())
