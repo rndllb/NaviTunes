@@ -1049,10 +1049,13 @@ extension View {
     }
 
     /// Library-style song rows over a dynamic hero backdrop (playlists on ``AlbumHeroBackdropView``).
-    func heroBackdropSongListRowStyle(highlightOpacity: Double = 0) -> some View {
+    /// `killTint`, when set, paints a Kill Mode status wash (red = to remove, green = kept) under
+    /// the deep-link highlight; the caller bakes in backdrop-adjusted opacity.
+    func heroBackdropSongListRowStyle(highlightOpacity: Double = 0, killTint: Color? = nil) -> some View {
         listRowBackground(
             ZStack {
                 Color.clear
+                if let killTint { killTint }
                 Color.accentColor.opacity(highlightOpacity)
             }
         )

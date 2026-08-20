@@ -2382,20 +2382,33 @@ private struct LyricsFocusScrollView: View {
     let primaryColor: Color
     let secondaryColor: Color
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     /// Index into `displayItems` of the currently active row. Mirrored as
     /// `@State` (vs. computed) so SwiftUI consistently re-renders styling and
-    /// fires `.onChange(of: activeIndex)` for scroll, driven by an `onReceive`
-    /// subscription on `player.$currentTime` — more reliable than relying on a
-    /// computed property buried inside a `ScrollViewReader` body.
+    /// fires `.onChange(of: activeIndex)` for scroll. Driven by two sources:
+    /// the coarse `player.$currentTime` publisher (re-sync/correction) and
+    /// `runLineFlipScheduler()` (frame-accurate flips on line boundaries).
     @State private var activeIndex: Int = 0
 
-    /// Mirrored playback time so the active silence's dot progress redraws
-    /// smoothly between `activeIndex` transitions.
-    @State private var displayTime: TimeInterval = 0
+    /// Wall-clock anchor for the extrapolated playhead. The engine's periodic
+    /// observer only ticks every ~0.35 s — visibly late for beat-accurate line
+    /// flips and far too coarse for a smooth silence-dot fill. Each tick
+    /// re-anchors; between ticks `estimatedTime(at:)` projects forward at the
+    /// current playback rate.
+    @State private var clockAnchor = PlaybackClockAnchor(time: 0, date: .distantPast)
 
     /// `lines` interleaved with silence markers for instrumental gaps.
     /// Recomputed only when the underlying `lines` change.
     @State private var displayItems: [LyricRenderItem] = []
+
+    /// True while the user is browsing the lyrics by hand. Auto-scroll is
+    /// suspended and the distance blur is lifted so every line is readable
+    /// (Apple Music behaviour); ~3 s after the finger lifts we spring back to
+    /// the active line.
+    @State private var isUserBrowsing = false
+    @State private var browseGeneration = 0
+    @State private var scrollPhaseIsSettled = true
 
     /// True when the source has no per-line timestamps (every `start` is 0).
     /// Jellyfin returns plain-text lyrics this way; render the lines but skip
@@ -2412,6 +2425,19 @@ private struct LyricsFocusScrollView: View {
     /// time *after* this offset as silence, so a normal vocal pause doesn't
     /// sprout dots.
     private static let typicalLineDuration: TimeInterval = 3
+
+    /// One size for every synced line — emphasis comes from opacity, blur and
+    /// a leading-anchored scale pop, never from font jumps (font changes
+    /// re-wrap the text and make the whole column jitter on each flip).
+    private static let syncedLineFont = Font.system(size: 28, weight: .bold)
+
+    /// Signature Apple-Music-style motion for line flips + auto-scroll.
+    private var focusSpring: Animation { .spring(response: 0.55, dampingFraction: 0.85) }
+
+    private struct PlaybackClockAnchor: Equatable {
+        var time: TimeInterval
+        var date: Date
+    }
 
     private static func buildDisplayItems(from lines: [LyricLine]) -> [LyricRenderItem] {
         guard !lines.isEmpty else { return [] }
@@ -2446,7 +2472,7 @@ private struct LyricsFocusScrollView: View {
         return items[lo].start <= t ? lo : 0
     }
 
-    private var scrollAnchor: UnitPoint { UnitPoint(x: 0.5, y: 0.38) }
+    private var scrollAnchor: UnitPoint { UnitPoint(x: 0.5, y: 0.35) }
 
     var body: some View {
         Group {
@@ -2458,35 +2484,83 @@ private struct LyricsFocusScrollView: View {
         }
         .onAppear {
             displayItems = Self.buildDisplayItems(from: lines)
-            syncActiveIndex(to: player.livePlaybackTime)
-            displayTime = player.livePlaybackTime
+            reanchorClock()
+            syncActiveIndex(to: estimatedNow(), animated: false)
         }
         .onChange(of: lines.map(\.id)) { _, _ in
             displayItems = Self.buildDisplayItems(from: lines)
-            syncActiveIndex(to: player.livePlaybackTime)
+            reanchorClock()
+            syncActiveIndex(to: estimatedNow(), animated: false)
         }
         .onReceive(player.time.$currentTime) { _ in
             // `currentTime` is UI-throttled; use it only as a publisher tick
             // and sample the fresher `livePlaybackTime` for sync accuracy.
-            let t = player.livePlaybackTime
-            displayTime = t
-            syncActiveIndex(to: t)
+            reanchorClock()
+            syncActiveIndex(to: estimatedNow())
         }
-        .onChange(of: player.isPlaying) { _, isPlaying in
-            guard isPlaying else { return }
-            let t = player.livePlaybackTime
-            displayTime = t
-            syncActiveIndex(to: t)
+        .onChange(of: player.isPlaying) { _, _ in
+            reanchorClock()
+            syncActiveIndex(to: estimatedNow())
+        }
+        .task(id: lineFlipSchedulerKey) {
+            await runLineFlipScheduler()
         }
     }
 
-    private func syncActiveIndex(to time: TimeInterval) {
+    // MARK: Extrapolated playback clock
+
+    private func reanchorClock() {
+        clockAnchor = PlaybackClockAnchor(time: player.livePlaybackTime, date: Date())
+    }
+
+    /// Playhead projected forward from the last observer tick at the current
+    /// rate. Capped so a stalled observer (e.g. route change hiccup) can't
+    /// run the estimate away from reality.
+    private func estimatedTime(at date: Date) -> TimeInterval {
+        guard player.isPlaying else { return clockAnchor.time }
+        let elapsed = date.timeIntervalSince(clockAnchor.date)
+        guard elapsed > 0 else { return clockAnchor.time }
+        return clockAnchor.time + min(elapsed, 3.0) * Double(player.playbackRate)
+    }
+
+    private func estimatedNow() -> TimeInterval {
+        estimatedTime(at: Date())
+    }
+
+    // MARK: Frame-accurate line flips
+
+    /// Restart key: any re-anchor (observer tick, seek, play/pause) or item
+    /// rebuild cancels the in-flight sleep and reschedules from fresh state.
+    private var lineFlipSchedulerKey: String {
+        "\(clockAnchor.date.timeIntervalSinceReferenceDate)-\(player.isPlaying)-\(displayItems.count)-\(isUnsynced)"
+    }
+
+    /// Sleeps until the next row boundary and flips `activeIndex` exactly on
+    /// it, instead of waiting out the coarse observer tick. The publisher
+    /// tick that follows re-anchors and restarts this task, correcting any
+    /// extrapolation drift.
+    private func runLineFlipScheduler() async {
+        guard !isUnsynced, player.isPlaying, !displayItems.isEmpty else { return }
+        while !Task.isCancelled {
+            let now = estimatedNow()
+            guard let next = displayItems.first(where: { $0.start > now + 0.08 })?.start else { return }
+            let delay = next - now
+            try? await Task.sleep(for: .seconds(max(delay, 0.05)))
+            if Task.isCancelled { return }
+            syncActiveIndex(to: estimatedNow())
+        }
+    }
+
+    private func syncActiveIndex(to time: TimeInterval, animated: Bool = true) {
         guard !isUnsynced else {
             if activeIndex != 0 { activeIndex = 0 }
             return
         }
         let newIndex = Self.computeActiveIndex(at: time, in: displayItems)
-        if newIndex != activeIndex {
+        guard newIndex != activeIndex else { return }
+        if animated && !reduceMotion {
+            withAnimation(focusSpring) { activeIndex = newIndex }
+        } else {
             activeIndex = newIndex
         }
     }
@@ -2516,30 +2590,86 @@ private struct LyricsFocusScrollView: View {
                 }
                 .padding(.horizontal, 28)
                 .padding(.top, 20)
-                .padding(.bottom, 48)
+                .padding(.bottom, 120)
+            }
+            .onScrollPhaseChange { _, newPhase in
+                handleScrollPhaseChange(newPhase)
             }
             .onAppear {
                 scrollToActiveItem(proxy: proxy, animated: false)
             }
             .onChange(of: activeIndex) { _, _ in
-                guard !isUnsynced else { return }
+                guard !isUnsynced, !isUserBrowsing else { return }
                 scrollToActiveItem(proxy: proxy, animated: true)
             }
             .onChange(of: displayItems.map(\.id)) { _, _ in
                 scrollToActiveItem(proxy: proxy, animated: false)
             }
+            .onChange(of: isUserBrowsing) { _, browsing in
+                guard !browsing else { return }
+                scrollToActiveItem(proxy: proxy, animated: true)
+            }
+            .task(id: browseGeneration) {
+                // Resume countdown: only once the finger is up and the scroll
+                // has settled. Any new touch bumps the generation and cancels.
+                guard isUserBrowsing, scrollPhaseIsSettled else { return }
+                try? await Task.sleep(for: .seconds(3))
+                guard !Task.isCancelled else { return }
+                if reduceMotion {
+                    isUserBrowsing = false
+                } else {
+                    withAnimation(focusSpring) { isUserBrowsing = false }
+                }
+            }
+        }
+    }
+
+    private func handleScrollPhaseChange(_ phase: ScrollPhase) {
+        guard !isUnsynced else { return }
+        switch phase {
+        case .tracking, .interacting, .decelerating:
+            scrollPhaseIsSettled = false
+            if !isUserBrowsing {
+                if reduceMotion {
+                    isUserBrowsing = true
+                } else {
+                    withAnimation(focusSpring) { isUserBrowsing = true }
+                }
+            }
+            browseGeneration += 1
+        case .idle:
+            scrollPhaseIsSettled = true
+            if isUserBrowsing { browseGeneration += 1 }
+        default:
+            break
         }
     }
 
     private func scrollToActiveItem(proxy: ScrollViewProxy, animated: Bool) {
         guard displayItems.indices.contains(activeIndex) else { return }
         let id = displayItems[activeIndex].id
-        if animated {
-            withAnimation(.easeInOut(duration: 0.38)) {
+        if animated && !reduceMotion {
+            withAnimation(focusSpring) {
                 proxy.scrollTo(id, anchor: scrollAnchor)
             }
         } else {
             proxy.scrollTo(id, anchor: scrollAnchor)
+        }
+    }
+
+    private func seekToLine(_ line: LyricLine, index: Int) {
+        player.seek(toSeconds: line.start)
+        // Snap the local clock immediately — waiting for the next publisher
+        // tick would leave the highlight on the old line for up to ~0.35 s.
+        clockAnchor = PlaybackClockAnchor(time: line.start, date: Date())
+        if reduceMotion {
+            isUserBrowsing = false
+            activeIndex = index
+        } else {
+            withAnimation(focusSpring) {
+                isUserBrowsing = false
+                activeIndex = index
+            }
         }
     }
 
@@ -2556,127 +2686,140 @@ private struct LyricsFocusScrollView: View {
     @ViewBuilder
     private func lyricLineView(_ line: LyricLine, index: Int) -> some View {
         let distance = isUnsynced ? Int.max : index - activeIndex
+        let isActive = distance == 0
 
         Text(line.text)
-            .font(isUnsynced ? .title2.weight(.bold) : font(for: distance))
-            .foregroundStyle(isUnsynced ? primaryColor : (distance == 0 ? primaryColor : secondaryColor))
-            .opacity(isUnsynced ? 0.92 : opacity(for: distance))
-            .blur(radius: isUnsynced ? 0 : blur(for: distance))
+            .font(isUnsynced ? .title2.weight(.bold) : Self.syncedLineFont)
+            .foregroundStyle(isUnsynced ? primaryColor : primaryColor.opacity(opacity(for: distance)))
+            .blur(radius: (isUnsynced || isUserBrowsing) ? 0 : blur(for: distance))
+            .scaleEffect(
+                (isUnsynced || reduceMotion) ? 1 : (isActive ? 1.0 : 0.92),
+                anchor: .leading,
+            )
+            .opacity(isUnsynced ? 0.92 : 1)
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
             .contentShape(Rectangle())
             .onTapGesture {
                 guard !isUnsynced else { return }
-                player.seek(toSeconds: line.start)
+                seekToLine(line, index: index)
             }
-            .animation(.easeInOut(duration: 0.28), value: activeIndex)
     }
 
     @ViewBuilder
     private func silenceMarkerView(start: TimeInterval, end: TimeInterval, index: Int) -> some View {
-        let distance = index - activeIndex
-        let isActive = distance == 0
-        // Progress 0…1 through this silence gap. Only meaningful while active;
-        // for past/future silence rows we just render three uniform dim dots.
-        let progress: Double = {
-            guard isActive, end > start else { return 0 }
-            return min(max((displayTime - start) / (end - start), 0), 1)
-        }()
+        // Apple Music only materialises the gap dots while the gap is live —
+        // inactive gaps contribute nothing to the scroll. The row itself stays
+        // in the ForEach (stable ids for scroll targeting); its content
+        // springs in and out.
+        let isActive = !isUnsynced && index == activeIndex
 
-        HStack(spacing: 12) {
-            ForEach(0..<3, id: \.self) { i in
-                Circle()
-                    .fill(primaryColor)
-                    .frame(width: 12, height: 12)
-                    .opacity(dotOpacity(forDot: i, progress: progress, isActive: isActive, distance: distance))
-                    .scaleEffect(dotScale(forDot: i, progress: progress, isActive: isActive))
+        Group {
+            if isActive {
+                SilenceBreathingDots(
+                    start: start,
+                    end: end,
+                    color: primaryColor,
+                    isPlaying: player.isPlaying,
+                    reduceMotion: reduceMotion,
+                    timeProvider: { estimatedTime(at: $0) },
+                )
+                .transition(
+                    .opacity.combined(with: .scale(scale: 0.4, anchor: .leading))
+                )
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .blur(radius: isActive ? 0 : silenceBlur(for: distance))
         .contentShape(Rectangle())
         .onTapGesture {
+            guard isActive else { return }
             player.seek(toSeconds: start)
-        }
-        .animation(.easeInOut(duration: 0.28), value: activeIndex)
-    }
-
-    /// Light each dot up in sequence (≈⅓, ⅔, 1.0 of the silence elapsed).
-    /// Inactive silences keep all three dots at a faint, uniform opacity.
-    private func dotOpacity(forDot i: Int, progress: Double, isActive: Bool, distance: Int) -> Double {
-        guard isActive else {
-            switch distance {
-            case ..<0: return 0.18
-            case 1: return 0.6
-            case 2: return 0.4
-            case 3: return 0.28
-            default: return 0.18
-            }
-        }
-        let threshold = Double(i + 1) / 3.0
-        return progress >= threshold ? 1.0 : 0.3
-    }
-
-    private func dotScale(forDot i: Int, progress: Double, isActive: Bool) -> CGFloat {
-        guard isActive else { return 1 }
-        let threshold = Double(i + 1) / 3.0
-        return progress >= threshold ? 1.15 : 1.0
-    }
-
-    private func silenceBlur(for distance: Int) -> CGFloat {
-        switch distance {
-        case ..<0: return 1.5
-        case 1: return 0.4
-        case 2: return 1.4
-        case 3: return 2.4
-        default: return 3.4
+            clockAnchor = PlaybackClockAnchor(time: start, date: Date())
         }
     }
 
     private func spacingAfterItem(at index: Int) -> CGFloat {
         guard !isUnsynced else { return 14 }
-        let distance = index - activeIndex
-        if distance == 0 { return 30 }
-        if distance == 1 { return 24 }
-        return 18
-    }
-
-    private func font(for distance: Int) -> Font {
-        switch distance {
-        case ..<0:
-            return .title3.weight(.medium)
-        case 0:
-            return .largeTitle.weight(.bold)
-        case 1:
-            return .title2.weight(.semibold)
-        case 2:
-            return .title3.weight(.medium)
-        default:
-            return .title3
-        }
+        // Collapsed (inactive) silence rows must not leave a phantom gap.
+        if case .silence = displayItems[index], index != activeIndex { return 0 }
+        return index == activeIndex ? 30 : 22
     }
 
     private func opacity(for distance: Int) -> Double {
+        if isUserBrowsing { return distance == 0 ? 1 : 0.72 }
         switch distance {
-        case ..<0: return 0.2
+        case ..<0: return 0.3
         case 0: return 1
-        case 1: return 0.78
-        case 2: return 0.52
+        case 1: return 0.58
+        case 2: return 0.44
         case 3: return 0.34
-        default: return 0.2
+        default: return 0.26
         }
     }
 
     private func blur(for distance: Int) -> CGFloat {
-        switch distance {
-        case ..<0: return 2
-        case 0: return 0
-        case 1: return 0.6
-        case 2: return 1.8
-        case 3: return 3
-        default: return min(4.5 + CGFloat(distance - 4), 7)
-        }
+        guard distance != 0 else { return 0 }
+        return min(CGFloat(abs(distance)) * 0.9, 4.5)
     }
 }
 
+/// Apple-Music-style instrumental-gap dots: three dots that fill smoothly
+/// left-to-right as the gap elapses, breathe gently while waiting, then swell
+/// and fade out just before the next line lands. Runs on a `TimelineView`
+/// animation schedule (paused when playback is paused) so the fill is
+/// per-frame smooth instead of stepping on the coarse observer tick.
+private struct SilenceBreathingDots: View {
+    let start: TimeInterval
+    let end: TimeInterval
+    let color: Color
+    let isPlaying: Bool
+    let reduceMotion: Bool
+    let timeProvider: (Date) -> TimeInterval
+
+    /// Final swell-and-vanish window before the next line takes over.
+    private var handoffLead: TimeInterval {
+        min(1.0, max(0.35, (end - start) * 0.12))
+    }
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !isPlaying)) { context in
+            let t = timeProvider(context.date)
+            let fillEnd = end - handoffLead
+            let fillProgress = fillEnd > start
+                ? min(max((t - start) / (fillEnd - start), 0), 1)
+                : 1.0
+            let exitProgress = min(max((t - fillEnd) / handoffLead, 0), 1)
+            let breathePhase = reduceMotion
+                ? 0.0
+                : max(0, t - start).truncatingRemainder(dividingBy: 2.4) / 2.4 * 2 * .pi
+
+            HStack(spacing: 9) {
+                ForEach(0..<3, id: \.self) { i in
+                    let dotFill = min(max(fillProgress * 3 - Double(i), 0), 1)
+                    Circle()
+                        .fill(color)
+                        .frame(width: 11, height: 11)
+                        .opacity((0.25 + 0.75 * dotFill) * (1 - exitProgress))
+                        .scaleEffect(dotScale(dot: i, dotFill: dotFill, breathePhase: breathePhase))
+                }
+            }
+            .scaleEffect(groupScale(exit: exitProgress), anchor: .leading)
+        }
+        .frame(height: 22, alignment: .leading)
+    }
+
+    private func dotScale(dot i: Int, dotFill: Double, breathePhase: Double) -> CGFloat {
+        guard !reduceMotion else { return 1 }
+        // Gentle out-of-phase breathing plus a slight grow as each dot fills.
+        let breathe = 0.05 * sin(breathePhase + Double(i) * 0.9)
+        return CGFloat(1 + breathe + 0.12 * dotFill)
+    }
+
+    private func groupScale(exit: Double) -> CGFloat {
+        guard exit > 0, !reduceMotion else { return 1 }
+        // Swell slightly, then shrink away as the next line takes over.
+        if exit < 0.4 { return 1 + 0.18 * CGFloat(exit / 0.4) }
+        return 1.18 - 0.5 * CGFloat((exit - 0.4) / 0.6)
+    }
+}

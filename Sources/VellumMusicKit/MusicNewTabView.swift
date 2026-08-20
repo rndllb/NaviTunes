@@ -14,7 +14,7 @@ struct MusicNewTabView: View {
     @State private var newTabShowFloatingHeader = true
 
     /// Hide the floating **New** / profile row after this much vertical scroll past the initial resting offset.
-    private let newTabFloatingHeaderCollapseSlack: CGFloat = 72
+    private let newTabFloatingHeaderCollapseSlack = MusicTabFloatingHeaderScrollModifier.defaultSlack
 
     private var hasNewTabTracks: Bool {
         !app.newTabTopTracks.isEmpty

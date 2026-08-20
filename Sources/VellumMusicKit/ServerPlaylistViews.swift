@@ -1050,6 +1050,12 @@ struct ServerPlaylistDetailView: View {
         if dismissalPhase == .gone {
             dismissalPhase = .idle
         }
+        // Same false-pop story for `isBeingDismissed`: being covered by the Kill Mode
+        // list flips `\.isPresented` to false (DetailDismissTracker sets this true), and
+        // it's never cleared on return — leaving the trailing toolbar items (Kill Mode
+        // button + overflow menu) faded to opacity 0 until the playlist is reopened.
+        // We're appearing, so we are definitively not dismissed.
+        isBeingDismissed = false
         if navigationTitleText.isEmpty {
             if isHomeMix, let mix = activeHomeMix {
                 navigationTitleText = mix.title
@@ -1250,6 +1256,10 @@ struct ServerPlaylistDetailView: View {
             }
         } else {
             let windowed = visible.prefix(rowRenderLimit)
+            // Hoist the Kill Mode sets once per render so per-row tinting is O(1).
+            let killEnabled = !isAlbumStyleDetail && app.isKillModeEnabled(playlistId: playlist.id)
+            let killRed = killEnabled ? app.killModePendingTrackIds(playlistId: playlist.id) : []
+            let killGreen = killEnabled ? app.killModePassedTrackIds(playlistId: playlist.id) : []
             ForEach(Array(windowed.enumerated()), id: \.element.rowId) { index, row in
                 let showsBottomDivider = index < visible.count - 1
                 let highlightOpacity: Double = row.rowId == highlightedRowId ? 0.28 : 0
@@ -1259,7 +1269,10 @@ struct ServerPlaylistDetailView: View {
                             .albumTrackListRowStyle(highlightOpacity: highlightOpacity)
                     } else {
                         songRow(row, displayIndex: index + 1, showsBottomDivider: showsBottomDivider)
-                            .heroBackdropSongListRowStyle(highlightOpacity: highlightOpacity)
+                            .heroBackdropSongListRowStyle(
+                                highlightOpacity: highlightOpacity,
+                                killTint: killModeRowTint(trackId: row.track.id, red: killRed, green: killGreen),
+                            )
                     }
                 }
                 .onAppear {
@@ -1355,29 +1368,42 @@ struct ServerPlaylistDetailView: View {
         }
     }
 
-    /// Sits in the trailing toolbar group, immediately left of the 3-dot menu. Hidden
-    /// unless there is at least one pending removal — Kill Mode on/off lives in the menu.
+    /// Sits in the trailing toolbar group, immediately left of the 3-dot menu. Visible
+    /// whenever Kill Mode is ON for this playlist — deliberately NOT gated on there being
+    /// pending removals. The screen behind it also owns "Clear Listen History", the only
+    /// control in the app that resets the listened (green) set, so hiding the button on an
+    /// empty removal list made that reset unreachable once Kill Mode started skipping
+    /// already-listened songs. Kill Mode on/off still lives in the 3-dot menu.
     @ViewBuilder
     private var killModeToolbarButton: some View {
-        let count = killModePendingCount
-        if count > 0 {
+        if !isAlbumStyleDetail, app.isKillModeEnabled(playlistId: playlist.id) {
+            let count = killModePendingCount
             NavigationLink {
                 PlaylistKillListView(playlistId: playlist.id, rows: rows)
             } label: {
                 Image(systemName: "scissors")
                     .font(.body.weight(.semibold))
-                    .foregroundStyle(.red)
+                    // Red reads as "songs are queued for deletion". With nothing queued the
+                    // button is just a way into the Kill Mode screen, so it matches the
+                    // neutral chrome of the 3-dot menu beside it.
+                    .foregroundStyle(count > 0 ? AnyShapeStyle(Color.red) : AnyShapeStyle(backdropPalette.heroChromePrimary))
                     .overlay(alignment: .topTrailing) {
-                        Text("\(count)")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 4)
-                            .frame(minWidth: 14, minHeight: 14)
-                            .background(Capsule().fill(Color.red))
-                            .offset(x: 8, y: -6)
+                        if count > 0 {
+                            Text("\(count)")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 4)
+                                .frame(minWidth: 14, minHeight: 14)
+                                .background(Capsule().fill(Color.red))
+                                .offset(x: 8, y: -6)
+                        }
                     }
             }
-            .accessibilityLabel("\(count) song\(count == 1 ? "" : "s") to remove")
+            .accessibilityLabel(
+                count > 0
+                    ? "Kill Mode, \(count) song\(count == 1 ? "" : "s") to remove"
+                    : "Kill Mode"
+            )
         }
     }
 
@@ -1702,6 +1728,23 @@ struct ServerPlaylistDetailView: View {
         guard !pending.isEmpty else { return 0 }
         let rowIds = Set(rows.map(\.track.id))
         return pending.intersection(rowIds).count
+    }
+
+    /// Kill Mode row wash for the main tracklist: red = marked for removal (skipped),
+    /// green = kept (played fully), nil = not yet listened. Opacity adapts to the active
+    /// backdrop so the tint reads on a hero image, a light backdrop, or the plain surface.
+    private func killModeRowTint(trackId: String, red: Set<String>, green: Set<String>) -> Color? {
+        let base: Color
+        if red.contains(trackId) {
+            base = .red
+        } else if green.contains(trackId) {
+            base = .green
+        } else {
+            return nil
+        }
+        let opacity = backdropPalette.isPlainSurface ? 0.14
+            : (backdropPalette.prefersDarkHeroChrome ? 0.22 : 0.18)
+        return base.opacity(opacity)
     }
 
     private var actionButtonTriplet: some View {
@@ -2190,13 +2233,31 @@ struct ServerPlaylistDetailView: View {
 
     private func playAll() async {
         guard !tracksForPlayback.isEmpty else { return }
-        await app.playAlbumOrToast(tracks: tracksForPlayback, startIndex: 0, source: playbackSource)
+        // Hero Play starts on the first unheard song, not literal row 0 — only an
+        // explicit row tap keeps a listened track (`keepStartTrack`).
+        await app.playAlbumOrToast(
+            tracks: tracksForPlayback,
+            startIndex: 0,
+            source: playbackSource,
+            keepStartTrack: false
+        )
     }
 
     private func shuffleAll() async {
         guard let lib = app.activeLibrary, !tracksForPlayback.isEmpty else { return }
+        // Kill Mode: shuffle only the unheard songs — same filter as hero Play.
+        let (playTracks, _) = app.killModeFilteredPlayback(
+            tracks: tracksForPlayback,
+            startIndex: 0,
+            source: playbackSource,
+            keepStartTrack: false
+        )
+        guard !playTracks.isEmpty else {
+            app.showTransientToast("Every song here has been listened. Clear listen history in Kill Mode to start over.")
+            return
+        }
         do {
-            try await app.player.playAlbumShuffled(library: lib, tracks: tracksForPlayback, source: playbackSource)
+            try await app.player.playAlbumShuffled(library: lib, tracks: playTracks, source: playbackSource)
         } catch {
             app.showTransientToast(error.musicPlaybackToastMessage)
         }

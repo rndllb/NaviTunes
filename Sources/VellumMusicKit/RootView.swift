@@ -390,7 +390,6 @@ private struct NowPlayingGestureHost: View {
     /// Guards the drag-to-dismiss gesture until the present animation has settled,
     /// so incidental touches during the slide-up can't park the sheet at half height.
     @State private var fullyPresented = false
-    @Environment(\.scenePhase) private var scenePhase
 
     /// 0…1 progress driving the Apple Music–style scale + corner-radius reveal.
     private var dragProgress: CGFloat {
@@ -427,11 +426,6 @@ private struct NowPlayingGestureHost: View {
                 try? await Task.sleep(for: .milliseconds(500))
                 fullyPresented = true
             }
-#if DEBUG
-            .onChange(of: scenePhase) { old, new in
-                print("[NP-DIAG] phase \(old)→\(new) dragOffset=\(dragOffset) isDismissAnimating=\(isDismissAnimating) fullyPresented=\(fullyPresented) hostHeight=\(hostHeight) isPresented=\(isPresented)")
-            }
-#endif
     }
 
     private var dismissDragGesture: some Gesture {

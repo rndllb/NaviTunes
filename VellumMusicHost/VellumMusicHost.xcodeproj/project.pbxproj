@@ -61,6 +61,8 @@
 		BB0000000000000000000005 /* VellumNowPlayingWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumNowPlayingWidget.swift; sourceTree = "<group>"; };
 		BB0000000000000000000006 /* VellumWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = VellumWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		BB0000000000000000000007 /* VellumMusicHost.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = VellumMusicHost.entitlements; sourceTree = "<group>"; };
+		A000000000000000000000CF /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
+		A000000000000000000000D0 /* Local.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Local.xcconfig.example; sourceTree = "<group>"; };
 		IC0000000000000000000010 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		IC0000000000000000000011 /* VellumIcon-blue.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "VellumIcon-blue.icon"; sourceTree = "<group>"; };
 		IC0000000000000000000012 /* VellumIcon-green.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "VellumIcon-green.icon"; sourceTree = "<group>"; };
@@ -116,11 +118,21 @@
 		A00000000000000000000005 = {
 			isa = PBXGroup;
 			children = (
+				A000000000000000000000D1 /* Config */,
 				A00000000000000000000003 /* VellumMusicHost */,
 				BB0000000000000000000020 /* VellumWidgets */,
 				AA9E8B822FBCB48C006C70DB /* Frameworks */,
 				A00000000000000000000004 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		A000000000000000000000D1 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				A000000000000000000000CF /* Signing.xcconfig */,
+				A000000000000000000000D0 /* Local.xcconfig.example */,
+			);
+			path = Config;
 			sourceTree = "<group>";
 		};
 		AA9E8B822FBCB48C006C70DB /* Frameworks */ = {
@@ -303,6 +315,7 @@
 /* Begin XCBuildConfiguration section */
 		A00000000000000000000100 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A000000000000000000000CF /* Signing.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ENABLE_MODULES = YES;
@@ -324,7 +337,6 @@
 				CLANG_WARN_SUSPICIOUS_MOVE = YES;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				DEVELOPMENT_TEAM = F7YZT72GUX;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -346,6 +358,7 @@
 		};
 		A00000000000000000000101 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A000000000000000000000CF /* Signing.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ENABLE_MODULES = YES;
@@ -367,7 +380,6 @@
 				CLANG_WARN_SUSPICIOUS_MOVE = YES;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				DEVELOPMENT_TEAM = F7YZT72GUX;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -386,19 +398,19 @@
 		};
 		A00000000000000000000200 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A000000000000000000000CF /* Signing.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "VellumIcon-pink VellumIcon-orange VellumIcon-yellow VellumIcon-green VellumIcon-teal VellumIcon-blue VellumIcon-indigo VellumIcon-purple VellumIcon-lightgray";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CLANG_ENABLE_OBJC_WEAK = YES;
-				CODE_SIGN_ENTITLEMENTS = VellumMusicHost/VellumMusicHost.entitlements;
+				CODE_SIGN_ENTITLEMENTS = "$(VELLUM_HOST_ENTITLEMENTS)";
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = F7YZT72GUX;
 				ENABLE_PREVIEWS = YES;
 				GCC_GENERATE_DEBUGGING_SYMBOLS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -410,7 +422,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.1;
-				PRODUCT_BUNDLE_IDENTIFIER = com.randll.vellum;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VELLUM_BUNDLE_ID)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -421,18 +433,18 @@
 		};
 		A00000000000000000000201 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A000000000000000000000CF /* Signing.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "VellumIcon-pink VellumIcon-orange VellumIcon-yellow VellumIcon-green VellumIcon-teal VellumIcon-blue VellumIcon-indigo VellumIcon-purple VellumIcon-lightgray";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CLANG_ENABLE_OBJC_WEAK = YES;
-				CODE_SIGN_ENTITLEMENTS = VellumMusicHost/VellumMusicHost.entitlements;
+				CODE_SIGN_ENTITLEMENTS = "$(VELLUM_HOST_ENTITLEMENTS)";
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = F7YZT72GUX;
 				ENABLE_PREVIEWS = YES;
 				GCC_GENERATE_DEBUGGING_SYMBOLS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -444,7 +456,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.1;
-				PRODUCT_BUNDLE_IDENTIFIER = com.randll.vellum;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VELLUM_BUNDLE_ID)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -455,14 +467,14 @@
 		};
 		BB0000000000000000000050 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A000000000000000000000CF /* Signing.xcconfig */;
 			buildSettings = {
 				CLANG_ENABLE_OBJC_WEAK = YES;
-				CODE_SIGN_ENTITLEMENTS = VellumWidgets/VellumWidgets.entitlements;
+				CODE_SIGN_ENTITLEMENTS = "$(VELLUM_WIDGET_ENTITLEMENTS)";
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = F7YZT72GUX;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = VellumWidgets/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -471,7 +483,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.randll.vellum.widgets;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VELLUM_BUNDLE_ID).widgets";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SKIP_INSTALL = YES;
@@ -483,14 +495,14 @@
 		};
 		BB0000000000000000000051 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A000000000000000000000CF /* Signing.xcconfig */;
 			buildSettings = {
 				CLANG_ENABLE_OBJC_WEAK = YES;
-				CODE_SIGN_ENTITLEMENTS = VellumWidgets/VellumWidgets.entitlements;
+				CODE_SIGN_ENTITLEMENTS = "$(VELLUM_WIDGET_ENTITLEMENTS)";
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = F7YZT72GUX;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = VellumWidgets/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -499,7 +511,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.randll.vellum.widgets;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VELLUM_BUNDLE_ID).widgets";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SKIP_INSTALL = YES;

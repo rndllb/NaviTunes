@@ -26,9 +26,14 @@ enum TrustedCertificateStore {
     }
 
     static func shouldAccept(serverTrust: SecTrust, host: String) -> Bool {
-        guard isHostTrusted(host) else { return false }
-        var error: CFError?
-        return SecTrustEvaluateWithError(serverTrust, &error)
+        // A user explicitly trusting a self-hosted server's certificate (per-host
+        // opt-in via "Trust server certificate") means: accept the chain this host
+        // presents, including self-signed / expired / hostname-mismatch — the exact
+        // cases the feature exists for. Non-trusted hosts never reach here; they fall
+        // through to `.performDefaultHandling` (normal system validation). Previously
+        // this still required SecTrustEvaluateWithError to pass, which is false for
+        // every cert the feature targets, so the option silently did nothing.
+        return isHostTrusted(host)
     }
 }
 

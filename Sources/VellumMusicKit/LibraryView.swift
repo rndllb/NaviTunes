@@ -178,7 +178,7 @@ struct LibraryView: View {
                 libraryScrollMainContent
             }
             .modifier(MusicTabFloatingHeaderScrollModifier(
-                slack: 72,
+                slack: MusicTabFloatingHeaderScrollModifier.defaultSlack,
                 showFloatingHeader: $showFloatingHeader
             ))
             .musicTabFloatingHeaderInset(isVisible: showFloatingHeader) {
