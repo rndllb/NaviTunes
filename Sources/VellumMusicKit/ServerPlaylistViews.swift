@@ -2510,6 +2510,10 @@ private struct PlaylistEditSheet: View {
     @State private var isUploadingCover = false
     @State private var pendingCoverData: Data?
     @State private var coverCropSubject: CoverCropSubject?
+    /// Presents the photo picker (from the Edit / Choose menu, or directly when the
+    /// playlist has no cover yet).
+    @State private var showCoverPicker = false
+    @State private var showCoverOptions = false
     private let draftArtworkSeed: String
     /// Create mode only: fires after the playlist (and optional cover) is saved,
     /// before dismissal — lets the add-to-playlist flow finish its confirmation.
@@ -2674,25 +2678,37 @@ private struct PlaylistEditSheet: View {
                 .frame(width: 184, height: 184)
                 .opacity(isUploadingCover ? 0.45 : 1)
 
-                PhotosPicker(selection: $coverPickerItem, matching: .images, photoLibrary: .shared()) {
-                    Circle()
-                        .fill(MusicDesign.accent)
-                        .frame(width: 52, height: 52)
-                        .overlay {
-                            if isUploadingCover {
-                                ProgressView().tint(.white)
-                            } else {
-                                Image(systemName: "photo")
-                                    .font(.title3.weight(.semibold))
-                                    .foregroundStyle(.white)
-                            }
-                        }
+                coverEditBadge
+                    .offset(x: -8, y: -8)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                // The whole cover is the tap target (the badge is decoration). An action
+                // sheet rather than a context menu: UIKit gives no control over menu
+                // direction and kept covering the artwork with it.
+                Button {
+                    if hasExistingCover {
+                        showCoverOptions = true
+                    } else {
+                        showCoverPicker = true
+                    }
+                } label: {
+                    Color.clear.contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(isUploadingCover || isSaving)
-                .offset(x: -8, y: -8)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .confirmationDialog("Playlist Cover", isPresented: $showCoverOptions, titleVisibility: .hidden) {
+                Button("Edit Photo") { Task { await editExistingCover() } }
+                Button("Choose Photo") { showCoverPicker = true }
+                if canRemoveCover {
+                    Button("Remove Cover", role: .destructive) {
+                        Task { await removeCoverImage() }
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            }
+            .photosPicker(isPresented: $showCoverPicker, selection: $coverPickerItem, matching: .images, photoLibrary: .shared())
 
             Text(isCreate
                 ? "Tap to choose a cover — it uploads when you save the playlist."
@@ -2735,6 +2751,70 @@ private struct PlaylistEditSheet: View {
             Task { await applyCoverImage(subject.imageData) }
         }
         #endif
+    }
+
+    private var coverEditBadge: some View {
+        Circle()
+            .fill(MusicDesign.accent)
+            .frame(width: 52, height: 52)
+            .overlay {
+                if isUploadingCover {
+                    ProgressView().tint(.white)
+                } else {
+                    Image(systemName: "photo")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.white)
+                }
+            }
+    }
+
+    /// A staged (not yet saved) cover or a server cover both count as editable.
+    private var hasExistingCover: Bool {
+        pendingCoverData != nil || artworkURL != nil
+    }
+
+    /// Removal is a server-side clear (Navidrome regenerates artwork from the tracks), so
+    /// it only applies to a saved playlist; while creating, discarding the staged image is
+    /// enough and needs no round trip.
+    private var canRemoveCover: Bool {
+        guard hasExistingCover else { return false }
+        if isCreate { return pendingCoverData != nil }
+        return app.backendKind == .navidrome
+    }
+
+    /// Discards a staged cover (create) or clears the uploaded one on the server (edit),
+    /// letting Navidrome fall back to the cover it generates from the playlist's tracks.
+    private func removeCoverImage() async {
+        if isCreate {
+            pendingCoverData = nil
+            artworkURL = nil
+            return
+        }
+        guard let playlist else { return }
+        isUploadingCover = true
+        defer { isUploadingCover = false }
+        do {
+            artworkURL = try await app.clearPlaylistCoverImage(playlistId: playlist.id)
+            pendingCoverData = nil
+            onSaved?(nil)
+        } catch {
+            app.errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    /// Opens the crop / rotate editor pre-loaded with the current cover — the staged
+    /// bytes when there are any, otherwise the server cover fetched through the artwork
+    /// cache. Falls back to the picker if the bytes can't be obtained.
+    private func editExistingCover() async {
+        if let pendingCoverData {
+            coverCropSubject = CoverCropSubject(imageData: pendingCoverData)
+            return
+        }
+        if let artworkURL, let data = await ArtworkURLCache.data(for: artworkURL), !data.isEmpty {
+            coverCropSubject = CoverCropSubject(imageData: data)
+            return
+        }
+        showCoverPicker = true
     }
 
     /// Picking only loads the image now — the user frames it in ``SquareImageCropView``

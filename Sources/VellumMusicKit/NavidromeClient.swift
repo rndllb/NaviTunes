@@ -1083,6 +1083,41 @@ final class NavidromeClient: MusicLibraryProviding {
         }
     }
 
+    /// Removes a user-uploaded playlist cover so Navidrome falls back to the cover it
+    /// generates from the playlist's tracks. `DELETE /api/playlist/{id}/image` — the
+    /// counterpart to the upload route (`deletePlaylistImage` in Navidrome's native API).
+    func deletePlaylistImage(playlistId: String) async throws {
+        do {
+            try await deletePlaylistImageRequest(playlistId: playlistId)
+        } catch let urlError as URLError where urlError.code == .userAuthenticationRequired {
+            nativeAuthToken = nil
+            try await deletePlaylistImageRequest(playlistId: playlistId)
+        }
+    }
+
+    private func deletePlaylistImageRequest(playlistId: String) async throws {
+        let token = try await nativeAuthenticate()
+        let url = baseURL.appendingPathComponent("api/playlist/\(playlistId)/image")
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "X-ND-Authorization")
+
+        let (_, response) = try await URLSession.vellum.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        if http.statusCode == 401 { throw URLError(.userAuthenticationRequired) }
+        if http.statusCode == 403 {
+            throw NSError(
+                domain: "Navidrome",
+                code: 403,
+                userInfo: [NSLocalizedDescriptionKey: "Artwork changes are disabled for this account. Ask your Navidrome admin to enable EnableArtworkUpload or grant admin role."],
+            )
+        }
+        // 404 = there was no uploaded image to remove; the end state is what we wanted.
+        guard (200 ..< 300).contains(http.statusCode) || http.statusCode == 404 else {
+            throw URLError(.badServerResponse)
+        }
+    }
+
     private func uploadPlaylistImageRequest(playlistId: String, imageData: Data, filename: String) async throws {
         let token = try await nativeAuthenticate()
         let url = baseURL.appendingPathComponent("api/playlist/\(playlistId)/image")

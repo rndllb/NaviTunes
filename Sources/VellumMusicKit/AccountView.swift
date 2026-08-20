@@ -1,12 +1,25 @@
 import PhotosUI
 import SwiftUI
 
+/// Identifiable wrapper so a freshly-picked profile image can drive a `.sheet(item:)`
+/// crop step before it's uploaded as the magic playlist's cover.
+private struct ProfileCropSubject: Identifiable {
+    let id = UUID()
+    let imageData: Data
+}
+
 struct AccountView: View {
     @EnvironmentObject private var app: AppModel
     @State private var isCheckingConnection = false
     @State private var connectionSuccess = false
     @State private var serverDraft = ServerConnectionDraft()
     @State private var profilePickerItem: PhotosPickerItem?
+    /// Picked-but-not-yet-framed profile image; drives the crop/rotate sheet (the same
+    /// ``SquareImageCropView`` the playlist cover editor uses) before upload.
+    @State private var profileCropSubject: ProfileCropSubject?
+    /// Presents the photo picker directly when there is no current picture to edit.
+    @State private var showProfilePicker = false
+    @State private var showProfilePhotoOptions = false
 
     var body: some View {
         Form {
@@ -68,37 +81,127 @@ struct AccountView: View {
     @ViewBuilder
     private var profileAvatar: some View {
         if app.isSignedIn, app.backendKind == .navidrome {
-            PhotosPicker(selection: $profilePickerItem, matching: .images, photoLibrary: .shared()) {
-                ZStack(alignment: .bottomTrailing) {
-                    AccountProfileAvatarView(diameter: 110)
-                        .opacity(app.isUpdatingProfilePicture ? 0.5 : 1)
-                    if app.isUpdatingProfilePicture {
-                        ProgressView()
-                            .tint(MusicDesign.accent)
-                    } else {
-                        Image(systemName: "pencil.circle.fill")
-                            .font(.system(size: 26, weight: .semibold))
-                            .symbolRenderingMode(.palette)
-                            .foregroundStyle(.white, MusicDesign.accent)
-                            .background(Circle().fill(MusicDesign.background))
-                            .offset(x: 4, y: 4)
-                    }
+            Button {
+                // With a picture to edit, offer the options; otherwise go straight to
+                // the picker. An action sheet rather than a context menu: UIKit gives no
+                // control over menu direction and kept covering the avatar with it.
+                if hasCurrentProfilePicture {
+                    showProfilePhotoOptions = true
+                } else {
+                    showProfilePicker = true
                 }
+            } label: {
+                profileAvatarLabel
             }
             .buttonStyle(.plain)
+            .contentShape(Circle())
             .disabled(app.isUpdatingProfilePicture || app.libraryMagicPlaylistId == nil)
+            .confirmationDialog("Profile Picture", isPresented: $showProfilePhotoOptions, titleVisibility: .hidden) {
+                Button("Edit Photo") { editCurrentProfilePicture() }
+                Button("Choose Photo") { showProfilePicker = true }
+                if app.navidromeMagicPlaylistAvatarURL != nil {
+                    Button("Remove Photo", role: .destructive) {
+                        Task { await app.clearProfilePicture() }
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            }
+            .photosPicker(isPresented: $showProfilePicker, selection: $profilePickerItem, matching: .images, photoLibrary: .shared())
             .onChange(of: profilePickerItem) { _, newItem in
                 guard let newItem else { return }
                 Task {
-                    if let data = try? await newItem.loadTransferable(type: Data.self) {
-                        await app.updateProfilePictureFromImageData(data)
+                    defer { profilePickerItem = nil }
+                    guard let data = try? await newItem.loadTransferable(type: Data.self), !data.isEmpty else {
+                        app.errorMessage = "Could not read the selected image."
+                        return
                     }
-                    profilePickerItem = nil
+                    // Frame it first — move / scale / rotate — exactly like a playlist cover.
+                    profileCropSubject = ProfileCropSubject(imageData: data)
                 }
+            }
+            .sheet(item: $profileCropSubject) { subject in
+                profileCropSheet(for: subject)
             }
         } else {
             AccountProfileAvatarView(diameter: 110)
         }
+    }
+
+    private var profileAvatarLabel: some View {
+        ZStack(alignment: .bottomTrailing) {
+            AccountProfileAvatarView(diameter: 110)
+                .opacity(app.isUpdatingProfilePicture ? 0.5 : 1)
+            if app.isUpdatingProfilePicture {
+                ProgressView()
+                    .tint(MusicDesign.accent)
+            } else {
+                Image(systemName: "pencil.circle.fill")
+                    .font(.system(size: 26, weight: .semibold))
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, MusicDesign.accent)
+                    .background(Circle().fill(MusicDesign.background))
+                    .offset(x: 4, y: 4)
+            }
+        }
+    }
+
+    /// Only a magic-playlist cover counts as an editable picture (the legacy `getAvatar`
+    /// fallback isn't something the user set here). Deliberately *not* gated on the avatar
+    /// cache file: the picture can be on screen from the in-memory decoded cache while the
+    /// on-disk copy is absent, which made the options sheet never appear.
+    private var hasCurrentProfilePicture: Bool {
+        app.navidromeMagicPlaylistAvatarURL != nil
+    }
+
+    /// Current picture bytes: the avatar cache when it has them, else fetched from the
+    /// avatar URL (same approach the playlist cover editor uses).
+    private func currentProfilePictureData() async -> Data? {
+        if let identity = app.accountAvatarIdentity,
+           let data = AccountAvatarCache.loadData(identity: identity),
+           !data.isEmpty {
+            return data
+        }
+        guard let url = app.accountAvatarURL,
+              let data = await ArtworkURLCache.data(for: url),
+              !data.isEmpty else { return nil }
+        return data
+    }
+
+    /// Opens the crop / rotate editor pre-loaded with the current profile picture.
+    private func editCurrentProfilePicture() {
+        Task {
+            guard let data = await currentProfilePictureData() else {
+                showProfilePicker = true
+                return
+            }
+            profileCropSubject = ProfileCropSubject(imageData: data)
+        }
+    }
+
+    @ViewBuilder
+    private func profileCropSheet(for subject: ProfileCropSubject) -> some View {
+        #if canImport(UIKit)
+        if let uiImage = UIImage(data: subject.imageData) {
+            SquareImageCropView(
+                image: uiImage,
+                onCancel: { profileCropSubject = nil },
+                onCrop: { cropped in
+                    profileCropSubject = nil
+                    Task { await app.updateProfilePictureFromImageData(cropped) }
+                },
+            )
+        } else {
+            Color.clear.onAppear {
+                profileCropSubject = nil
+                Task { await app.updateProfilePictureFromImageData(subject.imageData) }
+            }
+        }
+        #else
+        Color.clear.onAppear {
+            profileCropSubject = nil
+            Task { await app.updateProfilePictureFromImageData(subject.imageData) }
+        }
+        #endif
     }
 
     private var profileDisplayName: String {

@@ -20,6 +20,11 @@ struct SquareImageCropView: View {
     @GestureState private var dragTranslation: CGSize = .zero
     /// The on-screen square side, captured so export can match the framing exactly.
     @State private var displaySide: CGFloat = 0
+    /// The image after any 90° rotations. Rotation re-bakes the pixels (rather than
+    /// applying a transform) so every bit of framing math below stays orientation-agnostic.
+    @State private var rotatedImage: UIImage?
+
+    private var currentImage: UIImage { rotatedImage ?? image }
 
     private let maxScale: CGFloat = 6
     private let exportSide: CGFloat = 1024
@@ -58,12 +63,41 @@ struct SquareImageCropView: View {
                         dismiss()
                     }
                 }
+                ToolbarItemGroup(placement: .bottomBar) {
+                    Spacer()
+                    Button {
+                        rotateClockwise()
+                    } label: {
+                        Label("Rotate", systemImage: "rotate.right")
+                    }
+                    .accessibilityHint("Rotates the image 90 degrees clockwise")
+                    Spacer()
+                }
             }
         }
     }
 
+    /// Re-bakes the current image rotated 90° clockwise and resets the framing, since
+    /// the previous zoom/pan no longer maps onto the rotated pixels.
+    private func rotateClockwise() {
+        let source = currentImage
+        let newSize = CGSize(width: source.size.height, height: source.size.width)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = source.scale
+        let renderer = UIGraphicsImageRenderer(size: newSize, format: format)
+        let rotated = renderer.image { ctx in
+            ctx.cgContext.translateBy(x: newSize.width / 2, y: newSize.height / 2)
+            ctx.cgContext.rotate(by: .pi / 2)
+            source.draw(in: CGRect(x: -source.size.width / 2, y: -source.size.height / 2,
+                                   width: source.size.width, height: source.size.height))
+        }
+        rotatedImage = rotated
+        scale = 1
+        offset = .zero
+    }
+
     private func imageLayer(side: CGFloat) -> some View {
-        Image(uiImage: image)
+        Image(uiImage: currentImage)
             .resizable()
             .scaledToFill()
             .frame(width: side, height: side)
@@ -76,6 +110,7 @@ struct SquareImageCropView: View {
     /// Size the image occupies when `scaledToFill` into a `side × side` box at
     /// zoom 1 — one axis equals `side`, the other overflows by the aspect ratio.
     private func displayedBaseSize(side: CGFloat) -> CGSize {
+        let image = currentImage
         let aspect = image.size.height == 0 ? 1 : image.size.width / image.size.height
         if aspect >= 1 { return CGSize(width: side * aspect, height: side) }
         return CGSize(width: side, height: side / aspect)
@@ -122,8 +157,9 @@ struct SquareImageCropView: View {
     @MainActor
     private func export() {
         let side = displaySide
+        let fallback = currentImage
         guard side > 0 else {
-            onCrop(image.jpegData(compressionQuality: 0.9) ?? Data())
+            onCrop(fallback.jpegData(compressionQuality: 0.9) ?? Data())
             return
         }
         let content = imageLayer(side: side)
@@ -134,7 +170,7 @@ struct SquareImageCropView: View {
         if let rendered = renderer.uiImage, let data = rendered.jpegData(compressionQuality: 0.9) {
             onCrop(data)
         } else {
-            onCrop(image.jpegData(compressionQuality: 0.9) ?? Data())
+            onCrop(fallback.jpegData(compressionQuality: 0.9) ?? Data())
         }
     }
 }
