@@ -1119,6 +1119,9 @@ struct FavoritePlaylistView: View {
                             )
                         }
                     )
+                    // Gate the hero only — wrapping the whole screen left scrolling and
+                    // every track row dead for ~0.6s after each open.
+                    .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 14, trailing: 20))
@@ -1133,7 +1136,6 @@ struct FavoritePlaylistView: View {
             .scrollContentBackground(.hidden)
             .background(Color.clear)
         }
-        .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
         .coverZoomDestination(id: "__favorite_songs__", dismissalPhase: $dismissalPhase)
         .detailDismissTracker(isBeingDismissed: $isBeingDismissed)
         .onAppear {

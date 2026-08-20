@@ -1,5 +1,8 @@
 #if DEBUG
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Simulator-only remote control for UI verification — the project has no UI
 /// test target, so transitions and open/close performance are exercised from
@@ -173,7 +176,21 @@ enum DebugUIRemote {
         let gap = now - lastBeat
         lastBeat = now
         guard gap > 0.12 else { return }
-        log(String(format: "HANG gap=%.0fms (ended now, started %.3f)", gap * 1000, now - gap))
+        // Timers don't fire while the app is suspended, so backgrounding also shows up as
+        // a huge "hang". Record the app state rather than filtering by duration — a long
+        // gap while `.active` is a genuine stall and must not be hidden.
+        let state: String
+        #if canImport(UIKit)
+        switch UIApplication.shared.applicationState {
+        case .active: state = "active"
+        case .inactive: state = "inactive"
+        case .background: state = "background"
+        @unknown default: state = "unknown"
+        }
+        #else
+        state = "n/a"
+        #endif
+        log(String(format: "HANG gap=%.0fms state=%@ (ended now, started %.3f)", gap * 1000, state, now - gap))
     }
 }
 #endif
