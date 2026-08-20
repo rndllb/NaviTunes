@@ -31,6 +31,9 @@ enum DebugUIRemote {
         app = model
         guard !installed else { return }
         installed = true
+        // DEBUG builds only (whole file is #if DEBUG): always-on main-thread stall log so
+        // device runs record hangs without needing the simulator-only notify trigger.
+        startHangWatch()
         observe("com.vellum.debug.openPlaylist")
         observe("com.vellum.debug.addToPlaylist")
         observe("com.vellum.debug.toast")

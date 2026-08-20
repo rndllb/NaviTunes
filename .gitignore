@@ -38,3 +38,6 @@ Carthage/Build/
 .env
 .env.*
 !.env.example
+
+# DerivedData written by ~/.claude/scripts/build-to-phone.sh (device builds)
+.build-to-phone/

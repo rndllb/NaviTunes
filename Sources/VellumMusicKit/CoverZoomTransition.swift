@@ -143,6 +143,34 @@ private struct CoverZoomDismissalObserver: UIViewControllerRepresentable {
     final class Helper: UIViewController {
         var report: (CoverZoomTransitionPhase) -> Void = { _ in }
 
+        // MARK: Pull-to-reveal search (refresh-control semantics)
+        /// The bar's row is always laid out (`hidesSearchBarWhenScrolling = false`) so the
+        /// content never shifts; the bar itself is invisible and non-interactive until a
+        /// finger-driven pull past the threshold is released, and fades out again once the
+        /// user scrolls down. The real list stays the navigation bar's content scroll view,
+        /// so pull-to-refresh (whose spinner shares that strip on iOS 26) keeps working.
+        private weak var trackedContentScrollView: UIScrollView?
+        private var trackedOffsetObservation: NSKeyValueObservation?
+        private var isSearchBarRevealed = false
+        /// The search controller SwiftUI attached, held here while the bar is hidden so the
+        /// navigation item has *no* search row at all (nothing to snap open on a bounce).
+        private var parkedSearchController: UISearchController?
+        /// Whether the current pan began at rest at the top. Only such a pull may reveal;
+        /// a drag that starts lower and carries past the top is "arriving", not "pulling".
+        private var panBeganAtTop = false
+        /// Finger-driven overscroll (points past the top) at which the bar is attached and
+        /// shown, live, during the pull — roughly half a row, so a short overshoot at the top
+        /// never shows anything.
+        private static let pullRevealThreshold: CGFloat = 16
+        /// How far into the content the user must have scrolled (with the row already fully
+        /// collapsed) before the controller is parked again.
+        private static let scrollAwayCollapseDistance: CGFloat = 24
+
+        /// Parks the search controller the instant SwiftUI attaches it while the bar is
+        /// hidden — on a deep-link push that happens *after* `viewWillAppear`, and SwiftUI
+        /// can re-attach it on later updates too.
+        private var searchControllerObservation: NSKeyValueObservation?
+
         override func viewWillAppear(_ animated: Bool) {
             super.viewWillAppear(animated)
 #if DEBUG
@@ -153,10 +181,161 @@ private struct CoverZoomDismissalObserver: UIViewControllerRepresentable {
             // waiting for didAppear leaves them invisible through the whole
             // pop-back animation.
             setBarItemAlpha(1, animated: false)
+            disableZoomContentDismissGestures()
+            forceStackedSearchBarPlacement()
+            // The bar starts hidden (it's revealed only by a pull, see
+            // `installPullToRevealSearch`): park the controller the instant SwiftUI
+            // attaches it during the push so no row ever exists mid-transition.
+            applySearchBarVisibility(animated: false)
+            if let item = parent?.navigationItem {
+                searchControllerObservation = item.observe(\.searchController, options: [.new, .initial]) { [weak self] item, _ in
+                    guard let self, item.searchController != nil, !self.isSearchBarRevealed else { return }
+                    DispatchQueue.main.async { [weak self] in self?.applySearchBarVisibility(animated: false) }
+                }
+            }
             // No `animated` gate: zoom pushes report animated=false here, and
             // for genuinely instant appearances viewDidAppear follows right
             // behind and clears the phase anyway.
             report(.appearing)
+        }
+
+        /// SwiftUI's `.searchable(placement: .automatic)` lets UIKit choose the navigation
+        /// item's search placement. On iOS 26 that can resolve to the new *integrated*
+        /// placement — the field sits in the title row next to the bar buttons, and
+        /// `hidesSearchBarWhenScrolling` is documented as "not applicable and ignored" for
+        /// it. On iOS 26.6 this screen (empty inline title, hidden bar background) gets
+        /// exactly that: a full-width field jammed under the floating back / ⋯ buttons that
+        /// never hides. Force the classic *stacked* placement — its own row below the
+        /// buttons, collapsed until the user overscrolls at the top, re-collapsing on
+        /// scroll — which is the behaviour SwiftUI offered on 26.3–26.5. Applied on every
+        /// appearance so a navigation-item refresh can't flip it back.
+        private func forceStackedSearchBarPlacement() {
+            guard let item = parent?.navigationItem else { return }
+            if item.preferredSearchBarPlacement != .stacked {
+                item.preferredSearchBarPlacement = .stacked
+            }
+            // Native geometry: the row lives in the scroll distance above the content and
+            // expands/collapses with the pull. Only *visibility* is ours (see
+            // `installPullToRevealSearch`).
+            item.hidesSearchBarWhenScrolling = true
+        }
+
+        /// Pull-to-reveal with refresh-control semantics. While hidden, the navigation item
+        /// has *no* search controller (it is parked here), so no row exists: arriving at the
+        /// top — by drag or fling, with or without a bounce — can never show or reserve
+        /// space for the bar. A finger-driven pull that *began at rest at the top* and passes
+        /// ``pullRevealThreshold`` attaches the controller mid-pull: UIKit lays the row out
+        /// under the finger and the bar appears. From then on the row is native
+        /// (`hidesSearchBarWhenScrolling`): it shrinks 1:1 as the user scrolls down, and once
+        /// fully collapsed the controller is parked again, so scrolling back up does not
+        /// re-add it — only the next pull does. Nothing is ever fought mid-gesture, and the
+        /// real list stays the bar's content scroll view so pull-to-refresh keeps working.
+        private func installPullToRevealSearch() {
+            guard let host = parent,
+                  let list = Self.firstScrollView(in: host.view) else { return }
+            applySearchBarVisibility(animated: false)
+            guard trackedContentScrollView !== list else { return }
+            trackedContentScrollView = list
+            list.panGestureRecognizer.addTarget(self, action: #selector(listPanChanged(_:)))
+            trackedOffsetObservation = list.observe(\.contentOffset, options: [.new]) { [weak self] list, _ in
+                self?.listOffsetChanged(list)
+            }
+        }
+
+        @objc private func listPanChanged(_ pan: UIPanGestureRecognizer) {
+            guard let list = trackedContentScrollView else { return }
+            switch pan.state {
+            case .began:
+                // `.began` fires after ~10pt of movement; reconstruct the true start offset
+                // from the translation (finger down = offset up, 1:1 before any bounce).
+                let top = -list.adjustedContentInset.top
+                let startOffsetY = list.contentOffset.y + pan.translation(in: list).y
+                panBeganAtTop = startOffsetY <= top + 4
+            default:
+                break
+            }
+        }
+
+        private func listOffsetChanged(_ list: UIScrollView) {
+            let top = -list.adjustedContentInset.top
+            let overscroll = top - list.contentOffset.y   // > 0 while pulled past the top
+            // Reveal only for a finger-driven pull that *began* at the top and passes the
+            // threshold; arriving from below (drag or fling) never counts.
+            if panBeganAtTop, list.isDragging, overscroll >= Self.pullRevealThreshold, !isSearchBarRevealed {
+                setSearchBarRevealed(true)
+            }
+            // While revealed, UIKit shrinks the row 1:1 with the finger as the user scrolls
+            // down. Only once it has *fully* collapsed (row height 0) do we park the
+            // controller — removing it then is invisible, and scrolling back up can no
+            // longer re-add the row; only a fresh pull at the top can.
+            if isSearchBarRevealed,
+               let bar = parent?.navigationItem.searchController?.searchBar,
+               bar.bounds.height <= 1,
+               list.contentOffset.y > top + Self.scrollAwayCollapseDistance {
+                setSearchBarRevealed(false)
+            }
+        }
+
+        private func setSearchBarRevealed(_ revealed: Bool) {
+            guard isSearchBarRevealed != revealed else { return }
+            isSearchBarRevealed = revealed
+            applySearchBarVisibility(animated: true)
+        }
+
+        /// Hidden = the navigation item has no search controller (no row exists at all).
+        /// Revealed = the controller is attached and the bar is visible; UIKit lays the row
+        /// out under the finger during the qualifying pull.
+        private func applySearchBarVisibility(animated: Bool) {
+            guard let item = parent?.navigationItem else { return }
+            if isSearchBarRevealed {
+                if item.searchController == nil, let parked = parkedSearchController {
+                    parked.searchBar.alpha = 1
+                    parked.searchBar.isUserInteractionEnabled = true
+                    if animated {
+                        UIView.animate(withDuration: 0.25, delay: 0, options: [.curveEaseOut]) {
+                            item.searchController = parked
+                            item.searchController?.searchBar.superview?.layoutIfNeeded()
+                        }
+                    } else {
+                        item.searchController = parked
+                    }
+                } else if let sc = item.searchController {
+                    sc.searchBar.alpha = 1
+                    sc.searchBar.isUserInteractionEnabled = true
+                }
+            } else if let sc = item.searchController {
+                // Park it: row gone, nothing for a bounce to open. Done at rest / while the
+                // row is already collapsed, so there is no visible change.
+                parkedSearchController = sc
+                item.searchController = nil
+            }
+        }
+
+        private static func firstScrollView(in view: UIView) -> UIScrollView? {
+            if let s = view as? UIScrollView { return s }
+            for sub in view.subviews {
+                if let found = firstScrollView(in: sub) { return found }
+            }
+            return nil
+        }
+
+        /// The zoom navigation transition installs two extra interactive-dismiss gestures
+        /// on the zoomed screen: a pull-down ("content swipe dismiss") and a pinch
+        /// ("transform"). Pulling down at the top of a playlist/album popped the whole
+        /// screen, which fights scrolling the hero and is easy to trigger by accident.
+        /// SwiftUI's `.navigationTransition(.zoom)` exposes no `UIZoomTransitionOptions`
+        /// (`interactiveDismissShouldBegin`), so the recognizers are switched off by class
+        /// name here. The edge swipe-back (`_UIParallaxTransitionPanGestureRecognizer`)
+        /// is deliberately left alone. Runs on every appearance because UIKit can
+        /// re-enable them across transitions.
+        private func disableZoomContentDismissGestures() {
+            guard let hostView = parent?.view else { return }
+            for recognizer in hostView.gestureRecognizers ?? [] {
+                let name = String(describing: type(of: recognizer))
+                if name.contains("ContentSwipeDismiss") || name.contains("TransformGesture") {
+                    recognizer.isEnabled = false
+                }
+            }
         }
 
         override func viewWillDisappear(_ animated: Bool) {
@@ -211,8 +390,18 @@ private struct CoverZoomDismissalObserver: UIViewControllerRepresentable {
 #if DEBUG
             DebugUIRemote.log("PHASE didAppear")
 #endif
+            disableZoomContentDismissGestures()
+            forceStackedSearchBarPlacement()
             setBarItemAlpha(1, animated: false)
             report(.idle)
+            installPullToRevealSearch()
+            // Keep the KVO alive for the screen's lifetime: whenever SwiftUI (re)attaches
+            // a search controller while the bar is hidden, park it again immediately so
+            // the row never materialises. Deferred one turn to avoid mutating inside KVO.
+            searchControllerObservation = parent?.navigationItem.observe(\.searchController, options: [.new]) { [weak self] item, _ in
+                guard let self, item.searchController != nil, !self.isSearchBarRevealed else { return }
+                DispatchQueue.main.async { [weak self] in self?.applySearchBarVisibility(animated: false) }
+            }
         }
 
         /// Applies `alpha` to the hosted content of every leading/trailing
@@ -275,20 +464,39 @@ private struct CoverZoomDetailInteractionGate: ViewModifier {
             interactionArmed = true
             return
         }
+        let enabledNow = coverZoomDetailInteractionEnabled(phase: phase, isBeingDismissed: isBeingDismissed)
+        // Already interactive and the phase just settled to `.idle`: stay armed. Re-arming
+        // from scratch here flipped `allowsHitTesting` off for 180ms in the middle of
+        // whatever the user was doing (e.g. a scroll that began during the push).
+        if interactionArmed, enabledNow { return }
         interactionArmed = false
-        guard coverZoomDetailInteractionEnabled(phase: phase, isBeingDismissed: isBeingDismissed) else {
-            return
-        }
         armGeneration &+= 1
         let generation = armGeneration
-        Task { @MainActor in
-            // UIKit reports `.idle` before the zoom morph finishes; hold hero
-            // buttons briefly so a list-tap release cannot land on Play / +.
-            try? await Task.sleep(for: .milliseconds(180))
-            guard generation == armGeneration,
-                  coverZoomDetailInteractionEnabled(phase: phase, isBeingDismissed: isBeingDismissed)
-            else { return }
-            interactionArmed = true
+        if enabledNow {
+            Task { @MainActor in
+                // UIKit reports `.idle` before the zoom morph finishes; hold hero
+                // buttons briefly so a list-tap release cannot land on Play / +.
+                try? await Task.sleep(for: .milliseconds(180))
+                guard generation == armGeneration,
+                      coverZoomDetailInteractionEnabled(phase: phase, isBeingDismissed: isBeingDismissed)
+                else { return }
+                interactionArmed = true
+            }
+        } else if phase == .appearing, !isBeingDismissed {
+            // The zoom push takes ~0.9s to report `viewDidAppear` on device, and waiting
+            // for it froze the whole detail (scrolling included) for over a second after
+            // every open. The only thing the gate must stop is a finger still down from
+            // the list tap landing on a control under the morph, which a short hold
+            // covers — so arm early while the push is still animating. Dismissals
+            // (`isBeingDismissed` / `.dismissing`) keep the full gate.
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(350))
+                guard generation == armGeneration,
+                      !isBeingDismissed,
+                      phase == .appearing || phase == .idle
+                else { return }
+                interactionArmed = true
+            }
         }
     }
 }
