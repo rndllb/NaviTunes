@@ -822,7 +822,35 @@ public final class AppModel: ObservableObject {
     /// `getCoverArt` URL for the Vellum magic playlist when Navidrome reports a user-uploaded /
     /// external image on it (i.e. *not* the auto-generated mosaic). Used to override the
     /// account avatar so users can manage their PFP by setting the magic playlist's cover.
-    @Published private(set) var navidromeMagicPlaylistAvatarURL: URL?
+    @Published private(set) var navidromeMagicPlaylistAvatarURL: URL? {
+        didSet {
+            // Persisted per server + user so the profile picture paints from the on-disk
+            // avatar cache immediately on launch, before the membership sync re-confirms it.
+            guard let key = magicPlaylistAvatarDefaultsKey else { return }
+            if let url = navidromeMagicPlaylistAvatarURL {
+                UserDefaults.standard.set(url.absoluteString, forKey: key)
+            } else {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+        }
+    }
+
+    private var magicPlaylistAvatarDefaultsKey: String? {
+        let user = username.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !user.isEmpty,
+              let server = LibraryMembership.normalizedServerKey(from: baseURLString),
+              !server.isEmpty else { return nil }
+        return "navidrome.magicPlaylistAvatarURL.\(server).\(user)"
+    }
+
+    /// Restores the last known magic-playlist avatar URL for the current server + user.
+    private func restoreMagicPlaylistAvatarURL() {
+        guard backendKind == .navidrome, navidromeMagicPlaylistAvatarURL == nil,
+              let key = magicPlaylistAvatarDefaultsKey,
+              let raw = UserDefaults.standard.string(forKey: key),
+              let url = URL(string: raw) else { return }
+        navidromeMagicPlaylistAvatarURL = url
+    }
 
     /// `true` while ``updateProfilePictureFromImageData(_:)`` is in flight, so Settings can
     /// disable the picker and show a spinner.
@@ -1974,6 +2002,13 @@ public final class AppModel: ObservableObject {
                 Task { await refreshMagicPlaylistAvatar(playlistId: playlistId) }
             }
             persistLibrarySnapshot()
+        } else if backendKind == .navidrome, navidromeMagicPlaylistAvatarURL == nil {
+            // The avatar used to be resolved *only* when the membership payload changed.
+            // On a fresh launch the first fetch usually matches the persisted snapshot, so
+            // the check never ran, the URL stayed nil, and the profile picture fell back to
+            // the (usually blank) Subsonic `getAvatar` until the library next mutated —
+            // "the PFP resets every time the app restarts". Resolve it whenever it's unknown.
+            Task { await refreshMagicPlaylistAvatar(playlistId: playlistId) }
         }
     }
 
@@ -1988,7 +2023,21 @@ public final class AppModel: ObservableObject {
     /// we don't cascade a sync into the sync that just fetched the membership.
     private func refreshMagicPlaylistAvatar(playlistId: String) async {
         guard backendKind == .navidrome, let client = navidrome else { return }
-        let hasCustom = (try? await client.playlistHasCustomCover(playlistId: playlistId)) ?? false
+        let hasCustom: Bool
+        do {
+            hasCustom = try await client.playlistHasCustomCover(playlistId: playlistId)
+#if DEBUG
+            DebugUIRemote.log("AVATAR customCover=\(hasCustom) playlist=\(playlistId)")
+#endif
+        } catch {
+            // Swallowing this silently turned a native-API/auth failure into "no custom
+            // cover" and a blank profile picture. Keep the previous URL on error instead of
+            // downgrading to getAvatar, and make the failure visible in the debug log.
+#if DEBUG
+            DebugUIRemote.log("AVATAR customCover check FAILED playlist=\(playlistId) error=\(error)")
+#endif
+            return
+        }
         let newURL: URL? = hasCustom ? client.coverArtURL(forId: playlistId, size: 256) : nil
         let previousURL = navidromeMagicPlaylistAvatarURL
         guard previousURL != newURL else { return }
@@ -3456,6 +3505,46 @@ public final class AppModel: ObservableObject {
             prefetchAccountAvatar()
         }
         return playlistArtworkURL(for: playlistId, cacheBust: true)
+    }
+
+    /// Removes a user-uploaded playlist cover so Navidrome regenerates one from the
+    /// playlist's tracks. Navidrome-only — Jellyfin has no equivalent native route here.
+    func clearPlaylistCoverImage(playlistId: String) async throws -> URL? {
+        guard isSignedIn, backendKind == .navidrome, let client = navidrome else {
+            throw NSError(
+                domain: "VellumMusic",
+                code: 0,
+                userInfo: [NSLocalizedDescriptionKey: "Removing artwork is only supported on Navidrome."],
+            )
+        }
+        try await client.deletePlaylistImage(playlistId: playlistId)
+        await refreshLibraryPlaylists()
+        if playlistId == libraryMagicPlaylistId {
+            if let identity = accountAvatarIdentity {
+                AccountAvatarCache.remove(identity: identity)
+            }
+            // No custom cover any more: the profile picture reverts to `getAvatar`.
+            navidromeMagicPlaylistAvatarURL = nil
+            accountAvatarRevision &+= 1
+            prefetchAccountAvatar()
+        }
+        return playlistArtworkURL(for: playlistId, cacheBust: true)
+    }
+
+    /// Clears the profile picture by removing the magic playlist's uploaded cover.
+    func clearProfilePicture() async {
+        guard isSignedIn, backendKind == .navidrome, let playlistId = libraryMagicPlaylistId else {
+            profilePictureUpdateError = "Sign in to Navidrome and let your library sync before changing your profile picture."
+            return
+        }
+        isUpdatingProfilePicture = true
+        defer { isUpdatingProfilePicture = false }
+        do {
+            _ = try await clearPlaylistCoverImage(playlistId: playlistId)
+            profilePictureUpdateError = nil
+        } catch {
+            profilePictureUpdateError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
     }
 
     private func playlistArtworkURL(for playlistId: String, cacheBust: Bool) -> URL? {
@@ -5572,6 +5661,7 @@ public final class AppModel: ObservableObject {
                 isSignedIn = true
                 applyLaunchTab()
                 updateDeleteCapability()
+                restoreMagicPlaylistAvatarURL()
                 prefetchAccountAvatar()
                 restoreLibraryFromDisk()
                 restorePlaybackQueueFromDisk()
