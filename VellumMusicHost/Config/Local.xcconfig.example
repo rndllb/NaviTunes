@@ -1,0 +1,16 @@
+// Copy this file to Local.xcconfig (same folder) and set your own Team ID.
+//
+//     cp VellumMusicHost/Config/Local.xcconfig.example VellumMusicHost/Config/Local.xcconfig
+//
+// Local.xcconfig is gitignored, so your team ID never gets committed and never
+// clobbers a collaborator's signing. Find your Team ID in Xcode → Settings →
+// Accounts, or at https://developer.apple.com/account (Membership).
+
+DEVELOPMENT_TEAM = YOUR_TEAM_ID_HERE
+
+// OPTIONAL — only if you can't use the group.com.randll.vellum App Group (it belongs to
+// the upstream Apple account). Uncomment to build without the App Group entitlement:
+// the app signs under your wildcard profile and keeps com.randll.vellum's data, but the
+// home-screen widgets won't receive shared data. Leave commented to keep widgets.
+// VELLUM_HOST_ENTITLEMENTS =
+// VELLUM_WIDGET_ENTITLEMENTS =

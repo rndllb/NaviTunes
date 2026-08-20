@@ -140,7 +140,7 @@ struct HomeView: View {
                 .padding(.bottom, 36)
             }
             .modifier(MusicTabFloatingHeaderScrollModifier(
-                slack: 72,
+                slack: MusicTabFloatingHeaderScrollModifier.defaultSlack,
                 showFloatingHeader: $showFloatingHeader
             ))
             .musicTabFloatingHeaderInset(isVisible: showFloatingHeader) {

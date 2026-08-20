@@ -1,0 +1,32 @@
+// Code signing — shared base config.
+//
+// DEVELOPMENT_TEAM is intentionally NOT set here. Each collaborator signs with
+// their own Apple Developer team, and committing a team ID means every pull
+// overwrites someone else's signing and breaks their build with
+// "you don't have access to this membership resource".
+//
+// Instead, set YOUR team in Local.xcconfig (same folder, gitignored):
+//
+//     cp VellumMusicHost/Config/Local.xcconfig.example VellumMusicHost/Config/Local.xcconfig
+//     # then edit Local.xcconfig and put in your Team ID
+//
+// Find your Team ID in Xcode → Settings → Accounts (select your team), or at
+// https://developer.apple.com/account under Membership.
+//
+// Code-sign entitlements are also selectable per developer. The default uses the
+// committed entitlements (which request the group.com.randll.vellum App Group, owned
+// by the upstream account). A developer on a different Apple account that can't use
+// that App Group can blank these in Local.xcconfig to build without it (widgets lose
+// their shared data, but the app signs under a wildcard profile and keeps its data).
+VELLUM_HOST_ENTITLEMENTS = VellumMusicHost/VellumMusicHost.entitlements
+VELLUM_WIDGET_ENTITLEMENTS = VellumWidgets/VellumWidgets.entitlements
+
+// App identity. Overridable in Local.xcconfig: a developer upgrading a device
+// that still has the pre-rename Lyra install can set
+// VELLUM_BUNDLE_ID = com.randll.lyra so the build installs in place over it
+// and keeps all local data (LegacyLyraMigration then renames the old
+// lyra.* keys on first launch). The widget extension is always
+// $(VELLUM_BUNDLE_ID).widgets.
+VELLUM_BUNDLE_ID = com.randll.vellum
+
+#include? "Local.xcconfig"

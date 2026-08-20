@@ -1201,37 +1201,51 @@ enum MusicToolbar {
 
 /// Observes vertical scroll so the custom large-title header can hide after scrolling (matches **New** tab).
 struct MusicTabFloatingHeaderScrollModifier: ViewModifier {
-    var slack: CGFloat
+    /// Scroll distance around which the header flips. Deliberately small (Apple Music
+    /// fades its header within a few points of the top): with the default 10 the header
+    /// hides ~12pt down and only returns within ~4pt of the top, so it reads as
+    /// "visible at the top only" rather than lingering through the first screenful.
+    static let defaultSlack: CGFloat = 4
+    var slack: CGFloat = defaultSlack
     @Binding var showFloatingHeader: Bool
-    @State private var anchorContentOffsetY: CGFloat?
     /// Scroll down past ``slack`` + this before hiding (avoids flicker near the threshold).
-    private let hideHysteresis: CGFloat = 20
+    private let hideHysteresis: CGFloat = 2
     /// Scroll up to ``slack`` − this before showing again (wider dead band than hide).
-    private let showHysteresis: CGFloat = 28
+    /// The gap between the two thresholds is what stops the header flapping mid-scroll.
+    private let showHysteresis: CGFloat = 2
 
     func body(content: Content) -> some View {
-        content.onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y }) { _, y in
-            if anchorContentOffsetY == nil {
-                anchorContentOffsetY = y
-            }
-            let anchor = anchorContentOffsetY ?? y
-            // Rubber-band overscroll reports y < anchor; clamp so the header stays stable at the top.
-            let delta = max(0, y - anchor)
+        // Distance scrolled past the top, derived from the scroll view's own insets so it
+        // is 0 at rest no matter what the insets are. This used to capture an "anchor"
+        // offset on the first geometry change — but that fires before the header's
+        // `safeAreaInset` height has been measured (0 → ~60pt), so every delta carried a
+        // stale header-height offset. The thresholds below were then effectively ignored:
+        // changing them from 92pt to 3pt made no visible difference to where the header
+        // faded, because the constant error dominated.
+        content.onScrollGeometryChange(
+            for: CGFloat.self,
+            of: { $0.contentOffset.y + $0.contentInsets.top },
+        ) { _, distance in
+            // Rubber-band overscroll reports negative; clamp so the header stays stable at the top.
+            let delta = max(0, distance)
             let expandThreshold = max(0, slack - showHysteresis)
             let collapseThreshold = slack + hideHysteresis
 
-            if delta < expandThreshold {
+            // Plain assignments: the header is an overlay whose *opacity* animates (see
+            // `musicTabFloatingHeaderInset`), so the fade is owned there and runs both
+            // ways. Showing used to disable animations outright — needed back when the
+            // header was a collapsing `safeAreaInset`, since animating its height fed the
+            // content-offset change straight back into this observer, but that also made
+            // it pop in with no fade. Nothing here changes layout any more.
+            // `<=`, not `<`: `delta` is clamped at 0, so if these thresholds are ever
+            // tuned tight enough for `expandThreshold` to reach 0, `<` could never match
+            // and the header would stay hidden forever.
+            if delta <= expandThreshold {
                 guard !showFloatingHeader else { return }
-                var transaction = Transaction()
-                transaction.disablesAnimations = true
-                withTransaction(transaction) {
-                    showFloatingHeader = true
-                }
+                showFloatingHeader = true
             } else if delta > collapseThreshold {
                 guard showFloatingHeader else { return }
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    showFloatingHeader = false
-                }
+                showFloatingHeader = false
             }
         }
     }
@@ -1244,16 +1258,50 @@ extension View {
         isVisible: Bool,
         @ViewBuilder header: () -> Header,
     ) -> some View {
-        safeAreaInset(edge: .top, spacing: 0) {
-            // Keep the header (and profile avatar) mounted — conditional removal was
-            // re-running AccountProfileAvatarView's load task on every scroll-to-top.
-            header()
-                .opacity(isVisible ? 1 : 0)
-                .frame(maxHeight: isVisible ? nil : 0, alignment: .top)
-                .clipped()
-                .allowsHitTesting(isVisible)
-                .accessibilityHidden(!isVisible)
-        }
+        // The header is an *overlay*, not a `safeAreaInset` whose height collapses:
+        // collapsing changed the scroll view's content inset, which shoved the content
+        // (the visible jitter), and animating that collapse fed the offset change back
+        // into `onScrollGeometryChange` — an update loop the watchdog killed. As an
+        // overlay it never participates in scroll layout, so nothing shifts and nothing
+        // can loop; only its opacity animates. A matching top inset (measured from the
+        // header itself, so it tracks Dynamic Type) keeps the content clear of it.
+        //
+        // The header stays mounted either way — conditional removal was re-running
+        // AccountProfileAvatarView's load task on every scroll-to-top.
+        modifier(MusicTabFloatingHeaderOverlay(isVisible: isVisible, header: header()))
+    }
+}
+
+/// Floating tab header: reserves a fixed top inset for the content and draws the header
+/// over it, fading on `isVisible`. See ``musicTabFloatingHeaderInset``.
+private struct MusicTabFloatingHeaderOverlay<Header: View>: ViewModifier {
+    let isVisible: Bool
+    let header: Header
+    /// Measured once from the header's own layout so the reserved space matches it
+    /// exactly at any Dynamic Type size.
+    @State private var headerHeight: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        content
+            // Reserve the space with an inset whose height never changes, so showing or
+            // hiding the header cannot alter the scroll view's content offset.
+            .safeAreaInset(edge: .top, spacing: 0) {
+                Color.clear.frame(height: headerHeight)
+            }
+            .overlay(alignment: .top) {
+                header
+                    .background {
+                        GeometryReader { geo in
+                            Color.clear
+                                .onAppear { headerHeight = geo.size.height }
+                                .onChange(of: geo.size.height) { _, h in headerHeight = h }
+                        }
+                    }
+                    .opacity(isVisible ? 1 : 0)
+                    .animation(.easeInOut(duration: 0.2), value: isVisible)
+                    .allowsHitTesting(isVisible)
+                    .accessibilityHidden(!isVisible)
+            }
     }
 }
 

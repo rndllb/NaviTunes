@@ -106,6 +106,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private var advanceWork: Task<Void, Never>?
     /// Re-kicks AVPlayer when `playImmediately` doesn't stick (common after track handoff).
     private var autoplayVerifyTask: Task<Void, Never>?
+    /// Identity for the in-flight autoplay-verify task so it can clear its own
+    /// handle on completion without clobbering a newer task's handle.
+    private var autoplayVerifyToken = UUID()
     /// Captured at skip/jump/end before the async ``advance()`` task runs — avoids losing play intent.
     private var shouldAutoPlayAfterAdvance = false
     /// When a track is inserted via Play Next / Add to Queue from a playlist detail view, remember
@@ -196,6 +199,17 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// whether to mark the outgoing track.
     var onTrackSkipped: ((Track, PlaybackSource?) -> Void)?
 
+    /// Fires when a track reaches its **natural end** (end-of-playback advance), NOT
+    /// on a user skip. Drives Kill Mode's "played fully → kept (green)" path —
+    /// `AppModel` marks the outgoing track listened when the source is a kill-mode
+    /// playlist.
+    var onTrackCompleted: ((Track, PlaybackSource?) -> Void)?
+
+    /// Set by `AppModel` during an active Kill Mode session: returns true for tracks
+    /// already "listened" (played fully or skipped) that must not be auto-advanced into,
+    /// so each song plays once per run. Nil during normal playback (no effect).
+    var autoAdvanceExclusion: ((Track) -> Bool)?
+
     private var didConfigureRemoteCommands = false
     private var sleepTimerTask: Task<Void, Never>?
     private var nextTrackRemoteTarget: Any?
@@ -209,7 +223,21 @@ final class PlaybackEngine: NSObject, ObservableObject {
     #if os(iOS)
     private var audioSessionInterruptionObserver: NSObjectProtocol?
     private var audioSessionRouteObserver: NSObjectProtocol?
+    private var appBackgroundObserver: NSObjectProtocol?
+    private var appForegroundObserver: NSObjectProtocol?
     private var didInstallAudioSessionObservers = false
+    /// True while the app is in the background. The periodic time observer uses
+    /// this to skip Now-Playing rebuilds and published-progress writes that are
+    /// redundant/invisible in the background and burn battery during background
+    /// audio. Set by the app-lifecycle observers installed alongside the audio
+    /// session observers.
+    private var isAppBackgrounded = false
+    /// Debounced task that releases the audio session after we go idle so iOS
+    /// can suspend the app. Cancelled if playback resumes within the window.
+    private var audioSessionDeactivateTask: Task<Void, Never>?
+    /// Context for (re)installing the periodic time observer at a new cadence
+    /// (foreground 0.35s vs background 2.0s).
+    private var timeObserverContext: (item: AVPlayerItem, track: Track, player: AVPlayer)?
     /// Captures `isPlaying` when an interruption begins so we can decide on
     /// `.ended` whether to resume — `isPlaying` itself is flipped to `false`
     /// on `.began` to keep the transport button in sync with the system pause.
@@ -245,6 +273,42 @@ final class PlaybackEngine: NSObject, ObservableObject {
         ) { [weak self] note in
             Task { @MainActor in self?.handleAudioSessionRouteChange(note) }
         }
+        appBackgroundObserver = nc.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main,
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.isAppBackgrounded = true
+                // Widen the periodic time-observer cadence for the background.
+                self.installPeriodicTimeObserver()
+                // Stamp one fresh Now-Playing baseline (rate + elapsed +
+                // timestamp) so the lock screen can extrapolate the playhead on
+                // its own while we stop pushing per-tick updates.
+                self.refreshNowPlaying()
+                // If we are backgrounded while paused, release the session now
+                // (don't wait out the debounce, which suspension may cut off)
+                // so the app can suspend.
+                if !self.isPlaying { self.deactivateAudioSessionNow() }
+            }
+        }
+        appForegroundObserver = nc.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main,
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.isAppBackgrounded = false
+                // Restore the fast foreground time-observer cadence.
+                self.installPeriodicTimeObserver()
+                // Resync the scrubber + Now-Playing after a stretch of
+                // throttled background ticks.
+                self.currentTime = self.playbackHead
+                self.refreshNowPlaying()
+            }
+        }
     }
     #endif
 
@@ -267,6 +331,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
     private func activateAudioSession() {
         #if os(iOS)
+        audioSessionDeactivateTask?.cancel()
+        audioSessionDeactivateTask = nil
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(
             .playback,
@@ -274,6 +340,32 @@ final class PlaybackEngine: NSObject, ObservableObject {
             options: [.allowBluetoothA2DP, .allowAirPlay],
         )
         try? session.setActive(true, options: [])
+        #endif
+    }
+
+    /// Release the audio session a few seconds after going idle so iOS can
+    /// suspend the app (and power down the audio route) instead of keeping it
+    /// active indefinitely. Cancelled by ``activateAudioSession()`` if playback
+    /// resumes first. The session was previously never deactivated, so a paused
+    /// app stayed audio-active and never suspended.
+    private func scheduleAudioSessionDeactivation() {
+        #if os(iOS)
+        audioSessionDeactivateTask?.cancel()
+        audioSessionDeactivateTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            await MainActor.run { self?.deactivateAudioSessionNow() }
+        }
+        #endif
+    }
+
+    private func deactivateAudioSessionNow() {
+        #if os(iOS)
+        audioSessionDeactivateTask?.cancel()
+        audioSessionDeactivateTask = nil
+        guard !isPlaying else { return }
+        try? AVAudioSession.sharedInstance().setActive(
+            false, options: [.notifyOthersOnDeactivation])
         #endif
     }
 
@@ -289,6 +381,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
             // taking the audio session). Mirror that into ``isPlaying`` so the
             // transport button stops showing the pause glyph while playback
             // is silently halted.
+            // Capture EQ-playing too; the EQ node still claims to be playing
+            // even though the system stopped the engine mid-interruption.
             wasPlayingBeforeInterruption = isPlaying || (equalizedPlayer?.isPlaying ?? false)
             clearPlayIntent()
             equalizedPlayer?.pause()
@@ -303,6 +397,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             markPlayIntent()
             activateAudioSession()
             if let equalizedPlayer {
+                // Restarts the (system-stopped) AVAudioEngine as part of play().
                 equalizedPlayer.play(rate: playbackRate)
             } else if let player {
                 beginPlayback(on: player)
@@ -318,10 +413,16 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private func handleAudioSessionRouteChange(_ notification: Notification) {
         // Don't auto-resume — when the user unplugs headphones the system
         // pauses us on purpose (HIG: respect that intent), and the
-        // `timeControlStatus` KVO will sync ``isPlaying`` to match. Any other
-        // route change (new device available, override, etc.) likewise
-        // shouldn't force playback to keep going if the system paused us.
-        _ = notification
+        // `timeControlStatus` KVO will sync ``isPlaying`` to match for the
+        // AVPlayer path. The EQ engine gets no such system pause: stop it
+        // explicitly or audio continues (or resumes via the config-change
+        // rebuild) on the loudspeaker.
+        if let raw = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+           let reason = AVAudioSession.RouteChangeReason(rawValue: raw),
+           reason == .oldDeviceUnavailable, equalizedPlayer != nil {
+            pbLog("route lost (unplug) → pausing EQ playback")
+            pausePlayback()
+        }
         onAudioRouteChanged?()
     }
     #endif
@@ -700,7 +801,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
             if equalizedPlayer.isPlaying {
                 equalizedPlayer.pause()
                 isPlaying = false
+                scheduleAudioSessionDeactivation()
             } else {
+                activateAudioSession()
                 markPlayIntent()
                 equalizedPlayer.play(rate: playbackRate)
                 isPlaying = true
@@ -716,6 +819,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         if player.rate > 0.01 {
             player.pause()
             isPlaying = false
+            scheduleAudioSessionDeactivation()
         } else {
             // Track finished with nothing queued behind it (repeatMode .off, last track) →
             // AVPlayer is parked at duration; play() would be a no-op. Restart from 0.
@@ -794,6 +898,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             isPlaying = false
             playbackHead = equalizedPlayer.currentPlaybackTime()
             refreshNowPlaying()
+            scheduleAudioSessionDeactivation()
             return
         }
         guard let player else {
@@ -807,6 +912,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         isPlaying = false
         playbackHead = player.currentTime().seconds
         refreshNowPlaying()
+        scheduleAudioSessionDeactivation()
     }
 
     /// Resolved length for scrubbing — prefers live `AVPlayerItem` duration, then cached engine/track metadata.
@@ -1345,7 +1451,14 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// stream load or right after a handoff). Re-kick without churning the audio session.
     private func ensurePlaybackStarted(on player: AVPlayer, epoch: UInt) {
         autoplayVerifyTask?.cancel()
+        let token = UUID()
+        autoplayVerifyToken = token
         autoplayVerifyTask = Task { @MainActor [weak self] in
+            // Clear our own handle when the verify window ends (any exit path) so the
+            // timeControlStatus KVO stops ignoring genuine external pauses (headphone
+            // unplug, Control Center). The token guard stops a cancelled/older task
+            // from nil-ing a newer one's handle.
+            defer { if let self, self.autoplayVerifyToken == token { self.autoplayVerifyTask = nil } }
             var kicks = 0
             for _ in 0 ..< 12 {
                 try? await Task.sleep(for: .milliseconds(250))
@@ -1609,7 +1722,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             var step = 1
             while result.count < limit, step <= queue.count {
                 let idx = (currentIndex + step) % queue.count
-                if seen.insert(idx).inserted { result.append(idx) }
+                if seen.insert(idx).inserted, !isExcludedFromAutoAdvance(idx) { result.append(idx) }
                 step += 1
             }
             return result
@@ -1617,7 +1730,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             var result: [Int] = []
             var idx = currentIndex + 1
             while idx < queue.count, result.count < limit {
-                result.append(idx)
+                if !isExcludedFromAutoAdvance(idx) { result.append(idx) }
                 idx += 1
             }
             return result
@@ -2093,6 +2206,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
                 self.stagePendingRestore(at: resumeAt)
             }
         }
+        session.onConfigurationChange = { [weak self] in
+            guard let self, self.equalizedEndEpoch == epoch else { return }
+            self.rebuildEqualizedSessionAfterConfigChange(epoch: epoch)
+        }
 
         try await session.load(
             asset: urlAsset,
@@ -2459,6 +2576,36 @@ final class PlaybackEngine: NSObject, ObservableObject {
         stagePendingRestore(at: position)
     }
 
+    /// The system tore the EQ engine's render graph down (route/hardware
+    /// format change). Reload the same audio at the current position. Briefly
+    /// deferred so a simultaneous route-loss pause (unplugged headphones) can
+    /// land first — then the rebuild comes back up paused instead of blaring
+    /// from the loudspeaker.
+    private func rebuildEqualizedSessionAfterConfigChange(epoch: UInt) {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(120))
+            guard let self, self.isPlaybackEpochCurrent(epoch),
+                  let equalizedPlayer = self.equalizedPlayer,
+                  let asset = self.equalizedPlaybackAsset
+            else { return }
+            let position = equalizedPlayer.currentPlaybackTime()
+            let resume = self.isPlaying
+            self.pbLog("EQ config change → rebuilding at \(position) resume=\(resume)")
+            // seek() also resumes when the NODE claims it was playing — after a
+            // system stop that state can lie, so force-sync it to our intent.
+            if !resume { equalizedPlayer.pause() }
+            try? await equalizedPlayer.seek(
+                to: position,
+                asset: asset,
+                fileURL: self.equalizedPlaybackURL?.isFileURL == true ? self.equalizedPlaybackURL : nil,
+                gains: self.equalizerBandGains,
+                bypass: self.effectiveEqualizerBypass,
+                autoPlay: resume,
+                rate: self.playbackRate,
+            )
+        }
+    }
+
     private func periodicEqualizedTimeObserverTick(
         elapsed: TimeInterval,
         track: Track,
@@ -2472,13 +2619,23 @@ final class PlaybackEngine: NSObject, ObservableObject {
         if playStateChanged { isPlaying = playing }
 
         maybeScrobble(track: track, position: elapsed)
+        // Background: the system extrapolates the lock-screen playhead from the
+        // rate + last timestamp, so only refresh Now-Playing on a real
+        // play/pause change. Foreground: keep the smooth cadence for the scrubber.
         if playStateChanged
-            || elapsed - lastNowPlayingInfoRefresh >= 0.55
-            || abs(elapsed - lastNowPlayingInfoRefresh) > 1.25
+            || (!isAppBackgrounded
+                && (elapsed - lastNowPlayingInfoRefresh >= 0.55
+                    || abs(elapsed - lastNowPlayingInfoRefresh) > 1.25))
         {
             lastNowPlayingInfoRefresh = elapsed
             refreshNowPlaying()
         }
+
+        // Nothing on screen in the background — skip the published-progress
+        // writes (and seek-settle bookkeeping) that only drive the UI scrubber.
+        // playbackHead stays current above; the foreground observer resyncs
+        // currentTime on return.
+        if isAppBackgrounded { return }
 
         guard !isSeeking else { return }
         if let deadline = seekSettleDeadline, ContinuousClock.now < deadline { return }
@@ -2543,20 +2700,39 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// after an OS auto-advance, to rebind onto the now-current enqueued item
     /// without tearing the player down. The `timeControlStatus` KVO is per-player
     /// and set once in ``attachPlayer``, so it isn't touched here.
-    private func bindItemObservers(item: AVPlayerItem, track: Track, player p: AVPlayer) {
-        if let timeObserver { p.removeTimeObserver(timeObserver) }
-        let interval = CMTime(seconds: 0.35, preferredTimescale: 600)
+    /// Foreground cadence (0.35s) drives the smooth scrubber; backgrounded we
+    /// widen to 2.0s (~6x fewer main-thread wakeups) since nothing on screen
+    /// needs per-tick updates and the lock screen extrapolates the playhead
+    /// from the Now-Playing rate.
+    private func periodicTimeObserverInterval() -> Double {
+        #if os(iOS)
+        return isAppBackgrounded ? 2.0 : 0.35
+        #else
+        return 0.35
+        #endif
+    }
+
+    private func installPeriodicTimeObserver() {
+        guard let ctx = timeObserverContext else { return }
+        let p = ctx.player
+        if let obs = timeObserver { p.removeTimeObserver(obs); timeObserver = nil }
+        let interval = CMTime(seconds: periodicTimeObserverInterval(), preferredTimescale: 600)
         timeObserver = p.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             guard let self else { return }
             MainActor.assumeIsolated {
                 self.periodicTimeObserverTick(
                     elapsed: time.seconds,
-                    item: item,
-                    track: track,
+                    item: ctx.item,
+                    track: ctx.track,
                     player: p,
                 )
             }
         }
+    }
+
+    private func bindItemObservers(item: AVPlayerItem, track: Track, player p: AVPlayer) {
+        timeObserverContext = (item, track, p)
+        installPeriodicTimeObserver()
 
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         endObserver = NotificationCenter.default.addObserver(
@@ -2692,6 +2868,12 @@ final class PlaybackEngine: NSObject, ObservableObject {
             }
         }
 
+        // Natural end-of-track (past spurious-end recovery). Notify BEFORE the advance
+        // moves currentIndex — Kill Mode marks the just-finished track "kept (green)".
+        if queue.indices.contains(currentIndex) {
+            onTrackCompleted?(queue[currentIndex], playbackSource)
+        }
+
         // Fast path: the OS queue auto-advanced to the item we pre-enqueued and the
         // queue hasn't changed underneath it — promote bookkeeping in place. Audio
         // never stopped, so this works reliably while backgrounded (no app-driven
@@ -2714,32 +2896,57 @@ final class PlaybackEngine: NSObject, ObservableObject {
         // edited, or enqueue failed) — rebuild as before.
         // Shuffle is a queue-reordering action (see ``toggleShuffle``) — once shuffled,
         // advance through the queue sequentially, otherwise every track end would re-randomize.
+        if repeatMode == .one {
+            shouldAutoPlayAfterAdvance = true
+            resetUIProgressForTrackHandoff()
+            scheduleAdvance()
+        } else if let next = nextAdvanceIndex() {
+            shouldAutoPlayAfterAdvance = true
+            currentIndex = next
+            resetUIProgressForTrackHandoff()
+            scheduleAdvance()
+        } else {
+            isPlaying = false
+            // No next track: end of a repeat-off queue, or (Kill Mode) every other
+            // track has already been listened to and is excluded. AVQueuePlayer
+            // advanced past the final item, so `currentItem` is nil and the
+            // single-player "seek to 0 and replay" path can't work. Drop to a clean
+            // pending-restore so a later play tap rebuilds from the start.
+            teardownPlayer()
+            refreshNowPlaying()
+        }
+    }
+
+    /// Index the natural-end advance should move to, honoring repeat mode and the
+    /// Kill Mode auto-advance exclusion. Returns nil when nothing qualifies (end of a
+    /// repeat-off queue, or every candidate excluded). `.all` may return the current
+    /// index as a last resort so a single-track repeat-all still loops.
+    private func nextAdvanceIndex() -> Int? {
+        guard !queue.isEmpty else { return nil }
         switch repeatMode {
         case .one:
-            shouldAutoPlayAfterAdvance = true
-            resetUIProgressForTrackHandoff()
-            scheduleAdvance()
+            return currentIndex
         case .all:
-            shouldAutoPlayAfterAdvance = true
-            currentIndex = (currentIndex + 1) % max(queue.count, 1)
-            resetUIProgressForTrackHandoff()
-            scheduleAdvance()
-        case .off:
-            if currentIndex + 1 < queue.count {
-                shouldAutoPlayAfterAdvance = true
-                currentIndex += 1
-                resetUIProgressForTrackHandoff()
-                scheduleAdvance()
-            } else {
-                isPlaying = false
-                // AVQueuePlayer advanced past the final item, so `currentItem` is
-                // now nil and the single-player "seek to 0 and replay" path can't
-                // work. Drop to a clean pending-restore so a later play tap rebuilds
-                // the last track from the start (matching the prior behavior).
-                teardownPlayer()
-                refreshNowPlaying()
+            var step = 1
+            while step <= queue.count {
+                let idx = (currentIndex + step) % queue.count
+                if !isExcludedFromAutoAdvance(idx) { return idx }
+                step += 1
             }
+            return nil
+        case .off:
+            var idx = currentIndex + 1
+            while idx < queue.count {
+                if !isExcludedFromAutoAdvance(idx) { return idx }
+                idx += 1
+            }
+            return nil
         }
+    }
+
+    private func isExcludedFromAutoAdvance(_ index: Int) -> Bool {
+        guard let exclude = autoAdvanceExclusion, queue.indices.contains(index) else { return false }
+        return exclude(queue[index])
     }
 
     /// Adopt the just-auto-advanced item as the current track without tearing the
@@ -3021,6 +3228,17 @@ final class PlaybackEngine: NSObject, ObservableObject {
             // non-zero rate makes the lock screen advance a phantom playhead.
             now[MPNowPlayingInfoPropertyPlaybackRate] = (isPlaying && !isBuffering) ? playbackRate : 0.0
             now[MPNowPlayingInfoPropertyMediaType] = MPNowPlayingInfoMediaType.audio.rawValue
+            // Queue position so CarPlay / car head units show "N/M" instead of "1/1".
+            // The underlying AVQueuePlayer is fed one item at a time, so the system
+            // can't derive this — we report the engine's own queue cursor. In shuffle
+            // the queue array is already shuffled, so currentIndex is the shown spot.
+            if queue.indices.contains(currentIndex) {
+                now[MPNowPlayingInfoPropertyPlaybackQueueIndex] = currentIndex
+                now[MPNowPlayingInfoPropertyPlaybackQueueCount] = queue.count
+            } else {
+                now.removeValue(forKey: MPNowPlayingInfoPropertyPlaybackQueueIndex)
+                now.removeValue(forKey: MPNowPlayingInfoPropertyPlaybackQueueCount)
+            }
             if let artwork {
                 now[MPMediaItemPropertyArtwork] = artwork
             } else {

@@ -8,9 +8,14 @@ import SwiftUI
 /// successful commit naturally shrinks the list; when it goes empty the view dismisses
 /// itself back to the playlist detail.
 ///
-/// Two delete paths, both confirmation-gated:
-/// - Per-row swipe → alert → `commitKillModeRemovals` for that one row.
-/// - Top-right "Remove All" → confirmation dialog → commit every currently visible row.
+/// Two delete paths, both confirmation-gated, and both routed through
+/// `AppModel.runKillModeRemoval` so progress, partial-commit persistence and the completion
+/// summary behave identically whether one song goes or a hundred and fifty:
+/// - Per-row swipe → alert → run for that one row.
+/// - Top-right "Remove All" → confirmation dialog → run over every currently visible row.
+///
+/// The screen deliberately does NOT dismiss itself when the removal list empties — it also
+/// owns "Clear Listen History", which is the only control that resets the listened set.
 struct PlaylistKillListView: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -20,6 +25,9 @@ struct PlaylistKillListView: View {
 
     @State private var pendingRowDelete: PlaylistRowItem?
     @State private var showRemoveAllConfirm = false
+    /// Copied out of `AppModel` when a run finishes so the alert keeps its content while it
+    /// animates away — same pattern as `pendingRowDelete`.
+    @State private var finishedSummary: AppModel.KillModeRemovalSummary?
 
     private var visibleRows: [PlaylistRowItem] {
         let order = app.killModePendingOrderedTrackIds(playlistId: playlistId)
@@ -30,11 +38,35 @@ struct PlaylistKillListView: View {
         return order.flatMap { rowsByTrackId[$0] ?? [] }
     }
 
+    /// Authoritative playlist song total for the summary percentages — the playlist's
+    /// own `songCount` when known, else the snapshot row count.
+    private var totalSongCount: Int {
+        app.libraryPlaylists.first(where: { $0.id == playlistId })?.songCount ?? rows.count
+    }
+
+    /// The live run, but only if it belongs to this playlist.
+    private var activeProgress: AppModel.KillModeRemovalProgress? {
+        guard let progress = app.killModeRemovalProgress, progress.playlistId == playlistId else { return nil }
+        return progress
+    }
+
+    private var isRemoving: Bool { activeProgress != nil }
+
     var body: some View {
         List {
+            summaryHeader
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                .listRowSeparator(.hidden)
+            if visibleRows.isEmpty {
+                emptyRemovalState
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            }
             ForEach(visibleRows) { row in
                 rowView(row)
                     .listRowBackground(MusicDesign.background)
+                    .disabled(isRemoving)
                     .swipeActions(edge: .leading, allowsFullSwipe: true) {
                         Button {
                             app.restoreFromKillList(playlistId: playlistId, trackId: row.track.id)
@@ -56,7 +88,7 @@ struct PlaylistKillListView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(MusicDesign.background)
-        .navigationTitle("Songs to Remove")
+        .navigationTitle("Kill Mode")
         .musicNavigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: MusicToolbar.trailingItemPlacement) {
@@ -65,10 +97,52 @@ struct PlaylistKillListView: View {
                 } label: {
                     Text("Remove All")
                 }
-                .disabled(visibleRows.isEmpty)
+                .disabled(visibleRows.isEmpty || isRemoving)
             }
         }
         .musicNavigationChrome()
+        .overlay { removalProgressOverlay }
+        .animation(.easeInOut(duration: 0.2), value: isRemoving)
+        .onChange(of: app.killModeRemovalSummary) { _, summary in
+            guard let summary, summary.playlistId == playlistId else { return }
+            app.killModeRemovalSummary = nil
+            // A single clean removal is self-evident — a toast is enough. Anything bigger,
+            // or anything that did not fully succeed, gets the counts spelled out.
+            if summary.isComplete, summary.removed <= 1, summary.alreadyGone == 0 {
+                app.showTransientToast(summary.removed == 1 ? "Removed 1 song" : "Nothing to remove")
+            } else {
+                finishedSummary = summary
+            }
+        }
+        // This view already carries the row-delete `.alert` and the Remove All
+        // `.confirmationDialog`. Stacking a third presentation modifier on the SAME view is
+        // unreliable in SwiftUI — they compete and one silently never presents — so the
+        // completion summary hangs off its own empty background view, which keeps the three
+        // independent without changing what the user sees.
+        .background {
+            Color.clear
+                .alert(
+                    finishedSummary?.isComplete == false ? "Removal Incomplete" : "Removal Finished",
+                    isPresented: Binding(
+                        get: { finishedSummary != nil },
+                        set: { if !$0 { finishedSummary = nil } }
+                    ),
+                    presenting: finishedSummary
+                ) { summary in
+                    if summary.failed > 0 {
+                        // Failed songs kept their pending marks, so they are still listed —
+                        // continuing re-walks only those, never what already succeeded.
+                        Button("Continue") {
+                            let targets = visibleRows
+                            finishedSummary = nil
+                            Task { await commit(rows: targets) }
+                        }
+                    }
+                    Button("Done", role: .cancel) { finishedSummary = nil }
+                } message: { summary in
+                    Text(summaryMessage(summary))
+                }
+        }
         .alert(
             "Remove from Playlist?",
             isPresented: Binding(
@@ -97,9 +171,143 @@ struct PlaylistKillListView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
-        .onChange(of: visibleRows.isEmpty) { _, isEmpty in
-            if isEmpty { dismiss() }
+    }
+
+    /// Progress summary: % of the playlist listened (kept + removed) and % marked for
+    /// removal, with a two-segment bar (green = kept, red = to-remove) and the
+    /// "Clear listen history" reset.
+    private var summaryHeader: some View {
+        let total = max(totalSongCount, 1)
+        let passed = app.killModePassedTrackIds(playlistId: playlistId).count
+        let removed = app.killModePendingTrackIds(playlistId: playlistId).count
+        let listened = min(passed + removed, total)
+        let pctListened = Int((Double(listened) / Double(total) * 100).rounded())
+        let pctRemoved = Int((Double(removed) / Double(total) * 100).rounded())
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(pctListened)% listened")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text("\(listened) of \(total) · \(removed) to remove")
+                        .font(.caption)
+                        .foregroundStyle(MusicDesign.secondaryLabel)
+                }
+                Spacer(minLength: 8)
+                Text("\(pctRemoved)% removed")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.red)
+            }
+            GeometryReader { geo in
+                let w = geo.size.width
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.12))
+                    HStack(spacing: 0) {
+                        Rectangle().fill(Color.green)
+                            .frame(width: w * (Double(passed) / Double(total)))
+                        Rectangle().fill(Color.red)
+                            .frame(width: w * (Double(removed) / Double(total)))
+                    }
+                    .clipShape(Capsule())
+                }
+            }
+            .frame(height: 6)
+            Button {
+                app.clearKillModeListenHistory(playlistId: playlistId)
+                app.showTransientToast("Listen history cleared")
+            } label: {
+                Label("Clear Listen History", systemImage: "arrow.counterclockwise")
+                    .font(.footnote.weight(.medium))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(MusicDesign.accent)
+            .disabled(passed == 0)
+            .opacity(passed == 0 ? 0.4 : 1)
+            .padding(.top, 2)
         }
+        .padding(.vertical, 4)
+    }
+
+    /// Shown when nothing is queued for removal. This screen is still worth reaching in
+    /// that state — it owns "Clear Listen History" — so it must read as "you are done here",
+    /// not as a broken or empty screen.
+    private var emptyRemovalState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "checkmark.circle")
+                .font(.system(size: 34, weight: .light))
+                .foregroundStyle(MusicDesign.secondaryLabel)
+            Text("Nothing queued for removal")
+                .font(.headline)
+                .foregroundStyle(.primary)
+            Text("Skip a song while this playlist is playing to queue it here.")
+                .font(.footnote)
+                .foregroundStyle(MusicDesign.secondaryLabel)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 28)
+        .padding(.horizontal, 24)
+    }
+
+    /// Determinate, never a bare spinner: the whole point is being able to tell working
+    /// from stalled from done. Skipped for a single-song swipe, where it would just flash.
+    @ViewBuilder
+    private var removalProgressOverlay: some View {
+        if let progress = activeProgress, progress.total > 1 {
+            ZStack {
+                Color.black.opacity(0.35)
+                    .ignoresSafeArea()
+                VStack(spacing: 12) {
+                    Text(progressTitle(progress))
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    ProgressView(value: progress.fraction)
+                        .progressViewStyle(.linear)
+                        .tint(.red)
+                    Text(progressDetail(progress))
+                        .font(.footnote)
+                        .monospacedDigit()
+                        .foregroundStyle(MusicDesign.secondaryLabel)
+                }
+                .padding(20)
+                .frame(maxWidth: 280)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+            .transition(.opacity)
+        }
+    }
+
+    private func progressTitle(_ progress: AppModel.KillModeRemovalProgress) -> String {
+        switch progress.phase {
+        case .preparing: return "Checking playlist\u{2026}"
+        case .removing: return "Removing songs"
+        case .refreshing: return "Finishing up\u{2026}"
+        }
+    }
+
+    private func progressDetail(_ progress: AppModel.KillModeRemovalProgress) -> String {
+        switch progress.phase {
+        case .preparing:
+            return "Preparing \(progress.total) song\(progress.total == 1 ? "" : "s")"
+        case .removing:
+            return "Removing \(min(progress.completed + 1, progress.total)) of \(progress.total)"
+        case .refreshing:
+            return "Removed \(progress.completed) of \(progress.total)"
+        }
+    }
+
+    private func summaryMessage(_ summary: AppModel.KillModeRemovalSummary) -> String {
+        var parts: [String] = ["Removed \(summary.removed) song\(summary.removed == 1 ? "" : "s")."]
+        if summary.alreadyGone > 0 {
+            parts.append("\(summary.alreadyGone) \(summary.alreadyGone == 1 ? "was" : "were") already gone from this playlist.")
+        }
+        if summary.failed > 0 {
+            parts.append("\(summary.failed) could not be removed and \(summary.failed == 1 ? "is" : "are") still listed.")
+        }
+        if let message = summary.errorMessage, !message.isEmpty {
+            parts.append(message)
+        }
+        return parts.joined(separator: " ")
     }
 
     private func rowView(_ row: PlaylistRowItem) -> some View {
@@ -122,14 +330,11 @@ struct PlaylistKillListView: View {
         .contentShape(Rectangle())
     }
 
+    /// Every delete path goes through the same orchestrated run — see `runKillModeRemoval`
+    /// for the progress / background-assertion / resume behaviour. Reporting is handled by
+    /// the `killModeRemovalSummary` observer above, not here.
     private func commit(rows: [PlaylistRowItem]) async {
         guard !rows.isEmpty else { return }
-        let count = rows.count
-        do {
-            try await app.commitKillModeRemovals(playlistId: playlistId, rows: rows)
-            app.showTransientToast("Removed \(count) song\(count == 1 ? "" : "s")")
-        } catch {
-            app.errorMessage = error.localizedDescription
-        }
+        await app.runKillModeRemoval(playlistId: playlistId, rows: rows)
     }
 }

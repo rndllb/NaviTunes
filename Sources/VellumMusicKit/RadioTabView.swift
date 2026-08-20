@@ -13,7 +13,7 @@ struct RadioTabView: View {
     @State private var startingStationID: String?
     @State private var loadGeneration: UInt = 0
 
-    private let floatingHeaderCollapseSlack: CGFloat = 72
+    private let floatingHeaderCollapseSlack = MusicTabFloatingHeaderScrollModifier.defaultSlack
     private let featuredColumns = [
         GridItem(.flexible(), spacing: 12),
         GridItem(.flexible(), spacing: 12),
