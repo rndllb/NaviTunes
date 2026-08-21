@@ -58,6 +58,19 @@ From reading the reference video at 20fps. That document is wrong on both counts
   *pinned* cells all animate correctly with no per-call-site numbers. The animator measures
   whatever view carries `coverZoomCellAnchor` and derives scale from `cellWidth / heroWidth`.
 - Library → Playlists list is untouched and still slides.
+- **Every cover surface is on the custom transition** (2026-08-21 15:13 build): Home shelves +
+  Top Picks, Search (results, recents, song rows), New tab (hero carousel, trending rows, album
+  grids/shelves), artist discography, Genres/Artists album grids, Library album lists,
+  album-detail related shelves, Favorite Songs. Mechanism: `coverZoomSource(style: .custom)`
+  publishes a `CoverZoomCellAnchorRequest` into the environment and `AlbumArtworkView` registers
+  itself as the origin rect — a call site is a one-word change. Covers that are *not*
+  `AlbumArtworkView`s are anchored by hand (`ArtistDiscographyCard`, New-tab
+  `heroCarouselArtworkCard`). `cellCornerRadius:` overrides the artwork's radius when the visible
+  rounding belongs to a clipping container (Home Top Picks). Hero anchors live on all three
+  destinations; the hero-rect cache is keyed by `CoverZoomRegistry.heroKind(for:)`
+  (`detail` / `browse` / `favorites`), with `detail` as the fallback for an unmeasured kind.
+  Known rough edge: the New-tab hero carousel cover is non-square (card width × image height),
+  so its p = 0 crop is a square of the card's width — judge on device.
 - Tapping during an open cuts the push short so the back button responds immediately, and a back
   tap UIKit swallowed is re-issued. A tap during a *close* now settles that close the same way,
   which is what stops two transitions stacking (§4.2).
