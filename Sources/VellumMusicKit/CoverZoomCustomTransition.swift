@@ -93,6 +93,18 @@ enum CoverZoomTuning {
     /// `UIViewPropertyAnimator` delay factor so an interactive swipe scrubs it too.
     static let dissolveDelayFactor: CGFloat = 0.55
 
+    /// How much of its size the page gives up per screen-width of drag while the finger is down.
+    /// 0.55 ⇒ a full-width drag leaves the page at 45% size. The position is the finger's; only
+    /// the size is a function of distance.
+    static let dragShrinkPerWidth: CGFloat = 0.55
+    /// Smallest the page may get under the finger, as a fraction of full size.
+    static let dragMinScale: CGFloat = 0.35
+    /// Fly-home after the finger lifts on a committed swipe: from wherever the card is into the
+    /// row. Separate from `popDuration` so the two can be tuned apart.
+    static let dragReleaseDuration: TimeInterval = 0.50
+    /// Return to full screen after a cancelled swipe.
+    static let dragCancelDuration: TimeInterval = 0.35
+
     /// Fraction of the width past which releasing the edge swipe commits the pop.
     static let popCommitFraction: CGFloat = 0.33
     /// Rightward velocity (pt/s) that commits regardless of distance.
@@ -858,6 +870,7 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
                 }
                 // A finger holding a swipe still is not a stall: a scrubbed animator is
                 // `.active` but not running. Keep waiting — within reason — while that is so.
+                if round < 6, isDragging { continue }
                 if round < 3, session.context.isInteractive,
                    let animator = propertyAnimator, animator.state == .active, !animator.isRunning {
                     continue
@@ -1057,10 +1070,116 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
         return !session.didComplete
     }
 
-    /// True while this animator's transition is still running.
+    /// True while this animator's transition is still running — including while a finger is
+    /// holding the card mid-drag, when there is no property animator at all.
     var isRunning: Bool {
+        if isDragging { return true }
         guard let propertyAnimator else { return false }
         return propertyAnimator.state == .active || propertyAnimator.isRunning
+    }
+
+    // MARK: Finger-driven drag
+
+    /// True between `beginDrag` and the release animation starting.
+    private(set) var isDragging = false
+    /// True when *we* own the interactive context (our edge pan), so `finish` must tell UIKit
+    /// the interaction finished or cancelled before completing. A percent-driven controller
+    /// does that itself.
+    private var ownsInteractiveContext = false
+    /// The card's geometry at the moment of release, so the fly-home can start from it.
+    private var dragScale: CGFloat = 1
+    private var dragFrame: CGRect = .zero
+
+    /// Puts the page under the finger. Called once when the swipe's pop is set up.
+    ///
+    /// Two phases, split at finger-up. While the finger is down the page is a plain uniform
+    /// shrink that follows the finger — the point that was under the fingertip stays under it,
+    /// in any direction — and its size is a function of how far the finger has travelled. Only
+    /// when the finger lifts does the card fly home into the row (`flyHome`) or spring back to
+    /// full screen (`flyBack`). Nothing is percent-driven: the geometry is written directly on
+    /// every pan update, so it cannot drift onto the cell-bound path.
+    func beginDrag(context: UIViewControllerContextTransitioning) {
+        guard let session = prepare(context: context) else {
+            // Geometry unavailable; `prepare` already ran a cross-fade that will complete.
+            return
+        }
+        isDragging = true
+        ownsInteractiveContext = true
+        applyState(progress: 1)
+        session.clip.alpha = 1
+        dragScale = 1
+        dragFrame = session.full
+        startBarItemFadeIn(session)
+        scheduleCompletionWatchdog(nominal: transitionDuration(using: context))
+    }
+
+    /// Places the page for the current finger position. `start` is where the finger was when
+    /// the swipe began, `finger` where it is now — both in container coordinates.
+    func updateDrag(start: CGPoint, finger: CGPoint) {
+        guard isDragging, let session else { return }
+        let full = session.full
+        let width = max(full.width, 1)
+        let distance = hypot(finger.x - start.x, finger.y - start.y)
+        let travelled = min(1, distance / width)
+        let scale = max(CoverZoomTuning.dragMinScale, 1 - CoverZoomTuning.dragShrinkPerWidth * travelled)
+
+        // Anchor on the fingertip: the page point under the finger at touch-down, (start − full
+        // origin), stays under the finger after scaling.
+        let origin = CGPoint(
+            x: finger.x - (start.x - full.minX) * scale,
+            y: finger.y - (start.y - full.minY) * scale
+        )
+        let frame = CGRect(x: origin.x, y: origin.y, width: full.width * scale, height: full.height * scale)
+
+        session.clip.frame = frame
+        session.clip.layer.cornerRadius = max(session.cellCornerRadius, CoverZoomTuning.screenCornerRadius * scale)
+        session.detail.transform = CGAffineTransform(scaleX: scale, y: scale)
+        session.detail.center = CGPoint(x: frame.width / 2, y: frame.height / 2)
+        dragScale = scale
+        dragFrame = frame
+        // Keep UIKit's own bookkeeping (navigation bar, coordinator observers) roughly in step.
+        session.context.updateInteractiveTransition(travelled)
+    }
+
+    /// Finger lifted on a committed swipe: from wherever the card is, into the row.
+    func flyHome() {
+        guard isDragging, let session else { return }
+        isDragging = false
+        let animator = UIViewPropertyAnimator(
+            duration: CoverZoomTuning.dragReleaseDuration,
+            timingParameters: CoverZoomTuning.easeOutQuint
+        )
+        animator.addAnimations { [weak self] in
+            self?.applyState(progress: 0)
+        }
+        if session.dissolvesOntoCell {
+            animator.addAnimations({ session.clip.alpha = 0 }, delayFactor: CoverZoomTuning.dissolveDelayFactor)
+        }
+        animator.addCompletion { [weak self] _ in
+            self?.finish(committed: true)
+        }
+        propertyAnimator = animator
+        startRetargetWatch(session)
+        animator.startAnimation()
+    }
+
+    /// Finger lifted early: back to full screen, page stays.
+    func flyBack() {
+        guard isDragging, let session else { return }
+        isDragging = false
+        let animator = UIViewPropertyAnimator(
+            duration: CoverZoomTuning.dragCancelDuration,
+            timingParameters: CoverZoomTuning.easeOutQuint
+        )
+        animator.addAnimations { [weak self] in
+            self?.applyState(progress: 1)
+            session.clip.alpha = 1
+        }
+        animator.addCompletion { [weak self] _ in
+            self?.finish(committed: false)
+        }
+        propertyAnimator = animator
+        animator.startAnimation()
     }
 
     /// Jumps the animation to its end and completes the transition now.
@@ -1072,6 +1191,7 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
     /// action fires, so by the time the tap is acted on the stack is settled and the pop runs
     /// immediately.
     func completeImmediately() {
+        isDragging = false
         if let propertyAnimator, propertyAnimator.state == .active {
             propertyAnimator.stopAnimation(false)
             propertyAnimator.finishAnimation(at: .end)
@@ -1115,6 +1235,16 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
         session.clip.removeFromSuperview()
         CoverZoomFlight.shared.endFlight(id: id)
 
+        // When our own edge pan owns the interaction, UIKit has not been told how it ended —
+        // a percent-driven controller does this itself; we have to.
+        if ownsInteractiveContext {
+            ownsInteractiveContext = false
+            if committed {
+                session.context.finishInteractiveTransition()
+            } else {
+                session.context.cancelInteractiveTransition()
+            }
+        }
         if committed {
             session.context.completeTransition(!session.context.transitionWasCancelled)
         } else {
@@ -1183,6 +1313,48 @@ final class CoverZoomInteractivePop: UIPercentDrivenInteractiveTransition {
 /// button simply does not respond. Searching for the animator that made it is not enough: once
 /// UIKit releases the animator, nothing holds a reference to it and the view is orphaned.
 final class CoverZoomClipView: UIView {}
+
+/// The interaction controller for our own edge swipe. Not percent-driven on purpose: UIKit's
+/// percent scrubbing walks the fly-home path in step with the drag, which is exactly the "it
+/// slides along a line instead of following my finger" complaint. This object hands the context
+/// to the animator and then the pan drives the geometry directly (`updateDrag`); on release the
+/// animator runs its own fly-home or fly-back and completes the transition.
+@MainActor
+final class CoverZoomDragInteraction: NSObject, UIViewControllerInteractiveTransitioning {
+    private weak var animator: CoverZoomAnimator?
+    /// Finger position when the swipe began, in the navigation view's coordinates.
+    private let start: CGPoint
+    private var hasStarted = false
+    private var pendingFinger: CGPoint?
+
+    init(animator: CoverZoomAnimator, start: CGPoint) {
+        self.animator = animator
+        self.start = start
+    }
+
+    nonisolated var wantsInteractiveStart: Bool { true }
+
+    nonisolated func startInteractiveTransition(_ transitionContext: UIViewControllerContextTransitioning) {
+        MainActor.assumeIsolated {
+            hasStarted = true
+            animator?.beginDrag(context: transitionContext)
+            if let pendingFinger { update(finger: pendingFinger) }
+        }
+    }
+
+    func update(finger: CGPoint) {
+        guard hasStarted else { pendingFinger = finger; return }
+        animator?.updateDrag(start: start, finger: finger)
+    }
+
+    func commit() {
+        animator?.flyHome()
+    }
+
+    func cancel() {
+        animator?.flyBack()
+    }
+}
 
 /// A recognizer that only ever watches. It reports the first touch of every sequence and then
 /// immediately fails, so it never competes with, delays, or starves another recognizer.
@@ -1315,6 +1487,11 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
     private weak var navigationController: UINavigationController?
 
     private var interactionController: CoverZoomInteractivePop?
+    /// The finger-driven interaction for our own edge swipe; nil outside one.
+    private var dragInteraction: CoverZoomDragInteraction?
+    /// Where the swipe's finger was when it began, in the navigation view's coordinates. Read
+    /// by `interactionControllerFor`, which runs synchronously inside `popViewController`.
+    private var edgePanStart: CGPoint = .zero
     /// True only in the fallback case where UIKit vended-but-did-not-drive the interaction
     /// controller and ``handleSystemPan(_:)`` had to scrub it by hand.
     private var isDrivingInteractionManually = false
@@ -1593,33 +1770,37 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
             // Raising the flag first: `popViewController` asks for the animator and the
             // interaction controller synchronously, and `interactionControllerFor` reads it.
             edgePanPopInFlight = true
-            isDrivingInteractionManually = true
+            // `.began` fires once the pan has cleared its threshold; the finger's true origin is
+            // the current location minus what it has already travelled.
+            let location = pan.location(in: view)
+            edgePanStart = CGPoint(x: location.x - translation, y: location.y - pan.translation(in: view).y)
             navigationController.popViewController(animated: true)
-            if interactionController == nil {
+            if dragInteraction == nil {
 #if DEBUG
                 DebugUIRemote.log("COVERZOOM edgePan popped but no interaction controller was vended")
 #endif
                 edgePanPopInFlight = false
-                isDrivingInteractionManually = false
+            } else {
+                dragInteraction?.update(finger: location)
             }
         case .changed:
-            guard edgePanPopInFlight, let controller = interactionController else { return }
-            controller.update(fraction)
+            guard edgePanPopInFlight, let drag = dragInteraction else { return }
+            drag.update(finger: pan.location(in: view))
         case .ended:
             guard edgePanPopInFlight else { return }
-            defer { edgePanPopInFlight = false; interactionController = nil; isDrivingInteractionManually = false }
-            guard let controller = interactionController else { return }
+            defer { edgePanPopInFlight = false; dragInteraction = nil }
+            guard let drag = dragInteraction else { return }
             let commits = fraction > CoverZoomTuning.popCommitFraction
                 || velocity > CoverZoomTuning.popCommitVelocity
             if commits {
-                controller.finish(velocity: velocity)
+                drag.commit()
             } else {
-                controller.abort()
+                drag.cancel()
             }
         case .cancelled, .failed:
             guard edgePanPopInFlight else { return }
-            defer { edgePanPopInFlight = false; interactionController = nil; isDrivingInteractionManually = false }
-            interactionController?.abort()
+            defer { edgePanPopInFlight = false; dragInteraction = nil }
+            dragInteraction?.cancel()
         default:
             break
         }
@@ -2097,14 +2278,20 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
             // Translation is deliberately not consulted: at `shouldBegin` time it is zero, and
             // testing for it is what used to make this return `nil` — which UIKit reads as "no
             // interactive pop available" and answers by vetoing the gesture outright.
-            let fingerDown = edgePanPopInFlight || observedPans.contains { $0.numberOfTouches > 0 }
+            // Our own edge swipe: a finger-driven interaction, not a percent-driven one. The
+            // page follows the finger while it is down and only flies home on release.
+            if edgePanPopInFlight {
+                let drag = CoverZoomDragInteraction(animator: animator, start: edgePanStart)
+                dragInteraction = drag
+                interactionController = nil
+                isDrivingInteractionManually = false
+                return drag
+            }
+            let fingerDown = observedPans.contains { $0.numberOfTouches > 0 }
             controller.wantsInteractiveStart = fingerDown
             interactionController = controller
-            // Our own edge pan always drives by hand; the built-in gesture is given the chance
-            // to drive first and only taken over if it leaves the controller parked (see
-            // `handleSystemPan`).
-            isDrivingInteractionManually = edgePanPopInFlight
-            if fingerDown && !edgePanPopInFlight { scheduleInteractionWatchdog(for: controller) }
+            isDrivingInteractionManually = false
+            if fingerDown { scheduleInteractionWatchdog(for: controller) }
             return controller
         }
         if let original,
