@@ -615,9 +615,6 @@ struct AlbumArtworkView: View {
     var showsSubtleBorder: Bool = true
 
     @Environment(\.colorScheme) private var colorScheme
-    /// Set by an enclosing `coverZoomSource(id:style: .custom)` cell — this artwork is then the
-    /// transition's origin rect, and the one copy hidden while the card is in flight.
-    @Environment(\.coverZoomCellAnchorRequest) private var coverZoomAnchorRequest
     @State private var decoded: CGImage?
     @State private var loadFailed = false
     @State private var loadedArtworkID: String?
@@ -648,7 +645,6 @@ struct AlbumArtworkView: View {
                     )
                 }
             }
-            .coverZoomCellAnchorIfRequested(coverZoomAnchorRequest, ownCornerRadius: cornerRadius)
     }
 
     @ViewBuilder

@@ -99,7 +99,7 @@ struct NewTabChartListView: View {
                 }
             } label: {
                 rowMainContent(title: track.name, artist: track.artistName, artworkURL: track.imageURL)
-                    .coverZoomSource(id: coverZoomId(for: track, rowState: rowState), style: .custom)
+                    .coverZoomSource(id: coverZoomId(for: track, rowState: rowState))
             }
             .buttonStyle(.plain)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -219,7 +219,7 @@ struct NewTabChartAlbumsGridView: View {
                     album: album,
                     onArtistTap: { navigateArtist = ArtistNameNavigation(id: album.artistName) },
                 )
-                    .coverZoomSource(id: lib.id, style: .custom)
+                    .coverZoomSource(id: lib.id)
             }
             .buttonStyle(.plain)
         } else {
@@ -237,7 +237,7 @@ struct NewTabChartAlbumsGridView: View {
                     album: album,
                     onArtistTap: { navigateArtist = ArtistNameNavigation(id: album.artistName) },
                 )
-                    .coverZoomSource(id: source.coverZoomId, style: .custom)
+                    .coverZoomSource(id: source.coverZoomId)
             }
             .buttonStyle(.plain)
         }
