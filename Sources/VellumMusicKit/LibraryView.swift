@@ -264,8 +264,11 @@ struct LibraryView: View {
                         NavigationLink {
                             pinnedItemDestination(item)
                         } label: {
-                            pinnedItemCell(item)
-                                .coverZoomSource(id: pinnedItemZoomId(item))
+                            pinnedItemCell(item, zoomId: pinnedItemZoomId(item))
+                                .coverZoomSource(
+                                    id: pinnedItemZoomId(item),
+                                    style: pinnedUsesCustomZoom(item) ? .custom : .system
+                                )
                         }
                         .buttonStyle(.plain)
                         .libraryPinnedItemContextMenu(item, pinnedStorage: $pinnedStorage)
@@ -417,19 +420,26 @@ struct LibraryView: View {
     private func recentItemLink(_ item: RecentLibraryItem) -> some View {
         switch item {
         case .album(let album):
-            NavigationLink { ServerPlaylistDetailView(album: album, librarySource: true) } label: { recentCell(item).coverZoomSource(id: album.id) }
+            NavigationLink { ServerPlaylistDetailView(album: album, librarySource: true) } label: {
+                recentCell(item, zoomId: album.id).coverZoomSource(id: album.id, style: .custom)
+            }
                 .buttonStyle(.plain)
                 .libraryAlbumContextMenu(album)
         case .playlist(let playlist):
-            NavigationLink { ServerPlaylistDetailView(playlist: playlist) } label: { recentCell(item).coverZoomSource(id: playlist.id) }
+            NavigationLink { ServerPlaylistDetailView(playlist: playlist) } label: {
+                recentCell(item, zoomId: playlist.id).coverZoomSource(id: playlist.id, style: .custom)
+            }
                 .buttonStyle(.plain)
                 .libraryPlaylistContextMenu(playlist)
         }
     }
 
-    private func recentCell(_ item: RecentLibraryItem) -> some View {
+    private func recentCell(_ item: RecentLibraryItem, zoomId: String) -> some View {
         LibraryHubGridCell(title: item.title, subtitle: item.subtitle) {
+            // Same anchor as the 52pt playlist rows, on a much larger square grid cell — the
+            // animator derives everything from the measured rect, so no size is baked in.
             AlbumArtworkView(url: resolvedRecentArtworkURL(for: item), cornerRadius: MusicDesign.gridAlbumCorner)
+                .coverZoomCellAnchor(id: zoomId, cornerRadius: MusicDesign.gridAlbumCorner)
         }
     }
 
@@ -472,10 +482,19 @@ struct LibraryView: View {
         }
     }
 
-    private func pinnedItemCell(_ item: LibraryPinnedItem) -> some View {
+    private func pinnedItemCell(_ item: LibraryPinnedItem, zoomId: String) -> some View {
         LibraryHubGridCell(title: item.title, style: .pinned) {
             pinnedItemArtwork(item)
+                .coverZoomCellAnchor(id: zoomId, cornerRadius: MusicDesign.gridAlbumCorner)
         }
+    }
+
+    /// Favorite Songs pushes `FavoritePlaylistView`, whose hero is laid out differently from
+    /// `ServerPlaylistDetailView`. The custom animator caches one hero rect globally, so let
+    /// that one keep the stock zoom rather than aim at the wrong destination.
+    private func pinnedUsesCustomZoom(_ item: LibraryPinnedItem) -> Bool {
+        if case .playlist(let playlist) = item, playlist.id == "__favorite_songs__" { return false }
+        return true
     }
 
     @ViewBuilder
