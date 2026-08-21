@@ -400,6 +400,101 @@ without changing what the user sees, and the root pushes plenty of screens that 
 Artists, Settings…) — naming it would turn every one of their bare chevrons into "‹ Library".
 Fixing the last blank row means auditing those screens, not changing this one.
 
+### 4.6 Rolling the custom zoom out beyond Library — **open, attempted and reverted**
+
+**Status as of 2026-08-21 15:20.** Only the three Library surfaces (Recently Added grid, pinned
+cells, playlists list) use the custom transition. Every other cover — Home, Search, New tab,
+artist discography, Genres/Artists grids, Library album lists, album-detail related shelves,
+Favorite Songs — still opens with SwiftUI's default push ("primitive") and has **no** working
+swipe-to-dismiss there, because the edge pan only begins when our delegate pushed the detail.
+
+An attempt to widen it was made, tested on device, failed, and was **reverted** so the branch
+is back to the Library-only state. The attempt is preserved in history for reading, not reuse:
+
+- `507ed46` — the rollout itself (12 files). `b9b2ccc` — its notes. `db6cff5` — a follow-up fix
+  attempt. Reverted by `4ce323c`, `dd7c66f`, `a3a3732`. `git show 507ed46` to see the approach.
+
+**What the rollout did (the plumbing is sound and can be reused).**
+
+- `coverZoomSource(id:style: .custom, cellCornerRadius:)` published a
+  `CoverZoomCellAnchorRequest` into the environment, and `AlbumArtworkView` applied
+  `coverZoomCellAnchor` to itself when it saw one — so every call site was a one-word change
+  (`style: .custom`) and the artwork's own corner radius came for free. Covers that are not
+  `AlbumArtworkView`s (`ArtistDiscographyCard`, New-tab `heroCarouselArtworkCard`) were anchored
+  by hand. `cellCornerRadius:` overrode the radius for Home Top Picks, whose cover is
+  square-cornered under a rounded clip.
+- Hero anchors were added to `BrowseAlbumDetailView` and `FavoritePlaylistView` (both already
+  share the detail's `min(max(w − 52, 260), 320)` / radius-14 geometry), and the hero-rect cache
+  in `CoverZoomRegistry` was keyed by `heroKind(for:)` (`detail` / `browse` / `favorites`).
+- `pinnedUsesCustomZoom` stopped excluding Favorite Songs.
+
+**What the device showed — this is the real problem, and it is not in any cell.** Device log,
+build 15:13, on Home / Search / New tab:
+
+```
+touchDown x=205 y=356 coordinator=false depth=1 hit=PlatformGroupContainer   ← tap on a cover
+PHASE willAppear …                                                          ← detail appears
+                                                                            ← NO "COVERZOOM ask op=1"
+touchDown x=44 y=70 depth=2 hit=_UIButtonBarButton                           ← back
+ask op=2 … detail=nil fromIsDetail=false
+decline op=2 active=38dnzucwIncNi2RCUPQgoz last=nil pending=nil              ← never ours
+edgeTouch x=12.3 … / edgePan shouldBegin=false                               ← swipe refused
+```
+
+On these tabs `animationControllerFor` is **never called for the push** — not declined, not
+asked. SwiftUI's own delegate runs the open as a slide. Ours then arrives with the detail
+(`CoverZoomCustomTransitionInstaller.viewWillAppear` → `install(activeID:)`), which is why
+`active=` is set on the pop but `customDetailController` / `lastPushedCustomID` are nil, the pop
+declines, and `edgePanMayBegin` is false (so the swipe does nothing). Library is the only tab
+where the push reaches us.
+
+**First hypothesis, tested, insufficient.** `CoverZoomAnchorProbe.ProbeView.didMoveToWindow`
+installs the delegate by walking the responder chain to the *first* `UIViewController` and
+taking its `navigationController`. On Home/Search/New the rows are `List` / collection cells
+hosted by their own `CellHostingView` controllers, whose `navigationController` is nil — so the
+walk returned nil and nothing was installed. `db6cff5` changed the walk to continue up the chain
+(a `UIViewController`'s `next` is its view's superview, so the chain does continue to the
+outer hosting controller). The user reported no change ("still primitive, not able to swipe to
+dismiss in non-library views"). **The log for that build was not captured** — the phone's log
+had not flushed past the 15:13 build when it was pulled — so whether the probe now found a nav
+controller (it logs `COVERZOOM cell … found no navigation controller` when it does not) is
+unknown. That is the first thing to read.
+
+**Evidence that the problem is upstream of the probe.** In the 15:13 log, after a detail on
+Home had installed our delegate on that tab's nav (nav id `41211`), the *next* cover tap on the
+same tab still produced no `ask op=1` — even though `noteTouchDown` re-asserts
+`navigationController.delegate = self` on every touch-down and our touch spy was demonstrably
+on that nav (it logged the touch). So on these tabs a push does not consult
+`navigationController.delegate` at all, or consults it on a different navigation controller
+than the one the cells (and the spy) live in. Things that differ from Library and are worth
+checking, in order:
+
+1. **Which `UINavigationController` does the push actually run on?** `COVERZOOM ask` logs
+   `nav=` / `installedNav=`; the installer logs `nav=` at `willDisappear`. Compare those to the
+   nav the cell probe installed on. Home / Search / New each have their own `NavigationStack`
+   inside the `TabView`; Search additionally drives pushes through `navigationPath.append` +
+   `navigationDestination(for:)`, New through `navigationDestination(item:)`. If SwiftUI is
+   pushing on a nav controller we never touched, the cell-side install is aiming at the wrong
+   object.
+2. **Does SwiftUI replace the delegate between touch-down and the push** on these stacks? The
+   re-assert runs at touch-down; if SwiftUI's `NavigationStackHostingController` re-takes the
+   delegate inside the same runloop turn (e.g. on the path mutation that triggers the push), ours
+   is gone before UIKit asks. A `syncGestures`-style log of `navigationController.delegate`
+   *from inside* `animationControllerFor` on SwiftUI's side is not possible, but KVO-observing
+   `delegate` on the nav controller (it is `weak`, not KVO-compliant — use a one-frame
+   `CADisplayLink` poll after touch-down) would show the swap.
+3. **`hit=PlatformGroupContainer` vs `hit=PortalGroupMarkerView`.** Library cover taps hit
+   `PortalGroupMarkerView`; Home/Search/New taps hit `PlatformGroupContainer`. Different hosting
+   structure — possibly a different hosting controller tree entirely (e.g. content rendered via
+   a portal). `pendingPushID` resolution (`rowID(containing:)`) still needs the row anchor's
+   view to be in the same window hierarchy.
+
+**What to do next session.** Build `db6cff5`'s probe change back in *alone* (it is harmless),
+add a `DebugUIRemote.log` at the top of `animationControllerFor` that prints the nav id and
+`navigationController.delegate`'s type unconditionally, tap one cover on Home, and pull the log.
+Three lines will say whether the push reached us, on which nav, and who held the delegate.
+Do not re-apply the rollout until a Home tap produces `COVERZOOM ask op=1 … run push=true`.
+
 ---
 
 ## 5. Settled geometry — do not re-derive
