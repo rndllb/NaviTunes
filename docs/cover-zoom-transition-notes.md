@@ -77,7 +77,7 @@ From reading the reference video at 20fps. That document is wrong on both counts
 > were drawn from log regions belonging to *older builds*, which is easy to do because the file is
 > append-only across installs and has no launch marker.
 
-### 4.1 Interactive edge-swipe dismiss — still unverified, no longer "measured dead"
+### 4.1 Interactive edge-swipe dismiss — fixed (verified on device); finger-follow feel installed
 
 Swiping from the left edge does not shrink the page into its row. It has variously done UIKit's
 parallax slide, or nothing at all.
@@ -214,7 +214,35 @@ the problem; a transition that never reached `completeTransition` (so `didShow` 
 That is exactly the class of bug §4.2 and the fallback-path leak turned out to be, and every exit
 path now completes.
 
-**Not yet exercised on device** — the user could not test at the time. Read the next log for
+**Verified on device, 2026-08-21 ~14:55.** The swipe pops with our animator. User: "holy shit
+you got it." 4.1 is closed as a *bug*; what follows is the feel.
+
+**Feel, second pass (build 14:59) — the page follows the finger.** With the percent-driven
+controller the drag scrubbed the fly-home path by percentage, so the card slid along the
+cell-bound line instead of tracking the hand. `CoverZoomInteractivePop` is no longer used for
+our swipe; `CoverZoomDragInteraction` is a plain `UIViewControllerInteractiveTransitioning` that
+hands the context to the animator and then the pan writes geometry directly:
+
+- **Finger down** (`CoverZoomAnimator.updateDrag`): the page is a uniform shrink anchored on
+  the fingertip — the page point under the finger at touch-down stays under it, in any
+  direction. Size is a function of distance travelled from the start point:
+  `scale = 1 − dragShrinkPerWidth × min(1, distance / width)`, floored at `dragMinScale`.
+  Corner radius is `screenCornerRadius × scale`. No crop, no aiming at the row. The context gets
+  `updateInteractiveTransition` so UIKit's bar bookkeeping stays roughly in step.
+- **Release** → `flyHome` (commit: `applyState(progress: 0)` from wherever the card is, over
+  `dragReleaseDuration`, with the dissolve if the hero was off screen; retargeting active) or
+  `flyBack` (cancel: back to `applyState(progress: 1)` over `dragCancelDuration`).
+- The animator owns the interactive context on this path (`ownsInteractiveContext`) and calls
+  `finishInteractiveTransition` / `cancelInteractiveTransition` itself before
+  `completeTransition` — a percent-driven controller does that for you; a custom one must not
+  forget it. `isRunning` is true while dragging (no property animator exists then), so the
+  touch-down "stranded transition" sweep leaves a held card alone; the completion watchdog
+  waits out a held drag for six windows.
+
+Knobs: `dragShrinkPerWidth` 0.55, `dragMinScale` 0.35, `dragReleaseDuration` 0.50,
+`dragCancelDuration` 0.35. One at a time.
+
+**How the original fix was verified — read the log for** — kept for the next regression: look for
 `COVERZOOM edgePan shouldBegin=true` followed by `edgePan state=1` (began), then `ask op=2` /
 `interactionAsk … isSwipe` and `edgePan state=2 frac=…` lines with `pct` tracking `frac`. If
 `shouldBegin` never appears, the touch is not reaching recognizers on the navigation view at all
@@ -406,7 +434,8 @@ Measured on device, container 440×956:
 
 `CoverZoomTuning`: `pushDuration` 0.50, `popDuration` 0.50, `easeOutQuint` (cubic Bézier
 `0.23, 1, 0.32, 1` — the user's pick), `screenCornerRadius` 48, `verticalLag` 1.0,
-`dissolveDelayFactor` 0.55, `popCommitFraction` 0.33, `popCommitVelocity` 600, `barFadeOut` 0.12,
+`dissolveDelayFactor` 0.55, `dragShrinkPerWidth` 0.55, `dragMinScale` 0.35, `dragReleaseDuration` 0.50,
+`dragCancelDuration` 0.35, `popCommitFraction` 0.33, `popCommitVelocity` 600, `barFadeOut` 0.12,
 `barFadeIn` 0.18.
 
 Note the durations are also the length of the "back button does nothing" window — UIKit refuses a
