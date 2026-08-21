@@ -786,7 +786,7 @@ struct LibraryPlaylistsView: View {
                         ForEach(visible) { playlist in
                             NavigationLink { destination(for: playlist) } label: {
                                 gridCell(playlist)
-                                    .coverZoomSource(id: playlist.id)
+                                    .coverZoomSource(id: playlist.id, style: .custom)
                             }
                             .buttonStyle(.plain)
                             .homeMixOrPlaylistContextMenu(playlist, app: app)
@@ -799,7 +799,7 @@ struct LibraryPlaylistsView: View {
                     ForEach(Array(visible.enumerated()), id: \.element.id) { index, playlist in
                         NavigationLink { destination(for: playlist) } label: {
                             listRow(playlist)
-                                .coverZoomSource(id: playlist.id)
+                                .coverZoomSource(id: playlist.id, style: .custom)
                         }
                         .buttonStyle(.plain)
                         .homeMixOrPlaylistContextMenu(playlist, app: app)
@@ -909,7 +909,10 @@ struct LibraryPlaylistsView: View {
 
     private func listRow(_ playlist: PlaylistSummary) -> some View {
         HStack(spacing: 14) {
+            // Origin rect for the custom cover-zoom animator, and the copy it hides while the
+            // card is in flight so only one cover is ever on screen.
             playlistArtworkFixed(playlist, size: 52, cornerRadius: 8)
+                .coverZoomCellAnchor(id: playlist.id, cornerRadius: 8)
             VStack(alignment: .leading, spacing: 1) {
                 Text(playlist.name)
                     .font(.body)
@@ -967,6 +970,7 @@ struct LibraryPlaylistsView: View {
     private func gridCell(_ playlist: PlaylistSummary) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             playlistArtworkFill(playlist, cornerRadius: MusicDesign.gridAlbumCorner)
+                .coverZoomCellAnchor(id: playlist.id, cornerRadius: MusicDesign.gridAlbumCorner)
             Text(playlist.name)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)

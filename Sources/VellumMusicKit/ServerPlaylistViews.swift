@@ -1706,6 +1706,10 @@ struct ServerPlaylistDetailView: View {
         VStack(spacing: 18) {
             heroArtwork
                 .frame(width: heroArtSide, height: heroArtSide)
+                // Destination rect for the custom cover-zoom animator. Stays visible during the
+                // flight — this is the copy that rides inside the animating card. The *cell*
+                // copy is the one that hides.
+                .coverZoomHeroAnchor(id: coverZoomId, cornerRadius: 14)
                 .shadow(color: .black.opacity(0.45), radius: 24, y: 14)
 
             VStack(spacing: 6) {
