@@ -499,8 +499,9 @@ struct LibraryView: View {
     /// `ServerPlaylistDetailView`. The custom animator caches one hero rect globally, so let
     /// that one keep the stock zoom rather than aim at the wrong destination.
     private func pinnedUsesCustomZoom(_ item: LibraryPinnedItem) -> Bool {
-        if case .playlist(let playlist) = item, playlist.id == "__favorite_songs__" { return false }
-        return true
+        // Favorite Songs used to stay on the stock zoom because the hero-rect cache was global;
+        // it is now keyed by destination kind and the Favorites hero carries its own anchor.
+        true
     }
 
     @ViewBuilder
@@ -1241,6 +1242,7 @@ struct FavoritePlaylistView: View {
     private var heroBlock: some View {
         VStack(spacing: 18) {
             FavoriteSongsHeroArtwork(side: heroArtSide, cornerRadius: 14)
+                .coverZoomHeroAnchor(id: "__favorite_songs__", cornerRadius: 14)
                 .shadow(color: .black.opacity(0.45), radius: 24, y: 14)
 
             VStack(spacing: 6) {
@@ -1742,7 +1744,7 @@ struct LibraryDownloadedView: View {
                         ServerPlaylistDetailView(album: album, librarySource: true)
                     } label: {
                         recentlyDownloadedCell(album)
-                            .coverZoomSource(id: album.id)
+                            .coverZoomSource(id: album.id, style: .custom)
                     }
                     .buttonStyle(.plain)
                     .libraryAlbumContextMenu(album)
@@ -2149,7 +2151,7 @@ struct AlbumsGridView: View {
                     ServerPlaylistDetailView(album: album, librarySource: true)
                 } label: {
                     AlbumGridCell(album: album)
-                        .coverZoomSource(id: album.id)
+                        .coverZoomSource(id: album.id, style: .custom)
                 }
                 .buttonStyle(.plain)
                 .libraryAlbumContextMenu(album)
@@ -2374,7 +2376,7 @@ struct ArtistAlbumsView: View {
                             ServerPlaylistDetailView(album: album, librarySource: true)
                         } label: {
                             AlbumGridCell(album: album)
-                                .coverZoomSource(id: album.id)
+                                .coverZoomSource(id: album.id, style: .custom)
                         }
                         .buttonStyle(.plain)
                         .libraryAlbumContextMenu(album)

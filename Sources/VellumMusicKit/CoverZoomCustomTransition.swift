@@ -13,6 +13,41 @@ enum CoverZoomStyle {
     case custom
 }
 
+/// Published into the environment by `coverZoomSource(id:style: .custom)` so the artwork inside
+/// the cell can register itself as the transition's origin without the call site having to
+/// find it. `AlbumArtworkView` reads this; a cell whose cover is something else marks it by hand
+/// with `coverZoomCellAnchor(id:cornerRadius:)`.
+struct CoverZoomCellAnchorRequest: Equatable {
+    let id: String
+    /// Overrides the artwork's own corner radius — for covers whose visible rounding belongs to
+    /// a clipping container rather than to the artwork view itself (Home Top Picks).
+    let cornerRadius: CGFloat?
+}
+
+private struct CoverZoomCellAnchorRequestKey: EnvironmentKey {
+    static let defaultValue: CoverZoomCellAnchorRequest? = nil
+}
+
+extension EnvironmentValues {
+    var coverZoomCellAnchorRequest: CoverZoomCellAnchorRequest? {
+        get { self[CoverZoomCellAnchorRequestKey.self] }
+        set { self[CoverZoomCellAnchorRequestKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// Registers this view as the cover-zoom origin when an enclosing `.custom` cell asked for
+    /// one, and otherwise does nothing. Applied inside `AlbumArtworkView`.
+    @ViewBuilder
+    func coverZoomCellAnchorIfRequested(_ request: CoverZoomCellAnchorRequest?, ownCornerRadius: CGFloat) -> some View {
+        if let request {
+            coverZoomCellAnchor(id: request.id, cornerRadius: request.cornerRadius ?? ownCornerRadius)
+        } else {
+            self
+        }
+    }
+}
+
 #if os(iOS)
 import UIKit
 
@@ -218,19 +253,37 @@ final class CoverZoomRegistry {
     /// `(60, 124, 320, 320)` on a 17 Pro — because the hero's geometry comes from the detail's
     /// layout, not its content. So the last measurement is an exact predictor, not a guess.
     /// Persisted so the first push after a cold launch is right too.
-    private var lastHeroWindowRect: CGRect?
-    private var lastHeroCornerRadius: CGFloat = 14
+    ///
+    /// Keyed by destination *kind* (`heroKind(for:)`): the playlist/album detail, the browse
+    /// album detail and Favorite Songs each have their own layout, and one global answer would
+    /// aim a first push at the wrong rect whenever the kinds differ. (Today all three happen to
+    /// share `min(max(w − 52, 260), 320)` at radius 14 — keying costs nothing and means the next
+    /// destination with a different hero does not regress every first push.)
+    private var lastHeroWindowRects: [String: CGRect] = [:]
+    private var lastHeroCornerRadii: [String: CGFloat] = [:]
 
     private static let heroRectDefaultsKey = "coverZoom.lastHeroWindowRect"
     private static let heroRadiusDefaultsKey = "coverZoom.lastHeroCornerRadius"
 
+    /// Which hero layout a cover id lands on. Derived from the id so the *source* side never
+    /// has to know the destination type.
+    static func heroKind(for id: String) -> String {
+        if id == "__favorite_songs__" { return "favorites" }
+        if id.hasPrefix("chart-browse:") { return "browse" }
+        return "detail"
+    }
+
     private init() {
-        if let stored = UserDefaults.standard.string(forKey: Self.heroRectDefaultsKey) {
-            let rect = NSCoder.cgRect(for: stored)
-            if rect.width > 1, rect.height > 1 { lastHeroWindowRect = rect }
+        for kind in ["detail", "browse", "favorites"] {
+            // The un-suffixed key is the pre-keyed cache, which only ever held the detail hero.
+            let suffix = kind == "detail" ? "" : ".\(kind)"
+            if let stored = UserDefaults.standard.string(forKey: Self.heroRectDefaultsKey + suffix) {
+                let rect = NSCoder.cgRect(for: stored)
+                if rect.width > 1, rect.height > 1 { lastHeroWindowRects[kind] = rect }
+            }
+            let radius = UserDefaults.standard.double(forKey: Self.heroRadiusDefaultsKey + suffix)
+            if radius > 0 { lastHeroCornerRadii[kind] = radius }
         }
-        let radius = UserDefaults.standard.double(forKey: Self.heroRadiusDefaultsKey)
-        if radius > 0 { lastHeroCornerRadius = radius }
     }
 
     // MARK: Style
@@ -290,7 +343,7 @@ final class CoverZoomRegistry {
     /// The hero artwork's measured rect, or `nil` if its probe does not exist yet.
     func measuredHeroRect(for id: String, in container: UIView) -> (rect: CGRect, cornerRadius: CGFloat)? {
         guard let resolved = resolve(heroes[id], in: container) else { return nil }
-        recordHero(resolved, in: container)
+        recordHero(resolved, kind: Self.heroKind(for: id), in: container)
         return resolved
     }
 
@@ -317,13 +370,16 @@ final class CoverZoomRegistry {
     /// not built its body yet. See ``lastHeroWindowRect``.
     func heroRect(for id: String, in container: UIView) -> (rect: CGRect, cornerRadius: CGFloat)? {
         if let measured = measuredHeroRect(for: id, in: container) { return measured }
-        guard let windowRect = lastHeroWindowRect else { return nil }
+        let kind = Self.heroKind(for: id)
+        // A kind never measured yet borrows the detail's answer: every hero so far shares its
+        // geometry, and a slightly-off first push beats a cross-fade.
+        guard let windowRect = lastHeroWindowRects[kind] ?? lastHeroWindowRects["detail"] else { return nil }
         let rect = container.convert(windowRect, from: nil)
         guard rect.width > 1, rect.height > 1 else { return nil }
-        return (rect, lastHeroCornerRadius)
+        return (rect, lastHeroCornerRadii[kind] ?? lastHeroCornerRadii["detail"] ?? 14)
     }
 
-    private func recordHero(_ resolved: (rect: CGRect, cornerRadius: CGFloat), in container: UIView) {
+    private func recordHero(_ resolved: (rect: CGRect, cornerRadius: CGFloat), kind: String, in container: UIView) {
         let windowRect = container.convert(resolved.rect, to: nil)
         guard windowRect.width > 1, windowRect.height > 1 else { return }
         // Only a hero that is actually on screen is a valid predictor of where the *next*
@@ -334,11 +390,12 @@ final class CoverZoomRegistry {
         // display. The measurement is still *used* for that transition; it just never becomes
         // the cached answer.
         guard container.bounds.insetBy(dx: -1, dy: -1).contains(resolved.rect) else { return }
-        guard windowRect != lastHeroWindowRect || resolved.cornerRadius != lastHeroCornerRadius else { return }
-        lastHeroWindowRect = windowRect
-        lastHeroCornerRadius = resolved.cornerRadius
-        UserDefaults.standard.set(NSCoder.string(for: windowRect), forKey: Self.heroRectDefaultsKey)
-        UserDefaults.standard.set(resolved.cornerRadius, forKey: Self.heroRadiusDefaultsKey)
+        guard windowRect != lastHeroWindowRects[kind] || resolved.cornerRadius != lastHeroCornerRadii[kind] else { return }
+        lastHeroWindowRects[kind] = windowRect
+        lastHeroCornerRadii[kind] = resolved.cornerRadius
+        let suffix = kind == "detail" ? "" : ".\(kind)"
+        UserDefaults.standard.set(NSCoder.string(for: windowRect), forKey: Self.heroRectDefaultsKey + suffix)
+        UserDefaults.standard.set(resolved.cornerRadius, forKey: Self.heroRadiusDefaultsKey + suffix)
     }
 
     private func resolve(_ anchor: Anchor?, in container: UIView) -> (rect: CGRect, cornerRadius: CGFloat)? {
