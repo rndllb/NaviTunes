@@ -188,6 +188,12 @@ struct LibraryView: View {
             .musicNewTabNavigationChrome()
             .musicNewTabRootHidesNavigationBar()
             .navigationTitle("")
+            // Deliberately *not* `musicBackHistoryTitle` here. Naming the root would name it in
+            // the back-history menu, but `backButtonTitle` also drives the visible label on every
+            // screen pushed from it — Genres, Artists, Settings and the rest would all change
+            // from a bare chevron to "‹ Library". Only screens that opt into
+            // `backButtonDisplayMode = .minimal` themselves can carry a history title safely, so
+            // the root's own entry in that menu stays blank.
             .musicNavigationBarTitleDisplayMode(.inline)
             .refreshable {
                 await app.refreshLibraryAlbums()
@@ -1166,6 +1172,7 @@ struct FavoritePlaylistView: View {
             if dismissalPhase == .gone { dismissalPhase = .idle }
         }
         .navigationTitle("")
+        .musicBackHistoryTitle(displayTitle)
         .musicNavigationBarTitleDisplayMode(.inline)
         .musicFavoriteSongsNavigationChrome()
         .musicNavigationBarVisibleWhenPushed()

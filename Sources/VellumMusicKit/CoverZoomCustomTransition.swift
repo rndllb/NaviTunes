@@ -84,6 +84,15 @@ enum CoverZoomTuning {
     static let barFadeOut: TimeInterval = 0.12
     static let barFadeIn: TimeInterval = 0.18
 
+    /// Fraction of a dismiss that runs before a card with no cover to carry starts dissolving
+    /// onto the row's artwork.
+    ///
+    /// Only reached when the detail was scrolled past its hero, so there is nothing at the
+    /// cover's position inside the card to land with. Kept late: the shrink should read as the
+    /// motion, with the hand-over happening as the card arrives. Expressed as a
+    /// `UIViewPropertyAnimator` delay factor so an interactive swipe scrubs it too.
+    static let dissolveDelayFactor: CGFloat = 0.55
+
     /// Fraction of the width past which releasing the edge swipe commits the pop.
     static let popCommitFraction: CGFloat = 0.33
     /// Rightward velocity (pt/s) that commits regardless of distance.
@@ -273,6 +282,25 @@ final class CoverZoomRegistry {
         return resolved
     }
 
+    /// Whether the hero artwork is (almost entirely) inside the visible area right now.
+    ///
+    /// A detail scrolled past its cover still has a live probe — the hero is part of a scroll
+    /// view's content, not a lazy row — so it keeps resolving to a rect above the top of the
+    /// screen. The rect is truthful and the animator's arithmetic stays correct, but the pixels
+    /// are clipped away by the scroll view, so the card flies home empty. The pop needs to know
+    /// that and dissolve onto the row instead of pretending it is carrying a cover.
+    ///
+    /// `false` also when the probe is gone entirely. On a *pop* the detail is on screen, so a
+    /// missing probe means the hero is not there to fly.
+    func heroIsOnScreen(for id: String, in container: UIView) -> Bool {
+        guard let resolved = resolve(heroes[id], in: container) else { return false }
+        let visible = resolved.rect.intersection(container.bounds)
+        guard !visible.isNull else { return false }
+        let area = resolved.rect.width * resolved.rect.height
+        guard area > 0 else { return false }
+        return (visible.width * visible.height) / area > 0.92
+    }
+
     /// The hero rect to animate to, falling back to the last measurement when this detail has
     /// not built its body yet. See ``lastHeroWindowRect``.
     func heroRect(for id: String, in container: UIView) -> (rect: CGRect, cornerRadius: CGFloat)? {
@@ -286,6 +314,14 @@ final class CoverZoomRegistry {
     private func recordHero(_ resolved: (rect: CGRect, cornerRadius: CGFloat), in container: UIView) {
         let windowRect = container.convert(resolved.rect, to: nil)
         guard windowRect.width > 1, windowRect.height > 1 else { return }
+        // Only a hero that is actually on screen is a valid predictor of where the *next*
+        // detail's hero will be. Without this guard a detail scrolled past its cover reports a
+        // rect above the top of the screen and that gets persisted — device log:
+        //   COVERZOOM run push=false hero=(-97.3, 77.3, 320.0, 320.3)
+        // — after which every first push of the session aims at a rect off the top of the
+        // display. The measurement is still *used* for that transition; it just never becomes
+        // the cached answer.
+        guard container.bounds.insetBy(dx: -1, dy: -1).contains(resolved.rect) else { return }
         guard windowRect != lastHeroWindowRect || resolved.cornerRadius != lastHeroCornerRadius else { return }
         lastHeroWindowRect = windowRect
         lastHeroCornerRadius = resolved.cornerRadius
@@ -390,6 +426,19 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
     private var session: Session?
     private var propertyAnimator: UIViewPropertyAnimator?
 
+    // MARK: Navigation-bar fade state
+    //
+    // Deliberately *not* on `Session`: `animationEnded` clears that, and the one thing this
+    // must never do is leave a bar button stuck at alpha 0 because the restore path could not
+    // find its own state. See `startBarItemFadeIn`.
+    private weak var fadingIncomingItem: UINavigationItem?
+    private weak var fadingBar: UINavigationBar?
+    private var fadingIncludesChevron = false
+    private var barFadeReleased = false
+    private var barFadeLink: CADisplayLink?
+    private var barFadeStart: CFTimeInterval = 0
+    private var barFadeHoldUntil: TimeInterval = 0
+
     init(direction: Direction, id: String) {
         self.direction = direction
         self.id = id
@@ -426,6 +475,17 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
         /// Watches the row's live position during a dismiss so the card can follow a list that
         /// scrolls under it. See `startRetargetWatch`.
         var retargetLink: CADisplayLink?
+        /// True when the card has no cover to carry — the detail is scrolled past its hero, so
+        /// the artwork's pixels are clipped away by the scroll view. The card then dissolves
+        /// onto the row's own artwork instead of landing on it. See `prepare`.
+        var dissolvesOntoCell = false
+        /// The navigation item of the screen being *revealed*. Its buttons are held at zero and
+        /// faded in as the transition settles — see `startBarItemFadeIn`.
+        weak var incomingItem: UINavigationItem?
+        /// The system back chevron only arrives with a push; on a pop the one in the bar still
+        /// belongs to the screen going away and is already being faded out by
+        /// `CoverZoomTransition`'s `setBarItemAlpha`.
+        var fadesBackChevron = false
         /// Wall clock at transition start, used to bound retargeting so a continuously
         /// scrolling list cannot keep the transition alive forever.
         var startedAt: CFTimeInterval = CACurrentMediaTime()
@@ -495,22 +555,40 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
         animator.addAnimations { [weak self] in
             self?.applyState(progress: isPush ? 1 : 0)
         }
+        // Scrolled past the cover: the card is carrying the *page*, not an artwork, so it has to
+        // hand over to the row rather than land on it. Full opacity for most of the travel — the
+        // shrink is the motion — then a dissolve onto the row's own cover, which is deliberately
+        // left on screen for this case (see `prepare`). A second animation block rather than an
+        // alpha in `applyState` because that runs exactly twice: `UIViewPropertyAnimator`
+        // interpolates between the two values it is given, so an alpha written there would fade
+        // across the whole transition instead of the tail of it.
+        if let session, session.dissolvesOntoCell {
+            session.clip.alpha = 1
+            animator.addAnimations(
+                { session.clip.alpha = 0 },
+                delayFactor: CoverZoomTuning.dissolveDelayFactor
+            )
+        }
         animator.addCompletion { [weak self] position in
             guard let self else { return }
             // `.start` means the interactive pop was cancelled and ran backwards.
             finish(committed: position == .end)
         }
         propertyAnimator = animator
-        if let session { startRetargetWatch(session) }
+        if let session {
+            startRetargetWatch(session)
+            startBarItemFadeIn(session)
+        }
         scheduleCompletionWatchdog(nominal: transitionDuration(using: context))
         return animator
     }
 
     func animationEnded(_ transitionCompleted: Bool) {
-        // Belt and braces: never leave the list deaf or a display link running, even if
-        // `finish` was bypassed.
+        // Belt and braces: never leave the list deaf, a display link running, or a navigation
+        // item's buttons invisible, even if `finish` was bypassed.
         session?.retargetLink?.invalidate()
         session?.suspendedList?.isUserInteractionEnabled = true
+        releaseBarItemFade(animated: true)
         session = nil
         propertyAnimator = nil
     }
@@ -540,7 +618,19 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
         var suspendedList: UIView?
         if !isPush, let listController = context.viewController(forKey: listKey),
            let listView = listController.view {
-            listView.frame = context.finalFrame(for: listController)
+            // `finalFrame(for:)` is documented to return `.zero` when UIKit does not consider
+            // the controller's view part of the transition — a zero-sized list is invisible and
+            // untouchable, which reads exactly like "the list is dead during the dismiss".
+            let finalFrame = context.finalFrame(for: listController)
+            listView.frame = finalFrame.width > 1 && finalFrame.height > 1 ? finalFrame : container.bounds
+            // The list must be usable the whole way back. A push that fell through to the
+            // cross-fade used to leave it switched off for good (see the `guard` below), and
+            // anything that reaches this point with a stale `false` would silently swallow every
+            // tap on the revealed list.
+            listView.isUserInteractionEnabled = true
+            listView.isHidden = false
+            listView.alpha = 1
+            listView.transform = .identity
             container.insertSubview(listView, at: 0)
             listView.layoutIfNeeded()
             // Tried and reverted: making the list deaf during the dismiss as well. It does stop
@@ -595,6 +685,11 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
                 + "cell=\(CoverZoomRegistry.shared.cellRect(for: id, in: container)?.rect.debugDescription ?? "nil") "
                 + "hero=\(CoverZoomRegistry.shared.heroRect(for: id, in: container)?.rect.debugDescription ?? "nil")")
 #endif
+            // The list was switched off a few lines above and there is no `Session` to switch it
+            // back on: `finish` and `animationEnded` both key off one. Every cross-faded push
+            // therefore used to leave the playlists list permanently deaf — the app looked
+            // completely normal and ignored every tap. Device log has 21 of these.
+            suspendedList?.isUserInteractionEnabled = true
             detailView.transform = .identity
             detailView.frame = full
             container.addSubview(detailView)
@@ -603,11 +698,22 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
             return nil
         }
 
+        // A dismiss from a page scrolled past its cover has no cover to fly: the hero's pixels
+        // are clipped away by the detail's own scroll view, so the card would arrive at the row
+        // empty. Detected here, handled in `applyState` by dissolving the card over the last
+        // stretch — and the row's artwork is deliberately left *visible* for that case, because
+        // it is what the card is dissolving onto. A push always predicts its hero from the
+        // cache (the detail has not built its body yet), so this only ever applies to a pop.
+        let heroIsOnScreen = isPush || CoverZoomRegistry.shared.heroIsOnScreen(for: id, in: container)
+
 #if DEBUG
-        DebugUIRemote.log("COVERZOOM run id=\(id) push=\(isPush) cell=\(cell.rect) hero=\(hero.rect)")
+        DebugUIRemote.log("COVERZOOM run id=\(id) push=\(isPush) cell=\(cell.rect) hero=\(hero.rect) "
+            + "heroOnScreen=\(heroIsOnScreen)")
 #endif
 
-        CoverZoomFlight.shared.beginFlight(id: id)
+        if heroIsOnScreen {
+            CoverZoomFlight.shared.beginFlight(id: id)
+        }
 
         let built = Session(
             context: context,
@@ -622,6 +728,12 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
         )
         built.suspendedList = suspendedList
         built.navigationBar = detailController.navigationController?.navigationBar
+        built.dissolvesOntoCell = !heroIsOnScreen
+        // The screen being revealed: the detail on a push, the list on a pop.
+        built.incomingItem = isPush
+            ? detailController.navigationItem
+            : context.viewController(forKey: listKey)?.navigationItem
+        built.fadesBackChevron = isPush
         session = built
         return built
     }
@@ -700,6 +812,7 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
         session.clip.layer.cornerRadius = session.cellCornerRadius
             + (CoverZoomTuning.screenCornerRadius - session.cellCornerRadius) * p
 
+
         // Only transform and position per frame. Writing `bounds` here would re-trigger
         // `layoutSubviews` on the SwiftUI hosting view every single frame, which is what made
         // the motion jitter — the size is set once in `prepare`.
@@ -730,16 +843,29 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
     @MainActor
     private func scheduleCompletionWatchdog(nominal: TimeInterval) {
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(nominal * 2 + 0.3))
-            guard let self, let session, !session.didComplete else { return }
+            var lastFraction: CGFloat = -1
+            // Extended, not fixed. A swipe the user is still dragging legitimately outlives the
+            // nominal duration, and tearing the screen away mid-gesture is worse than the stall
+            // this guards against — so a transition that is still *moving* gets another window.
+            // Three of them, then it is wedged whatever it looks like.
+            for _ in 0..<3 {
+                try? await Task.sleep(for: .seconds(nominal * 2 + 0.3))
+                guard let self, let session, !session.didComplete else { return }
+                let fraction = propertyAnimator?.fractionComplete ?? 0
+                guard abs(fraction - lastFraction) <= 0.001 else {
+                    lastFraction = fraction
+                    continue
+                }
 #if DEBUG
-            DebugUIRemote.log("COVERZOOM watchdog — transition never completed, forcing it")
+                DebugUIRemote.log("COVERZOOM watchdog — transition never completed, forcing it")
 #endif
-            session.retargetLink?.invalidate()
-            session.retargetLink = nil
-            completeImmediately()
-            if let session = self.session, !session.didComplete {
-                finish(committed: true)
+                session.retargetLink?.invalidate()
+                session.retargetLink = nil
+                completeImmediately()
+                if let session = self.session, !session.didComplete {
+                    finish(committed: true)
+                }
+                return
             }
         }
     }
@@ -803,30 +929,113 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
 
     // MARK: Navigation bar
 
-    /// **Not called — kept as a record of why this approach is wrong.**
+    /// Fades the *incoming* screen's bar buttons in as the transition settles.
     ///
-    /// Fading `UINavigationController.navigationBar` cross-fades whichever item set is current,
-    /// which looked like an easy way to match the reference footage. But that bar is shared by
-    /// every screen on the stack: it took the *playlists list's* own header buttons with it, and
-    /// any transition that did not reach `finish` left them invisible and untappable — a soft
-    /// lock, and far worse than a late fade.
+    /// The outgoing side already leaves early — `setBarItemAlpha` in `CoverZoomTransition.swift`
+    /// fades the departing screen's item groups and the system back chevron at
+    /// `viewWillDisappear`. The arriving side had nothing: UIKit swaps the bar's content the
+    /// instant the transition starts, so a full set of buttons appeared over a card that was
+    /// still the size of a playlist row. That snap is what the reference footage does not do.
     ///
-    /// A correct version has to fade only the outgoing view controller's own items, and hand
-    /// over to the incoming one's — see `setBarItemAlpha` in `CoverZoomTransition.swift`, which
-    /// is scoped to a single `navigationItem`.
+    /// **Never fade `UINavigationController.navigationBar` itself to achieve this.** That bar is
+    /// shared by every screen on the stack, so it takes the *list's* own header buttons with it,
+    /// and any transition that does not reach `finish` leaves them invisible and untappable — a
+    /// soft lock, and far worse than a late fade. This works on one `UINavigationItem`'s hosted
+    /// item views, plus the back chevron `UINavigationBar` owns privately.
+    ///
+    /// Held at zero on a display link rather than set once, because UIKit installs the incoming
+    /// item's views partway through the transition — the same reason `applyMorphPassthrough` in
+    /// `CoverZoomTransition.swift` re-applies each frame. Every path out of here restores alpha
+    /// (see `releaseBarItemFade`), and a watchdog restores it even if none of them runs.
     @MainActor
-    private func crossFadeNavigationBar(_ session: Session) {
-        guard let bar = session.navigationBar else { return }
-        let total = direction == .push ? CoverZoomTuning.pushDuration : CoverZoomTuning.popDuration
-        UIView.animate(withDuration: CoverZoomTuning.barFadeOut, delay: 0, options: [.curveEaseOut]) {
-            bar.alpha = 0
+    private func startBarItemFadeIn(_ session: Session) {
+        guard let item = session.incomingItem else { return }
+        fadingIncomingItem = item
+        fadingBar = session.navigationBar
+        fadingIncludesChevron = session.fadesBackChevron
+        barFadeReleased = false
+
+        let views = incomingBarViews()
+        guard !views.isEmpty || fadingIncludesChevron else { return }
+        views.forEach { $0.alpha = 0 }
+
+        let total = transitionDuration(using: session.context)
+        // Start early enough that the fade is over before the pushed detail's `viewDidAppear`
+        // sets its own items back to full alpha — that call is not animated and would otherwise
+        // cut the fade off at its brightest point.
+        barFadeHoldUntil = max(0, total - CoverZoomTuning.barFadeIn - 0.06)
+        barFadeStart = CACurrentMediaTime()
+        barFadeLink?.invalidate()
+        let link = CADisplayLink(target: self, selector: #selector(barFadeTick))
+        link.add(to: .main, forMode: .common)
+        barFadeLink = link
+
+        // Unconditional restore. Nothing about a navigation bar may depend on a transition
+        // reaching its completion handler — a bar button left at alpha 0 is invisible *and*
+        // untappable (UIKit's hit test skips near-transparent views), which is the soft lock an
+        // earlier attempt at this shipped. The zeroed views are captured strongly as well as
+        // going through `releaseBarItemFade`, so this holds even if the animator is gone.
+        Task { @MainActor [weak self, held = views] in
+            try? await Task.sleep(for: .seconds(total + 0.6))
+            self?.releaseBarItemFade(animated: false)
+            held.forEach { if $0.alpha < 1 { $0.alpha = 1 } }
         }
-        UIView.animate(
-            withDuration: CoverZoomTuning.barFadeIn,
-            delay: max(0, total - CoverZoomTuning.barFadeIn),
-            options: [.curveEaseIn]
-        ) {
-            bar.alpha = 1
+    }
+
+    /// The incoming screen's own bar-button views. SwiftUI toolbar content lives in the
+    /// navigation item's leading/trailing *groups* (`rightBarButtonItems` stays empty), hosted as
+    /// `customView`s — alpha on those is the one knob `UINavigationBar` leaves alone while it
+    /// animates the item containers itself.
+    private func incomingBarViews() -> [UIView] {
+        guard let item = fadingIncomingItem else { return [] }
+        var views = (item.leadingItemGroups + item.trailingItemGroups)
+            .flatMap(\.barButtonItems)
+            .compactMap(\.customView)
+        if fadingIncludesChevron, let bar = fadingBar {
+            views += Self.backChevronViews(in: bar)
+        }
+        return views
+    }
+
+    /// The system back chevron, which is owned by `UINavigationBar` rather than by any
+    /// navigation item — so the item-level walk above structurally cannot reach it.
+    private static func backChevronViews(in bar: UIView) -> [UIView] {
+        var found: [UIView] = []
+        func walk(_ view: UIView) {
+            let name = String(describing: type(of: view))
+            if name.contains("BackButton") || name.contains("BackIndicator") {
+                found.append(view)
+                return
+            }
+            view.subviews.forEach(walk)
+        }
+        walk(bar)
+        return found
+    }
+
+    @objc private func barFadeTick() {
+        guard !barFadeReleased else { return }
+        if CACurrentMediaTime() - barFadeStart < barFadeHoldUntil {
+            for view in incomingBarViews() where view.alpha != 0 { view.alpha = 0 }
+        } else {
+            releaseBarItemFade(animated: true)
+        }
+    }
+
+    @MainActor
+    private func releaseBarItemFade(animated: Bool) {
+        guard !barFadeReleased else { return }
+        barFadeReleased = true
+        barFadeLink?.invalidate()
+        barFadeLink = nil
+        let views = incomingBarViews()
+        guard !views.isEmpty else { return }
+        if animated {
+            UIView.animate(withDuration: CoverZoomTuning.barFadeIn, delay: 0, options: [.curveEaseIn]) {
+                views.forEach { $0.alpha = 1 }
+            }
+        } else {
+            views.forEach { $0.alpha = 1 }
         }
     }
 
@@ -880,6 +1089,10 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
         session.suspendedList = nil
         // Never leave the bar faded — a cancelled swipe ends here too.
         session.navigationBar?.alpha = 1
+        releaseBarItemFade(animated: true)
+        // A cancelled dissolve leaves the card part-transparent; it is about to be handed back
+        // to the container as the live screen.
+        session.clip.alpha = 1
 
         session.detail.transform = .identity
         session.detail.frame = session.full
@@ -969,6 +1182,66 @@ final class CoverZoomClipView: UIView {}
 /// and holds until lift — on device that stopped `_UIParallaxTransitionPanGestureRecognizer`
 /// receiving the swipe at all (the log showed our pan target never firing once, and UIKit never
 /// even asking whether the gesture should begin).
+#if DEBUG
+/// Watches UIKit's answer to `gestureRecognizerShouldBegin:` on the pop recognizers **without
+/// taking the job over**.
+///
+/// The one thing 4.1 turns on is whether UIKit vetoes the swipe. A vetoed recognizer goes
+/// straight to `.failed` and never notifies its targets, so silence from our pan target cannot
+/// tell "UIKit said no" apart from "the recognizer never saw the touch" — and the two have
+/// nothing in common as fixes.
+///
+/// Replacing that delegate has been tried twice and broke the pop both times: the object sitting
+/// there is `_UINavigationInteractiveTransitionBase`, the only thing that consults
+/// `UINavigationControllerDelegate` on a gesture pop and the only thing that arms it. So this
+/// forwards *everything* to it — including the `shouldBegin` call itself, whose answer it merely
+/// reads on the way past. Compiled out of Release.
+final class CoverZoomPanDelegateSpy: NSObject, UIGestureRecognizerDelegate {
+    private let original: UIGestureRecognizerDelegate
+    private static var associationKey: UInt8 = 0
+
+    private init(original: UIGestureRecognizerDelegate) {
+        self.original = original
+    }
+
+    /// Installs on `recognizer` once. No-op when there is nothing to forward to, or when the
+    /// delegate in place is already one of ours.
+    @MainActor
+    static func installIfNeeded(on recognizer: UIGestureRecognizer) {
+        guard let current = recognizer.delegate, !(current is CoverZoomPanDelegateSpy) else { return }
+        let spy = CoverZoomPanDelegateSpy(original: current)
+        // The recognizer holds `delegate` weakly; keep the proxy alive alongside it.
+        objc_setAssociatedObject(recognizer, &associationKey, spy, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        recognizer.delegate = spy
+    }
+
+    nonisolated func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        MainActor.assumeIsolated {
+            let answer = original.gestureRecognizerShouldBegin?(gestureRecognizer) ?? true
+            let pan = gestureRecognizer as? UIPanGestureRecognizer
+            let translation = pan.map { $0.translation(in: $0.view) } ?? .zero
+            DebugUIRemote.log("COVERZOOM shouldBegin \(type(of: gestureRecognizer)) "
+                + "answer=\(answer) state=\(gestureRecognizer.state.rawValue) "
+                + "touches=\(gestureRecognizer.numberOfTouches) "
+                + "dx=\(String(format: "%.1f", translation.x)) dy=\(String(format: "%.1f", translation.y))")
+            return answer
+        }
+    }
+
+    // Everything else is UIKit's business.
+    override func responds(to aSelector: Selector!) -> Bool {
+        if aSelector == #selector(UIGestureRecognizerDelegate.gestureRecognizerShouldBegin(_:)) { return true }
+        if super.responds(to: aSelector) { return true }
+        return original.responds(to: aSelector)
+    }
+
+    override func forwardingTarget(for aSelector: Selector!) -> Any? {
+        if original.responds(to: aSelector) { return original }
+        return super.forwardingTarget(for: aSelector)
+    }
+}
+#endif
+
 final class CoverZoomTouchSpy: UIGestureRecognizer {
     var onTouchDown: ((CGPoint) -> Void)?
 
@@ -1149,6 +1422,12 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
             recognizer.addTarget(self, action: #selector(handleSystemPan(_:)))
             observedPans.append(recognizer)
         }
+#if DEBUG
+        // Read UIKit's verdict on the swipe without taking the decision over — see
+        // `CoverZoomPanDelegateSpy`. This is the measurement that separates "vetoed" from
+        // "never saw the touch", and the two have nothing in common as fixes.
+        candidates.forEach(CoverZoomPanDelegateSpy.installIfNeeded(on:))
+#endif
         observedPan = systemPan
     }
 
@@ -1232,27 +1511,57 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
         if runningAnimator?.hasLiveSession == false { runningAnimator = nil }
         if runningPushAnimator?.hasLiveSession == false { runningPushAnimator = nil }
 
+        // A dismiss still in flight is the other half of the same problem, and the one that
+        // actually wedges the stack: a tap on the list during a close raises a *push* while the
+        // pop's transition is still live, so two transitions are stacked and the pop that should
+        // follow is never even requested — the back button is visible and nothing reaches
+        // `animationControllerFor` at all. Device log:
+        //
+        //   touchDown x=125 y=208  coordinator=true depth=1   ← tap landed inside the close
+        //   PHASE didDisappear popped=true
+        //   ask op=1 → run push=true                          ← push started inside the pop
+        //   touchDown x=109 y=203  coordinator=true depth=2   ← and another inside that
+        //
+        // Settling the dismiss *here* fixes it without deafening the list: touches are delivered
+        // before the tap's action fires, so by the time SwiftUI activates the link the stack has
+        // already settled and the push is an ordinary one. Skipped while a pop gesture is
+        // genuinely being dragged — that transition has a driver and must not be cut short.
+        let panDragging = observedPans.contains { $0.state == .began || $0.state == .changed }
+        var settledTransition = false
+        if !panDragging, let running = runningAnimator, running.isRunning, running.direction == .pop {
+#if DEBUG
+            DebugUIRemote.log("COVERZOOM touch during dismiss — settling it now")
+#endif
+            running.completeImmediately()
+            runningAnimator = nil
+            settledTransition = true
+        }
+
         if let running = runningPushAnimator, running.isRunning {
 #if DEBUG
             DebugUIRemote.log("COVERZOOM touch during push — completing it now")
 #endif
             running.completeImmediately()
             runningPushAnimator = nil
+            settledTransition = true
+        }
 
-            // Completing the push frees the stack, but this touch's own button action has
-            // already been rejected by UIKit — which is why the first back tap did nothing and
-            // a second was needed. If the touch was on the back button and nothing popped by
-            // the next runloop turn, perform the pop ourselves.
+        if settledTransition {
+            // Settling frees the stack, but this touch's own button action has already been
+            // rejected by UIKit — which is why the first back tap did nothing and a second was
+            // needed. If the touch was on the back button and nothing popped by the next runloop
+            // turn, perform the pop ourselves.
             if isBackButtonRegion(point, in: view) {
                 let depthBefore = navigationController.viewControllers.count
                 Task { @MainActor [weak self, weak navigationController] in
                     guard let self, let navigationController else { return }
                     guard navigationController.viewControllers.count == depthBefore,
                           depthBefore > 1,
+                          navigationController.transitionCoordinator == nil,
                           navigationController.topViewController === self.customDetailController
                     else { return }
 #if DEBUG
-                    DebugUIRemote.log("COVERZOOM back tap was swallowed by the push — popping")
+                    DebugUIRemote.log("COVERZOOM back tap was swallowed by the transition — popping")
 #endif
                     navigationController.popViewController(animated: true)
                 }
@@ -1266,17 +1575,38 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
         // the touch, rather than narrowing by elimination.
         if point.x < 40 {
             let pan = navigationController.interactivePopGestureRecognizer
+            // Walk the whole chain the touch actually travels — from the hit-test view up to the
+            // window — rather than the two views we happened to guess at. A recognizer deeper in
+            // the SwiftUI content that claims the touch would only ever show up here.
             var lines: [String] = []
-            for host in [navigationController.view, navigationController.topViewController?.view] {
-                guard let host else { continue }
-                for recognizer in host.gestureRecognizers ?? [] {
-                    lines.append("\(type(of: recognizer))/en=\(recognizer.isEnabled)/st=\(recognizer.state.rawValue)")
+            var node: UIView? = navigationController.view.hitTest(point, with: nil)
+            while let current = node {
+                let owned = (current.gestureRecognizers ?? []).map {
+                    "\(type(of: $0))/en=\($0.isEnabled)/st=\($0.state.rawValue)"
                 }
+                if !owned.isEmpty {
+                    lines.append("\(type(of: current)){\(owned.joined(separator: "|"))}")
+                }
+                node = current.superview
             }
             DebugUIRemote.log("COVERZOOM edgeTouch x=\(String(format: "%.1f", point.x)) "
+                + "y=\(String(format: "%.0f", point.y)) depth=\(navigationController.viewControllers.count) "
                 + "panEnabled=\(pan?.isEnabled ?? false) panState=\(pan?.state.rawValue ?? -1) "
                 + "panView=\(pan?.view.map { String(describing: type(of: $0)) } ?? "nil") "
                 + "recognizers=[\(lines.joined(separator: ", "))]")
+
+            // The one question 4.1 still turns on: does either pop recognizer ever leave
+            // `.possible`? A vetoed recognizer goes straight to `.failed` and never notifies its
+            // targets, so silence from `handleSystemPan` cannot distinguish "vetoed" from "never
+            // saw the touch". Sampling the states a few frames into the swipe can.
+            let observed = observedPans
+            Task { @MainActor in
+                for delay in [120, 260, 420] {
+                    try? await Task.sleep(for: .milliseconds(delay == 120 ? 120 : 140))
+                    let states = observed.map { "\(type(of: $0))/st=\($0.state.rawValue)/n=\($0.numberOfTouches)" }
+                    DebugUIRemote.log("COVERZOOM edgeSample +\(delay)ms [\(states.joined(separator: ", "))]")
+                }
+            }
         }
 #endif
 
@@ -1378,6 +1708,9 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
 
         switch pan.state {
         case .changed:
+            // A controller vended for a pop that has already finished is not ours to scrub —
+            // `wantsInteractiveStart == false` pops leave one behind until the next ask.
+            guard navigationController?.transitionCoordinator != nil else { return }
             guard let controller = interactionController else { return }
             if !isDrivingInteractionManually {
                 guard controller.percentComplete <= 0.0001, fraction > 0.02 else { return }
@@ -1518,6 +1851,8 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
             + "dir=\((animationController as? CoverZoomAnimator)?.direction == .pop ? "pop" : "other") "
             + "panState=\(observedPan?.state.rawValue ?? -1) "
             + "panTouches=\(observedPan?.numberOfTouches ?? -1) "
+            + "anyPanTouches=\(observedPans.map { $0.numberOfTouches }.max() ?? -1) "
+            + "observed=\(observedPans.count) "
             + "isSwipe=\(isSwipe)")
 #endif
         // Always vend one for our pop, without trying to judge whether a swipe is under way.
@@ -1534,9 +1869,26 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
         if let animator = animationController as? CoverZoomAnimator,
            animator.direction == .pop {
             let controller = CoverZoomInteractivePop()
+            // `wantsInteractiveStart` is the part that *can* be decided here, and it is the
+            // difference between the two kinds of pop:
+            //
+            //  - Edge swipe: UIKit asks from `gestureRecognizerShouldBegin:` with the finger
+            //    down, so a pop recognizer is holding touches. The transition starts paused at
+            //    0% and UIKit scrubs it with the gesture.
+            //  - Back button: the pop is raised on touch *up* — device log shows `panTouches=0`
+            //    at exactly this moment. Starting paused there stalled every single back-button
+            //    pop for the length of `scheduleInteractionWatchdog`, which the log confirms
+            //    fired on all of them ("nothing drove it, finishing"). Starting non-interactive
+            //    runs it straight through, and a gesture can still take it over later.
+            //
+            // Translation is deliberately not consulted: at `shouldBegin` time it is zero, and
+            // testing for it is what used to make this return `nil` — which UIKit reads as "no
+            // interactive pop available" and answers by vetoing the gesture outright.
+            let fingerDown = observedPans.contains { $0.numberOfTouches > 0 }
+            controller.wantsInteractiveStart = fingerDown
             interactionController = controller
             isDrivingInteractionManually = false
-            scheduleInteractionWatchdog(for: controller)
+            if fingerDown { scheduleInteractionWatchdog(for: controller) }
             return controller
         }
         if let original,

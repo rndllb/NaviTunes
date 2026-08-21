@@ -917,6 +917,9 @@ struct ServerPlaylistDetailView: View {
             .coverZoomDestination(id: coverZoomId, dismissalPhase: $dismissalPhase)
             .playlistTrackSearchable(enabled: !isAlbumStyleDetail, text: $searchText)
             .navigationTitle("")
+            // The bar stays untitled — the hero carries the name. This only fills in the entry
+            // UIKit shows when the back button is long-pressed.
+            .musicBackHistoryTitle(navigationTitleText.isEmpty ? source.displayName : navigationTitleText)
             .musicNavigationBarTitleDisplayMode(.inline)
             .modifier(DetailNavigationChrome(palette: backdropPalette))
             .musicNavigationBarVisibleWhenPushed()
