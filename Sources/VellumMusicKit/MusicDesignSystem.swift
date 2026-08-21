@@ -1099,6 +1099,64 @@ extension View {
     }
 }
 
+/// Names a screen for UIKit's back-history menu without putting a title in the bar.
+///
+/// Hero screens (album, playlist, Library root) all use `navigationTitle("")` so no inline title
+/// sits over the artwork. UIKit builds the long-press-the-back-button history from each stack
+/// entry's `backButtonTitle` / `title`, so an empty title produced a menu of blank rows.
+///
+/// Sets `backButtonTitle` (what the *next* screen's back button would say, and what the history
+/// menu lists) and pins `backButtonDisplayMode` to `.minimal` so the visible button stays a bare
+/// chevron — the label is only ever wanted in the menu.
+extension View {
+    @ViewBuilder
+    func musicBackHistoryTitle(_ title: String) -> some View {
+        #if os(iOS)
+        background(MusicBackHistoryTitleInstaller(title: title).allowsHitTesting(false))
+        #else
+        self
+        #endif
+    }
+}
+
+#if os(iOS)
+private struct MusicBackHistoryTitleInstaller: UIViewControllerRepresentable {
+    let title: String
+
+    func makeUIViewController(context: Context) -> Installer {
+        let installer = Installer()
+        installer.view.isUserInteractionEnabled = false
+        installer.historyTitle = title
+        return installer
+    }
+
+    func updateUIViewController(_ controller: Installer, context: Context) {
+        controller.historyTitle = title
+    }
+
+    final class Installer: UIViewController {
+        /// Not `title`: that is `UIViewController`'s own optional property, and this controller
+        /// must stay untitled — naming it would put the text in the bar.
+        var historyTitle: String = "" {
+            didSet { apply() }
+        }
+
+        override func viewWillAppear(_ animated: Bool) {
+            super.viewWillAppear(animated)
+            apply()
+        }
+
+        private func apply() {
+            guard let item = parent?.navigationItem else { return }
+            let trimmed = historyTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            if item.backButtonTitle != trimmed { item.backButtonTitle = trimmed }
+            if item.backButtonDisplayMode != .minimal { item.backButtonDisplayMode = .minimal }
+        }
+    }
+}
+#endif
+
 enum MusicTextAutocapitalization {
     case never
     case words

@@ -59,21 +59,41 @@ From reading the reference video at 20fps. That document is wrong on both counts
   whatever view carries `coverZoomCellAnchor` and derives scale from `cellWidth / heroWidth`.
 - Library → Playlists list is untouched and still slides.
 - Tapping during an open cuts the push short so the back button responds immediately, and a back
-  tap UIKit swallowed is re-issued.
+  tap UIKit swallowed is re-issued. A tap during a *close* now settles that close the same way,
+  which is what stops two transitions stacking (§4.2).
 - The card retargets to the row's live position while the list scrolls under it during a dismiss.
+- A dismiss from a page scrolled past its cover dissolves onto the row instead of arriving empty
+  (§4.3), and the incoming screen's bar buttons fade in rather than snapping (§4.4).
 
 ---
 
 ## 4. Open problems
 
-### 4.1 Interactive edge-swipe dismiss — unsolved
+> **Update, 2026-08-21 (second session).** The device log was pulled off the phone before anything
+> was changed (`Documents/vellum-hangwatch.log`, 20 403 lines, spanning several builds). Reading it
+> settled four of the five items below and corrected one claim that this document asserted as
+> measured. Each subsection now records what the log actually showed and what changed. **Read the
+> "what the log showed" paragraphs before re-opening any of these** — several earlier conclusions
+> were drawn from log regions belonging to *older builds*, which is easy to do because the file is
+> append-only across installs and has no launch marker.
+
+### 4.1 Interactive edge-swipe dismiss — still unverified, no longer "measured dead"
 
 Swiping from the left edge does not shrink the page into its row. It has variously done UIKit's
 parallax slide, or nothing at all.
 
-**Key measurement:** zero `COVERZOOM pan` callbacks from either pop recognizer, ever. A recognizer
-whose delegate vetoes it goes straight to `.failed` and never notifies its targets — that is the
-signature of a veto, not of a missed target.
+**Correction — the key measurement was wrong.** This document said "zero `COVERZOOM pan` callbacks
+from either pop recognizer, ever". `grep -c "COVERZOOM pan "` over the whole log is indeed 0 — but
+the *current* build's region of the log (everything after the first unconditional `COVERZOOM
+touchDown` line) contains **no genuine edge-swipe attempt at all**. Every left-side touch in it is
+a back-*button* tap: `x≈31–38, y≈76–102, hit=_UIButtonBarButton`. The 83 `edgeTouch` lines that do
+sit near x≈4–11 all belong to builds that predate both the "observe every parallax recognizer" and
+"always vend an interaction controller" fixes. So the swipe has not been exercised since those
+landed, and "still does not work" is an assumption, not a measurement.
+
+A recognizer whose delegate vetoes it does go straight to `.failed` without notifying its targets,
+so silence from `handleSystemPan` genuinely cannot tell a veto apart from a missed target. That
+ambiguity is now removed rather than reasoned around — see the three diagnostics below.
 
 **Two facts found late, both of which invalidate earlier reasoning:**
 
@@ -87,17 +107,51 @@ signature of a veto, not of a missed target.
   necessarily answers no there, and returning `nil` makes UIKit veto the gesture outright.
 
 Both are fixed — all parallax recognizers are observed, and an interaction controller is always
-vended for our pop with a 50ms watchdog finishing it when nothing drives it — and the swipe still
-does not work. That is where the next attempt starts.
+vended for our pop.
 
-**Untested hypotheses:**
+**What changed this session.**
+
+- **`wantsInteractiveStart` now distinguishes the two kinds of pop.** Vending an interaction
+  controller for *every* pop made every back-button press start paused at 0% and wait for
+  `scheduleInteractionWatchdog` to notice nobody was driving it — the log confirms
+  `COVERZOOM interaction watchdog — nothing drove it, finishing` fired on **171** pops, i.e. all of
+  them, ~50–60 ms after each one started. The distinction that *is* decidable at
+  `interactionControllerFor:` time is whether a finger is down: an edge swipe is asked from
+  `gestureRecognizerShouldBegin:` with the pan holding touches, a back button raises its pop on
+  touch *up* with `panTouches=0` (visible on every `interactionAsk` line in the log). So
+  `wantsInteractiveStart = observedPans.contains { $0.numberOfTouches > 0 }`. Non-nil is still
+  always returned, so the veto this document warns about cannot come back. Translation is still
+  not consulted — it is zero at that instant, and testing it is what used to return `nil`.
+- **The completion watchdog no longer kills a swipe in progress.** It was a flat "2× duration +
+  0.3 s then force it", which would tear the screen away from a finger still dragging. It now
+  extends its deadline while `fractionComplete` is still moving, up to three times.
+
+**Diagnostics added — one device round-trip should now settle it:**
+
+- `COVERZOOM shouldBegin …` — `CoverZoomPanDelegateSpy` sits in front of UIKit's own
+  `_UINavigationInteractiveTransitionBase` on each pop recognizer and *forwards everything*,
+  reading the `gestureRecognizerShouldBegin:` answer on the way past. This is not the same as the
+  two attempts in the "ruled out" table: UIKit's object is still the delegate that does the work,
+  so the arming path is untouched. DEBUG only.
+- `COVERZOOM edgeSample +Nms […]` — samples both pop recognizers' `state` and `numberOfTouches` at
+  +120/+260/+420 ms after an edge touch. Answers "did either recognizer ever leave `.possible`?"
+  without depending on a target callback that a vetoed recognizer will never make.
+- `COVERZOOM edgeTouch` now walks the **whole chain from the hit-test view up to the window**,
+  listing every recognizer at every level, instead of guessing at the nav view and top VC's view.
+  This is hypothesis 3's requested extension.
+
+**Read them like this:** `answer=false` on `shouldBegin` ⇒ UIKit is vetoing, and the next question
+is why (the delegate pair is no longer a candidate). No `shouldBegin` line at all, with
+`edgeSample` showing `st=0` throughout ⇒ the recognizer never even tried, so something upstream is
+taking the touch and the extended `edgeTouch` chain names it. `answer=true` followed by movement
+⇒ the swipe now works and this item is closed.
+
+**Untested hypotheses that remain:**
 1. SwiftUI's `NavigationStack` handles the interactive pop itself and never routes it through
    `UINavigationController`'s delegate.
 2. `preferredTransition` on the pushed controller wins over the delegate for interactive pops.
-   Logged as `fromPreferredTransition` / `toPreferredTransition`; observed `nil` so far.
-3. Something in the SwiftUI content consumes the touch before either recognizer sees it. The
-   `COVERZOOM edgeTouch` line dumps every recognizer on the nav view and top VC's view at
-   touch-down; extend it upward through the hierarchy.
+   Logged as `fromPreferredTransition` / `toPreferredTransition`; observed `nil` on every line of
+   the log, in every build.
 
 **Ruled out on device, with logs. Do not retry:**
 
@@ -110,63 +164,140 @@ does not work. That is where the next attempt starts.
 | SwiftUI `simultaneousGesture(TapGesture())` on the cell | Ate the `NavigationLink`'s activation — nothing opened at all |
 | Zero-duration `UILongPressGestureRecognizer` as touch observer | Starved the edge pan completely. Replaced by `CoverZoomTouchSpy`, which reports `touchesBegan` then immediately `.failed` |
 
-### 4.2 Rapid open → close → open leaves the back button dead
+### 4.2 Rapid open → close → open leaves the back button dead — fixed (two separate bugs)
 
 Reproduction: open a playlist, close it quickly, open another, try to close. The back button is
 visible but unpressable.
 
-**Mechanism, from the touch log:**
+**Mechanism, confirmed in the log** (timestamps 808986563.4 → 564.6, current build):
 
 ```
-touchDown x=125 y=208  coordinator=true  depth=1   ← tap landed while the close was still animating
-PHASE didDisappear popped=true
-ask op=1 → run push=true                           ← that tap started a new open inside the close
-touchDown x=109 y=203  coordinator=true  depth=2   ← another tap during that open
+563.396 touchDown x=102 y=362  coordinator=false depth=1   ← open
+563.894 touchDown x=42  y=81   coordinator=true  depth=2   ← back tap during the open
+        touch during push — completing it now
+        back tap was swallowed by the push — popping
+564.006 interaction watchdog — nothing drove it, finishing
+564.363 touchDown x=125 y=208  coordinator=true  depth=1   ← tap landed inside the close
+564.512 PHASE didDisappear popped=true
+564.519 ask op=1 → run push=true                           ← push started inside the pop
+564.605 touchDown x=109 y=203  coordinator=true  depth=2   ← and another inside that
+564.606 PHASE didAppear
+        (nothing, ever again — no ask op=2 on any subsequent press)
 ```
 
-Two transitions get stacked, and the wreckage leaves the stack in a state where the pop is never
-requested (no `ask op=2` at all on the failing press).
+**Fix 1 — settle a running dismiss on touch-down.** The tap that wedges it is the one at 564.363:
+a push raised while the pop's transition is still live. `noteTouchDown` already cut a running
+*push* short for exactly this reason; it now does the same for a running *pop*. Touches are
+delivered before the tap's action fires, so by the time SwiftUI activates the link the stack has
+settled and the push is an ordinary one. This does **not** deafen the list — the tap still works,
+the close just snaps to done first. Skipped while a pop gesture is genuinely being dragged.
 
-**The obvious fix is off the table.** Making the list deaf during the dismiss does stop it, and was
-tried — but the list staying live through the dismiss is the entire point of this work, and the
-user rejected it immediately. The stacking has to be handled *without* deafening the list: most
-likely by handling a push that arrives while a pop is in flight (settle or coalesce), rather than
-by preventing the tap.
+**Fix 2 — the fallback path leaked a disabled list.** Independent, and almost certainly the cause
+of the reports where the app looks completely normal and ignores every tap. `prepare` switches the
+list off for the length of a push (`suspendedList`), and both restore paths (`finish`,
+`animationEnded`) key off a `Session`. The geometry `guard` that falls through to the cross-fade
+returns **before** a `Session` exists — so every cross-faded push left the playlists list
+permanently, silently deaf. The log has 21 `COVERZOOM fallback` lines. It now re-enables the list
+on that path.
 
-Guardrails already in place that did **not** fix it, all still worth keeping:
-- Completion watchdog forcing any transition to finish past 2× duration + 0.3s.
+**Fix 3 — hardened the list on the way back in.** A pop sets the revealed list's frame from
+`context.finalFrame(for:)`, which is documented to return `.zero` when UIKit does not consider the
+controller part of the transition; a zero-sized list is invisible *and* untouchable, which reads
+exactly like "the list is dead during the dismiss". It now falls back to `container.bounds` and
+explicitly asserts `isUserInteractionEnabled` / `alpha` / `isHidden` / `transform` — the log has
+taps during a dismiss landing on `hit=UIViewControllerWrapperView` (i.e. past the list entirely)
+rather than on the list's own SwiftUI content, which is what a live list gives
+(`hit=PortalGroupMarkerView` / `PlatformGroupContainer`).
+
+Guardrails already in place, all still worth keeping:
+- Completion watchdog forcing any transition to finish past 2× duration + 0.3s (now extends its
+  deadline while the animation is still moving, so it cannot cut a live swipe short).
 - Settling any still-running animator when the next operation is requested.
 - `completeImmediately()` tearing down even when the animator is not in a finishable state.
 - Sweeping for orphaned `CoverZoomClipView`s on touch-down and disarming them (never fired).
 
-### 4.3 Dismiss when the detail is scrolled past the cover
+### 4.3 Dismiss when the detail is scrolled past the cover — fixed
 
 If the playlist view is scrolled so the hero artwork has left the viewport, the dismiss has no
-cover to fly — the card shrinks as a page rather than as a cover returning home.
+cover to fly.
 
-Fix direction: the pop needs a **snapshot** of the artwork taken while it was last visible,
-composited into the card, rather than relying on the live hero view. This is a real change to how
-the card is composed, not a tweak.
+**Why, precisely:** the hero probe is *not* gone — the hero is a scroll view's content, not a lazy
+row — so it keeps resolving, to a rect above the top of the screen. The animator's arithmetic
+stays correct; it is the *pixels* that are missing, clipped away by the detail's own scroll view.
+So the card flies home carrying an empty square.
 
-### 4.4 Navigation-bar handover
+**Fix, and it needs no snapshot.** `CoverZoomRegistry.heroIsOnScreen(for:in:)` asks whether the
+measured hero is (>92%) inside the container. When it is not, `prepare` sets
+`Session.dissolvesOntoCell`, which does two things: the source row's artwork is **left visible**
+(no `beginFlight`), and the card dissolves over the tail of the travel onto it. The shrink is still
+the motion; the hand-over happens as the card arrives. `CoverZoomTuning.dissolveDelayFactor`
+(0.55) is the knob.
 
-The outgoing screen's items fade (`setBarItemAlpha` in `CoverZoomTransition.swift`, now extended to
+The dissolve is a second `addAnimations(_:delayFactor:)` block on the property animator rather than
+an alpha written in `applyState`. That matters: `applyState` runs **exactly twice** (once per end
+state) — `UIViewPropertyAnimator` interpolates between the two values it is given — so an alpha
+set there would fade across the whole transition instead of the tail of it. As a delay factor it
+also scrubs correctly under an interactive pop.
+
+**Bonus fix, same cause.** `recordHero` had no sanity check, so a hero measured while scrolled off
+screen was persisted as *the* prediction for every future first push. The log caught it:
+
+```
+COVERZOOM run push=false hero=(-97.3, 77.3, 320.0, 320.3)
+```
+
+It now only records a rect that is inside the container. The measurement is still *used* for that
+transition; it just never becomes the cached answer.
+
+### 4.4 Navigation-bar handover — implemented
+
+The outgoing screen's items fade (`setBarItemAlpha` in `CoverZoomTransition.swift`, extended to
 cover the system back chevron, which is owned by `UINavigationBar` and which the item-level fade
-structurally could not reach). The **incoming** screen's items have no fade-in at all — they appear
-whenever UIKit swaps the bar's content, which reads as an abrupt snap. The user wants a quick
-blur-style fade out and in, as in `~/Downloads/ScreenRecording_08-21-2026 02-02-57_1.MP4`.
+structurally could not reach). The **incoming** screen had no fade-in at all — its buttons appeared
+whenever UIKit swapped the bar's content, over a card still the size of a playlist row.
 
-**Do not fade `UINavigationController.navigationBar` to do this.** It was tried and it soft-locked
-the app: that bar is shared by every screen on the stack, so it took the playlists list's own
-header buttons with it, and any transition that did not reach `finish` left them invisible and
-untappable. `CoverZoomAnimator.crossFadeNavigationBar` is retained, uncalled, recording this. A
-correct version drives the two `navigationItem`s' item groups independently, scoped per view
-controller.
+`CoverZoomAnimator.startBarItemFadeIn` now handles the arriving side, scoped to **one**
+`UINavigationItem`: the detail's on a push, the list's on a pop, plus the back chevron on a push
+only (on a pop the chevron in the bar still belongs to the screen leaving, which
+`setBarItemAlpha` is already fading out).
 
-### 4.5 Cosmetic
+**Do not fade `UINavigationController.navigationBar` to do this** — that bar is shared by every
+screen on the stack, so it takes the list's own header buttons with it. The dead
+`crossFadeNavigationBar` that recorded this is gone, replaced by the scoped version.
 
-Long-pressing the back button shows UIKit's back-history menu with blank entries, because the
-detail screens set `navigationTitle("")`. Pre-existing and unrelated.
+Two implementation details that are not optional:
+
+- **Held at zero on a display link, not set once.** UIKit installs the incoming item's views
+  partway through the transition, so a single write at `prepare` time misses them — the same
+  reason `applyMorphPassthrough` re-applies each frame.
+- **Four independent restores.** A bar button left at alpha 0 is invisible *and* untappable (UIKit
+  skips near-transparent views when hit testing), which is the soft lock the earlier attempt
+  shipped. Alpha is restored by `barFadeTick` reaching its deadline, by `finish`, by
+  `animationEnded`, and by a `Task` watchdog that strong-captures the zeroed views so it holds even
+  if the animator has been deallocated.
+
+The fade starts at `duration − barFadeIn − 0.06` so it is over before the pushed detail's
+`viewDidAppear` writes its own items back to full alpha — that call is not animated and would
+otherwise cut the fade off at its brightest point.
+
+### 4.5 Cosmetic — fixed
+
+Long-pressing the back button showed UIKit's back-history menu with blank entries, because the
+hero screens set `navigationTitle("")` and UIKit builds that menu from each stack entry's
+`backButtonTitle` / `title`.
+
+`musicBackHistoryTitle(_:)` (`MusicDesignSystem.swift`) sets `navigationItem.backButtonTitle` and
+pins `backButtonDisplayMode = .minimal`, so the menu is populated while the visible back button
+stays a bare chevron. Applied to the three pushed hero screens: Favorite Songs, playlist/album
+detail, browse album detail. The modal sheet that also uses `navigationTitle("")` is left alone —
+it is not on a navigation stack.
+
+**The Library root is deliberately still blank in that menu.** `backButtonTitle` does double duty:
+it names the screen in the history *and* supplies the visible label on the back button of anything
+pushed from it. Only a screen that also opts into `backButtonDisplayMode = .minimal` can carry one
+without changing what the user sees, and the root pushes plenty of screens that don't (Genres,
+Artists, Settings…) — naming it would turn every one of their bare chevrons into "‹ Library".
+Fixing the last blank row means auditing those screens, not changing this one.
 
 ---
 
@@ -202,7 +333,8 @@ Measured on device, container 440×956:
 
 `CoverZoomTuning`: `pushDuration` 0.50, `popDuration` 0.50, `easeOutQuint` (cubic Bézier
 `0.23, 1, 0.32, 1` — the user's pick), `screenCornerRadius` 48, `verticalLag` 1.0,
-`popCommitFraction` 0.33, `popCommitVelocity` 600, `barFadeOut` 0.12, `barFadeIn` 0.18.
+`dissolveDelayFactor` 0.55, `popCommitFraction` 0.33, `popCommitVelocity` 600, `barFadeOut` 0.12,
+`barFadeIn` 0.18.
 
 Note the durations are also the length of the "back button does nothing" window — UIKit refuses a
 pop while a transition runs — mitigated but not eliminated by the touch-interrupt.
@@ -222,9 +354,17 @@ xcrun devicectl device copy from --device 00008150-001A43E10C63401C \
 ```
 
 Lines: `COVERZOOM ask` (push/pop decisions, nav identity, preferredTransition), `run` / `fallback`
-(geometry used), `state` (card frame at both ends), `interactionAsk`, `pan`, `edgeTouch` (every
-recognizer at touch-down), `touchDown` (unconditional, with hit-test), `decline`, `syncGestures`,
-`watchdog`, `orphaned clip`.
+(geometry used, plus `heroOnScreen`), `state` (card frame at both ends), `interactionAsk`, `pan`,
+`shouldBegin` (UIKit's own verdict on the swipe), `edgeTouch` (full recognizer chain from the
+hit-test view to the window), `edgeSample` (recognizer states a few frames into a swipe),
+`touchDown` (unconditional, with hit-test), `decline`, `syncGestures`, `watchdog`,
+`orphaned clip`.
+
+**The log is append-only across installs and has no launch marker.** This cost a whole round of
+wrong conclusions: §4.1's "measured" claim about the swipe was read out of a region belonging to
+two builds earlier. Before concluding anything, find where the *current* build starts — the
+easiest anchor is the first line carrying a field only this build emits — and read only past it.
+`grep -c` over the whole file answers a question nobody asked.
 
 ---
 

@@ -259,6 +259,9 @@ struct BrowseAlbumDetailView: View {
             if dismissalPhase == .gone { dismissalPhase = .idle }
         }
         .navigationTitle("")
+        // Bar stays untitled (the hero carries the name); this names the screen only in the
+        // back button's long-press history menu.
+        .musicBackHistoryTitle(displayTitle)
         .musicNavigationBarTitleDisplayMode(.inline)
         .musicNavigationBarVisibleWhenPushed()
         .musicHeroAlbumNavigationChrome(palette: backdropPalette)
