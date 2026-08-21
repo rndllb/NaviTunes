@@ -70,13 +70,35 @@ private struct CoverZoomContext: ViewModifier {
 
 private struct CoverZoomSource: ViewModifier {
     let id: String
+    let style: CoverZoomStyle
     @Environment(\.coverZoomNamespace) private var namespace
 
     func body(content: Content) -> some View {
-        if let namespace {
-            content.matchedTransitionSource(id: id, in: namespace)
-        } else {
+        switch style {
+        case .custom:
+            // The custom animator resolves its own geometry from `coverZoomCellAnchor`, and a
+            // `matchedTransitionSource` here would additionally arm SwiftUI's zoom on the same
+            // id. Register the style so the pushed detail knows which transition it was opened
+            // with, and otherwise stay out of the way.
+#if os(iOS)
+            // The row anchor lets a touch be resolved back to this cover. Two other ways of
+            // recording the tap were tried and reverted: a `simultaneousGesture(TapGesture())`
+            // here swallowed the `NavigationLink`'s activation so nothing opened at all, and
+            // setting it from the link's destination closure named whichever row SwiftUI
+            // happened to build last — including buffered rows past the fold, which made the
+            // card fly in from below the bottom of the screen.
             content
+                .onAppear { CoverZoomRegistry.shared.setStyle(.custom, for: id) }
+                .coverZoomRowAnchor(id: id)
+#else
+            content
+#endif
+        case .system:
+            if let namespace {
+                content.matchedTransitionSource(id: id, in: namespace)
+            } else {
+                content
+            }
         }
     }
 }
@@ -114,19 +136,38 @@ private struct CoverZoomDestination: ViewModifier {
     @Environment(\.coverZoomNamespace) private var namespace
 
     func body(content: Content) -> some View {
-        if let namespace {
-            content
-                .navigationTransition(.zoom(sourceID: id, in: namespace))
 #if os(iOS)
+        // Opened from a `.custom` cell: our own animator drives this push, and
+        // `preferredTransition` must stay unset for UIKit to consult the delegate at all.
+        // (Handoff §3 records *clearing* `preferredTransition` after the push breaking
+        // swipe-back — that failed because SwiftUI was still setting it in the first place.
+        // Never setting it is a different thing.)
+        if CoverZoomRegistry.shared.style(for: id) == .custom {
+            content
+                .coverZoomCustomTransition(id: id)
                 .background {
                     if let dismissalPhase {
                         CoverZoomDismissalObserver(phase: dismissalPhase)
                     }
                 }
-#endif
+        } else if let namespace {
+            content
+                .navigationTransition(.zoom(sourceID: id, in: namespace))
+                .background {
+                    if let dismissalPhase {
+                        CoverZoomDismissalObserver(phase: dismissalPhase)
+                    }
+                }
         } else {
             content
         }
+#else
+        if let namespace {
+            content.navigationTransition(.zoom(sourceID: id, in: namespace))
+        } else {
+            content
+        }
+#endif
     }
 }
 
@@ -606,8 +647,13 @@ extension View {
     /// Marks an album/playlist cover cell as the zoom origin. `id` must match
     /// the id the pushed detail passes to ``coverZoomDestination(id:)``
     /// (album id / playlist id / home-mix id).
-    func coverZoomSource(id: String) -> some View {
-        modifier(CoverZoomSource(id: id))
+    ///
+    /// Pass `style: .custom` to route the push through the local animator in
+    /// `CoverZoomCustomTransition.swift` instead of SwiftUI's `.zoom`. A `.custom` cell must
+    /// also mark its artwork with ``coverZoomCellAnchor(id:cornerRadius:)`` so the animator
+    /// has an origin rect; without one the push degrades to a cross-fade.
+    func coverZoomSource(id: String, style: CoverZoomStyle = .system) -> some View {
+        modifier(CoverZoomSource(id: id, style: style))
     }
 
     /// Applies the zoom transition on a pushed album/playlist detail root.
