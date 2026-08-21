@@ -375,6 +375,24 @@ private struct CoverZoomDismissalObserver: UIViewControllerRepresentable {
             }
         }
 
+        /// The navigation bar's own back-button views, found by class name because UIKit exposes
+        /// no handle on them. Same technique as the morph-container and zoom-gesture lookups
+        /// elsewhere in this file.
+        private static func backButtonViews(in bar: UIView?) -> [UIView] {
+            guard let bar else { return [] }
+            var found: [UIView] = []
+            func walk(_ view: UIView) {
+                let name = String(describing: type(of: view))
+                if name.contains("BackButton") || name.contains("BackIndicator") {
+                    found.append(view)
+                    return
+                }
+                view.subviews.forEach(walk)
+            }
+            walk(bar)
+            return found
+        }
+
         private static func firstScrollView(in view: UIView) -> UIScrollView? {
             if let s = view as? UIScrollView { return s }
             for sub in view.subviews {
@@ -542,9 +560,14 @@ private struct CoverZoomDismissalObserver: UIViewControllerRepresentable {
         /// bar item group on the navigation stack entry's navigation item.
         private func setBarItemAlpha(_ alpha: CGFloat, animated: Bool) {
             guard let item = parent?.navigationItem else { return }
+            // The system back chevron is owned by `UINavigationBar`, not by the navigation
+            // item's leading/trailing groups, so fading only those left it on screen after the
+            // rest of the header had gone — visible for the whole pop and beyond.
+            let backViews = Self.backButtonViews(in: parent?.navigationController?.navigationBar)
             let views = (item.trailingItemGroups + item.leadingItemGroups)
                 .flatMap(\.barButtonItems)
                 .compactMap(\.customView)
+                + backViews
             guard !views.isEmpty else { return }
             if animated {
                 UIView.animate(withDuration: 0.15) {
