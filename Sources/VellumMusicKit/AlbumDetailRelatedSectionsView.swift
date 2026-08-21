@@ -104,7 +104,7 @@ struct AlbumDetailRelatedSectionsView: View {
                                 album: album,
                                 backdropPalette: backdropPalette,
                             )
-                                .coverZoomSource(id: album.id)
+                                .coverZoomSource(id: album.id, style: .custom)
                         }
                         .buttonStyle(.plain)
                     }

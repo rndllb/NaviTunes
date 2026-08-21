@@ -210,7 +210,9 @@ struct HomeView: View {
                             ServerPlaylistDetailView(album: album)
                         } label: {
                             heroCard(album: album)
-                                .coverZoomSource(id: album.id)
+                                // The cover inside is square-cornered; the card's clip supplies
+                                // the visible rounding, so the origin rect takes that radius.
+                                .coverZoomSource(id: album.id, style: .custom, cellCornerRadius: MusicDesign.homeTopPickCardCorner)
                         }
                         .buttonStyle(.plain)
                         .libraryAlbumContextMenu(album)
@@ -233,7 +235,7 @@ struct HomeView: View {
                             ServerPlaylistDetailView(album: album)
                         } label: {
                             shelfCard(album: album)
-                                .coverZoomSource(id: album.id)
+                                .coverZoomSource(id: album.id, style: .custom)
                         }
                         .buttonStyle(.plain)
                         .libraryAlbumContextMenu(album)
@@ -259,7 +261,7 @@ struct HomeView: View {
                                 ServerPlaylistDetailView(album: album)
                             } label: {
                                 shelfCard(album: album)
-                                    .coverZoomSource(id: album.id)
+                                    .coverZoomSource(id: album.id, style: .custom)
                             }
                             .buttonStyle(.plain)
                             .libraryAlbumContextMenu(album)
@@ -268,7 +270,7 @@ struct HomeView: View {
                                 ServerPlaylistDetailView(playlist: playlist)
                             } label: {
                                 playlistShelfCard(playlist: playlist)
-                                    .coverZoomSource(id: playlist.id)
+                                    .coverZoomSource(id: playlist.id, style: .custom)
                             }
                             .buttonStyle(.plain)
                             .libraryPlaylistContextMenu(playlist)
@@ -336,7 +338,7 @@ struct HomeView: View {
                             ServerPlaylistDetailView(playlist: playlist)
                         } label: {
                             playlistShelfCard(playlist: playlist)
-                                .coverZoomSource(id: playlist.id)
+                                .coverZoomSource(id: playlist.id, style: .custom)
                         }
                         .buttonStyle(.plain)
                         .libraryPlaylistContextMenu(playlist)
