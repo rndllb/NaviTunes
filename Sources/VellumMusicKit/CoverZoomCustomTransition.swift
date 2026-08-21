@@ -1228,9 +1228,42 @@ final class CoverZoomPanDelegateSpy: NSObject, UIGestureRecognizerDelegate {
         }
     }
 
+    /// The gate that turned out to matter. Device log, three real edge swipes on the build that
+    /// added `edgeSample`: both pop recognizers sat at `st=0 n=0` for 420ms with the finger down
+    /// and `shouldBegin` was never called — UIKit refused to *deliver* the touch, which happens
+    /// here, one step before `shouldBegin`.
+    nonisolated func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        MainActor.assumeIsolated {
+            let answer = original.gestureRecognizer?(gestureRecognizer, shouldReceive: touch) ?? true
+            let point = touch.location(in: gestureRecognizer.view)
+            if point.x < 60 {
+                DebugUIRemote.log("COVERZOOM shouldReceiveTouch \(type(of: gestureRecognizer)) answer=\(answer) "
+                    + "x=\(String(format: "%.1f", point.x)) "
+                    + "delegateResponds=\(original.responds(to: Self.shouldReceiveTouchSelector))")
+            }
+            return answer
+        }
+    }
+
+    nonisolated func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive event: UIEvent) -> Bool {
+        MainActor.assumeIsolated {
+            let answer = original.gestureRecognizer?(gestureRecognizer, shouldReceive: event) ?? true
+            if !answer {
+                DebugUIRemote.log("COVERZOOM shouldReceiveEvent \(type(of: gestureRecognizer)) answer=false")
+            }
+            return answer
+        }
+    }
+
+    // `#selector` cannot disambiguate the two `shouldReceive:` overloads; name them directly.
+    private static let shouldReceiveTouchSelector = NSSelectorFromString("gestureRecognizer:shouldReceiveTouch:")
+    private static let shouldReceiveEventSelector = NSSelectorFromString("gestureRecognizer:shouldReceiveEvent:")
+
     // Everything else is UIKit's business.
     override func responds(to aSelector: Selector!) -> Bool {
         if aSelector == #selector(UIGestureRecognizerDelegate.gestureRecognizerShouldBegin(_:)) { return true }
+        if aSelector == Self.shouldReceiveTouchSelector { return true }
+        if aSelector == Self.shouldReceiveEventSelector { return true }
         if super.responds(to: aSelector) { return true }
         return original.responds(to: aSelector)
     }
@@ -1589,10 +1622,26 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
                 }
                 node = current.superview
             }
+            // Everything `_UINavigationInteractiveTransition`'s receive-touch gate is known to
+            // consult, so a refusal can be matched to its cause in one read.
+            let top = navigationController.topViewController
+            let item = top?.navigationItem
+            let navState = "barHidden=\(navigationController.isNavigationBarHidden) "
+                + "hidesBack=\(item?.hidesBackButton ?? false) "
+                + "leftItems=\(item?.leftBarButtonItems?.count ?? 0) "
+                + "leftSupplement=\(item?.leftItemsSupplementBackButton ?? false) "
+                + "leadingGroups=\(item?.leadingItemGroups.count ?? 0) "
+                + "backMode=\(item?.backButtonDisplayMode.rawValue ?? -1) "
+                + "backItem=\(item?.backBarButtonItem == nil ? "nil" : "set") "
+                + "coordinator=\(navigationController.transitionCoordinator != nil) "
+                + "modal=\(top?.presentedViewController == nil ? "nil" : "set") "
+                + "panDelegate=\(pan?.delegate.map { String(describing: type(of: $0)) } ?? "nil") "
+                + "topModalInPresentation=\(top?.isModalInPresentation ?? false)"
             DebugUIRemote.log("COVERZOOM edgeTouch x=\(String(format: "%.1f", point.x)) "
                 + "y=\(String(format: "%.0f", point.y)) depth=\(navigationController.viewControllers.count) "
                 + "panEnabled=\(pan?.isEnabled ?? false) panState=\(pan?.state.rawValue ?? -1) "
                 + "panView=\(pan?.view.map { String(describing: type(of: $0)) } ?? "nil") "
+                + navState + " "
                 + "recognizers=[\(lines.joined(separator: ", "))]")
 
             // The one question 4.1 still turns on: does either pop recognizer ever leave

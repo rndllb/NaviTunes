@@ -140,15 +140,44 @@ vended for our pop.
   listing every recognizer at every level, instead of guessing at the nav view and top VC's view.
   This is hypothesis 3's requested extension.
 
-**Read them like this:** `answer=false` on `shouldBegin` ⇒ UIKit is vetoing, and the next question
-is why (the delegate pair is no longer a candidate). No `shouldBegin` line at all, with
-`edgeSample` showing `st=0` throughout ⇒ the recognizer never even tried, so something upstream is
-taking the touch and the extended `edgeTouch` chain names it. `answer=true` followed by movement
-⇒ the swipe now works and this item is closed.
+**Result of the first round-trip (device, 2026-08-21 14:xx).** Three genuine edge swipes on a
+custom-zoomed detail — `touchDown x=2 / 4 / 0, depth=2, hit=CellHostingView`. Every one:
+
+```
+edgeSample +120ms [ParallaxPan/st=0/n=0, ParallaxPan/st=0/n=0]
+edgeSample +260ms [ParallaxPan/st=0/n=0, ParallaxPan/st=0/n=0]
+edgeSample +420ms [ParallaxPan/st=0/n=0, ParallaxPan/st=0/n=0]
+```
+
+and **no `shouldBegin` line at all**. The full `edgeTouch` chain shows both pop recognizers
+sitting on `UILayoutContainerView`, squarely in the touch's path, with nothing above them but
+`HostingView`s and the window's system gates. So:
+
+- It is **not a veto** — `gestureRecognizerShouldBegin:` was never reached.
+- It is **not a missed target** — the recognizers are in the chain and enabled.
+- `numberOfTouches == 0` with the finger still down 420 ms later means the touch was **never
+  delivered** to them. The only thing between "in the chain" and "received the touch" is the
+  delegate's `gestureRecognizer(_:shouldReceive:)` gate, which runs one step *before*
+  `shouldBegin` and which `_UINavigationInteractiveTransition` implements.
+
+That gate is where the answer is. `CoverZoomPanDelegateSpy` now logs its verdict
+(`COVERZOOM shouldReceiveTouch … answer=…`, plus `shouldReceiveEvent` when false), and the
+`edgeTouch` line now dumps everything the gate is known to consult on the top controller's
+`navigationItem` — `hidesBack`, `leftItems` / `leftSupplement` / `leadingGroups`, `backMode`,
+`backItem`, `barHidden`, `coordinator`, `modal`, `panDelegate`. The detail only has *trailing*
+toolbar items (checked in `detailToolbarContent`), so the classic "leading item disables the
+pop gesture" rule is not it on its face; the dump will say what is.
+
+**Read the next log like this:** `shouldReceiveTouch answer=false` ⇒ UIKit's gate refused, and
+the nav-item fields on the same swipe's `edgeTouch` line name the rule. `answer=true` but still
+`n=0` ⇒ the touch is being intercepted between delegate approval and delivery, which would point
+at the window-level `_UISystemGestureGateGestureRecognizer`s. No `shouldReceiveTouch` line at all
+⇒ UIKit is not even asking, and the spy's `responds(to:)` is the first thing to check.
 
 **Untested hypotheses that remain:**
 1. SwiftUI's `NavigationStack` handles the interactive pop itself and never routes it through
-   `UINavigationController`'s delegate.
+   `UINavigationController`'s delegate. (Weakened: the touch is being refused at the recognizer,
+   before any delegate question arises.)
 2. `preferredTransition` on the pushed controller wins over the delegate for interactive pops.
    Logged as `fromPreferredTransition` / `toPreferredTransition`; observed `nil` on every line of
    the log, in every build.
