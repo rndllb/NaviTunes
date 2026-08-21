@@ -848,12 +848,18 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
             // nominal duration, and tearing the screen away mid-gesture is worse than the stall
             // this guards against — so a transition that is still *moving* gets another window.
             // Three of them, then it is wedged whatever it looks like.
-            for _ in 0..<3 {
+            for round in 0..<12 {
                 try? await Task.sleep(for: .seconds(nominal * 2 + 0.3))
                 guard let self, let session, !session.didComplete else { return }
                 let fraction = propertyAnimator?.fractionComplete ?? 0
                 guard abs(fraction - lastFraction) <= 0.001 else {
                     lastFraction = fraction
+                    continue
+                }
+                // A finger holding a swipe still is not a stall: a scrubbed animator is
+                // `.active` but not running. Keep waiting — within reason — while that is so.
+                if round < 3, session.context.isInteractive,
+                   let animator = propertyAnimator, animator.state == .active, !animator.isRunning {
                     continue
                 }
 #if DEBUG
@@ -964,6 +970,9 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
         // sets its own items back to full alpha — that call is not animated and would otherwise
         // cut the fade off at its brightest point.
         barFadeHoldUntil = max(0, total - CoverZoomTuning.barFadeIn - 0.06)
+        // Under a finger the clock is meaningless — hold until the swipe is released and the
+        // transition finishes (`finish` releases the fade). The watchdog below still bounds it.
+        if session.context.isInteractive { barFadeHoldUntil = 4 }
         barFadeStart = CACurrentMediaTime()
         barFadeLink?.invalidate()
         let link = CADisplayLink(target: self, selector: #selector(barFadeTick))
@@ -976,7 +985,7 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
         // earlier attempt at this shipped. The zeroed views are captured strongly as well as
         // going through `releaseBarItemFade`, so this holds even if the animator is gone.
         Task { @MainActor [weak self, held = views] in
-            try? await Task.sleep(for: .seconds(total + 0.6))
+            try? await Task.sleep(for: .seconds(max(total, barFadeHoldUntil) + 0.6))
             self?.releaseBarItemFade(animated: false)
             held.forEach { if $0.alpha < 1 { $0.alpha = 1 } }
         }
@@ -1321,6 +1330,11 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
     /// The push currently animating, if any — used to cut an open short on touch-down.
     private weak var runningPushAnimator: CoverZoomAnimator?
     private var touchObserver: CoverZoomTouchSpy?
+    /// Our own edge swipe. See `installEdgePan`.
+    private var edgePan: UIScreenEdgePanGestureRecognizer?
+    /// True from the moment `handleEdgePan` raises a pop until that pop's gesture ends, so the
+    /// delegate knows the interaction controller it is vending has a driver.
+    private var edgePanPopInFlight = false
     /// The controller we pushed with our animator. Pops only belong to us when *this* is the
     /// one going away — otherwise popping the playlist *list* back to Library would zoom too,
     /// when it should be an ordinary slide.
@@ -1380,19 +1394,26 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
 
     // MARK: Gestures
 
-    /// Observes UIKit's own pop gesture rather than replacing it.
+    /// Keeps UIKit's own pop gesture observed, and **switched off while our detail is on top**.
     ///
-    /// An earlier version installed a private `UIScreenEdgePanGestureRecognizer` and called
-    /// `popViewController` from it. That popped the view controller but left SwiftUI's
-    /// `NavigationLink` still believing its destination was on screen, so tapping the *same*
-    /// playlist a second time did nothing — a navigation-state desync, visible immediately on
-    /// device. SwiftUI's own bookkeeping rides on the built-in gesture, so the built-in gesture
-    /// has to stay in charge of *starting* the pop; we only need its progress, which a target
-    /// added to the same recognizer gives us for free.
+    /// Why it is off: the built-in edge gesture does not drive custom animators. That is
+    /// UIKit's design, not a bug — once the navigation delegate answers `animationControllerFor`
+    /// with its own object for a pop, the built-in recognizer is not used for that pop, and it
+    /// declines the touch *without consulting anyone* (device log: both recognizers at
+    /// `st=0 n=0` for 420ms with the finger down, and neither `shouldReceiveTouch` nor
+    /// `shouldBegin` ever called, with UIKit's pristine delegate in place). The contract is the
+    /// one from the original custom-transitions session: custom animator ⇒ supply your own
+    /// gesture and drive the interaction controller yourself. That is `installEdgePan`.
+    ///
+    /// It stays observed anyway, so that `wantsInteractiveStart` and the touch-down settling
+    /// logic keep working on the screens where it *is* in charge (the playlists list).
     private func syncGestures() {
         guard let navigationController else { return }
         guard let systemPan = navigationController.interactivePopGestureRecognizer else { return }
-        systemPan.isEnabled = true
+        // Off only while the custom-zoomed detail is on top; an ordinary slide screen keeps it.
+        let customOnTop = customDetailController != nil
+            && navigationController.topViewController === customDetailController
+        systemPan.isEnabled = !customOnTop
 
         // This recognizer's `delegate` is UIKit's own `_UINavigationInteractiveTransitionBase`.
         // **It must stay installed.** That object is the only thing that consults
@@ -1458,6 +1479,11 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
             recognizer.addTarget(self, action: #selector(handleSystemPan(_:)))
             observedPans.append(recognizer)
         }
+        // Every built-in pop recognizer follows the same on/off rule as `interactivePopGestureRecognizer`.
+        for recognizer in observedPans where recognizer.isEnabled == customOnTop {
+            recognizer.isEnabled = !customOnTop
+        }
+        installEdgePan(on: navigationController)
 #if DEBUG
         // Off by default. With the spy in front of UIKit's delegate, device logs showed the pop
         // recognizers refusing every edge touch *without consulting the delegate protocol at all*
@@ -1490,6 +1516,113 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
         observer.delaysTouchesEnded = false
         navigationController.view.addGestureRecognizer(observer)
         touchObserver = observer
+    }
+
+    // MARK: Edge swipe
+
+    /// Our own left-edge pan, which starts and drives the interactive pop for custom-zoomed
+    /// details. The built-in gesture will not do this for a custom animator — see `syncGestures`.
+    ///
+    /// An earlier version of this idea was abandoned because `popViewController` from our own
+    /// recognizer "desynced `NavigationLink`" — tapping the same playlist again did nothing. The
+    /// back button is *also* a UIKit-initiated `popViewController`, and it has always kept
+    /// SwiftUI in sync through `navigationController(_:didShow:)`, which this proxy forwards. So
+    /// the pop itself cannot have been the cause; a transition that never reached
+    /// `completeTransition` (so `didShow` never fired) was. Every exit from the animator now
+    /// completes the transition, and every exit from this gesture finishes or cancels the
+    /// interaction controller.
+    private func installEdgePan(on navigationController: UINavigationController) {
+        guard edgePan == nil else { return }
+        let pan = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(handleEdgePan(_:)))
+        pan.edges = .left
+        pan.delegate = self
+        pan.maximumNumberOfTouches = 1
+        navigationController.view.addGestureRecognizer(pan)
+        edgePan = pan
+    }
+
+    /// True only when a swipe-back would be ours to animate: our detail is on top, with
+    /// something under it, and nothing else is mid-transition.
+    private var edgePanMayBegin: Bool {
+        guard let navigationController, let detail = customDetailController else { return false }
+        guard navigationController.viewControllers.count > 1,
+              navigationController.topViewController === detail,
+              navigationController.transitionCoordinator == nil else { return false }
+        guard let id = activeCustomID ?? lastPushedCustomID,
+              CoverZoomRegistry.shared.style(for: id) == .custom else { return false }
+        return true
+    }
+
+    @objc private func handleEdgePan(_ pan: UIScreenEdgePanGestureRecognizer) {
+        guard let navigationController, let view = navigationController.view else { return }
+        let width = max(view.bounds.width, 1)
+        let translation = pan.translation(in: view).x
+        let fraction = max(0, min(1, translation / width))
+        let velocity = pan.velocity(in: view).x
+
+#if DEBUG
+        if pan.state != .changed || Int(fraction * 20) % 4 == 0 {
+            DebugUIRemote.log("COVERZOOM edgePan state=\(pan.state.rawValue) "
+                + "frac=\(String(format: "%.2f", fraction)) v=\(String(format: "%.0f", velocity)) "
+                + "inFlight=\(edgePanPopInFlight) interaction=\(interactionController != nil) "
+                + "pct=\(String(format: "%.2f", interactionController?.percentComplete ?? -1)) "
+                + "coordinator=\(navigationController.transitionCoordinator != nil) "
+                + "interactiveCoordinator=\(navigationController.transitionCoordinator?.isInteractive ?? false)")
+        }
+#endif
+
+        switch pan.state {
+        case .began:
+            guard edgePanMayBegin else {
+#if DEBUG
+                DebugUIRemote.log("COVERZOOM edgePan began but may not pop — depth=\(navigationController.viewControllers.count) "
+                    + "topIsDetail=\(navigationController.topViewController === customDetailController) "
+                    + "coordinator=\(navigationController.transitionCoordinator != nil)")
+#endif
+                return
+            }
+            // Anything still settling is finished first — a pop cannot start over a live
+            // transition, and UIKit would silently drop the request.
+            if let running = runningAnimator, running.isRunning {
+                running.completeImmediately()
+                runningAnimator = nil
+            }
+            if navigationController.delegate !== self {
+                navigationController.delegate = self
+            }
+            // Raising the flag first: `popViewController` asks for the animator and the
+            // interaction controller synchronously, and `interactionControllerFor` reads it.
+            edgePanPopInFlight = true
+            isDrivingInteractionManually = true
+            navigationController.popViewController(animated: true)
+            if interactionController == nil {
+#if DEBUG
+                DebugUIRemote.log("COVERZOOM edgePan popped but no interaction controller was vended")
+#endif
+                edgePanPopInFlight = false
+                isDrivingInteractionManually = false
+            }
+        case .changed:
+            guard edgePanPopInFlight, let controller = interactionController else { return }
+            controller.update(fraction)
+        case .ended:
+            guard edgePanPopInFlight else { return }
+            defer { edgePanPopInFlight = false; interactionController = nil; isDrivingInteractionManually = false }
+            guard let controller = interactionController else { return }
+            let commits = fraction > CoverZoomTuning.popCommitFraction
+                || velocity > CoverZoomTuning.popCommitVelocity
+            if commits {
+                controller.finish(velocity: velocity)
+            } else {
+                controller.abort()
+            }
+        case .cancelled, .failed:
+            guard edgePanPopInFlight else { return }
+            defer { edgePanPopInFlight = false; interactionController = nil; isDrivingInteractionManually = false }
+            interactionController?.abort()
+        default:
+            break
+        }
     }
 
     /// Whether a touch landed on the navigation bar's back button. Generous on width — the tap
@@ -1567,7 +1700,8 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
         // before the tap's action fires, so by the time SwiftUI activates the link the stack has
         // already settled and the push is an ordinary one. Skipped while a pop gesture is
         // genuinely being dragged — that transition has a driver and must not be cut short.
-        let panDragging = observedPans.contains { $0.state == .began || $0.state == .changed }
+        let panDragging = edgePanPopInFlight
+            || observedPans.contains { $0.state == .began || $0.state == .changed }
         var settledTransition = false
         if !panDragging, let running = runningAnimator, running.isRunning, running.direction == .pop {
 #if DEBUG
@@ -1803,7 +1937,16 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
     /// own delegate — see `syncGestures()` — because that object is what asks us for an
     /// animator in the first place.
     nonisolated func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        true
+        MainActor.assumeIsolated {
+            if gestureRecognizer === edgePan {
+                let allowed = edgePanMayBegin
+#if DEBUG
+                DebugUIRemote.log("COVERZOOM edgePan shouldBegin=\(allowed)")
+#endif
+                return allowed
+            }
+            return true
+        }
     }
 
     nonisolated func gestureRecognizer(
@@ -1813,6 +1956,19 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
         MainActor.assumeIsolated {
             // The observer has to coexist with everything — scrolling, buttons, the pop swipe.
             gestureRecognizer === touchObserver || other === touchObserver
+        }
+    }
+
+    /// The detail's track list is a scroll view whose pan would otherwise race our edge pan
+    /// for the same touch. Make every other recognizer wait for the edge pan to fail — which it
+    /// does immediately for any touch that did not start at the edge, so scrolling is not
+    /// delayed anywhere else.
+    nonisolated func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldBeRequiredToFailBy other: UIGestureRecognizer
+    ) -> Bool {
+        MainActor.assumeIsolated {
+            gestureRecognizer === edgePan && other !== touchObserver
         }
     }
 
@@ -1941,11 +2097,14 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
             // Translation is deliberately not consulted: at `shouldBegin` time it is zero, and
             // testing for it is what used to make this return `nil` — which UIKit reads as "no
             // interactive pop available" and answers by vetoing the gesture outright.
-            let fingerDown = observedPans.contains { $0.numberOfTouches > 0 }
+            let fingerDown = edgePanPopInFlight || observedPans.contains { $0.numberOfTouches > 0 }
             controller.wantsInteractiveStart = fingerDown
             interactionController = controller
-            isDrivingInteractionManually = false
-            if fingerDown { scheduleInteractionWatchdog(for: controller) }
+            // Our own edge pan always drives by hand; the built-in gesture is given the chance
+            // to drive first and only taken over if it leaves the controller parked (see
+            // `handleSystemPan`).
+            isDrivingInteractionManually = edgePanPopInFlight
+            if fingerDown && !edgePanPopInFlight { scheduleInteractionWatchdog(for: controller) }
             return controller
         }
         if let original,
@@ -1973,7 +2132,8 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
             try? await Task.sleep(for: .milliseconds(50))
             guard let self, let controller, self.interactionController === controller else { return }
             guard controller.percentComplete <= 0.0001 else { return }
-            let panIsLive = self.observedPans.contains { $0.state == .began || $0.state == .changed || $0.numberOfTouches > 0 }
+            let panIsLive = self.edgePanPopInFlight
+                || self.observedPans.contains { $0.state == .began || $0.state == .changed || $0.numberOfTouches > 0 }
             guard !panIsLive else { return }
 #if DEBUG
             DebugUIRemote.log("COVERZOOM interaction watchdog — nothing drove it, finishing")

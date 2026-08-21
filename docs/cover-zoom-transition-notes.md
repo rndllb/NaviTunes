@@ -174,19 +174,63 @@ the nav-item fields on the same swipe's `edgeTouch` line name the rule. `answer=
 at the window-level `_UISystemGestureGateGestureRecognizer`s. No `shouldReceiveTouch` line at all
 ⇒ UIKit is not even asking, and the spy's `responds(to:)` is the first thing to check.
 
-**Untested hypotheses that remain:**
-1. SwiftUI's `NavigationStack` handles the interactive pop itself and never routes it through
-   `UINavigationController`'s delegate. (Weakened: the touch is being refused at the recognizer,
-   before any delegate question arises.)
-2. `preferredTransition` on the pushed controller wins over the delegate for interactive pops.
-   Logged as `fromPreferredTransition` / `toPreferredTransition`; observed `nil` on every line of
-   the log, in every build.
+**Second round-trip (same day, spy off).** Eight more edge touches (x=0–4, depth 2) with UIKit's
+**pristine** delegate in place: identical — `st=0 n=0` throughout, no `shouldReceiveTouch`, no
+`shouldBegin`, no pop. The proxy was not the cause. Nav-item state on every one was clean:
+`hidesBack=false leftItems=0 leadingGroups=0 backMode=minimal coordinator=false barHidden=false`.
+
+**The actual answer, and the fix now installed.** Put together, the evidence describes UIKit's
+*documented* behaviour rather than a bug: the navigation controller's built-in edge gesture does
+not drive custom animators. Once the delegate answers `animationControllerFor` for a pop with its
+own object, the built-in recognizer is not used for that pop — and it declines the touch without
+consulting anyone, which is exactly the silent `n=0` signature. It only ever "worked" (as
+parallax) when the delegate was out of the picture. The contract from the original
+custom-transitions guidance is: custom animator ⇒ **supply your own gesture and drive the
+interaction controller yourself.**
+
+That is what `CoverZoomNavigationDelegate.installEdgePan` / `handleEdgePan` now do:
+
+- A `UIScreenEdgePanGestureRecognizer(edges: .left)` on the navigation controller's view,
+  delegate = the proxy. `gestureRecognizerShouldBegin` allows it only when our detail is on top,
+  with something under it, and no transition running (`edgePanMayBegin`). Every other recognizer
+  is made to wait for it to fail (`shouldBeRequiredToFailBy`), which costs nothing away from the
+  edge because a screen-edge pan fails on the first touch that isn't at the edge.
+- `.began` → settle anything still animating, re-assert the navigation delegate, raise
+  `edgePanPopInFlight`, then `popViewController(animated: true)`. UIKit asks for the animator and
+  the interaction controller synchronously inside that call; `interactionControllerFor` sees the
+  flag, vends the percent-driven controller with `wantsInteractiveStart = true`, and marks it as
+  manually driven. `.changed` → `update(fraction)`. `.ended` → commit on
+  `popCommitFraction` / `popCommitVelocity`, else cancel. `.cancelled`/`.failed` → cancel.
+- UIKit's own pop recognizers are **disabled while the custom detail is on top** (`syncGestures`)
+  so they cannot race ours, and re-enabled for the playlists list, which still uses them.
+- The completion watchdog treats a scrubbed-but-not-running animator under an interactive
+  transition as "held by a finger", not "stalled", for the first three windows. The incoming
+  bar-item fade holds until `finish` when the transition is interactive.
+
+**On the old objection** — "own recognizer + `popViewController` desyncs `NavigationLink`": the
+back button *is* a UIKit-initiated `popViewController`, and it has always kept SwiftUI in sync,
+through the `navigationController(_:didShow:)` callbacks this proxy forwards. The pop was never
+the problem; a transition that never reached `completeTransition` (so `didShow` never fired) was.
+That is exactly the class of bug §4.2 and the fallback-path leak turned out to be, and every exit
+path now completes.
+
+**Not yet exercised on device** — the user could not test at the time. Read the next log for
+`COVERZOOM edgePan shouldBegin=true` followed by `edgePan state=1` (began), then `ask op=2` /
+`interactionAsk … isSwipe` and `edgePan state=2 frac=…` lines with `pct` tracking `frac`. If
+`shouldBegin` never appears, the touch is not reaching recognizers on the navigation view at all
+and the window-level `_UISystemGestureGateGestureRecognizer`s become the suspect. If it begins
+but `ask op=2` is missing, `popViewController` was refused — check `coordinator` on the same line.
+A cancelled swipe should end with `PHASE didAppear` and the detail still on top; a committed one
+with `PHASE didDisappear popped=true` and the playlist tappable again.
+
+**Remaining hypothesis, now unlikely:** `preferredTransition` on the pushed controller wins over
+the delegate for interactive pops — observed `nil` on every line of every build.
 
 **Ruled out on device, with logs. Do not retry:**
 
 | Attempt | Result |
 |---|---|
-| Own `UIScreenEdgePanGestureRecognizer` + `popViewController` | Pops, but desyncs SwiftUI's `NavigationLink` state |
+| Own `UIScreenEdgePanGestureRecognizer` + `popViewController` | Pops; was believed to desync `NavigationLink` — **re-instated 2026-08-21**, see the fix above; the desync was a transition that never completed |
 | Taking `_UIParallaxTransitionPanGestureRecognizer.delegate` and answering `shouldBegin` | Gesture recognizes, pop never armed. That delegate is UIKit's `_UINavigationInteractiveTransitionBase` — the only object that consults `UINavigationControllerDelegate` on a gesture pop |
 | Setting that delegate to `nil` | Pop happens via the recognizer's target/action but bypasses our delegate → UIKit's parallax |
 | Custom `UIViewControllerInteractiveTransitioning` driving progress by hand | Never scrubbed; UIKit substituted its parallax. UIKit can only scrub an animator that vends `interruptibleAnimator(using:)` |
