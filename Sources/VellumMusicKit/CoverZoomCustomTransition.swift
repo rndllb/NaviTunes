@@ -460,32 +460,16 @@ private struct CoverZoomAnchorProbe: UIViewRepresentable {
             // Install the delegate as soon as a custom cell is on screen. Doing it from the
             // pushed detail is too late: the very first push of a session would find no
             // delegate at all and use the default slide.
-            if isCell {
-                if let nav = Self.enclosingNavigationController(of: self) {
-                    CoverZoomNavigationDelegate.installIfNeeded(on: nav)
-                } else {
-#if DEBUG
-                    DebugUIRemote.log("COVERZOOM cell \(registeredID) found no navigation controller — push will be SwiftUI's")
-#endif
-                }
+            if isCell, let nav = Self.enclosingNavigationController(of: self) {
+                CoverZoomNavigationDelegate.installIfNeeded(on: nav)
             }
         }
 
-        /// The navigation controller this view is ultimately presented in.
-        ///
-        /// Walks the *whole* responder chain rather than stopping at the first view controller.
-        /// That first controller is not always the screen: `List` and collection-view rows are
-        /// hosted by their own cell controllers (`CellHostingView`), whose `navigationController`
-        /// is nil — stopping there meant every cell on Home, Search and the New tab installed
-        /// nothing, SwiftUI's delegate ran the push as a plain slide, and ours only arrived with
-        /// the detail, in time for the pop alone. Library's cells sit in a plain `ScrollView`,
-        /// which is why it was the one tab that worked.
         static func enclosingNavigationController(of view: UIView) -> UINavigationController? {
             var responder: UIResponder? = view
             while let current = responder {
-                if let nav = current as? UINavigationController { return nav }
-                if let controller = current as? UIViewController, let nav = controller.navigationController {
-                    return nav
+                if let controller = current as? UIViewController {
+                    return controller.navigationController
                 }
                 responder = current.next
             }
