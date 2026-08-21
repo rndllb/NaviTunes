@@ -1197,6 +1197,9 @@ final class CoverZoomClipView: UIView {}
 /// forwards *everything* to it — including the `shouldBegin` call itself, whose answer it merely
 /// reads on the way past. Compiled out of Release.
 final class CoverZoomPanDelegateSpy: NSObject, UIGestureRecognizerDelegate {
+    /// Launch with `VELLUM_DEBUG_PAN_SPY=1` to install. See `syncGestures` for why it is off.
+    static let isEnabled = ProcessInfo.processInfo.environment["VELLUM_DEBUG_PAN_SPY"] != nil
+
     private let original: UIGestureRecognizerDelegate
     private static var associationKey: UInt8 = 0
 
@@ -1456,10 +1459,15 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
             observedPans.append(recognizer)
         }
 #if DEBUG
-        // Read UIKit's verdict on the swipe without taking the decision over — see
-        // `CoverZoomPanDelegateSpy`. This is the measurement that separates "vetoed" from
-        // "never saw the touch", and the two have nothing in common as fixes.
-        candidates.forEach(CoverZoomPanDelegateSpy.installIfNeeded(on:))
+        // Off by default. With the spy in front of UIKit's delegate, device logs showed the pop
+        // recognizers refusing every edge touch *without consulting the delegate protocol at all*
+        // — no `shouldReceiveTouch`, no `shouldBegin`, `n=0` for 420ms. That is the signature of
+        // the recognizer testing its delegate's identity or class privately, which a proxy fails.
+        // Every measured failing swipe had the spy installed, so the pristine delegate plus the
+        // always-non-nil interaction controller has to be measured on its own first.
+        if CoverZoomPanDelegateSpy.isEnabled {
+            candidates.forEach(CoverZoomPanDelegateSpy.installIfNeeded(on:))
+        }
 #endif
         observedPan = systemPan
     }
