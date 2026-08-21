@@ -1089,8 +1089,6 @@ private struct ArtistDiscographyCard: View {
                     ArtistAlbumCardArtwork(url: item.artworkURL, seed: item.title)
                         .frame(width: layout.cardSide, height: layout.cardSide)
                         .clipShape(RoundedRectangle(cornerRadius: MusicDesign.albumCorner, style: .continuous))
-                        // Not an `AlbumArtworkView`, so the origin rect is marked by hand.
-                        .coverZoomCellAnchor(id: coverZoomId, cornerRadius: MusicDesign.albumCorner)
                     if showsRequestBadge {
                         // Compact glyph in the top-right corner of the cover signals
                         // "not on your server — tap to request via the request backend".
@@ -1128,7 +1126,7 @@ private struct ArtistDiscographyCard: View {
                 )
             }
             .frame(width: layout.cardSide, alignment: .leading)
-            .coverZoomSource(id: coverZoomId, style: .custom)
+            .coverZoomSource(id: coverZoomId)
         }
         .buttonStyle(.plain)
         .libraryAlbumContextMenu(libraryAlbumForContextMenu)

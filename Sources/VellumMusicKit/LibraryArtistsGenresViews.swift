@@ -640,7 +640,7 @@ struct LibraryGenreAlbumsView: View {
                             ServerPlaylistDetailView(album: album, librarySource: true)
                         } label: {
                             LibraryBrowsingAlbumGridCell(album: album)
-                                .coverZoomSource(id: album.id, style: .custom)
+                                .coverZoomSource(id: album.id)
                         }
                         .buttonStyle(.plain)
                         .libraryAlbumContextMenu(album)

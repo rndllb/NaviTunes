@@ -71,7 +71,6 @@ private struct CoverZoomContext: ViewModifier {
 private struct CoverZoomSource: ViewModifier {
     let id: String
     let style: CoverZoomStyle
-    let cellCornerRadius: CGFloat?
     @Environment(\.coverZoomNamespace) private var namespace
 
     func body(content: Content) -> some View {
@@ -88,14 +87,9 @@ private struct CoverZoomSource: ViewModifier {
             // setting it from the link's destination closure named whichever row SwiftUI
             // happened to build last — including buffered rows past the fold, which made the
             // card fly in from below the bottom of the screen.
-            //
-            // The environment request is what lets the cover inside register itself: every
-            // `AlbumArtworkView` under this cell becomes the origin anchor, so call sites need
-            // no knowledge of where their artwork lives.
             content
                 .onAppear { CoverZoomRegistry.shared.setStyle(.custom, for: id) }
                 .coverZoomRowAnchor(id: id)
-                .environment(\.coverZoomCellAnchorRequest, CoverZoomCellAnchorRequest(id: id, cornerRadius: cellCornerRadius))
 #else
             content
 #endif
@@ -681,10 +675,8 @@ extension View {
     /// `CoverZoomCustomTransition.swift` instead of SwiftUI's `.zoom`. A `.custom` cell must
     /// also mark its artwork with ``coverZoomCellAnchor(id:cornerRadius:)`` so the animator
     /// has an origin rect; without one the push degrades to a cross-fade.
-    /// `cellCornerRadius` overrides the artwork's own radius for the origin rect — use it when the
-    /// visible rounding belongs to a clipping container (Home Top Picks), not the artwork view.
-    func coverZoomSource(id: String, style: CoverZoomStyle = .system, cellCornerRadius: CGFloat? = nil) -> some View {
-        modifier(CoverZoomSource(id: id, style: style, cellCornerRadius: cellCornerRadius))
+    func coverZoomSource(id: String, style: CoverZoomStyle = .system) -> some View {
+        modifier(CoverZoomSource(id: id, style: style))
     }
 
     /// Applies the zoom transition on a pushed album/playlist detail root.
