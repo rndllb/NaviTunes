@@ -136,11 +136,18 @@ final class NowPlayingCoverZoomController: NSObject, UIViewControllerTransitioni
     }
 
     private func installPan() {
-        // `host.view`, not `viewIfLoaded`: attach happens before the controller is presented, so
-        // the view does not exist yet and the guarded version installed nothing at all — which
-        // is why swipe-to-dismiss did nothing on the first build of this. The presenter loads
-        // and lays the view out before presenting anyway (see `presentCover`).
-        guard pan == nil, let view = host?.view else { return }
+        // **The window, not the player's view.**
+        //
+        // The animator reparents the player into its clip view, and removing a view from its
+        // superview cancels the gesture recognizers attached to it — mid-`prepare`, before the
+        // animator has marked itself as dragging. The cancel handler then returned early, so
+        // nothing ever completed the transition: it stayed in flight forever, every later swipe
+        // was refused with `coordinator=true`, and the abandoned card sat over the app as a
+        // cover stuck in the middle of the screen.
+        //
+        // The window is never reparented. `gestureRecognizerShouldBegin` does the gating that
+        // attaching to the player used to do implicitly.
+        guard pan == nil, let view = host?.view.window ?? host?.view else { return }
         let recognizer = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
         recognizer.delegate = self
         recognizer.maximumNumberOfTouches = 1
@@ -148,10 +155,11 @@ final class NowPlayingCoverZoomController: NSObject, UIViewControllerTransitioni
         pan = recognizer
     }
 
-    /// Re-attaches the drag if the recognizer's view is no longer the controller's.
+    /// Moves the drag onto the window once there is one. Called from the present completion,
+    /// because the host has no window until it is on screen.
     func reinstallPanIfNeeded() {
-        guard let host else { return }
-        if let pan, pan.view === host.viewIfLoaded { return }
+        guard let window = host?.view.window else { return }
+        if let pan, pan.view === window { return }
         if let pan { pan.view?.removeGestureRecognizer(pan) }
         self.pan = nil
         installPan()
@@ -209,29 +217,22 @@ final class NowPlayingCoverZoomController: NSObject, UIViewControllerTransitioni
             // interaction controller, in that order, and the drag takes over from there.
             requestDismiss()
         case .changed:
-            interaction?.update(fraction: dismissFraction(for: finger, in: space))
+            interaction?.update(translation: finger.y - dragStart.y)
         case .ended:
-            let translation = pan.translation(in: space).y
+            let translation = finger.y - dragStart.y
             let velocity = pan.velocity(in: space).y
-            endDrag(committed: translation > 140 || velocity > 900)
+            endDrag(committed: translation > 120 || velocity > 700, velocity: velocity)
         case .cancelled, .failed:
-            endDrag(committed: false)
+            endDrag(committed: false, velocity: 0)
         default:
             break
         }
     }
 
-    /// How far through the dismiss the finger is. Travel is measured against the screen so the
-    /// card is roughly back in the pill by the time the finger reaches the bottom.
-    private func dismissFraction(for finger: CGPoint, in space: UIView) -> CGFloat {
-        let travel = max(space.bounds.height * 0.55, 1)
-        return max(0, min(1, (finger.y - dragStart.y) / travel))
-    }
-
-    private func endDrag(committed: Bool) {
+    private func endDrag(committed: Bool, velocity: CGFloat) {
         guard isInteractiveDismiss else { return }
         isInteractiveDismiss = false
-        interaction?.finish(committed: committed)
+        interaction?.finish(committed: committed, velocity: velocity)
         if !committed {
             // UIKit cancelled the dismissal, so the cover never left. SwiftUI was told it did.
             restorePresentation()
@@ -253,6 +254,9 @@ final class NowPlayingCoverZoomController: NSObject, UIViewControllerTransitioni
         )
 #endif
         // Never start a close on top of an unfinished open, and never start a second one.
+        // The recognizer lives on the window now, so this also has to answer "is the player
+        // even on screen" — which used to be implied by where it was attached.
+        guard host?.presentingViewController != nil else { return false }
         guard isSettled, canDismiss(), !isInteractiveDismiss else { return false }
         guard host?.transitionCoordinator == nil else { return false }
         // Downward, and more vertical than horizontal — everything else belongs to the player's
@@ -406,6 +410,10 @@ struct NowPlayingCoverPresenter<Content: View>: UIViewControllerRepresentable {
         /// no animation, and throw away the reused controller so the next open rebuilds cleanly.
         private func forceResolve() {
             let wanted = isPresentedBinding.wrappedValue
+            // Tear down a flight that is still on screen first. Without this the abandoned card
+            // and its cover snapshot stay in the window, floating over the app — the "album
+            // cover stuck in the middle blocking everything" a wedged drag left behind.
+            NowPlayingCoverAnimator.current?.finish(committed: !wanted)
             if let host = cover, host.presentingViewController != nil, !wanted {
                 host.dismiss(animated: false) { [weak self] in
                     self?.cover = nil
