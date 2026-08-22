@@ -119,6 +119,13 @@ private struct LibraryArtistSectionsList: View, Equatable {
             ArtistPageView(input: .libraryArtist(artist))
         } label: {
             LibraryArtistRowLabel(artist: artist)
+                .coverZoomSource(
+                    id: ArtistPageInput.coverZoomPageId(forName: artist.name),
+                    style: .custom,
+                    // The row's 52pt artwork is clipped to a circle outside the artwork view,
+                    // so the origin rect has to be told it is round.
+                    cellCornerRadius: 26,
+                )
         }
         .buttonStyle(.plain)
         .navigationLinkIndicatorVisibility(.hidden)

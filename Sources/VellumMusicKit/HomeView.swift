@@ -27,6 +27,7 @@ struct HomeView: View {
     /// matches it.
     @State private var navigateAlbum: AlbumSummary?
     @State private var navigatePlaylist: PlaylistSummary?
+    @State private var navigateArtistName: String?
 
     private let inset: CGFloat = MusicDesign.newTabHorizontalInset
 
@@ -183,6 +184,9 @@ struct HomeView: View {
             .navigationDestination(item: $navigatePlaylist) { playlist in
                 ServerPlaylistDetailView(playlist: playlist)
             }
+            .navigationDestination(item: $navigateArtistName) { name in
+                ArtistPageView(input: .named(name))
+            }
             .deepLinkPush(tab: .home, path: $navigationPath)
         }
         .coverZoomContext()
@@ -308,10 +312,17 @@ struct HomeView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 16) {
                     ForEach(artists) { artist in
-                        NavigationLink {
-                            ArtistPageView(input: .named(artist.name))
+                        Button {
+                            navigateArtistName = artist.name
                         } label: {
                             newArtistCircleTile(artist: artist)
+                                .coverZoomSource(
+                                    id: ArtistPageInput.coverZoomPageId(forName: artist.name),
+                                    style: .custom,
+                                    // The tile's rounding is a `clipShape(Circle())` outside the
+                                    // artwork, so the origin rect has to be told it is round.
+                                    cellCornerRadius: MusicDesign.artistCircleTileSize / 2,
+                                )
                         }
                         .buttonStyle(.plain)
                     }
