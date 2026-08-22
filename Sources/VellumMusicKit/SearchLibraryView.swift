@@ -8,13 +8,21 @@ struct SearchLibraryView: View {
     @State private var searchText = ""
     @State private var navigationPath = NavigationPath()
     @FocusState private var searchFieldFocused: Bool
+    /// The search session, held open across navigation.
+    ///
+    /// Focus alone cannot express it: pushing a detail resigns the text field, so a session
+    /// opened by tapping the bar *without typing* — the recents / browse view — collapsed the
+    /// moment anything was opened from it, and popping back landed on the plain Discover page
+    /// instead of the view the user came from. Latched on focus and cleared only by the
+    /// header's ✕, which is the one deliberate "leave search" action there is.
+    @State private var searchSessionLatched = false
 
     private var trimmedQuery: String {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var isSearchSessionActive: Bool {
-        searchFieldFocused || !trimmedQuery.isEmpty
+        searchSessionLatched || searchFieldFocused || !trimmedQuery.isEmpty
     }
 
     var body: some View {
@@ -25,7 +33,9 @@ struct SearchLibraryView: View {
                         searchText: $searchText,
                         scope: $scope,
                         searchFieldFocused: $searchFieldFocused,
+                        sessionActive: isSearchSessionActive,
                         showsScopePicker: isSearchSessionActive,
+                        onCancel: { searchSessionLatched = false },
                     )
                 }
                 DiscoverySearchView(
@@ -40,6 +50,9 @@ struct SearchLibraryView: View {
                 searchDestination(target)
             }
             .deepLinkPush(tab: .search, path: $navigationPath)
+            .onChange(of: searchFieldFocused) { _, focused in
+                if focused { searchSessionLatched = true }
+            }
         }
         .coverZoomContext()
         .animation(.easeInOut(duration: 0.2), value: isSearchSessionActive)
@@ -77,9 +90,13 @@ private struct SearchTabHeader: View {
     @Binding var searchText: String
     @Binding var scope: SearchScope
     @FocusState.Binding var searchFieldFocused: Bool
+    /// The owner's latched session — see `SearchLibraryView.searchSessionLatched`. The header
+    /// has to agree with it or the ✕ would vanish while the session it dismisses is still up.
+    let sessionActive: Bool
     let showsScopePicker: Bool
+    let onCancel: () -> Void
 
-    private var isSearching: Bool { searchFieldFocused || !searchText.isEmpty }
+    private var isSearching: Bool { sessionActive || searchFieldFocused || !searchText.isEmpty }
 
     var body: some View {
         VStack(spacing: isSearching ? 10 : 12) {
@@ -135,6 +152,7 @@ private struct SearchTabHeader: View {
                     Button {
                         searchText = ""
                         searchFieldFocused = false
+                        onCancel()
                     } label: {
                         Image(systemName: "xmark")
                             .font(.body.weight(.semibold))

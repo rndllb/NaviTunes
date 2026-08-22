@@ -13,6 +13,41 @@ enum CoverZoomStyle {
     case custom
 }
 
+/// Published into the environment by `coverZoomSource(id:style: .custom)` so the artwork inside
+/// the cell can register itself as the transition's origin without the call site having to
+/// find it. `AlbumArtworkView` reads this; a cell whose cover is something else marks it by hand
+/// with `coverZoomCellAnchor(id:cornerRadius:)`.
+struct CoverZoomCellAnchorRequest: Equatable {
+    let id: String
+    /// Overrides the artwork's own corner radius — for covers whose visible rounding belongs to
+    /// a clipping container rather than to the artwork view itself (Home Top Picks).
+    let cornerRadius: CGFloat?
+}
+
+private struct CoverZoomCellAnchorRequestKey: EnvironmentKey {
+    static let defaultValue: CoverZoomCellAnchorRequest? = nil
+}
+
+extension EnvironmentValues {
+    var coverZoomCellAnchorRequest: CoverZoomCellAnchorRequest? {
+        get { self[CoverZoomCellAnchorRequestKey.self] }
+        set { self[CoverZoomCellAnchorRequestKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// Registers this view as the cover-zoom origin when an enclosing `.custom` cell asked for
+    /// one, and otherwise does nothing. Applied inside `AlbumArtworkView`.
+    @ViewBuilder
+    func coverZoomCellAnchorIfRequested(_ request: CoverZoomCellAnchorRequest?, ownCornerRadius: CGFloat) -> some View {
+        if let request {
+            coverZoomCellAnchor(id: request.id, cornerRadius: request.cornerRadius ?? ownCornerRadius)
+        } else {
+            self
+        }
+    }
+}
+
 #if os(iOS)
 import UIKit
 
@@ -218,19 +253,37 @@ final class CoverZoomRegistry {
     /// `(60, 124, 320, 320)` on a 17 Pro — because the hero's geometry comes from the detail's
     /// layout, not its content. So the last measurement is an exact predictor, not a guess.
     /// Persisted so the first push after a cold launch is right too.
-    private var lastHeroWindowRect: CGRect?
-    private var lastHeroCornerRadius: CGFloat = 14
+    ///
+    /// Keyed by destination *kind* (`heroKind(for:)`): the playlist/album detail, the browse
+    /// album detail and Favorite Songs each have their own layout, and one global answer would
+    /// aim a first push at the wrong rect whenever the kinds differ. (Today all three happen to
+    /// share `min(max(w − 52, 260), 320)` at radius 14 — keying costs nothing and means the next
+    /// destination with a different hero does not regress every first push.)
+    private var lastHeroWindowRects: [String: CGRect] = [:]
+    private var lastHeroCornerRadii: [String: CGFloat] = [:]
 
     private static let heroRectDefaultsKey = "coverZoom.lastHeroWindowRect"
     private static let heroRadiusDefaultsKey = "coverZoom.lastHeroCornerRadius"
 
+    /// Which hero layout a cover id lands on. Derived from the id so the *source* side never
+    /// has to know the destination type.
+    static func heroKind(for id: String) -> String {
+        if id == "__favorite_songs__" { return "favorites" }
+        if id.hasPrefix("chart-browse:") { return "browse" }
+        return "detail"
+    }
+
     private init() {
-        if let stored = UserDefaults.standard.string(forKey: Self.heroRectDefaultsKey) {
-            let rect = NSCoder.cgRect(for: stored)
-            if rect.width > 1, rect.height > 1 { lastHeroWindowRect = rect }
+        for kind in ["detail", "browse", "favorites"] {
+            // The un-suffixed key is the pre-keyed cache, which only ever held the detail hero.
+            let suffix = kind == "detail" ? "" : ".\(kind)"
+            if let stored = UserDefaults.standard.string(forKey: Self.heroRectDefaultsKey + suffix) {
+                let rect = NSCoder.cgRect(for: stored)
+                if rect.width > 1, rect.height > 1 { lastHeroWindowRects[kind] = rect }
+            }
+            let radius = UserDefaults.standard.double(forKey: Self.heroRadiusDefaultsKey + suffix)
+            if radius > 0 { lastHeroCornerRadii[kind] = radius }
         }
-        let radius = UserDefaults.standard.double(forKey: Self.heroRadiusDefaultsKey)
-        if radius > 0 { lastHeroCornerRadius = radius }
     }
 
     // MARK: Style
@@ -275,6 +328,49 @@ final class CoverZoomRegistry {
         if cells[id]?.view === view { cells[id] = nil }
     }
 
+    /// Whether the source cover is still in a window.
+    ///
+    /// It is regularly `false` while a detail is open: `List` rows and lazy-stack cells are
+    /// released once something covers them, so on most surfaces the cover the user tapped is
+    /// simply not there any more by the time they come back.
+    func cellIsOnScreen(for id: String) -> Bool {
+        guard let view = cells[id]?.view, view.window != nil else { return false }
+        return view.bounds.width > 1 && view.bounds.height > 1
+    }
+
+    /// Where this cover was, in **window** coordinates, when its detail was pushed.
+    ///
+    /// The pop's target when the live cell is gone (see ``cellIsOnScreen``). Without it the
+    /// pop had no rect at all, and the two ways of handling that were both wrong on device:
+    /// the cross-fade fallback stranded the navigation stack, and declining the pop handed it
+    /// to UIKit's parallax — the swipe "immediately cutting out and doing the right-hand
+    /// transition instead". The push's own measurement is the correct answer anyway: it is
+    /// exactly where the artwork was when the user tapped it, and the row comes back into the
+    /// same place as the list is revealed. Once the live cell does resolve again, the
+    /// per-frame retarget takes over from this seed.
+    private var lastCellWindowRects: [String: (rect: CGRect, cornerRadius: CGFloat)] = [:]
+
+    func rememberCell(_ resolved: (rect: CGRect, cornerRadius: CGFloat), for id: String, in container: UIView) {
+        let windowRect = container.convert(resolved.rect, to: nil)
+        guard windowRect.width > 1, windowRect.height > 1 else { return }
+        lastCellWindowRects[id] = (windowRect, resolved.cornerRadius)
+    }
+
+    func rememberedCellRect(for id: String, in container: UIView) -> (rect: CGRect, cornerRadius: CGFloat)? {
+        guard let stored = lastCellWindowRects[id] else { return nil }
+        let rect = container.convert(stored.rect, from: nil)
+        guard rect.width > 1, rect.height > 1 else { return nil }
+        return (rect, stored.cornerRadius)
+    }
+
+    /// Whether a pop has anywhere to fly to — a live cell, or a remembered one.
+    ///
+    /// Needs no container, so it can be answered in `animationControllerFor`, which runs before
+    /// there is a transition context and is the only place a pop can still be declined cleanly.
+    func hasCellTarget(for id: String) -> Bool {
+        cellIsOnScreen(for: id) || lastCellWindowRects[id] != nil
+    }
+
     func unregisterHero(_ view: UIView, for id: String) {
         if heroes[id]?.view === view { heroes[id] = nil }
     }
@@ -290,7 +386,7 @@ final class CoverZoomRegistry {
     /// The hero artwork's measured rect, or `nil` if its probe does not exist yet.
     func measuredHeroRect(for id: String, in container: UIView) -> (rect: CGRect, cornerRadius: CGFloat)? {
         guard let resolved = resolve(heroes[id], in: container) else { return nil }
-        recordHero(resolved, in: container)
+        recordHero(resolved, kind: Self.heroKind(for: id), in: container)
         return resolved
     }
 
@@ -317,13 +413,16 @@ final class CoverZoomRegistry {
     /// not built its body yet. See ``lastHeroWindowRect``.
     func heroRect(for id: String, in container: UIView) -> (rect: CGRect, cornerRadius: CGFloat)? {
         if let measured = measuredHeroRect(for: id, in: container) { return measured }
-        guard let windowRect = lastHeroWindowRect else { return nil }
+        let kind = Self.heroKind(for: id)
+        // A kind never measured yet borrows the detail's answer: every hero so far shares its
+        // geometry, and a slightly-off first push beats a cross-fade.
+        guard let windowRect = lastHeroWindowRects[kind] ?? lastHeroWindowRects["detail"] else { return nil }
         let rect = container.convert(windowRect, from: nil)
         guard rect.width > 1, rect.height > 1 else { return nil }
-        return (rect, lastHeroCornerRadius)
+        return (rect, lastHeroCornerRadii[kind] ?? lastHeroCornerRadii["detail"] ?? 14)
     }
 
-    private func recordHero(_ resolved: (rect: CGRect, cornerRadius: CGFloat), in container: UIView) {
+    private func recordHero(_ resolved: (rect: CGRect, cornerRadius: CGFloat), kind: String, in container: UIView) {
         let windowRect = container.convert(resolved.rect, to: nil)
         guard windowRect.width > 1, windowRect.height > 1 else { return }
         // Only a hero that is actually on screen is a valid predictor of where the *next*
@@ -334,11 +433,12 @@ final class CoverZoomRegistry {
         // display. The measurement is still *used* for that transition; it just never becomes
         // the cached answer.
         guard container.bounds.insetBy(dx: -1, dy: -1).contains(resolved.rect) else { return }
-        guard windowRect != lastHeroWindowRect || resolved.cornerRadius != lastHeroCornerRadius else { return }
-        lastHeroWindowRect = windowRect
-        lastHeroCornerRadius = resolved.cornerRadius
-        UserDefaults.standard.set(NSCoder.string(for: windowRect), forKey: Self.heroRectDefaultsKey)
-        UserDefaults.standard.set(resolved.cornerRadius, forKey: Self.heroRadiusDefaultsKey)
+        guard windowRect != lastHeroWindowRects[kind] || resolved.cornerRadius != lastHeroCornerRadii[kind] else { return }
+        lastHeroWindowRects[kind] = windowRect
+        lastHeroCornerRadii[kind] = resolved.cornerRadius
+        let suffix = kind == "detail" ? "" : ".\(kind)"
+        UserDefaults.standard.set(NSCoder.string(for: windowRect), forKey: Self.heroRectDefaultsKey + suffix)
+        UserDefaults.standard.set(resolved.cornerRadius, forKey: Self.heroRadiusDefaultsKey + suffix)
     }
 
     private func resolve(_ anchor: Anchor?, in container: UIView) -> (rect: CGRect, cornerRadius: CGFloat)? {
@@ -403,16 +503,32 @@ private struct CoverZoomAnchorProbe: UIViewRepresentable {
             // Install the delegate as soon as a custom cell is on screen. Doing it from the
             // pushed detail is too late: the very first push of a session would find no
             // delegate at all and use the default slide.
-            if isCell, let nav = Self.enclosingNavigationController(of: self) {
-                CoverZoomNavigationDelegate.installIfNeeded(on: nav)
+            if isCell {
+                if let nav = Self.enclosingNavigationController(of: self) {
+                    CoverZoomNavigationDelegate.installIfNeeded(on: nav)
+                } else {
+#if DEBUG
+                    DebugUIRemote.log("COVERZOOM cell \(registeredID) found no navigation controller — push will be SwiftUI's")
+#endif
+                }
             }
         }
 
+        /// The navigation controller this view is ultimately presented in.
+        ///
+        /// Walks the *whole* responder chain rather than stopping at the first view controller.
+        /// That first controller is not always the screen: `List` and collection-view rows are
+        /// hosted by their own cell controllers (`CellHostingView`), whose `navigationController`
+        /// is nil — stopping there meant every cell on Home, Search and the New tab installed
+        /// nothing, SwiftUI's delegate ran the push as a plain slide, and ours only arrived with
+        /// the detail, in time for the pop alone. Library's cells sit in a plain `ScrollView`,
+        /// which is why it was the one tab that worked.
         static func enclosingNavigationController(of view: UIView) -> UINavigationController? {
             var responder: UIResponder? = view
             while let current = responder {
-                if let controller = current as? UIViewController {
-                    return controller.navigationController
+                if let nav = current as? UINavigationController { return nav }
+                if let controller = current as? UIViewController, let nav = controller.navigationController {
+                    return nav
                 }
                 responder = current.next
             }
@@ -450,6 +566,26 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
     private var barFadeLink: CADisplayLink?
     private var barFadeStart: CFTimeInterval = 0
     private var barFadeHoldUntil: TimeInterval = 0
+
+    /// Set the moment `prepare` gives up on the geometry and hands the transition to
+    /// ``crossFade``. A cross-fade owns the context from then on — it will call
+    /// `completeTransition` when its own animation ends — so `prepare` must never run a second
+    /// one for the same transition.
+    ///
+    /// It could, before this: on the swipe path `prepare` is called twice, once from
+    /// `beginDrag` and again from `interruptibleAnimator`, and with no `Session` to short it
+    /// out both calls fell through to the fallback. Two cross-fades meant two
+    /// `completeTransition` calls on one context, which leaves the navigation controller
+    /// holding its transition coordinator forever — every later push and pop silently refused,
+    /// the whole app apparently frozen with the UI still drawing. Device log, Search:
+    ///
+    ///     fallback id=7a0x… push=false cell=nil hero=(60,124,320,320)
+    ///     fallback id=7a0x… push=false cell=nil hero=(60,124,320,320)
+    ///     touchDown … coordinator=true depth=1     ← and still true seconds later
+    private var didCrossFade = false
+    /// Guards `finishOwnedInteractiveContext` — the cross-fade path can reach it from both the
+    /// drag's early return and its own completion.
+    private var didFinishInteractiveContext = false
 
     init(direction: Direction, id: String) {
         self.direction = direction
@@ -612,6 +748,8 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
     @discardableResult
     func prepare(context: UIViewControllerContextTransitioning) -> Session? {
         if let session { return session }
+        // The cross-fade already has this transition. See `didCrossFade`.
+        if didCrossFade { return nil }
 
         let isPush = direction == .push
         let container = context.containerView
@@ -620,6 +758,7 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
 
         guard let detailController = context.viewController(forKey: detailKey),
               let detailView = detailController.view else {
+            didCrossFade = true
             crossFade(context: context)
             return nil
         }
@@ -689,7 +828,11 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
             return (rect, CoverZoomRegistry.shared.pendingPushCellCornerRadius)
         }()
 
-        guard let cell = capturedCell ?? CoverZoomRegistry.shared.cellRect(for: id, in: container),
+        guard let cell = capturedCell
+                ?? CoverZoomRegistry.shared.cellRect(for: id, in: container)
+                // The row was released while the detail covered it. Fly back to where the push
+                // came from — see `rememberedCellRect`.
+                ?? CoverZoomRegistry.shared.rememberedCellRect(for: id, in: container),
               let hero = CoverZoomRegistry.shared.heroRect(for: id, in: container),
               hero.rect.width > 1 else {
 #if DEBUG
@@ -706,6 +849,7 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
             detailView.frame = full
             container.addSubview(detailView)
             clip.removeFromSuperview()
+            didCrossFade = true
             crossFade(context: context, detailView: detailView)
             return nil
         }
@@ -717,6 +861,9 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
         // it is what the card is dissolving onto. A push always predicts its hero from the
         // cache (the detail has not built its body yet), so this only ever applies to a pop.
         let heroIsOnScreen = isPush || CoverZoomRegistry.shared.heroIsOnScreen(for: id, in: container)
+
+        // Recorded on the push, spent on the pop when the row has been released underneath.
+        if isPush { CoverZoomRegistry.shared.rememberCell(cell, for: id, in: container) }
 
 #if DEBUG
         DebugUIRemote.log("COVERZOOM run id=\(id) push=\(isPush) cell=\(cell.rect) hero=\(hero.rect) "
@@ -1101,6 +1248,15 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
     func beginDrag(context: UIViewControllerContextTransitioning) {
         guard let session = prepare(context: context) else {
             // Geometry unavailable; `prepare` already ran a cross-fade that will complete.
+            //
+            // But this is *our* interactive context — UIKit will not act on
+            // `completeTransition` until it has been told the interaction is over, and a
+            // percent-driven controller is not in play here to do that for us. Without this
+            // line the cross-fade finishes, the screen looks right, and the navigation
+            // controller keeps its transition coordinator forever: every later push and pop is
+            // refused and the app appears frozen. Committed rather than cancelled — the
+            // cross-fade is already running the pop through to its end.
+            finishOwnedInteractiveContext(context)
             return
         }
         isDragging = true
@@ -1265,17 +1421,57 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
             container.addSubview(view)
         }
         if !isPush, let listController = context.viewController(forKey: .to),
-           let listView = listController.view, listView.superview == nil {
-            listView.frame = context.finalFrame(for: listController)
-            container.insertSubview(listView, at: 0)
+           let listView = listController.view {
+            if listView.superview == nil {
+                // `finalFrame(for:)` is documented to return `.zero` when UIKit does not
+                // consider the controller part of the transition, and a zero-sized list is
+                // invisible *and* untouchable — which reads exactly like the app having
+                // frozen. Same guard the main path already carries.
+                let final = context.finalFrame(for: listController)
+                listView.frame = final.isEmpty ? container.bounds : final
+                container.insertSubview(listView, at: 0)
+            }
+            listView.isUserInteractionEnabled = true
+            listView.alpha = 1
+            listView.isHidden = false
         }
         view?.alpha = isPush ? 0 : 1
+
+        var completed = false
+        let complete = { [weak self] in
+            guard !completed else { return }
+            completed = true
+            view?.alpha = 1
+            self?.finishOwnedInteractiveContext(context)
+            context.completeTransition(!context.transitionWasCancelled)
+        }
 
         UIView.animate(withDuration: transitionDuration(using: context)) {
             view?.alpha = isPush ? 1 : 0
         } completion: { _ in
-            view?.alpha = 1
-            context.completeTransition(!context.transitionWasCancelled)
+            complete()
+        }
+        // The completion block of `UIView.animate` is not guaranteed to run if the animation is
+        // removed out from under it, and a cross-fade that never calls `completeTransition`
+        // leaves the navigation controller holding its transition coordinator forever: every
+        // later push and pop silently refused while the UI still draws. Cheap insurance.
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(Int(transitionDuration(using: context) * 1000) + 250))
+            complete()
+        }
+    }
+
+    /// Tells UIKit an interaction we own has ended, so `completeTransition` can actually tear
+    /// the transition down. A `UIPercentDrivenInteractiveTransition` does this itself; our
+    /// finger-driven `CoverZoomDragInteraction` does not, and skipping it is what strands the
+    /// stack. Safe to call on a non-interactive transition — it is then a no-op.
+    private func finishOwnedInteractiveContext(_ context: UIViewControllerContextTransitioning) {
+        guard context.isInteractive, !didFinishInteractiveContext else { return }
+        didFinishInteractiveContext = true
+        if context.transitionWasCancelled {
+            context.cancelInteractiveTransition()
+        } else {
+            context.finishInteractiveTransition()
         }
     }
 }
@@ -1472,6 +1668,70 @@ final class CoverZoomTouchSpy: UIGestureRecognizer {
     }
 }
 
+// MARK: - Non-animated push fix
+
+/// Forces `animated: true` on a push that is about to open a `.custom` cover.
+///
+/// **Why this is not optional.** UIKit asks `animationControllerFor:` only for an *animated*
+/// push; a `pushViewController(_:animated: false)` runs with no animator, no transition
+/// coordinator, and no delegate call of any kind. On the Home tab SwiftUI pushes exactly that
+/// way, every time, and it is the whole reason the cover zoom never appeared there. Measured on
+/// device across one run, same build, same code:
+///
+///     COVERZOOM willShow animated=true  nav=49467 depth=2   ← Library  → ask op=1 → run push=true
+///     COVERZOOM willShow animated=true  nav=6864  depth=2   ← Search   → ask op=1 → run push=true
+///     COVERZOOM willShow animated=false nav=16064 depth=2   ← Home     → nothing, ever
+///
+/// Two stock-SwiftUI shapes were tried on Home first and both still measured `animated=false`:
+/// a destination-closure `NavigationLink`, and the New tab's `Button` +
+/// `navigationDestination(item:)` (which animates correctly on the New tab itself). So this is
+/// not a call-site style that can be written differently — SwiftUI decides, and on that stack it
+/// decides not to animate.
+///
+/// **Scope.** The swizzle is global but the *behaviour change* is not: it fires only when the
+/// navigation controller carries our proxy **and** `pendingPushID` names a `.custom` cover —
+/// which is written only by the touch spy hit-testing a registered cover row, and cleared as
+/// soon as a push consumes it. Every other push in the app keeps the flag it was given. And the
+/// change it makes is to animate a push, which is the ordinary case everywhere else.
+@MainActor
+enum CoverZoomPushAnimationFix {
+    private static var installed = false
+
+    static func installIfNeeded() {
+        guard !installed else { return }
+        installed = true
+        guard let original = class_getInstanceMethod(
+                UINavigationController.self,
+                #selector(UINavigationController.pushViewController(_:animated:))),
+              let replacement = class_getInstanceMethod(
+                UINavigationController.self,
+                #selector(UINavigationController.coverZoomForcedAnimatedPush(_:animated:)))
+        else { return }
+        method_exchangeImplementations(original, replacement)
+    }
+}
+
+extension UINavigationController {
+    /// Swapped with `pushViewController(_:animated:)` by ``CoverZoomPushAnimationFix``, so the
+    /// recursive-looking call at the end is the original implementation.
+    @objc fileprivate func coverZoomForcedAnimatedPush(_ viewController: UIViewController, animated: Bool) {
+        var animated = animated
+        MainActor.assumeIsolated {
+            guard !animated,
+                  CoverZoomNavigationDelegate.isInstalled(on: self),
+                  let id = CoverZoomRegistry.shared.pendingPushID,
+                  CoverZoomRegistry.shared.style(for: id) == .custom
+            else { return }
+            animated = true
+#if DEBUG
+            DebugUIRemote.log("COVERZOOM forced animated push id=\(id) "
+                + "nav=\(UInt(bitPattern: ObjectIdentifier(self).hashValue) & 0xffff)")
+#endif
+        }
+        coverZoomForcedAnimatedPush(viewController, animated: animated)
+    }
+}
+
 // MARK: - Navigation controller delegate
 
 /// Installed on the `UINavigationController` that `NavigationStack` creates.
@@ -1535,7 +1795,14 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
     /// Installs (or re-asserts) the proxy without claiming an active cover. Called from the
     /// *source list* so the delegate is in place before any push begins.
     @discardableResult
+    /// Whether this navigation controller is one of ours. Read by the push-animation fix, which
+    /// must not touch any other stack.
+    static func isInstalled(on navigationController: UINavigationController) -> Bool {
+        objc_getAssociatedObject(navigationController, &associationKey) is CoverZoomNavigationDelegate
+    }
+
     static func installIfNeeded(on navigationController: UINavigationController) -> CoverZoomNavigationDelegate {
+        CoverZoomPushAnimationFix.installIfNeeded()
         let existing = objc_getAssociatedObject(navigationController, &associationKey) as? CoverZoomNavigationDelegate
         let proxy = existing ?? CoverZoomNavigationDelegate(navigationController: navigationController)
         if existing == nil {
@@ -1545,6 +1812,17 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
                 proxy,
                 .OBJC_ASSOCIATION_RETAIN_NONATOMIC
             )
+#if DEBUG
+            // Once per navigation controller — i.e. once per tab that has a `.custom` cover on
+            // it. Compare `nav=` here with the same field on `COVERZOOM ask` / `installer
+            // willAppear`: if a tab's pushes report a navigation controller that never appears
+            // in one of these lines, the cells installed on the wrong object.
+            DebugUIRemote.log("COVERZOOM proxy installed "
+                + "nav=\(UInt(bitPattern: ObjectIdentifier(navigationController).hashValue) & 0xffff) "
+                + "wasDelegate=\(navigationController.delegate.map { String(describing: type(of: $0)) } ?? "nil") "
+                + "root=\(navigationController.viewControllers.first.map { String(describing: type(of: $0)) } ?? "nil") "
+                + "depth=\(navigationController.viewControllers.count)")
+#endif
         }
         if navigationController.delegate !== proxy {
             navigationController.delegate = proxy
@@ -1830,6 +2108,8 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
         // "the touch never reached us" from "it did, and the button's action still did not
         // fire" — which have nothing in common as fixes.
         DebugUIRemote.log("COVERZOOM touchDown x=\(String(format: "%.0f", point.x)) y=\(String(format: "%.0f", point.y)) "
+            + "nav=\(UInt(bitPattern: ObjectIdentifier(navigationController).hashValue) & 0xffff) "
+            + "navDelegate=\(navigationController.delegate.map { String(describing: type(of: $0)) } ?? "nil") "
             + "coordinator=\(navigationController.transitionCoordinator != nil) "
             + "depth=\(navigationController.viewControllers.count) "
             + "hit=\(navigationController.view.hitTest(point, with: nil).map { String(describing: type(of: $0)) } ?? "nil")")
@@ -2205,7 +2485,13 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
             // ordinary slide and must stay one.
             if fromVC === customDetailController,
                let id = activeCustomID ?? lastPushedCustomID,
-               CoverZoomRegistry.shared.style(for: id) == .custom {
+               CoverZoomRegistry.shared.style(for: id) == .custom,
+               // Nothing to fly home to at all — see `hasCellTarget`. Declining hands the pop
+               // to SwiftUI's slide, which is the right answer and, unlike the cross-fade
+               // fallback, cannot strand the stack. This should now be rare: a cover that was
+               // pushed from is remembered, so the usual "the row was released while the
+               // detail covered it" case still animates.
+               CoverZoomRegistry.shared.hasCellTarget(for: id) {
                 // Deliberately *not* clearing `customDetailController` here. UIKit asks twice
                 // for a gesture-driven pop — once from `gestureRecognizerShouldBegin:` while
                 // it decides whether to arm the swipe, and again when the pop actually starts
@@ -2225,6 +2511,50 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
             + "pending=\(CoverZoomRegistry.shared.pendingPushID ?? "nil")")
 #endif
         return forwardedAnimationController(navigationController, operation, fromVC, toVC)
+    }
+
+    /// Diagnostic only, and the one callback UIKit makes for **every** push and pop —
+    /// animated or not, delegate-driven or not. `animationControllerFor` is skipped entirely
+    /// for a non-animated push, so its absence cannot distinguish "UIKit never asked us" from
+    /// "UIKit never asked anyone"; this line can, because `animated:` is UIKit's own flag for
+    /// the transition it is about to run.
+    ///
+    /// Forwarded by hand: implementing the selector takes it out of `forwardingTarget(for:)`'s
+    /// reach, and SwiftUI's coordinator relies on these callbacks to keep its path in sync.
+    func navigationController(
+        _ navigationController: UINavigationController,
+        willShow viewController: UIViewController,
+        animated: Bool
+    ) {
+#if DEBUG
+        DebugUIRemote.log("COVERZOOM willShow animated=\(animated) "
+            + "nav=\(UInt(bitPattern: ObjectIdentifier(navigationController).hashValue) & 0xffff) "
+            + "depth=\(navigationController.viewControllers.count) "
+            + "coordinator=\(navigationController.transitionCoordinator != nil) "
+            + "isUs=\(navigationController.delegate === self) "
+            + "vcPreferredTransition=\(viewController.preferredTransition == nil ? "nil" : "set") "
+            + "pending=\(CoverZoomRegistry.shared.pendingPushID ?? "nil")")
+#endif
+        if let original,
+           original.responds(to: #selector(UINavigationControllerDelegate.navigationController(_:willShow:animated:))) {
+            original.navigationController?(navigationController, willShow: viewController, animated: animated)
+        }
+    }
+
+    func navigationController(
+        _ navigationController: UINavigationController,
+        didShow viewController: UIViewController,
+        animated: Bool
+    ) {
+#if DEBUG
+        DebugUIRemote.log("COVERZOOM didShow animated=\(animated) "
+            + "nav=\(UInt(bitPattern: ObjectIdentifier(navigationController).hashValue) & 0xffff) "
+            + "depth=\(navigationController.viewControllers.count)")
+#endif
+        if let original,
+           original.responds(to: #selector(UINavigationControllerDelegate.navigationController(_:didShow:animated:))) {
+            original.navigationController?(navigationController, didShow: viewController, animated: animated)
+        }
     }
 
     func navigationController(
@@ -2379,6 +2709,34 @@ struct CoverZoomCustomTransitionInstaller: UIViewControllerRepresentable {
 
         override func viewWillAppear(_ animated: Bool) {
             super.viewWillAppear(animated)
+#if DEBUG
+            // The push's own post-mortem. On Home / Search / New the device log showed the
+            // detail arriving with no `COVERZOOM ask op=1` line at all, which leaves exactly
+            // three explanations, and this line separates them in one read:
+            //
+            //   navDelegate != CoverZoomNavigationDelegate  → SwiftUI held the property when
+            //       UIKit asked, so the question never reached us.
+            //   preferredTransition = set                   → UIKit used the controller's own
+            //       transition and skips the delegate entirely.
+            //   animated=false                              → there was no transition to ask
+            //       an animator for.
+            //
+            // `nav` is logged so it can be compared with the id in `COVERZOOM ask` /
+            // `COVERZOOM syncGestures`: a mismatch means the push ran on a navigation
+            // controller the cells never installed on.
+            let debugNav = parent?.navigationController ?? navigationController
+            DebugUIRemote.log("COVERZOOM installer willAppear id=\(id) animated=\(animated) "
+                + "nav=\(debugNav.map { UInt(bitPattern: ObjectIdentifier($0).hashValue) & 0xffff } ?? 0) "
+                + "navDelegate=\(debugNav?.delegate.map { String(describing: type(of: $0)) } ?? "nil") "
+                + "parentPreferredTransition=\(parent?.preferredTransition == nil ? "nil" : "set") "
+                + "selfPreferredTransition=\(preferredTransition == nil ? "nil" : "set") "
+                + "topPreferredTransition=\(debugNav?.topViewController?.preferredTransition == nil ? "nil" : "set") "
+                + "parent=\(parent.map { String(describing: type(of: $0)) } ?? "nil") "
+                + "depth=\(debugNav?.viewControllers.count ?? -1) "
+                + "coordinator=\(debugNav?.transitionCoordinator != nil) "
+                + "style=\(CoverZoomRegistry.shared.style(for: id) == .custom ? "custom" : "system") "
+                + "pending=\(CoverZoomRegistry.shared.pendingPushID ?? "nil")")
+#endif
             guard let nav = parent?.navigationController ?? navigationController else { return }
             CoverZoomNavigationDelegate.install(on: nav, activeID: id)
         }

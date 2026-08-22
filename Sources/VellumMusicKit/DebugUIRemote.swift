@@ -34,6 +34,7 @@ enum DebugUIRemote {
         app = model
         guard !installed else { return }
         installed = true
+        logLaunchMarker()
         // DEBUG builds only (whole file is #if DEBUG): always-on main-thread stall log so
         // device runs record hangs without needing the simulator-only notify trigger.
         startHangWatch()
@@ -151,6 +152,29 @@ enum DebugUIRemote {
         } else {
             try? line.write(to: url, atomically: true, encoding: .utf8)
         }
+    }
+
+    /// The one thing this log was missing.
+    ///
+    /// It is append-only across installs, so a build's lines sit directly after the previous
+    /// build's with nothing between them. Whole rounds of wrong conclusions have come from
+    /// reading a region that belonged to two builds earlier and calling it a measurement.
+    ///
+    ///     grep -n "===== LAUNCH" hw.log | tail -1
+    ///
+    /// gives the first line of the current run; read only past it. The binary's modification
+    /// date distinguishes a fresh build from a relaunch of the same one.
+    private static func logLaunchMarker() {
+        let formatter = ISO8601DateFormatter()
+        formatter.timeZone = .current
+        formatter.formatOptions = [.withFullDate, .withTime, .withColonSeparatorInTime]
+        var built = "unknown"
+        if let executable = Bundle.main.executableURL,
+           let modified = try? executable.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate {
+            built = formatter.string(from: modified)
+        }
+        log("===== LAUNCH \(formatter.string(from: Date())) build=\(built) "
+            + "os=\(ProcessInfo.processInfo.operatingSystemVersionString) =====")
     }
 
     // MARK: - Main-thread hang watcher
