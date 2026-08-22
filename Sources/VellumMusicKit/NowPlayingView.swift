@@ -1318,6 +1318,12 @@ struct NowPlayingView: View {
                 // not the morph's frame/position/shadow changes.
                 artworkView(for: track, cornerRadius: cornerRadius)
                     .frame(width: artworkSize, height: artworkSize)
+                    // Destination rect for the mini-player cover zoom. The shared header is the
+                    // one artwork that is on screen when the player opens and closes.
+                    .coverZoomHeroAnchor(id: NowPlayingCoverZoom.id, cornerRadius: cornerRadius)
+                    // Hidden while the transition carries a copy of this cover, so only one is
+                    // ever on screen. Observes a single small object — not the player's state.
+                    .nowPlayingHeroFlightHiding()
                     .modifier(PlayPulseScale(scale: playPulseScale, isPlaying: app.player.isPlaying))
                     .shadow(
                         color: .black.opacity(backdropPalette.prefersDarkHeroChrome ? 0.22 : 0.45),
