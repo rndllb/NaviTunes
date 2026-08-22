@@ -109,6 +109,9 @@ struct MiniPlayerView: View {
                     )
                         .frame(width: MusicDesign.miniPlayerArtwork, height: MusicDesign.miniPlayerArtwork)
                         .padding(.leading, 2)
+                        // Origin rect for the cover zoom into the full player, and the copy
+                        // taken off screen while the card is in flight.
+                        .coverZoomCellAnchor(id: NowPlayingCoverZoom.id, cornerRadius: 6)
                         .id("mini-art-\(track.id)-\(artURL?.absoluteString ?? "")")
 
                     VStack(alignment: .leading, spacing: 1) {
@@ -176,6 +179,9 @@ struct MiniPlayerView: View {
                     )
                         .frame(width: artSize, height: artSize)
                         .padding(.leading, 2)
+                        // Origin rect for the cover zoom into the full player, and the copy
+                        // taken off screen while the card is in flight.
+                        .coverZoomCellAnchor(id: NowPlayingCoverZoom.id, cornerRadius: 6)
                         .id("mini-art-\(track.id)-\(artURL?.absoluteString ?? "")")
 
                     VStack(alignment: .leading, spacing: 1) {
