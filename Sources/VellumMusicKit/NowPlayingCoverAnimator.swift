@@ -31,11 +31,15 @@ final class NowPlayingCoverAnimator: NSObject, UIViewControllerAnimatedTransitio
     /// that fades — the cover travels and the content is revealed by the crop.
     private static let pillFadeEnd: CGFloat = 0.35
 
+    /// How much of the *close* is spent handing the pill's area back to the real pill — see
+    /// step 5 of `applyState`.
+    private static let closeHandoffEnd: CGFloat = 0.22
+
     /// Deliberately **not** `CoverZoomTuning`. Those numbers belong to the album/playlist push,
     /// which is a different motion over a different distance, and this one wants a touch longer
     /// to read — the cover has the full height of the screen to travel.
-    private static let presentDuration: TimeInterval = 0.58
-    private static let dismissDuration: TimeInterval = 0.52
+    private static let presentDuration: TimeInterval = 0.66
+    private static let dismissDuration: TimeInterval = 0.60
 
     private let direction: Direction
     private var session: Session?
@@ -205,7 +209,8 @@ final class NowPlayingCoverAnimator: NSObject, UIViewControllerAnimatedTransitio
         if let artworkSnapshot {
             artworkSnapshot.layer.cornerCurve = .continuous
             artworkSnapshot.clipsToBounds = true
-            clip.addSubview(artworkSnapshot)
+            // Above the card, not inside it — see `applyState`.
+            container.addSubview(artworkSnapshot)
         }
         if let pillSnapshot {
             clip.addSubview(pillSnapshot)
@@ -222,6 +227,7 @@ final class NowPlayingCoverAnimator: NSObject, UIViewControllerAnimatedTransitio
             progress: isPresent ? 0 : 1
         )
         self.session = session
+        Self.current = self
 #if DEBUG
         DebugUIRemote.log(
             "NP-ANIM prepare present=\(isPresent) pill=\(short(geometry.pill)) "
@@ -236,23 +242,52 @@ final class NowPlayingCoverAnimator: NSObject, UIViewControllerAnimatedTransitio
     private func resolveGeometry(in container: UIView) -> Geometry? {
         let registry = CoverZoomRegistry.shared
         let id = NowPlayingCoverZoom.id
-        // The pill's artwork: live while the pill is on screen, otherwise the rect measured when
-        // the player was opened. On a dismiss the pill is behind a full-screen player, so the
-        // remembered one is the normal path.
-        let art = registry.cellRect(for: id, in: container)
-            ?? registry.rememberedCellRect(for: id, in: container)
-        guard let art, art.rect.width > 1 else { return nil }
-        guard let hero = registry.heroRect(for: id, in: container), hero.rect.width > 1 else { return nil }
 
-        // The whole pill, for the card's collapsed frame. Falls back to a band around the
-        // artwork so a missing accessory anchor degrades instead of failing.
-        let pillRect: CGRect
-        if let pillView = MiniPlayerZoomSourceRegistry.sourceView, pillView.window != nil {
-            pillRect = pillView.convert(pillView.bounds, to: container)
+        // Live pill geometry, if the pill is on screen. On a **dismiss** it is not: the player
+        // is a full-screen presentation, so the accessory and its artwork are off-window and
+        // every lookup here returns nil. That is exactly what made the close fall back to a
+        // cross-fade every single time — device log, on each of six swipes:
+        //
+        //     NP-DRAG began at 382,520
+        //     NP-ANIM cross-fade present=false — geometry unavailable
+        //
+        // So the open records what it measured, and the close reads it back. The pill returns
+        // to the same place it left from, which makes the recorded rect exact rather than a
+        // guess.
+        let liveArt = registry.cellRect(for: id, in: container)
+        let livePill = MiniPlayerZoomSourceRegistry.sourceView
+            .flatMap { $0.window == nil ? nil : $0.convert($0.bounds, to: container) }
+
+        let art: (rect: CGRect, cornerRadius: CGFloat)?
+        let pillRect: CGRect?
+        if let liveArt, let livePill, liveArt.rect.width > 1, livePill.width > 1 {
+            art = liveArt
+            pillRect = livePill
+            NowPlayingCoverGeometryCache.record(pill: livePill, art: liveArt, in: container)
         } else {
-            pillRect = art.rect.insetBy(dx: -art.rect.minX + 8, dy: -6)
+            let cached = NowPlayingCoverGeometryCache.resolve(in: container)
+            art = cached?.art
+            pillRect = cached?.pill
         }
-        guard pillRect.width > 1, pillRect.height > 1 else { return nil }
+
+        guard let art, art.rect.width > 1 else {
+#if DEBUG
+            DebugUIRemote.log("NP-ANIM geometry: no artwork rect (live=\(liveArt != nil) cached=false)")
+#endif
+            return nil
+        }
+        guard let pillRect, pillRect.width > 1, pillRect.height > 1 else {
+#if DEBUG
+            DebugUIRemote.log("NP-ANIM geometry: no pill rect (live=\(livePill != nil))")
+#endif
+            return nil
+        }
+        guard let hero = registry.heroRect(for: id, in: container), hero.rect.width > 1 else {
+#if DEBUG
+            DebugUIRemote.log("NP-ANIM geometry: no hero rect")
+#endif
+            return nil
+        }
 
         return Geometry(
             pill: pillRect,
@@ -267,14 +302,18 @@ final class NowPlayingCoverAnimator: NSObject, UIViewControllerAnimatedTransitio
 
     // MARK: State
 
-    /// `progress` 0 = collapsed into the pill, 1 = full screen.
-    func applyState(progress: CGFloat) {
+    /// `progress` 0 = collapsed into the pill, 1 = full screen. `dragOffset` slides the whole
+    /// flight down without morphing it — see `updateDrag`.
+    func applyState(progress: CGFloat, dragOffset: CGFloat? = nil) {
         guard let session else { return }
         let p = max(0, min(1, progress))
         session.progress = p
+        if let dragOffset { self.dragOffset = dragOffset }
         let g = session.geometry
 
         // 1. The card. Grows out of the pill; the content behind it is revealed, not scaled.
+        //    Drag translation is a `transform`, applied separately — never folded in here, so a
+        //    drag costs no layout at all.
         let card = interpolate(g.pill, g.full, p)
         session.clip.frame = card
         session.clip.layer.cornerRadius = lerp(g.pillCorner, CoverZoomTuning.screenCornerRadius, p)
@@ -297,11 +336,16 @@ final class NowPlayingCoverAnimator: NSObject, UIViewControllerAnimatedTransitio
         )
         session.player.alpha = 1
 
-        // 3. The travelling cover. Opaque for the whole flight: this *is* the cover, carried
-        //    from the pill into the player, not a stand-in that dissolves into another copy.
+        // 3. The travelling cover — its **own object**, a sibling of the card rather than a
+        //    child of it, living in absolute container coordinates.
+        //
+        //    That matters on the way down: as the card collapses toward the pill it becomes
+        //    smaller than the cover, and a cover parented inside it would be clipped away just
+        //    as it needs to be seen flying home. Outside the card it is never clipped, and the
+        //    release reads the way it should — the sheet drops, the cover pops out as a single
+        //    object and matches into the pill.
         if let artwork = session.artwork {
-            let rect = interpolate(g.artStart, g.artEnd, p)
-            artwork.frame = rect.offsetBy(dx: -card.minX, dy: -card.minY)
+            artwork.frame = interpolate(g.artStart, g.artEnd, p)
             artwork.layer.cornerRadius = lerp(g.artStartCorner, g.artEndCorner, p)
         }
 
@@ -310,11 +354,33 @@ final class NowPlayingCoverAnimator: NSObject, UIViewControllerAnimatedTransitio
             pill.frame = CGRect(x: 0, y: 0, width: card.width, height: g.pill.height)
             pill.alpha = 1 - smoothstep(p, 0, Self.pillFadeEnd)
         }
+
+        // 5. Closing only: hand the pill's own area back before the card is taken away.
+        //
+        //    The card carries the player, so at the end of a close it is a pill-sized window
+        //    onto the player's *transport row* sitting exactly where the pill is — and removing
+        //    it at `finish` swapped that for the real pill in a single frame. That one-frame
+        //    substitution is what reads as the title and artist juddering. Fading the card out
+        //    over the last stretch lets the real pill arrive underneath instead.
+        //
+        //    The travelling cover is a sibling of the card, not a child, so it is unaffected and
+        //    still lands on the pill's artwork.
+        if direction == .dismiss {
+            session.clip.alpha = smoothstep(p, 0, Self.closeHandoffEnd)
+        }
     }
 
     // MARK: Interactive drag
 
     private(set) var isDragging = false
+    /// How far the finger has pulled the page down, before any morph.
+    private var dragOffset: CGFloat = 0
+    /// An end that arrived before the drag was ready — see `beginDrag`.
+    private var pendingEnd: Bool?
+
+    /// The flight currently on screen, so a stuck transition can be torn down from outside.
+    /// Weak: this is a recovery handle, never ownership.
+    static weak var current: NowPlayingCoverAnimator?
 
     func beginDrag(context: UIViewControllerContextTransitioning) {
         guard prepare(context: context) != nil else {
@@ -324,31 +390,71 @@ final class NowPlayingCoverAnimator: NSObject, UIViewControllerAnimatedTransitio
         isDragging = true
         ownsInteractiveContext = true
         applyState(progress: 1)
+        // `prepare` reparents the player, which can cancel the very gesture driving this before
+        // `isDragging` was ever true. That end has to be honoured now rather than dropped —
+        // dropping it left the transition in flight forever.
+        if let pendingEnd {
+            self.pendingEnd = nil
+            endDrag(committed: pendingEnd)
+        }
     }
 
-    /// `fraction` 0…1 of the way to dismissed.
-    func updateDrag(fraction: CGFloat) {
+    /// The player follows the finger **without morphing**.
+    ///
+    /// Measured against Apple Music: while the finger is down the cover does not start shrinking
+    /// or drifting toward the pill at all — the whole page, cover included, simply slides down.
+    /// The geometry match to the pill happens only on release. Scrubbing the morph with the drag
+    /// instead is what made the cover "move too quickly" and start reassembling under the finger.
+    func updateDrag(translation: CGFloat) {
         guard isDragging, let session else { return }
-        applyState(progress: 1 - max(0, min(1, fraction)))
-        session.context.updateInteractiveTransition(max(0, min(1, fraction)))
+        // Resist upward drags: this gesture only ever dismisses.
+        let offset = translation > 0 ? translation : translation * 0.25
+        dragOffset = offset
+        // A **transform**, not a frame change. Re-laying the card out every frame meant setting
+        // the player's frame every frame too, which forces SwiftUI to lay the whole player out
+        // — that is what made the drag feel heavy. A translation on the layer costs nothing and
+        // moves the card and the cover as rigid objects, which is exactly what a drag should do.
+        let slide = CGAffineTransform(translationX: 0, y: offset)
+        session.clip.transform = slide
+        session.artwork?.transform = slide
+        let fraction = max(0, min(1, offset / max(session.geometry.full.height * 0.55, 1)))
+        session.context.updateInteractiveTransition(fraction)
     }
 
-    func endDrag(committed: Bool) {
-        guard isDragging, let session else { return }
+    func endDrag(committed: Bool, velocity: CGFloat = 0) {
+        guard isDragging, let session else {
+            // Arrived before `beginDrag` finished setting up; replayed there.
+            if session == nil { pendingEnd = committed }
+            return
+        }
         isDragging = false
-        let target: CGFloat = committed ? 0 : 1
+
+        // Spring, not a curve. This is the release the sheet settles home on — it slides and
+        // settles with a little overshoot rather than easing flatly into place, and seeding it
+        // with the finger's velocity is what makes a flick feel like it threw the sheet down.
+        let distance = max(session.geometry.full.height - session.geometry.pill.minY, 1)
+        let initial = CGVector(dx: 0, dy: min(abs(velocity) / distance, 8))
         let animator = UIViewPropertyAnimator(
-            duration: committed ? CoverZoomTuning.dragReleaseDuration : CoverZoomTuning.dragCancelDuration,
-            timingParameters: CoverZoomTuning.easeOutQuint
+            duration: committed ? Self.dismissDuration : 0.42,
+            timingParameters: UISpringTimingParameters(
+                dampingRatio: committed ? 0.82 : 0.86,
+                initialVelocity: initial
+            )
         )
         animator.addAnimations { [weak self] in
-            self?.applyState(progress: target)
+            guard let self, let session = self.session else { return }
+            // The drag translation unwinds and the morph runs in the same breath, so the cover
+            // leaves exactly where the finger left it and geometry-matches into the pill from
+            // there — rather than snapping back to centre first and then flying.
+            self.dragOffset = 0
+            session.clip.transform = .identity
+            session.artwork?.transform = .identity
+            self.applyState(progress: committed ? 0 : 1)
         }
         animator.addCompletion { [weak self] _ in
             self?.finish(committed: committed)
         }
         propertyAnimator = animator
-        _ = session
         animator.startAnimation()
     }
 
@@ -388,6 +494,7 @@ final class NowPlayingCoverAnimator: NSObject, UIViewControllerAnimatedTransitio
 #if DEBUG
         DebugUIRemote.log("NP-ANIM finish present=\(direction == .present) committed=\(committed)")
 #endif
+        if Self.current === self { Self.current = nil }
         self.session = nil
     }
 
@@ -466,6 +573,36 @@ final class NowPlayingCoverAnimator: NSObject, UIViewControllerAnimatedTransitio
 #endif
 }
 
+/// Where the pill was when the player was opened, in **window** coordinates.
+///
+/// The close cannot measure it: a full-screen presentation takes the accessory off-window, so
+/// the pill's artwork and the pill itself both stop resolving. Recorded on the way up, read on
+/// the way down — and window coordinates rather than container ones because the two transitions
+/// run in different containers.
+@MainActor
+enum NowPlayingCoverGeometryCache {
+    private static var pill: CGRect?
+    private static var art: CGRect?
+    private static var artCorner: CGFloat = 6
+
+    static func record(pill: CGRect, art: (rect: CGRect, cornerRadius: CGFloat), in container: UIView) {
+        let pillWindow = container.convert(pill, to: nil)
+        let artWindow = container.convert(art.rect, to: nil)
+        guard pillWindow.width > 1, artWindow.width > 1 else { return }
+        self.pill = pillWindow
+        self.art = artWindow
+        artCorner = art.cornerRadius
+    }
+
+    static func resolve(in container: UIView) -> (pill: CGRect, art: (rect: CGRect, cornerRadius: CGFloat))? {
+        guard let pill, let art else { return nil }
+        let pillLocal = container.convert(pill, from: nil)
+        let artLocal = container.convert(art, from: nil)
+        guard pillLocal.width > 1, artLocal.width > 1 else { return nil }
+        return (pillLocal, (artLocal, artCorner))
+    }
+}
+
 /// Hands the drag to ``NowPlayingCoverAnimator``. Not percent-driven: UIKit's percent scrubbing
 /// bakes its end values when it starts, and the geometry here is written directly on every pan
 /// update instead.
@@ -473,7 +610,7 @@ final class NowPlayingCoverAnimator: NSObject, UIViewControllerAnimatedTransitio
 final class NowPlayingCoverInteraction: NSObject, UIViewControllerInteractiveTransitioning {
     private weak var animator: NowPlayingCoverAnimator?
     private var hasStarted = false
-    private var pendingFraction: CGFloat?
+    private var pendingTranslation: CGFloat?
 
     init(animator: NowPlayingCoverAnimator) {
         self.animator = animator
@@ -485,20 +622,20 @@ final class NowPlayingCoverInteraction: NSObject, UIViewControllerInteractiveTra
         MainActor.assumeIsolated {
             hasStarted = true
             animator?.beginDrag(context: transitionContext)
-            if let pendingFraction { update(fraction: pendingFraction) }
+            if let pendingTranslation { update(translation: pendingTranslation) }
         }
     }
 
-    func update(fraction: CGFloat) {
+    func update(translation: CGFloat) {
         guard hasStarted else {
-            pendingFraction = fraction
+            pendingTranslation = translation
             return
         }
-        animator?.updateDrag(fraction: fraction)
+        animator?.updateDrag(translation: translation)
     }
 
-    func finish(committed: Bool) {
-        animator?.endDrag(committed: committed)
+    func finish(committed: Bool, velocity: CGFloat) {
+        animator?.endDrag(committed: committed, velocity: velocity)
     }
 }
 #endif
