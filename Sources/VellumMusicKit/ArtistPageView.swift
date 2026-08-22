@@ -25,9 +25,14 @@ struct ArtistPageView: View {
     @State private var navigateAlbum: AlbumSummary?
     @State private var navigateAbout = false
 
+    /// This page's cover-zoom key. Held rather than derived from `model` so it is stable from
+    /// `init` — the animator asks for geometry before the body has run.
+    private let coverZoomPageId: String
+
     init(input: ArtistPageInput) {
         _model = StateObject(wrappedValue: ArtistViewModel(input: input))
         _backdropPalette = State(initialValue: ArtworkDynamicGradient.seededBackdrop(for: input.serverArtworkURL, style: .artistPage))
+        coverZoomPageId = input.coverZoomPageId
     }
 
     private static let scrollCoordinateSpace = "ArtistPageView.scroll"
@@ -47,6 +52,7 @@ struct ArtistPageView: View {
                         backdropPalette: backdropPalette,
                         showsInfoButton: model.hasAboutSection,
                         onInfo: { navigateAbout = true },
+                        coverZoomId: coverZoomPageId,
                     )
                     ArtistLatestReleaseCard(model: model, onGoToAlbum: { navigateAlbum = $0 })
                     ArtistAcquisitionBanner(model: model)
@@ -76,6 +82,10 @@ struct ArtistPageView: View {
             ))
         }
         .ignoresSafeArea(edges: .top)
+        // A no-op unless the tile or row that opened this page marked itself `.custom`, so the
+        // dozen programmatic pushes of this view (Now Playing, "Go to Artist", deep links,
+        // Following) keep the ordinary slide.
+        .coverZoomCustomTransition(id: coverZoomPageId)
         .navigationTitle("")
         .musicNavigationBarTitleDisplayMode(.inline)
         .musicNavigationBarVisibleWhenPushed()
@@ -233,6 +243,8 @@ private struct ArtistHeroSection: View {
     let backdropPalette: ArtworkDynamicGradient.BackdropPalette
     var showsInfoButton: Bool = false
     var onInfo: () -> Void = {}
+    /// Cover-zoom key for the page. The banner is this destination's hero rect.
+    var coverZoomId: String = ""
 
     private var bannerURL: URL? { model.bannerArtworkURL }
 
@@ -267,6 +279,9 @@ private struct ArtistHeroSection: View {
                     onInfo: onInfo,
                 )
             }
+            // Square corners: the banner is full-bleed, so the card's radius should reach zero
+            // as it arrives rather than keeping the tile's rounding.
+            .coverZoomHeroAnchor(id: coverZoomId, cornerRadius: 0)
         }
         .padding(.bottom, -MusicDesign.artistHeroBottomSeamOverlap)
     }

@@ -269,12 +269,21 @@ final class CoverZoomRegistry {
     /// has to know the destination type.
     static func heroKind(for id: String) -> String {
         if id == "__favorite_songs__" { return "favorites" }
+        // The mini player's destination is the full player, whose hero is larger and higher
+        // than a detail cover. Its own kind, so measuring it never overwrites the album
+        // detail's cached rect (and vice versa).
+        if id == "__now_playing__" { return "player" }
         if id.hasPrefix("chart-browse:") { return "browse" }
+        // The artist page's hero is a full-bleed stretchy banner, not a square cover — the one
+        // destination whose geometry genuinely differs, and the reason this cache is keyed at
+        // all. Borrowing the album detail's 320×320 rect would aim every first artist push at
+        // a square in the middle of the screen.
+        if id.hasPrefix("artist-page:") { return "artist" }
         return "detail"
     }
 
     private init() {
-        for kind in ["detail", "browse", "favorites"] {
+        for kind in ["detail", "browse", "favorites", "artist", "player"] {
             // The un-suffixed key is the pre-keyed cache, which only ever held the detail hero.
             let suffix = kind == "detail" ? "" : ".\(kind)"
             if let stored = UserDefaults.standard.string(forKey: Self.heroRectDefaultsKey + suffix) {
@@ -414,12 +423,17 @@ final class CoverZoomRegistry {
     func heroRect(for id: String, in container: UIView) -> (rect: CGRect, cornerRadius: CGFloat)? {
         if let measured = measuredHeroRect(for: id, in: container) { return measured }
         let kind = Self.heroKind(for: id)
-        // A kind never measured yet borrows the detail's answer: every hero so far shares its
-        // geometry, and a slightly-off first push beats a cross-fade.
-        guard let windowRect = lastHeroWindowRects[kind] ?? lastHeroWindowRects["detail"] else { return nil }
+        // A kind never measured yet borrows the detail's answer: the album, browse and
+        // favourites heroes all share `min(max(w − 52, 260), 320)` at radius 14, so a
+        // slightly-off first push beats a cross-fade. The artist banner does **not** share it
+        // — borrowing there would fly the card at a square in the middle of a page whose hero
+        // is a full-width band at the top — so its first push cross-fades and every one after
+        // it uses the real measurement.
+        let borrowed = kind == "artist" ? nil : lastHeroWindowRects["detail"]
+        guard let windowRect = lastHeroWindowRects[kind] ?? borrowed else { return nil }
         let rect = container.convert(windowRect, from: nil)
         guard rect.width > 1, rect.height > 1 else { return nil }
-        return (rect, lastHeroCornerRadii[kind] ?? lastHeroCornerRadii["detail"] ?? 14)
+        return (rect, lastHeroCornerRadii[kind] ?? (kind == "artist" ? 0 : lastHeroCornerRadii["detail"] ?? 14))
     }
 
     private func recordHero(_ resolved: (rect: CGRect, cornerRadius: CGFloat), kind: String, in container: UIView) {

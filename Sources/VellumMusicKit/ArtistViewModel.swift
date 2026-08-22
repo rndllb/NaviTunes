@@ -27,6 +27,18 @@ enum ArtistPageInput: Hashable {
         if case .libraryArtist(let a) = self { return a.id }
         return nil
     }
+
+    /// Cover-zoom key for the artist *page* — the id its hero registers and the one the tiles
+    /// and rows that open it mark themselves with.
+    ///
+    /// Derived from the name rather than an id because the entry points know a name and often
+    /// nothing else, and because `.libraryArtist` and `.named` for the same artist have to land
+    /// on one key or the push and the pop would disagree about which cover is in play.
+    var coverZoomPageId: String { Self.coverZoomPageId(forName: displayName) }
+
+    static func coverZoomPageId(forName name: String) -> String {
+        "artist-page:" + name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
 }
 
 /// One row in the artist page's "Top Songs" section. Either matches a real track

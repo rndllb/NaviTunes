@@ -28,16 +28,19 @@ struct SearchLibraryView: View {
     var body: some View {
         NavigationStack(path: $navigationPath) {
             VStack(spacing: 0) {
-                if navigationPath.isEmpty {
-                    SearchTabHeader(
-                        searchText: $searchText,
-                        scope: $scope,
-                        searchFieldFocused: $searchFieldFocused,
-                        sessionActive: isSearchSessionActive,
-                        showsScopePicker: isSearchSessionActive,
-                        onCancel: { searchSessionLatched = false },
-                    )
-                }
+                // Deliberately *not* gated on `navigationPath.isEmpty`. Removing the header
+                // while something is pushed took ~110pt out of the root's layout, so the page
+                // revealed behind a dismiss sat that much too high and visibly dropped back
+                // into place as the path emptied at the end of the transition. There is
+                // nothing to hide: a pushed screen covers this root completely.
+                SearchTabHeader(
+                    searchText: $searchText,
+                    scope: $scope,
+                    searchFieldFocused: $searchFieldFocused,
+                    sessionActive: isSearchSessionActive,
+                    showsScopePicker: isSearchSessionActive,
+                    onCancel: { searchSessionLatched = false },
+                )
                 DiscoverySearchView(
                     searchText: $searchText,
                     scope: $scope,
