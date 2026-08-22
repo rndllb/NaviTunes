@@ -387,6 +387,8 @@ struct BrowseAlbumDetailView: View {
         VStack(spacing: 18) {
             AlbumArtworkView(url: displayArtworkURL, cornerRadius: 14)
                 .frame(width: heroArtSide, height: heroArtSide)
+                // Destination rect for the custom cover-zoom animator (see ServerPlaylistViews).
+                .coverZoomHeroAnchor(id: source.coverZoomId, cornerRadius: 14)
                 .shadow(color: .black.opacity(0.45), radius: 24, y: 14)
 
             VStack(spacing: 8) {
