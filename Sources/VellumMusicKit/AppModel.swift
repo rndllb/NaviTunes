@@ -2936,9 +2936,27 @@ public final class AppModel: ObservableObject {
 
     /// Appends an album to `libraryAlbums` if it isn't already cached, so views that
     /// resolve `libraryAlbumEntries` against the catalog don't drop newly-added albums.
+    ///
+    /// Index maintenance is **incremental** (O(1)) rather than a full rebuild: callers
+    /// like ``reconcileNewTabChartServerPresence`` insert one row at a time in a loop, and
+    /// a full `rebuildLibraryAlbumIndex` per row is O(catalog + tracks) of unicode folding
+    /// and regex on the main actor — hundreds of milliseconds each on a real library.
     private func ensureAlbumInCatalog(_ album: AlbumSummary) {
         if libraryAlbumsById[album.id] != nil { return }
+        appendCatalogAlbumIncrementally(album)
+    }
+
+    /// Appends to ``libraryAlbums`` with the `didSet` rebuild suppressed, then folds the
+    /// album into the derived indices by hand. Equivalent to what a full rebuild would
+    /// produce, because both indices key off the same arrays this appends to.
+    private func appendCatalogAlbumIncrementally(_ album: AlbumSummary) {
+        let previousSkip = skipAlbumIndexRebuild
+        skipAlbumIndexRebuild = true
         libraryAlbums.append(album)
+        skipAlbumIndexRebuild = previousSkip
+        libraryAlbumsById[album.id] = album
+        libraryAlbumReleaseIndex.insert(album)
+        invalidateMembershipLookups()
     }
 
     /// Ensures a pinned album can render in the Library hub grid before the next catalog refresh.
@@ -2947,10 +2965,39 @@ public final class AppModel: ObservableObject {
     }
 
     /// Ensures a pinned song can render in the Library hub grid before the track index finishes loading.
+    ///
+    /// Same rule as ``ensureAlbumInCatalog(_:)`` — one appended track updates the four
+    /// derived indices in place instead of rebuilding all of them over the whole library.
     func retainTrackForLibraryPin(_ track: Track) {
         if discoveryTrackById[track.id] != nil { return }
-        discoveryLibraryTracks.append(trackWithResolvedArtwork(track))
-        rebuildDiscoveryTrackIndices()
+        let resolved = trackWithResolvedArtwork(track)
+
+        let previousSkip = skipDiscoveryIndexRebuild
+        skipDiscoveryIndexRebuild = true
+        discoveryLibraryTracks.append(resolved)   // `didSet` still invalidates membership lookups
+        skipDiscoveryIndexRebuild = previousSkip
+
+        discoveryTrackById[resolved.id] = resolved
+        LibraryTrackMatcher.insert(resolved, into: &libraryTrackTitleIndex)
+        libraryChartTrackIndex.insert(resolved)
+        // Mirrors the track-derived album merge in ``rebuildLibraryAlbumIndex``.
+        if !resolved.albumId.isEmpty,
+           !resolved.albumTitle.isEmpty,
+           libraryAlbumsById[resolved.albumId] == nil {
+            let derived = AlbumSummary(
+                id: resolved.albumId,
+                title: resolved.albumTitle,
+                artist: resolved.artist,
+                artworkURL: resolved.artworkURL,
+                coverArtId: navidromeCoverArtId(for: resolved),
+                trackCount: nil,
+                libraryAddedDate: resolved.libraryAddedDate,
+                genres: resolved.genres,
+                releaseYear: resolved.releaseYear,
+            )
+            libraryAlbumsById[derived.id] = derived
+            libraryAlbumReleaseIndex.insert(derived)
+        }
     }
 
     /// Synthesizes a minimal AlbumSummary from a track and inserts it when the album
@@ -2969,7 +3016,7 @@ public final class AppModel: ObservableObject {
             genres: track.genres,
             releaseYear: track.releaseYear,
         )
-        libraryAlbums.append(synthesized)
+        appendCatalogAlbumIncrementally(synthesized)
     }
 
     /// Removes a single song from the user's library (magic playlist tracks). Does NOT
