@@ -271,6 +271,13 @@ struct NowPlayingView: View {
     #endif
 
     var body: some View {
+#if DEBUG
+        // Diagnostic: how often this body is re-evaluated. A control cannot complete a tap if
+        // the subtree holding it is rebuilt between touch-down and touch-up, and the device log
+        // shows taps reaching SwiftUI's recogniser while buttons stay dead — so the rebuild rate
+        // right after the player opens is the thing to measure.
+        let _ = NowPlayingBodyCounter.shared.tick()
+#endif
         // Drive layout only from this column. Avoid placing `AsyncImage` / blurred artwork in a sibling
         // `ZStack` above this column — intrinsic bitmap sizes can blow up layout width.
         NavigationStack(path: $libraryPath) {
@@ -1478,8 +1485,25 @@ struct NowPlayingView: View {
         )
     }
 
+    /// Closes the player from inside the player.
+    ///
+    /// The binding is only half of it. `NowPlayingCoverPresenter` acts on the binding from
+    /// `updateUIViewController`, which needs the *shell* to re-render — and the shell is
+    /// completely covered while the player is up, so SwiftUI stops updating it. Device log:
+    /// "Go to Playlist" wrote the binding at t=462.13 and the presenter's next `NP-SYNC` did
+    /// not arrive for 1.3s, when the user gave up and swiped the player down by hand; the deep
+    /// link had been sitting queued behind a player that never left. Write the binding so
+    /// SwiftUI's state stays truthful, then tell UIKit directly.
+    private func closeCover() {
+        isPresented = false
+        NowPlayingCoverState.shared.requestDismiss?()
+    }
+
     private func dismissAndNavigate(to route: NowPlayingLibraryRoute) {
         let activeTrackId = player.activeTrack?.id
+#if DEBUG
+        DebugUIRemote.log("NP-NAV enter route=\(route) isPresented=\(isPresented)")
+#endif
 
         // Special case: behind the player the user is already on this destination on the current
         // tab — dismiss the overlay and let the underlying view scroll + highlight.
@@ -1488,14 +1512,14 @@ struct NowPlayingView: View {
             if let activeTrackId {
                 app.pendingAlbumScroll = PendingAlbumScroll(albumId: album.id, trackId: activeTrackId)
             }
-            isPresented = false
+            closeCover()
             return
         case .playlist:
             if let track = player.activeTrack,
                let p = sourcePlaylistForActiveTrack(track),
                app.currentlyVisiblePlaylistId == p.id {
                 app.pendingPlaylistScroll = PendingPlaylistScroll(playlistId: p.id, trackId: track.id)
-                isPresented = false
+                closeCover()
                 return
             }
         default:
@@ -1521,7 +1545,7 @@ struct NowPlayingView: View {
         }
 
         let targetTab = app.selectedTab
-        isPresented = false
+        closeCover()
         guard let nav else { return }
         if case .playlist(let playlist, _) = nav {
             // Warm the rows cache concurrently with the dismiss animation. Never
@@ -1534,6 +1558,9 @@ struct NowPlayingView: View {
         }
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(450))
+#if DEBUG
+            DebugUIRemote.log("NP-NAV deepLink set tab=\(targetTab)")
+#endif
             app.deepLinkTab = targetTab
             app.presentedDeepLink = nav
         }

@@ -311,6 +311,20 @@ final class NowPlayingCoverAnimator: NSObject, UIViewControllerAnimatedTransitio
         if let dragOffset { self.dragOffset = dragOffset }
         let g = session.geometry
 
+        // Keep touches flowing for the length of the flight.
+        //
+        // UIKit switches interaction off on the transition container while a presentation runs,
+        // which is why nothing responded until the animation had played out — and why a
+        // window-level gesture recognizer never saw the swipe either: with the container
+        // non-interactive, hit-testing finds nothing and no touch is delivered at all. Re-arming
+        // it every frame is two boolean writes and hands the user their taps back.
+        if !session.container.isUserInteractionEnabled {
+            session.container.isUserInteractionEnabled = true
+        }
+        if let window = session.container.window, !window.isUserInteractionEnabled {
+            window.isUserInteractionEnabled = true
+        }
+
         // 1. The card. Grows out of the pill; the content behind it is revealed, not scaled.
         //    Drag translation is a `transform`, applied separately — never folded in here, so a
         //    drag costs no layout at all.
