@@ -72,6 +72,9 @@ struct DeepLinkPushModifier: ViewModifier {
             }
             .onChange(of: app.presentedDeepLink) { _, newValue in
                 guard app.deepLinkTab == tab, let link = newValue else { return }
+#if DEBUG
+                DebugUIRemote.log("NP-DEEPLINK append tab=\(tab) depth=\(path.count)")
+#endif
                 path.append(link)
                 // Consume so a subsequent set of the same link still triggers onChange.
                 app.presentedDeepLink = nil
@@ -408,6 +411,16 @@ private struct NowPlayingGestureHost: View {
             // outside this tree — see ``NowPlayingCoverState``.
             NowPlayingCoverState.shared.libraryNavigationDepth = depth
         }
+#if DEBUG
+            // Diagnostic only. UIKit's hit-test shows a tap reaching the player's hosting view,
+            // but says nothing about what SwiftUI does with it afterwards. This logs every tap
+            // SwiftUI's own gesture system recognises, which separates "the touch never reaches
+            // SwiftUI's recogniser" from "it does, and the control still doesn't fire".
+            // `simultaneousGesture` so it cannot steal anything from a button.
+            .simultaneousGesture(
+                TapGesture().onEnded { DebugUIRemote.log("NP-SWIFTUI tap recognised") }
+            )
+#endif
             .environmentObject(app)
             .environmentObject(app.offline)
             .environmentObject(app.acquisition)

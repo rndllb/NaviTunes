@@ -53,6 +53,21 @@ final class NowPlayingCoverState {
     /// How deep the player's own navigation is. A swipe down inside a pushed artist or album
     /// belongs to that screen, not to the dismiss.
     var libraryNavigationDepth = 0
+
+    /// Closes the cover *now*, without waiting for the shell to render.
+    ///
+    /// Setting the presentation binding is not enough on its own, and the device log says so.
+    /// `NowPlayingCoverPresenter` acts on the binding from `updateUIViewController` — i.e. only
+    /// when SwiftUI re-evaluates the shell — and while the cover is up the shell is entirely
+    /// covered, so SwiftUI stops updating it. "Go to Playlist" at t=462.13 wrote the binding
+    /// (`NP-NAV binding written false (readback=false)`) and the next `NP-SYNC` did not arrive
+    /// for 1.3s — when the user gave up and swiped the player away by hand. The queued deep
+    /// link then pushed behind a player that had never left.
+    ///
+    /// The drag never had this problem because it calls the presenter directly. This is that
+    /// same door, opened to the code inside the cover: write the binding so SwiftUI's state
+    /// stays truthful, then call this so UIKit acts on it in the same runloop turn.
+    var requestDismiss: (() -> Void)?
 }
 
 #if canImport(UIKit)
@@ -349,21 +364,44 @@ struct NowPlayingCoverPresenter<Content: View>: UIViewControllerRepresentable {
             isPresentedBinding = isPresented
             makeContent = content
             zoom.canDismiss = canDismiss
-            zoom.requestDismiss = { [weak self] in self?.beginInteractiveDismiss() }
+            zoom.requestDismiss = { [weak self] in self?.dismissNow() }
+            // The same door for code *inside* the cover — "Go to Album / Playlist / Artist".
+            // See ``NowPlayingCoverState/requestDismiss``: the binding alone cannot close this,
+            // because acting on it needs a shell render and the shell is covered.
+            NowPlayingCoverState.shared.requestDismiss = { [weak self] in self?.dismissNow() }
             zoom.restorePresentation = { [weak self] in
                 // The drag was released short of the threshold: UIKit cancelled the dismissal
                 // and the cover never left, so only the binding needs putting back.
                 self?.isPresentedBinding.wrappedValue = true
             }
-            // Keep the presented tree current with the rest of the app — but never mid
-            // transition. `updateUIViewController` runs on every shell render, and
-            // `PlaybackEngine` publishes constantly, so reassigning `rootView` while the card is
-            // in flight re-renders and relayouts the player inside the moving view on almost
-            // every frame of the drag.
-            if let cover, let makeContent, !isBusy { cover.rootView = makeContent() }
+            // **Never while it is on screen.**
+            //
+            // `updateUIViewController` runs on every shell render and `PlaybackEngine` publishes
+            // several times a second, so this was replacing the player's entire root view that
+            // often. Device log: taps landed squarely on `_UIHostingView<…NowPlayingGestureHost…>`
+            // with `window/container/player=true` and no transition coordinator, and nothing
+            // happened — because the tree recognising the tap was being swapped out from under
+            // it before it could complete.
+            //
+            // Reassigning is not needed anyway: the player reads everything through
+            // `@EnvironmentObject` and `@ObservedObject`, so it updates itself. Refresh only
+            // while it is off screen, where a rebuild costs nothing and cannot eat a touch.
+            if let cover, let makeContent, cover.presentingViewController == nil {
+                cover.rootView = makeContent()
+            }
         }
 
         func sync() {
+#if DEBUG
+            // "Go to Album" sets the binding false and the cover stays up until the user swipes
+            // it away by hand (device log 12:03 — menu cell tapped at t=428.58, no
+            // `NP-ANIM prepare present=false` until the manual drag at t=432.07). Three links in
+            // that chain can break it and only a log separates them: the binding never reaching
+            // here, `dismissCover` refusing, or the dismiss being aimed at the context menu
+            // instead of the cover.
+            DebugUIRemote.log("NP-SYNC wanted=\(isPresentedBinding.wrappedValue) "
+                + "onScreen=\(isCoverOnScreen) busy=\(isBusy) scheduled=\(isSyncScheduled)")
+#endif
             if isPresentedBinding.wrappedValue {
                 presentCover()
             } else {
@@ -458,6 +496,15 @@ struct NowPlayingCoverPresenter<Content: View>: UIViewControllerRepresentable {
             let host = cover ?? makeHost(makeContent)
             zoom.isSettled = false
             present(host, animated: true) { [weak self] in
+#if DEBUG
+                // Why can't the player be touched right after it opens? Same question the
+                // dismiss probe already answers for the other direction, and guessing at it is
+                // what cost several attempts earlier: this logs what a tap actually lands on,
+                // plus the interaction flags UIKit and we have each set.
+                NowPlayingTouchProbe.start(in: host.viewIfLoaded?.window, tag: "OPEN")
+                NowPlayingTouchProbe.logInteractionFlags(host: host)
+                NowPlayingTouchProbe.sampleMainThread()
+#endif
                 // Straight from the completion handler: no timer can know this, and every
                 // timer-shaped guess at it has been wrong.
                 self?.zoom.isSettled = true
@@ -484,9 +531,12 @@ struct NowPlayingCoverPresenter<Content: View>: UIViewControllerRepresentable {
 
         // MARK: Dismiss
 
-        /// Called by the drag on touch-down, so the interactive dismissal starts on the same
-        /// runloop turn as the gesture rather than after a SwiftUI update.
-        private func beginInteractiveDismiss() {
+        /// Take the cover down on this runloop turn rather than after a SwiftUI update.
+        ///
+        /// Both callers need that. The drag starts its interactive dismissal on touch-down, and
+        /// a "Go to …" inside the player has no SwiftUI update coming at all — the shell it
+        /// would arrive on is covered, and SwiftUI does not render a covered hierarchy.
+        private func dismissNow() {
             isPresentedBinding.wrappedValue = false
             dismissCover()
         }
@@ -494,8 +544,26 @@ struct NowPlayingCoverPresenter<Content: View>: UIViewControllerRepresentable {
         private func dismissCover() {
             // The controller is kept for reuse, so "do we hold one" says nothing about whether
             // anything is on screen. Only `presentingViewController` does.
-            guard let host = cover, isCoverOnScreen else { return }
+            guard let host = cover, isCoverOnScreen else {
+#if DEBUG
+                DebugUIRemote.log("NP-DISMISS skip haveCover=\(cover != nil) onScreen=\(isCoverOnScreen)")
+#endif
+                return
+            }
+#if DEBUG
+            // `presentedViewController` is the one thing the guard below does *not* test, and
+            // the reported failure arrives straight out of a `UIMenu` selection — so whether
+            // the cover is itself presenting the context menu at this instant is the fact that
+            // decides between "the dismiss was refused" and "the dismiss hit the menu".
+            DebugUIRemote.log("NP-DISMISS enter "
+                + "presenting=\(host.presentedViewController.map { String(describing: type(of: $0)) } ?? "nil") "
+                + "beingDismissed=\(host.isBeingDismissed) beingPresented=\(host.isBeingPresented) "
+                + "hostCoordinator=\(host.transitionCoordinator != nil) selfCoordinator=\(transitionCoordinator != nil)")
+#endif
             guard !host.isBeingDismissed, !host.isBeingPresented, host.transitionCoordinator == nil else {
+#if DEBUG
+                DebugUIRemote.log("NP-DISMISS deferred — waiting for UIKit")
+#endif
                 syncWhenIdle()
                 return
             }
@@ -504,6 +572,9 @@ struct NowPlayingCoverPresenter<Content: View>: UIViewControllerRepresentable {
 #endif
             host.dismiss(animated: true) { [weak self] in
                 guard let self else { return }
+#if DEBUG
+                DebugUIRemote.log("NP-DISMISS done stillPresented=\(host.presentingViewController != nil)")
+#endif
                 if host.presentingViewController == nil {
                     self.zoom.isSettled = false
 #if DEBUG
@@ -530,7 +601,7 @@ struct NowPlayingCoverPresenter<Content: View>: UIViewControllerRepresentable {
 /// with `UITransitionView` — the modal presentation container — left standing over the app.
 @MainActor
 enum NowPlayingTouchProbe {
-    static func start(in window: UIWindow?) {
+    static func start(in window: UIWindow?, tag: String = "CLOSE") {
         guard let window else { return }
         let probe = Recognizer()
         probe.cancelsTouchesInView = false
@@ -545,13 +616,51 @@ enum NowPlayingTouchProbe {
                 next = view.superview
             }
             DebugUIRemote.log(
-                "NP-PROBE tap=\(Int(point.x)),\(Int(point.y)) hit=\(chain.joined(separator: " < "))"
+                "NP-PROBE[\(tag)] tap=\(Int(point.x)),\(Int(point.y)) hit=\(chain.joined(separator: " < "))"
             )
         }
         window.addGestureRecognizer(probe)
         Task { @MainActor [weak window] in
             try? await Task.sleep(for: .seconds(8))
             window?.removeGestureRecognizer(probe)
+        }
+    }
+
+    /// Samples the interaction flags for a few seconds after an open, so a window or container
+    /// left non-interactive by UIKit shows up as a fact rather than a theory.
+    static func logInteractionFlags(host: UIViewController) {
+        Task { @MainActor in
+            for delay in [0, 200, 600, 1200, 2500] {
+                if delay > 0 { try? await Task.sleep(for: .milliseconds(delay)) }
+                let view = host.viewIfLoaded
+                let window = view?.window
+                DebugUIRemote.log(
+                    "NP-FLAGS +\(delay)ms window=\(window?.isUserInteractionEnabled.description ?? "nil") "
+                    + "container=\(view?.superview?.isUserInteractionEnabled.description ?? "nil") "
+                    + "player=\(view?.isUserInteractionEnabled.description ?? "nil") "
+                    + "alpha=\(String(format: "%.2f", view?.alpha ?? -1)) "
+                    + "coordinator=\(host.transitionCoordinator != nil)"
+                )
+            }
+        }
+    }
+
+    /// Samples main-thread responsiveness for three seconds after an open.
+    ///
+    /// The hang watcher only reports gaps over 120ms, so a main thread that is merely *busy* —
+    /// enough to drop touches without ever stalling outright — is invisible to it. This ticks
+    /// every frame and reports the worst gap it saw, which rules the main thread in or out.
+    static func sampleMainThread() {
+        Task { @MainActor in
+            var worst: Double = 0
+            var last = CFAbsoluteTimeGetCurrent()
+            for _ in 0..<180 {
+                try? await Task.sleep(for: .milliseconds(16))
+                let now = CFAbsoluteTimeGetCurrent()
+                worst = max(worst, now - last)
+                last = now
+            }
+            DebugUIRemote.log(String(format: "NP-MAINTHREAD worst gap over 3s = %.0fms", worst * 1000))
         }
     }
 
@@ -567,4 +676,32 @@ enum NowPlayingTouchProbe {
     }
 }
 #endif
+#endif
+
+#if DEBUG
+/// Counts `NowPlayingView.body` evaluations and reports the rate once a second.
+///
+/// The question it answers: taps reach SwiftUI's gesture recogniser (`NP-SWIFTUI tap recognised`)
+/// and the main thread is healthy (`NP-MAINTHREAD worst gap ≈ 85ms`), yet controls in the player
+/// do not fire for a second or two after it opens. A subtree rebuilt between touch-down and
+/// touch-up cannot complete a tap, and every view here observes the whole of `AppModel`, so any
+/// publish re-runs the entire player body (`Rules/swiftui-body-cost.md`).
+@MainActor
+final class NowPlayingBodyCounter {
+    static let shared = NowPlayingBodyCounter()
+
+    private var count = 0
+    private var windowStart: CFAbsoluteTime = 0
+
+    func tick() {
+        count += 1
+        let now = CFAbsoluteTimeGetCurrent()
+        if windowStart == 0 { windowStart = now }
+        let elapsed = now - windowStart
+        guard elapsed >= 1 else { return }
+        DebugUIRemote.log(String(format: "NP-BODY %d evaluations in %.1fs", count, elapsed))
+        count = 0
+        windowStart = now
+    }
+}
 #endif
