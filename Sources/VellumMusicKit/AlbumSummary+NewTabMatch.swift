@@ -188,28 +188,32 @@ struct LibraryAlbumReleaseIndex {
         let artistKey: String
     }
     /// Strict album title key → entries. Same album may appear under both maps.
-    private let byStrictAlbumKey: [String: [Entry]]
+    private var byStrictAlbumKey: [String: [Entry]]
     /// Loose album title key (trailing "(Deluxe)" etc. stripped) → entries.
-    private let byLooseAlbumKey: [String: [Entry]]
+    private var byLooseAlbumKey: [String: [Entry]]
 
     static let empty = LibraryAlbumReleaseIndex(albums: [])
 
     init(albums: [AlbumSummary]) {
-        var strict: [String: [Entry]] = [:]
-        var loose: [String: [Entry]] = [:]
+        byStrictAlbumKey = [:]
+        byLooseAlbumKey = [:]
         for album in albums {
-            let strictAlbum = AlbumSummary.normalizedReleaseKey(album.title)
-            let artistKey = AlbumSummary.normalizedReleaseKey(album.artist)
-            guard !strictAlbum.isEmpty, !artistKey.isEmpty else { continue }
-            let entry = Entry(album: album, artistKey: artistKey)
-            strict[strictAlbum, default: []].append(entry)
-            let looseAlbum = AlbumSummary.normalizedAlbumTitleLoose(album.title)
-            if !looseAlbum.isEmpty, looseAlbum != strictAlbum {
-                loose[looseAlbum, default: []].append(entry)
-            }
+            insert(album)
         }
-        self.byStrictAlbumKey = strict
-        self.byLooseAlbumKey = loose
+    }
+
+    /// Folds one album in without rebuilding. Keying is identical to ``init(albums:)``,
+    /// so an incremental insert and a later full rebuild agree.
+    mutating func insert(_ album: AlbumSummary) {
+        let strictAlbum = AlbumSummary.normalizedReleaseKey(album.title)
+        let artistKey = AlbumSummary.normalizedReleaseKey(album.artist)
+        guard !strictAlbum.isEmpty, !artistKey.isEmpty else { return }
+        let entry = Entry(album: album, artistKey: artistKey)
+        byStrictAlbumKey[strictAlbum, default: []].append(entry)
+        let looseAlbum = AlbumSummary.normalizedAlbumTitleLoose(album.title)
+        if !looseAlbum.isEmpty, looseAlbum != strictAlbum {
+            byLooseAlbumKey[looseAlbum, default: []].append(entry)
+        }
     }
 
     /// Mirror of ``AlbumSummary.matchesNewTabRelease`` — equality on title (strict
