@@ -301,8 +301,22 @@ final class CoverZoomRegistry {
         styles[id] = style
     }
 
+    /// An id nobody registered answers `.custom`, not `.system`.
+    ///
+    /// A style is recorded by the *source cell's* `onAppear`, so an id whose cell has never
+    /// been on screen has none — which is every deep link: "Go to Album" / "Go to Playlist"
+    /// from the player, a notification tap, `DebugUIRemote`. Answering `.system` there made
+    /// the pushed detail arm `navigationTransition(.zoom(sourceID:))` against a source id
+    /// nothing had claimed. Two things followed, and both were reported as bugs: no zoom ran
+    /// (there was nothing to zoom from), and SwiftUI's zoom took over dismissal, so the page
+    /// could not be swiped back from the left edge the way every other pushed page can.
+    ///
+    /// `.custom` is the honest answer for an unknown id. Our own delegate declines a push it
+    /// has no `pendingPushID` for and a pop with no cell to fly to, which lands the detail on
+    /// UIKit's ordinary slide — with its ordinary edge-swipe pop. Every live call site passes
+    /// `.custom` anyway; `.system` now only ever comes from a cell that asked for it.
     func style(for id: String) -> CoverZoomStyle {
-        styles[id] ?? .system
+        styles[id] ?? .custom
     }
 
     // MARK: Registration
