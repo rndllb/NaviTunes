@@ -100,11 +100,23 @@ private struct CoverZoomSource: ViewModifier {
             content
 #endif
         case .system:
+            // Registered explicitly, because an unregistered id now answers `.custom` — see
+            // `CoverZoomRegistry.style(for:)`. Without this the opt-out would be silent.
+#if os(iOS)
+            if let namespace {
+                content
+                    .onAppear { CoverZoomRegistry.shared.setStyle(.system, for: id) }
+                    .matchedTransitionSource(id: id, in: namespace)
+            } else {
+                content
+            }
+#else
             if let namespace {
                 content.matchedTransitionSource(id: id, in: namespace)
             } else {
                 content
             }
+#endif
         }
     }
 }
