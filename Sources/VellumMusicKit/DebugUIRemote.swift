@@ -177,6 +177,22 @@ enum DebugUIRemote {
         }
     }
 
+    /// Times a block and logs it only when it is slow enough to matter.
+    ///
+    /// Investigation instrumentation for the swipe-down stall (T054). The hang watcher says
+    /// *that* the main thread stalled and for how long; this says *which* span it was in.
+    /// Threshold-gated because ``log(_:)`` opens, seeks, writes and closes the file on the
+    /// calling thread — logging every span unconditionally would add its own cost to the very
+    /// path being measured.
+    @discardableResult
+    static func span<T>(_ label: String, minMs: Double = 8, _ body: () -> T) -> T {
+        let start = CFAbsoluteTimeGetCurrent()
+        let result = body()
+        let ms = (CFAbsoluteTimeGetCurrent() - start) * 1000
+        if ms >= minMs { log(String(format: "NP-PERF %@=%.0fms", label, ms)) }
+        return result
+    }
+
     /// Appends a timestamped line to the shared verification log — same file
     /// the hang watcher writes, so external markers, app events, and stalls
     /// form one timeline.

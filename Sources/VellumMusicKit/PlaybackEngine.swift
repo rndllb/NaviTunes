@@ -87,7 +87,17 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// Reactive stale-id recovery when every stream candidate fails (``AppModel``).
     var recoverStaleTrackOnFailure: ((Track) async -> StaleSongRecoveryResult?)?
     /// Drives the tab-bar mini player pill — false after a cold restore until the user starts playback.
-    @Published private(set) var showsMiniPlayerChrome = false
+    @Published private(set) var showsMiniPlayerChrome = false {
+        didSet {
+#if DEBUG
+            // T054: this flag is forwarded into `AppModel.objectWillChange`, so a flip is a
+            // whole-tree invalidation. If one lands mid-drag it would explain the stall.
+            if oldValue != showsMiniPlayerChrome {
+                DebugUIRemote.log("NP-CHROME showsMiniPlayerChrome=\(showsMiniPlayerChrome)")
+            }
+#endif
+        }
+    }
     /// Stores the pre-shuffle queue order for restoring when shuffle is toggled off.
     private var unshuffledQueue: [Track]?
     /// Natural ordered track list from the most recently loaded source — used to detect

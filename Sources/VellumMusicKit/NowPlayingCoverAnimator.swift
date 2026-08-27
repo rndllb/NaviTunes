@@ -227,7 +227,14 @@ final class NowPlayingCoverAnimator: NSObject, UIViewControllerAnimatedTransitio
         clip.backgroundColor = .clear
         container.addSubview(clip)
 
-        player.removeFromSuperview()
+        // `addSubview` reparents on its own, and doing it *without* an explicit detach first is
+        // what keeps this cheap. `removeFromSuperview()` moved the player to no window at all,
+        // so UIKit walked the entire player view tree firing
+        // `_didMoveFromWindow:toWindow:` on every node — and then `addSubview` walked it a
+        // second time putting the window back. Two full traversals of the whole ~2,800-line
+        // player, on the finger-down that starts the swipe. `clip` is already in `container`
+        // (added just above) and therefore already in the window, so moving the player straight
+        // into it is a same-window reparent and UIKit skips the window-change cascade entirely.
         clip.addSubview(player)
 
         if let artworkSnapshot {
@@ -421,7 +428,12 @@ final class NowPlayingCoverAnimator: NSObject, UIViewControllerAnimatedTransitio
     static weak var current: NowPlayingCoverAnimator?
 
     func beginDrag(context: UIViewControllerContextTransitioning) {
-        guard prepare(context: context) != nil else {
+#if DEBUG
+        let preparedSession = DebugUIRemote.span("beginDrag.prepare") { prepare(context: context) }
+#else
+        let preparedSession = prepare(context: context)
+#endif
+        guard preparedSession != nil else {
             finishOwnedInteractiveContext(context)
             return
         }
