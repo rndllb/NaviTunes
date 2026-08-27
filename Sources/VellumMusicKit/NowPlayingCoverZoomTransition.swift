@@ -134,6 +134,10 @@ final class NowPlayingCoverZoomController: NSObject, UIViewControllerTransitioni
     /// and treating it as one tore the cover away mid-drag.
     private(set) var isInteractiveDismiss = false
     private var dragStart: CGPoint = .zero
+#if DEBUG
+    /// T054 investigation: numbers the drag deltas so the log names the slow frame.
+    private var dragUpdateIndex = 0
+#endif
 
     // MARK: Install
 
@@ -226,13 +230,28 @@ final class NowPlayingCoverZoomController: NSObject, UIViewControllerTransitioni
             dragStart = finger
             isInteractiveDismiss = true
 #if DEBUG
+            dragUpdateIndex = 0
             DebugUIRemote.log("NP-DRAG began at \(Int(finger.x)),\(Int(finger.y))")
 #endif
             // SwiftUI drives the dismissal; UIKit then asks us for the animator and the
             // interaction controller, in that order, and the drag takes over from there.
+#if DEBUG
+            DebugUIRemote.span("began.requestDismiss") { requestDismiss() }
+#else
             requestDismiss()
+#endif
         case .changed:
+#if DEBUG
+            // Every delta is numbered so the log shows *which* frame of the drag went long,
+            // not just that one did. Threshold is low on purpose: at 60Hz anything over ~8ms
+            // has already missed, and we want the shape of the whole drag, not only the worst.
+            dragUpdateIndex += 1
+            DebugUIRemote.span("drag.update#\(dragUpdateIndex)", minMs: 4) {
+                interaction?.update(translation: finger.y - dragStart.y)
+            }
+#else
             interaction?.update(translation: finger.y - dragStart.y)
+#endif
         case .ended:
             let translation = finger.y - dragStart.y
             let velocity = pan.velocity(in: space).y
@@ -611,8 +630,16 @@ struct NowPlayingCoverPresenter<Content: View>: UIViewControllerRepresentable {
         /// a "Go to …" inside the player has no SwiftUI update coming at all — the shell it
         /// would arrive on is covered, and SwiftUI does not render a covered hierarchy.
         private func dismissNow() {
+#if DEBUG
+            // Split deliberately: the binding write is a SwiftUI state change that re-renders the
+            // shell, `dismissCover()` is the UIKit teardown. They are very different costs and
+            // the hang watcher cannot tell them apart.
+            DebugUIRemote.span("dismissNow.binding") { isPresentedBinding.wrappedValue = false }
+            DebugUIRemote.span("dismissNow.dismissCover") { dismissCover() }
+#else
             isPresentedBinding.wrappedValue = false
             dismissCover()
+#endif
         }
 
         private func dismissCover() {
