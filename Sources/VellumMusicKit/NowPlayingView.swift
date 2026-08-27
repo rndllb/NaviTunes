@@ -2017,6 +2017,9 @@ private struct ScrubberBlock: View {
             }
             .frame(height: NowPlayingScrubberMetrics.slotHeight)
             .allowsHitTesting(isEnabled)
+            // A diagonal seek must stay a seek. Without this the window-level dismiss pan sees
+            // a downward-ish drag outside any scroll view and starts closing the player.
+            .nowPlayingDismissExclusionZone()
 
             HStack {
                 Text(formatTime(displayTime))
@@ -2263,6 +2266,8 @@ private struct VolumeScrubberBlock: View {
                 )
             }
             .frame(height: NowPlayingScrubberMetrics.slotHeight)
+            // Same reason as ``ScrubberBlock``: a diagonal volume drag must not become a dismiss.
+            .nowPlayingDismissExclusionZone()
 
             Image(systemName: "speaker.wave.3.fill")
                 .font(.footnote.weight(.semibold))
