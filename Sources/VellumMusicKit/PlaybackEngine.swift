@@ -67,6 +67,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// reports the transcode target, not the file's source codec.
     @Published private(set) var nowPlayingFormatLabel: String?
     @Published private(set) var lyrics: [LyricLine] = []
+    /// Track id ``lyrics`` were loaded for — or that a load is in flight for. Lets a track
+    /// start ask for lyrics without knowing whether some earlier path already did
+    /// (``scheduleLyricsLoadIfNeeded(for:)``).
+    private var lyricsTrackId: String?
     @Published var shuffleMode: ShuffleMode = .off
     @Published var repeatMode: RepeatMode = .off
     @Published private(set) var playbackSource: PlaybackSource?
@@ -461,6 +465,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         queue = []
         currentIndex = 0
         lyrics = []
+        lyricsTrackId = nil
         didConfigureRemoteCommands = false
         currentTime = 0
         playbackHead = 0
@@ -523,7 +528,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
         playbackHead = pending
         currentTime = pending
         lastEmittedUIProgress = pending
+        // Nothing is loaded yet and nothing is fetching: leave the id unclaimed so the first
+        // play tap's `startCurrentItem` fetches this track's lyrics.
         lyrics = []
+        lyricsTrackId = nil
         scrobbledForCurrentTrack = false
         isPlaying = false
         unshuffledQueue = snapshot.unshuffledQueue
@@ -1991,6 +1999,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             }
         }
         guard let activeTrack = currentTrack else { throw PlaybackEngineError.missingTrack }
+        scheduleLyricsLoadIfNeeded(for: activeTrack)
 
         var candidates: [(url: URL, headers: [String: String])] = []
         if let saved = offline?.localFile(for: activeTrack.id) {
@@ -3151,7 +3160,22 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// track the user already skipped past is dropped.
     private func scheduleLyricsLoad() {
         lyrics = []
+        lyricsTrackId = currentTrack?.id
         Task { [weak self] in try? await self?.loadLyrics() }
+    }
+
+    /// Lyrics for a track start that no other path has claimed.
+    ///
+    /// ``playAlbum`` / ``advance`` schedule the load themselves, before the (slow) item
+    /// start, so the previous track's lines leave the screen immediately — this then finds
+    /// the id already claimed and does nothing. What it catches is every *other* way a track
+    /// can start: the first play after a cold restore (``startFromPendingRestore``, which was
+    /// the one path that reached playback with no lyrics load anywhere behind it), and a
+    /// reload that changed the track id under us (stale-id recovery). A same-track reload —
+    /// EQ toggle, stall recovery, spurious end — keeps what is already on screen.
+    private func scheduleLyricsLoadIfNeeded(for track: Track) {
+        guard lyricsTrackId != track.id else { return }
+        scheduleLyricsLoad()
     }
 
     private func loadLyrics() async throws {
@@ -3160,19 +3184,23 @@ final class PlaybackEngine: NSObject, ObservableObject {
             DebugUIRemote.log("NP-LYRICS skip library=\(self.library != nil) track=\(currentTrack?.id ?? "nil")")
 #endif
             lyrics = []
+            lyricsTrackId = nil
             return
         }
         let trackId = track.id
-        let epoch = playbackEpoch
         let fetched = (try? await library.lyrics(for: track)) ?? []
 #if DEBUG
         DebugUIRemote.log(
-            "NP-LYRICS fetched=\(fetched.count) id=\(trackId) epochOK=\(isPlaybackEpochCurrent(epoch)) "
-            + "current=\(currentTrack?.id ?? "nil")"
+            "NP-LYRICS fetched=\(fetched.count) id=\(trackId) current=\(currentTrack?.id ?? "nil")"
         )
 #endif
-        guard isPlaybackEpochCurrent(epoch), currentTrack?.id == trackId else { return }
+        // Keyed on the track alone, not the playback epoch. Lyrics depend on nothing else, so
+        // a result that arrives after a same-track reload (EQ handoff, stall recovery — each
+        // begins a new epoch) is still the right text; dropping it left the song playing with
+        // an empty lyrics tab until the next track.
+        guard currentTrack?.id == trackId else { return }
         lyrics = fetched
+        lyricsTrackId = trackId
     }
 
     private func resolvedArtworkURL(for track: Track) -> URL? {
