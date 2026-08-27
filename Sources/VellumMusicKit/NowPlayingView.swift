@@ -115,11 +115,22 @@ struct NowPlayingView: View {
     @State private var prevTapPulse = 0
     @State private var nextTapPulse = 0
     @State private var libraryPath: [NowPlayingLibraryRoute] = []
-    /// Which of the three paged queue sections is currently snapped. Drives the
-    /// inter-section haptic so each swipe-and-snap fires its own impact, and
-    /// reaching the boundary the user is swiping toward requires a second swipe.
-    @State private var queueScrollAnchor: QueueScrollAnchor? = .nowPlayingHeader
-    @State private var lastQueueHapticAnchor: QueueScrollAnchor? = .nowPlayingHeader
+    /// Which of the paged queue sections is currently snapped, held in its own object.
+    ///
+    /// It used to be `@State` here, which meant every page settle invalidated *this* view — the
+    /// NavigationStack, `sharedHeader`'s GeometryReader, the backdrop and the whole bottom
+    /// chrome — rather than just the scroll region that moved. Only ``QueuePagingScroll``
+    /// observes this object, so a settle now re-runs that view and nothing else. Same shape as
+    /// `PlaybackTimeModel`, which exists so the playhead tick does not re-render every player
+    /// view; this is that pattern applied to the one place it had not been.
+    ///
+    /// Held with `@State` rather than `@StateObject` deliberately: `@State` on a reference type
+    /// does not subscribe to `objectWillChange`, so this view keeps the object *alive* without
+    /// observing it. Lifetime is therefore exactly what it was — it survives leaving and
+    /// re-entering the queue pane, and survives a close/reopen, so which page you return to is
+    /// unchanged. (Scoping it to the queue pane's own view would have reset it on every visit,
+    /// which is the kind of pane-restoration change this pass must not make.)
+    @State private var queuePageAnchor = QueuePageAnchorModel()
     @Namespace private var artworkNamespace
 
     init(
@@ -133,10 +144,6 @@ struct NowPlayingView: View {
     }
 
     var onLibraryNavigationDepthChanged: ((Int) -> Void)
-
-    private enum QueueScrollAnchor: Hashable {
-        case historyTop, nowPlayingHeader
-    }
 
     /// Paused artwork size. Bigger → cover shrinks LESS when paused
     /// (296/315 ≈ 94% of playing size). Only affects the paused state.
@@ -515,25 +522,10 @@ struct NowPlayingView: View {
             .reversed()
             .map { $0 }
 
-        return ScrollView(.vertical, showsIndicators: false) {
-            LazyVStack(spacing: 0) {
-                historySection(history: queueHistory)
-                    .containerRelativeFrame(.vertical)
-                    .id(QueueScrollAnchor.historyTop)
-                nowPlayingPage(track: track, upNext: upNext)
-                    .containerRelativeFrame(.vertical)
-                    .id(QueueScrollAnchor.nowPlayingHeader)
-            }
-            .scrollTargetLayout()
-        }
-        .scrollTargetBehavior(.paging)
-        .scrollPosition(id: $queueScrollAnchor)
-        .onChange(of: queueScrollAnchor) { _, new in
-            guard let new, new != lastQueueHapticAnchor else { return }
-            lastQueueHapticAnchor = new
-            #if os(iOS)
-            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            #endif
+        return QueuePagingScroll(model: queuePageAnchor) {
+            historySection(history: queueHistory)
+        } nowPlaying: {
+            nowPlayingPage(track: track, upNext: upNext)
         }
     }
 
@@ -2721,7 +2713,13 @@ private struct LyricsFocusScrollView: View {
     private var lyricsScroll: some View {
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 0) {
+                // Lazy, because this was an eager `VStack`: every line of the song was
+                // instantiated regardless of the viewport, and each line carries its own
+                // `.blur()` — one offscreen Gaussian pass per line, for the whole song. That
+                // cost is paid again whenever the player is snapshotted or rebuilt with the
+                // lyrics pane open. `.id()` and the `scrollTo` calls below are unchanged, which
+                // is what keeps the focus scrolling working.
+                LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(displayItems.enumerated()), id: \.element.id) { index, item in
                         renderItemView(item, index: index)
                             .id(item.id)
@@ -2909,6 +2907,56 @@ private struct LyricsFocusScrollView: View {
 /// and fade out just before the next line lands. Runs on a `TimelineView`
 /// animation schedule (paused when playback is paused) so the fill is
 /// per-frame smooth instead of stepping on the coarse observer tick.
+/// Which paged queue section is currently snapped.
+enum QueueScrollAnchor: Hashable {
+    case historyTop, nowPlayingHeader
+}
+
+/// The queue pager's snap position, isolated from ``NowPlayingView``'s `objectWillChange`.
+///
+/// See the comment on `NowPlayingView.queuePageAnchor` for why this is its own object.
+@MainActor
+final class QueuePageAnchorModel: ObservableObject {
+    @Published var anchor: QueueScrollAnchor? = .nowPlayingHeader
+    /// Last anchor that fired a haptic. Deliberately **not** `@Published`: it is bookkeeping for
+    /// the impact below, and publishing it would cause a second render for no visible reason.
+    var lastHapticAnchor: QueueScrollAnchor? = .nowPlayingHeader
+}
+
+/// The two-page vertical pager inside the queue (History above, Now Playing + Up Next below).
+///
+/// Exists so that a page settle invalidates this view instead of the whole ~2,800-line player
+/// body. The pages themselves are passed in as builders, so their content is still assembled by
+/// `NowPlayingView` — this owns only the scroll container and the snap position.
+private struct QueuePagingScroll<History: View, NowPlaying: View>: View {
+    @ObservedObject var model: QueuePageAnchorModel
+    @ViewBuilder var history: () -> History
+    @ViewBuilder var nowPlaying: () -> NowPlaying
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVStack(spacing: 0) {
+                history()
+                    .containerRelativeFrame(.vertical)
+                    .id(QueueScrollAnchor.historyTop)
+                nowPlaying()
+                    .containerRelativeFrame(.vertical)
+                    .id(QueueScrollAnchor.nowPlayingHeader)
+            }
+            .scrollTargetLayout()
+        }
+        .scrollTargetBehavior(.paging)
+        .scrollPosition(id: $model.anchor)
+        .onChange(of: model.anchor) { _, new in
+            guard let new, new != model.lastHapticAnchor else { return }
+            model.lastHapticAnchor = new
+            #if os(iOS)
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            #endif
+        }
+    }
+}
+
 private struct SilenceBreathingDots: View {
     let start: TimeInterval
     let end: TimeInterval
