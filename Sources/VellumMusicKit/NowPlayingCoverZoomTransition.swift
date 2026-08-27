@@ -265,7 +265,8 @@ final class NowPlayingCoverZoomController: NSObject, UIViewControllerTransitioni
             "NP-DRAG shouldBegin settled=\(isSettled) canDismiss=\(canDismiss()) "
             + "inFlight=\(isInteractiveDismiss) coordinator=\(host?.transitionCoordinator != nil) "
             + "dx=\(Int(t.x)) dy=\(Int(t.y)) "
-            + "overScroll=\(isOverScrolledContent(at: pan.location(in: view), in: view))"
+            + "overScroll=\(isOverScrolledContent(at: pan.location(in: view), in: view)) "
+            + "excluded=\(NowPlayingDismissExclusion.contains(pan.location(in: view), in: view))"
         )
 #endif
         // Never start a close on top of an unfinished open, and never start a second one.
@@ -275,12 +276,20 @@ final class NowPlayingCoverZoomController: NSObject, UIViewControllerTransitioni
         guard isSettled, canDismiss(), !isInteractiveDismiss else { return false }
         guard host?.transitionCoordinator == nil else { return false }
         // Downward, and more vertical than horizontal — everything else belongs to the player's
-        // own content (the paged artwork/lyrics/queue scroll, the scrubbers).
+        // own content (the paged artwork/lyrics/queue scroll).
         let translation = pan.translation(in: view)
         guard translation.y > 0, abs(translation.y) > abs(translation.x) else { return false }
+        // The two scrubbers are the exception the angle check above cannot cover. They are not
+        // inside a scroll view, so ``isOverScrolledContent`` cannot see them, and a diagonal
+        // thumb drag on the progress or volume bar crosses 45° as a matter of course — which
+        // handed a seek to the dismiss and closed the player mid-scrub. Direction is committed
+        // once off the first few points and never re-checked, so this has to be answered here,
+        // at `shouldBegin`, or not at all.
+        let location = pan.location(in: view)
+        guard !NowPlayingDismissExclusion.contains(location, in: view) else { return false }
         // A list inside the player (queue, lyrics) scrolls first and only hands the drag over
         // once it is at its top, the way a sheet behaves.
-        return !isOverScrolledContent(at: pan.location(in: view), in: view)
+        return !isOverScrolledContent(at: location, in: view)
     }
 
     /// True while *any* scroll view under the finger still has content above its top edge.
@@ -470,6 +479,24 @@ struct NowPlayingCoverPresenter<Content: View>: UIViewControllerRepresentable {
                     self?.zoom.isSettled = false
                 }
             } else if !wanted {
+                cover = nil
+                zoom.isSettled = false
+            } else if isCoverOnScreen {
+                // The stuck side was the *present*, and the player is up. `isSettled` is only
+                // ever set true from `presentCover`'s completion closure — which a forced
+                // resolve, by definition, never reaches. Leaving it false was silent and
+                // permanent: `gestureRecognizerShouldBegin` guards on it, so swipe-to-dismiss
+                // on the player was dead for the rest of the session, with no crash and nothing
+                // on screen to say so. Re-arm it here, exactly as the completion would have.
+                zoom.isSettled = true
+                // The completion also does this, and for the same reason: SwiftUI can replace
+                // the hosting view during the first render pass, and a recognizer left on a
+                // discarded view never fires.
+                zoom.reinstallPanIfNeeded()
+            } else {
+                // Wanted up, nothing on screen — the present never landed at all. Throw the
+                // reused controller away so the next open rebuilds cleanly. `sync()` runs again
+                // on the shell's next render, which is several times a second.
                 cover = nil
                 zoom.isSettled = false
             }
@@ -717,3 +744,84 @@ final class NowPlayingBodyCounter {
     }
 }
 #endif
+
+
+// MARK: - Dismiss exclusion zones
+
+#if canImport(UIKit)
+/// Regions of the player that must never hand their drag to the dismiss.
+///
+/// ``NowPlayingCoverZoomController/isOverScrolledContent(at:in:)`` answers "does the content
+/// under this finger want the drag" by walking for `UIScrollView` ancestors — which is the right
+/// question everywhere the content *is* a scroll view, and the wrong one for the two horizontal
+/// scrubbers. `pinnedBottomChrome` is a sibling of the mode-switching `ZStack`, not a descendant
+/// of any scroll view, so a touch on the progress bar or the volume bar walks all the way to the
+/// window without meeting one, `isOverScrolledContent` returns false, and the only thing left
+/// standing between a scrub and a dismiss is the 45° angle check. A thumb dragging a slider does
+/// not travel in a straight horizontal line: a natural diagonal seek crosses 45° and starts
+/// closing the player mid-scrub.
+///
+/// Rect-based rather than hit-test-based on purpose. A marker view that answered `hitTest` would
+/// have to be interactive, and an interactive view over a slider eats the slider's own drag. The
+/// markers here are `isUserInteractionEnabled = false`, invisible to hit-testing and to the eye,
+/// and only their geometry is consulted — once per touch-down, never per frame.
+@MainActor
+enum NowPlayingDismissExclusion {
+    private static let zones = NSHashTable<UIView>.weakObjects()
+
+    static func register(_ view: UIView) {
+        zones.add(view)
+    }
+
+    static func unregister(_ view: UIView) {
+        zones.remove(view)
+    }
+
+    /// True when `point` (expressed in `view`'s coordinate space) falls inside a registered zone.
+    static func contains(_ point: CGPoint, in view: UIView) -> Bool {
+        for zone in zones.allObjects {
+            guard zone.window != nil, !zone.isHidden, zone.alpha > 0 else { continue }
+            let rect = zone.convert(zone.bounds, to: view)
+            if rect.contains(point) { return true }
+        }
+        return false
+    }
+}
+
+/// Marks the view it backs as a ``NowPlayingDismissExclusion`` zone.
+///
+/// Applied as a `.background`, so it takes exactly the frame of the control it is protecting and
+/// draws nothing — a clear, non-interactive `UIView`.
+struct NowPlayingDismissExclusionZone: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        NowPlayingDismissExclusion.register(view)
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        // Re-registering is idempotent (`NSHashTable`), and it covers the case where SwiftUI
+        // recycles a representable's backing view across an identity change.
+        NowPlayingDismissExclusion.register(uiView)
+    }
+
+    static func dismantleUIView(_ uiView: UIView, coordinator: ()) {
+        NowPlayingDismissExclusion.unregister(uiView)
+    }
+}
+#endif
+
+extension View {
+    /// Excludes this view's frame from the player's swipe-to-dismiss pan.
+    ///
+    /// A no-op off UIKit — there is no window-level dismiss pan to exclude from.
+    func nowPlayingDismissExclusionZone() -> some View {
+#if canImport(UIKit)
+        background(NowPlayingDismissExclusionZone())
+#else
+        self
+#endif
+    }
+}
