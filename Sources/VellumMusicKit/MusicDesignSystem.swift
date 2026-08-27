@@ -1851,9 +1851,46 @@ struct MusicTransientToastChrome: ViewModifier {
     }
 }
 
+/// Centered system alert warning that starting a new song discards hand-queued tracks.
+/// Driven by ``AppModel/pendingQueueReplacement``. Stock `.alert` rather than
+/// `.confirmationDialog` — this is a blocking destructive choice, not an action sheet.
+/// Render at the app root (and once on the Now Playing cover, which occludes the root).
+struct MusicQueueReplacementChrome: ViewModifier {
+    @EnvironmentObject private var app: AppModel
+
+    func body(content: Content) -> some View {
+        content.alert(
+            "Clear your queue?",
+            isPresented: Binding(
+                get: { app.pendingQueueReplacement != nil },
+                set: { if !$0 { app.pendingQueueReplacement = nil } },
+            ),
+            presenting: app.pendingQueueReplacement,
+        ) { _ in
+            Button("Clear Queue and Play", role: .destructive) {
+                app.confirmPendingQueueReplacement()
+            }
+            Button("Cancel", role: .cancel) {
+                app.pendingQueueReplacement = nil
+            }
+        } message: { pending in
+            Text(
+                pending.queuedCount == 1
+                    ? "Playing this song will remove 1 song you added to Up Next."
+                    : "Playing this song will remove \(pending.queuedCount) songs you added to Up Next.",
+            )
+        }
+    }
+}
+
 extension View {
     /// Renders the app-wide transient toast above this view (used at the root).
     func musicTransientToastChrome() -> some View {
         modifier(MusicTransientToastChrome())
+    }
+
+    /// Presents the "starting this song clears your queue" confirmation (used at the root).
+    func musicQueueReplacementChrome() -> some View {
+        modifier(MusicQueueReplacementChrome())
     }
 }

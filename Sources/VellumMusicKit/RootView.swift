@@ -211,6 +211,7 @@ private struct MainShellView: View {
             artworkNamespace: playerArtworkNamespace,
         ))
         .musicTransientToastChrome()
+        .musicQueueReplacementChrome()
     }
 }
 
@@ -245,6 +246,9 @@ private struct NowPlayingFullScreenCoverModifier: ViewModifier {
                         // cover carries its own copy ("1 song added", sleep timer, etc.).
                         // Never both visible at once — the cover is full-screen.
                         .musicTransientToastChrome()
+                        // Same occlusion argument as the toast: tap-to-play is reachable
+                        // from over-player sheets, so the cover carries its own alert.
+                        .musicQueueReplacementChrome()
                         // Injected **outermost**, and every one of them, because a
                         // `UIHostingController` inherits no SwiftUI environment. Under
                         // `fullScreenCover` the cover picked these up from the shell's

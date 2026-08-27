@@ -63,6 +63,16 @@ struct TransientToastContent: Equatable {
     var artworkURL: URL? = nil
 }
 
+/// A tap-to-play request held back pending confirmation, because starting it would replace
+/// a queue containing tracks the user hand-added via Play Next / Add to Queue.
+/// Driven by ``AppModel/pendingQueueReplacement``; rendered by ``MusicQueueReplacementChrome``.
+struct PendingQueueReplacement: Identifiable {
+    let id = UUID()
+    /// Unplayed user-queued tracks this request would discard — shown in the prompt.
+    let queuedCount: Int
+    let play: @MainActor @Sendable () async -> Void
+}
+
 /// Holds a UIKit background assertion for the life of a bulk operation.
 ///
 /// Without one, iOS suspends the app a few seconds after it leaves the foreground, which
@@ -180,6 +190,10 @@ public final class AppModel: ObservableObject {
     var currentlyVisiblePlaylistId: String? = nil
     /// Album equivalent of ``currentlyVisiblePlaylistId``.
     var currentlyVisibleAlbumId: String? = nil
+
+    /// A tap-to-play request held back because starting it would discard tracks the user
+    /// explicitly queued. Presented as a confirmation; cleared on either choice.
+    @Published var pendingQueueReplacement: PendingQueueReplacement? = nil
 
     /// Brief bottom toast (e.g. "Added to Queue"). Auto-clears after ``showTransientToast``
     /// is called; the ``MusicTransientToastChrome`` view modifier renders it.
@@ -4601,6 +4615,25 @@ public final class AppModel: ObservableObject {
     // MARK: - Playback helpers
 
     /// Starts playback and surfaces stream/load failures via the root toast.
+    /// Runs `play` now, or holds it behind a confirmation when starting it would throw away
+    /// tracks the user explicitly queued via Play Next / Add to Queue. Silent in the common
+    /// case — a plain album/playlist queue has nothing hand-curated to lose.
+    func playReplacingQueue(_ play: @escaping @MainActor @Sendable () async -> Void) async {
+        let queued = player.pendingUserQueuedCount
+        guard queued > 0 else {
+            await play()
+            return
+        }
+        pendingQueueReplacement = PendingQueueReplacement(queuedCount: queued, play: play)
+    }
+
+    /// Confirm handler for ``pendingQueueReplacement`` — runs the held request.
+    func confirmPendingQueueReplacement() {
+        guard let pending = pendingQueueReplacement else { return }
+        pendingQueueReplacement = nil
+        Task { await pending.play() }
+    }
+
     func playAlbumOrToast(
         library: MusicLibraryProviding? = nil,
         tracks: [Track],
@@ -4624,10 +4657,13 @@ public final class AppModel: ObservableObject {
             showTransientToast("Every song here has been listened. Clear listen history in Kill Mode to start over.")
             return
         }
-        do {
-            try await player.playAlbum(library: lib, tracks: playTracks, startIndex: playStart, source: source)
-        } catch {
-            showTransientToast(error.musicPlaybackToastMessage)
+        await playReplacingQueue { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.player.playAlbum(library: lib, tracks: playTracks, startIndex: playStart, source: source)
+            } catch {
+                self.showTransientToast(error.musicPlaybackToastMessage)
+            }
         }
     }
 
