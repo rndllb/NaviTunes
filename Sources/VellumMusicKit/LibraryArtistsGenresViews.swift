@@ -182,6 +182,8 @@ struct LibraryArtistsView: View {
     @State private var displayedSections: [LibraryArtistListSection] = []
     @State private var scrubberSelectedLetter: String?
     @State private var lastScrubbedLetter: String?
+    /// In-flight debounce for search typing — see ``scheduleRecomputeDisplayed()``.
+    @State private var searchDebounceTask: Task<Void, Never>?
 
     private var scrubberLetters: [String] {
         displayedSections.map(\.id)
@@ -200,6 +202,21 @@ struct LibraryArtistsView: View {
         case .allArtists: return "No artists"
         case .favorites: return "No favorite artists"
         case .downloads: return "No downloaded artists"
+        }
+    }
+
+    /// Debounced ``recomputeDisplayed()``, for the one input that changes per keystroke.
+    ///
+    /// The recompute behind this re-filters up to ~12k artists *and* rebuilds the alphabet
+    /// sections, so it was doing that whole pass on every character typed. Same shape and same
+    /// 150ms as `LibraryView.scheduleRecomputeAlbumDisplay`. The other triggers stay immediate:
+    /// they are discrete events, not per-keystroke ones.
+    private func scheduleRecomputeDisplayed() {
+        searchDebounceTask?.cancel()
+        searchDebounceTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            recomputeDisplayed()
         }
     }
 
@@ -358,7 +375,7 @@ struct LibraryArtistsView: View {
         .task(id: "\(app.isSignedIn)-\(app.backendKind)") { await load() }
         .refreshable { await load() }
         .onChange(of: artists) { _, _ in recomputeDisplayed() }
-        .onChange(of: query) { _, _ in recomputeDisplayed() }
+        .onChange(of: query) { _, _ in scheduleRecomputeDisplayed() }
         .onChange(of: libraryFilter) { _, _ in recomputeDisplayed() }
         .onChange(of: app.favoriteTrackIds) { _, _ in
             if libraryFilter == .favorites { recomputeDisplayed() }

@@ -32,6 +32,22 @@ struct LibrarySongsView: View {
     /// Cached projection of `tracks` → filter → search → sort. Recomputed only when an input
     /// changes, so scroll redraws don't re-sort 10k+ items on every body call.
     @State private var displayed: [Track] = []
+    /// In-flight debounce for search typing — see ``scheduleRecomputeDisplayed()``.
+    @State private var searchDebounceTask: Task<Void, Never>?
+
+    /// Debounced ``recomputeDisplayed()``, for the one input that changes per keystroke.
+    ///
+    /// Same shape and same 150ms as `LibraryView.scheduleRecomputeAlbumDisplay`, which is the
+    /// existing precedent in this codebase. Only search typing goes through here: the other
+    /// triggers are discrete (a sort tap, a finished load) and should land immediately.
+    private func scheduleRecomputeDisplayed() {
+        searchDebounceTask?.cancel()
+        searchDebounceTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            recomputeDisplayed()
+        }
+    }
 
     private func recomputeDisplayed() {
         // Runs on every searchText keystroke. For very large libraries (50K+ tracks)
@@ -168,7 +184,7 @@ struct LibrarySongsView: View {
                 .onDisappear { navigateAlbum = nil }
         }
         .onChange(of: tracks) { _, _ in recomputeDisplayed() }
-        .onChange(of: searchText) { _, _ in recomputeDisplayed() }
+        .onChange(of: searchText) { _, _ in scheduleRecomputeDisplayed() }
         .onChange(of: sort) { _, _ in recomputeDisplayed() }
     }
 
