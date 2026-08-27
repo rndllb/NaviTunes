@@ -392,6 +392,8 @@ public final class AppModel: ObservableObject {
     /// the player's transient queue. Newest first.
     private static let recentlyPlayedTracksKey = "VellumMusic.recentlyPlayedTracks"
     private static let recentlyPlayedTracksLimit = 100
+    /// Guards against an older off-main history encode landing after a newer one.
+    private var recentlyPlayedSaveGeneration = 0
     @Published private(set) var recentlyPlayedTracks: [Track] = []
 
     /// Playlist id → last time the user meaningfully played from that playlist (scrobble threshold).
@@ -5236,9 +5238,27 @@ public final class AppModel: ObservableObject {
         recentlyPlayedTracks = decoded
     }
 
+    /// Persist the history list, encoding off the main actor.
+    ///
+    /// This is reached from `recordRecentTrackPlay`, which is wired to
+    /// `PlaybackEngine.onTrackStarted` — so it fires on every track change, including the
+    /// `jumpToQueueItem` that a queue row's own Button calls. Encoding up to 100 `Track` structs
+    /// synchronously put a full JSON encode in the same runloop pass as the page-snap animation
+    /// that tap had just started.
+    ///
+    /// The write itself stays on the main actor and is generation-checked, so two saves racing
+    /// cannot land out of order and persist an older history than the one in memory.
     private func saveRecentlyPlayedTracksToDefaults() {
-        guard let data = try? JSONEncoder().encode(recentlyPlayedTracks) else { return }
-        UserDefaults.standard.set(data, forKey: Self.recentlyPlayedTracksKey)
+        recentlyPlayedSaveGeneration &+= 1
+        let generation = recentlyPlayedSaveGeneration
+        let snapshot = recentlyPlayedTracks
+        Task.detached(priority: .utility) {
+            guard let data = try? JSONEncoder().encode(snapshot) else { return }
+            await MainActor.run { [weak self] in
+                guard let self, self.recentlyPlayedSaveGeneration == generation else { return }
+                UserDefaults.standard.set(data, forKey: Self.recentlyPlayedTracksKey)
+            }
+        }
     }
 
     /// Logs a single track as actually-played. Called by `PlaybackEngine` only when the
