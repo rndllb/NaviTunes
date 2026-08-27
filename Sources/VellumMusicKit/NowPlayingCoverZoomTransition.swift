@@ -283,13 +283,25 @@ final class NowPlayingCoverZoomController: NSObject, UIViewControllerTransitioni
         return !isOverScrolledContent(at: pan.location(in: view), in: view)
     }
 
+    /// True while *any* scroll view under the finger still has content above its top edge.
+    ///
+    /// The walk must not stop at the innermost one, and the queue is why. Its rows live in a
+    /// `List` that sits at its own top the moment the queue opens (nothing to reveal above),
+    /// nested inside the paged scroll that carries History above the Now Playing page — parked
+    /// one page down with everything to reveal (measured: list `offset=0 content=614
+    /// bounds=426`, paged scroll `offset=426 content=854`). Answering from the list alone
+    /// reported "already at the top" and handed a swipe meant for History to the dismiss, which
+    /// closed the player instead. It only misfired when the list was both scrollable and
+    /// untouched — scroll it at all, or leave the queue short enough not to overflow, and the
+    /// walk reached the paged scroll and got the right answer.
     private func isOverScrolledContent(at point: CGPoint, in view: UIView) -> Bool {
         var candidate = view.hitTest(point, with: nil)
         while let current = candidate {
             if let scroll = current as? UIScrollView,
                scroll.isScrollEnabled,
-               scroll.contentSize.height > scroll.bounds.height {
-                return scroll.contentOffset.y > -scroll.adjustedContentInset.top + 0.5
+               scroll.contentSize.height > scroll.bounds.height,
+               scroll.contentOffset.y > -scroll.adjustedContentInset.top + 0.5 {
+                return true
             }
             candidate = current.superview
         }

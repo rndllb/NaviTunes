@@ -44,6 +44,7 @@ enum DebugUIRemote {
         observe("com.vellum.debug.deleteUITestPlaylists")
         observe("com.vellum.debug.pop")
         observe("com.vellum.debug.playFirst")
+        observe("com.vellum.debug.playQueue")
         observe("com.vellum.debug.openPlayer")
         observe("com.vellum.debug.libraryTab")
         observe("com.vellum.debug.ping")
@@ -115,6 +116,17 @@ enum DebugUIRemote {
                     .first
             if let track {
                 Task { try? await app.player.playAlbum(library: app.activeLibrary, tracks: [track], startIndex: 0) }
+            }
+        case "com.vellum.debug.playQueue":
+            // Like `playFirst`, but with a *full album* behind the needle, so the
+            // queue list has more rows than fit on screen — the state the history
+            // swipe has to work in.
+            Task {
+                let albums = app.libraryAlbums
+                guard let album = albums.first(where: { ($0.trackCount ?? 0) >= 8 }) ?? albums.first,
+                      let tracks = try? await app.activeLibrary?.tracks(forAlbumId: album.id),
+                      !tracks.isEmpty else { return }
+                try? await app.player.playAlbum(library: app.activeLibrary, tracks: tracks, startIndex: 0)
             }
         case "com.vellum.debug.openPlayer":
             app.debugOpenPlayerRequests += 1
