@@ -2221,7 +2221,12 @@ struct AlbumsGridView: View {
             }
         }
         .onChange(of: query) { _, _ in
-            recomputeAlbumDisplay()
+            // Debounced: this is the only trigger here that fires per *keystroke*, and the
+            // recompute behind it re-filters and re-sorts the whole album list. The helper
+            // already existed in this file but was only wired to `downloadedTrackIds`. Sort and
+            // filter changes below stay synchronous on purpose — they are discrete taps, one
+            // recompute each, and deferring those would just make them feel laggy.
+            scheduleRecomputeAlbumDisplay()
             if isSearching {
                 endScrubbing()
             }

@@ -1026,8 +1026,16 @@ public final class AppModel: ObservableObject {
             .removeDuplicates()
             .sink { [weak self] _ in self?.writeWidgetData() }
             .store(in: &cancellables)
+        // Throttled, because `removeDuplicates()` never suppresses anything here: each track
+        // that finishes downloading inserts into the Set, so every value is strictly larger than
+        // the last and always "different". Saving an album therefore fired one full-tree
+        // invalidation per track — and ~40 view files hold `@EnvironmentObject var app`,
+        // including RootView, NowPlayingView and MiniPlayerView, i.e. exactly the views alive
+        // during a cover zoom. `latest: true` guarantees the final state still arrives, so a
+        // download-complete checkmark can be up to 250ms late but is never dropped.
         offline.$downloadedTrackIds
             .removeDuplicates()
+            .throttle(for: .milliseconds(250), scheduler: DispatchQueue.main, latest: true)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         acquisition.onJobFinished = { [weak self] job in
@@ -5492,7 +5500,11 @@ public final class AppModel: ObservableObject {
                 guard let self else { return }
                 let online = path.status == .satisfied
                 let wasOnline = self.hasInternetPath
-                self.hasInternetPath = online
+                // `@Published` has no equality check, and this handler fires on interface
+                // reordering and `isExpensive` flips, not just online↔offline — so an
+                // unconditional assignment was a full-tree invalidation on events where nothing
+                // had actually changed. Every comparable path in this file is guarded already.
+                if self.hasInternetPath != online { self.hasInternetPath = online }
                 let wifiLike = path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet)
                 self.prefersWifiLikePath = wifiLike
                 if !online {

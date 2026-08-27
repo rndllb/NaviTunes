@@ -62,7 +62,15 @@ enum ArtworkURLCache {
         if let cached = memory.object(forKey: key as NSString) as Data? {
             return cached
         }
-        if let disk = loadFromDisk(key: key) {
+        // Off the caller's executor. This function is `async` but not actor-isolated, and there
+        // is no suspension point before this line — so Swift ran `loadFromDisk`'s blocking
+        // `Data(contentsOf:)` synchronously on whoever called it, which for the hero image and
+        // the backdrop tint is the main actor, right as a detail page appears. It is hit
+        // whenever the memory cache was evicted but the file is still on disk, which is the
+        // common steady state. The network path below was already offloaded correctly; this was
+        // an inconsistency inside one function rather than a deliberate tradeoff. The in-memory
+        // lookup above is untouched, so warm hits still return without suspending.
+        if let disk = await Task.detached(priority: .utility, operation: { loadFromDisk(key: key) }).value {
             memory.setObject(disk as NSData, forKey: key as NSString, cost: max(1, disk.count))
             return disk
         }
