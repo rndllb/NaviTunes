@@ -266,18 +266,42 @@ struct LibraryChartTrackIndex {
         var titleMap: [String: [Entry]] = [:]
         var albumMap: [String: [Entry]] = [:]
         for track in tracks {
-            let artistKey = LibraryTrackMatcher.normalize(track.artist)
-            guard !artistKey.isEmpty else { continue }
-            let entry = Entry(track: track, artistKey: artistKey)
-            for titleKey in LibraryTrackMatcher.normalizedTitleKeys(from: track.title) {
-                titleMap[titleKey, default: []].append(entry)
-            }
-            for albumKey in LibraryTrackMatcher.normalizedAlbumTitleLookupKeys(from: track.albumTitle) {
-                albumMap[albumKey, default: []].append(entry)
-            }
+            Self.insert(track, intoTitle: &titleMap, album: &albumMap)
         }
         self.byTitleKey = titleMap
         self.byAlbumTitleKey = albumMap
+    }
+
+    /// Cheap path for New-tab / pin reconcile — avoids rebuilding from the full 50k catalog.
+    func inserting(_ tracks: [Track]) -> LibraryChartTrackIndex {
+        guard !tracks.isEmpty else { return self }
+        var titleMap = byTitleKey
+        var albumMap = byAlbumTitleKey
+        for track in tracks {
+            Self.insert(track, intoTitle: &titleMap, album: &albumMap)
+        }
+        return LibraryChartTrackIndex(titleMap: titleMap, albumMap: albumMap)
+    }
+
+    private init(titleMap: [String: [Entry]], albumMap: [String: [Entry]]) {
+        self.byTitleKey = titleMap
+        self.byAlbumTitleKey = albumMap
+    }
+
+    private static func insert(
+        _ track: Track,
+        intoTitle titleMap: inout [String: [Entry]],
+        album albumMap: inout [String: [Entry]]
+    ) {
+        let artistKey = LibraryTrackMatcher.normalize(track.artist)
+        guard !artistKey.isEmpty else { return }
+        let entry = Entry(track: track, artistKey: artistKey)
+        for titleKey in LibraryTrackMatcher.normalizedTitleKeys(from: track.title) {
+            titleMap[titleKey, default: []].append(entry)
+        }
+        for albumKey in LibraryTrackMatcher.normalizedAlbumTitleLookupKeys(from: track.albumTitle) {
+            albumMap[albumKey, default: []].append(entry)
+        }
     }
 
     /// Mirrors ``LibraryTrackMatcher.trackMatchesChart``: title-key overlap +

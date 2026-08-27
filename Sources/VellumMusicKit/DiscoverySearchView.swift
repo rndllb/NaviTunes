@@ -802,14 +802,9 @@ struct DiscoverySearchView: View {
                 Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
             }
         }
+        .menuSectionPrimaryTint()
         Section {
-            if app.isSongInLibrary(track.id) {
-                Button(role: .destructive) {
-                    app.toggleFavoriteTrack(id: track.id)
-                } label: {
-                    Label("Remove from Library", systemImage: "minus.circle")
-                }
-            } else {
+            if !app.isSongInLibrary(track.id) {
                 Button {
                     Task { await addTrack(track) }
                 } label: {
@@ -830,6 +825,19 @@ struct DiscoverySearchView: View {
                 Label("Add to a Playlist", systemImage: "music.note.list")
             }
         }
+        .menuSectionPrimaryTint()
+
+        if app.isSongInLibrary(track.id) {
+            Section {
+                Button(role: .destructive) {
+                    app.toggleFavoriteTrack(id: track.id)
+                } label: {
+                    Label("Remove from Library", systemImage: "minus.circle")
+                }
+            }
+            .menuSectionDestructiveTint()
+        }
+
         Section {
             Button {
                 navigationPath.append(SearchNavTarget.album(app.albumSummary(for: track)))
@@ -840,6 +848,7 @@ struct DiscoverySearchView: View {
                 Label("Share", systemImage: "square.and.arrow.up")
             }
         }
+        .menuSectionPrimaryTint()
         NavidromeShareMenuSection(
             itemId: track.id,
             description: "\(track.title) — \(track.artist)"

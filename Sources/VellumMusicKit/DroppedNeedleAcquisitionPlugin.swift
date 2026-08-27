@@ -57,14 +57,16 @@ struct DroppedNeedleAcquisitionPlugin: AcquisitionProviding {
             displayName: "DroppedNeedle",
             iconName: "arrow.down.circle",
             blurb: "A self-hosted music request engine. Sign in with your DroppedNeedle account, an imported Jellyfin user, or Plex — then Vellum sends album requests through the native API.",
+            requirementsSummary: "DroppedNeedle needs its server address and an account sign-in. No API key — app passwords from Connect Apps won't work here.",
             granularity: .album,
             supportsTrackSearch: false,
             configFields: [
                 AcquisitionConfigField(
                     id: "baseURL",
                     kind: .url,
-                    label: "Server URL",
-                    placeholder: "http://192.168.1.x:8688"
+                    label: "Server Address",
+                    placeholder: "http://192.168.1.10:8688",
+                    helpText: "The same address you use to open DroppedNeedle in a browser, including the port."
                 ),
                 AcquisitionConfigField(
                     id: "loginMethod",
@@ -81,7 +83,8 @@ struct DroppedNeedleAcquisitionPlugin: AcquisitionProviding {
                     id: "username",
                     kind: .username,
                     label: "Username",
-                    placeholder: "Account username"
+                    placeholder: "Account username",
+                    helpText: "The account you sign in to DroppedNeedle with, not your Vellum server login."
                 ),
                 AcquisitionConfigField(
                     id: "password",

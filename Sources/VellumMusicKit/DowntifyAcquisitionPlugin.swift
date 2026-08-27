@@ -15,10 +15,17 @@ struct DowntifyAcquisitionPlugin: AcquisitionProviding {
             displayName: "Downtify",
             iconName: "arrow.down.to.line",
             blurb: "One-tap track downloads. Vellum searches Downtify, picks the best match, and queues a download.",
+            requirementsSummary: "Downtify only needs its server address. No API key.",
             granularity: .track,
             supportsTrackSearch: true,
             configFields: [
-                AcquisitionConfigField(id: "baseURL", kind: .url, label: "Server URL", placeholder: "http://192.168.1.x:8000")
+                AcquisitionConfigField(
+                    id: "baseURL",
+                    kind: .url,
+                    label: "Server Address",
+                    placeholder: "http://192.168.1.10:8000",
+                    helpText: "The same address you use to open Downtify in a browser, including the port."
+                )
             ]
         )
     }

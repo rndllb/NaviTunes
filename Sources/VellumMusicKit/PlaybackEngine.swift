@@ -235,6 +235,16 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// Debounced task that releases the audio session after we go idle so iOS
     /// can suspend the app. Cancelled if playback resumes within the window.
     private var audioSessionDeactivateTask: Task<Void, Never>?
+    /// Best-effort mirror of the session's activation state. `AVAudioSession` has
+    /// no cheap "is active" query, and every call into it blocks the caller for
+    /// milliseconds-to-tens-of-milliseconds, so redundant activations must be
+    /// skipped rather than re-issued from every play path and UI milestone.
+    ///
+    /// A stale `false` is harmless (one redundant activation); a stale `true`
+    /// would skip a required activation, so this is cleared on every event that
+    /// can drop the session out from under us: interruption, our own
+    /// deactivation, and returning to the foreground.
+    private var audioSessionIsActive = false
     /// Context for (re)installing the periodic time observer at a new cadence
     /// (foreground 0.35s vs background 2.0s).
     private var timeObserverContext: (item: AVPlayerItem, track: Track, player: AVPlayer)?
@@ -301,6 +311,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.isAppBackgrounded = false
+                // iOS may have torn down the session while we were suspended, so
+                // let the next play path re-assert it instead of trusting the flag.
+                if !self.isPlaying { self.audioSessionIsActive = false }
                 // Restore the fast foreground time-observer cadence.
                 self.installPeriodicTimeObserver()
                 // Resync the scrubber + Now-Playing after a stretch of
@@ -333,13 +346,27 @@ final class PlaybackEngine: NSObject, ObservableObject {
         #if os(iOS)
         audioSessionDeactivateTask?.cancel()
         audioSessionDeactivateTask = nil
+        guard !audioSessionIsActive else { return }
         let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(
-            .playback,
-            mode: .default,
-            options: [.allowBluetoothA2DP, .allowAirPlay],
-        )
-        try? session.setActive(true, options: [])
+        // Reading the configuration is cheap; setting it is not, and setting it
+        // while the session is active fails with `-50`. Only write when it
+        // actually differs (e.g. the hearing test left `.mixWithOthers` behind).
+        let options: AVAudioSession.CategoryOptions = [.allowBluetoothA2DP, .allowAirPlay]
+        let unwanted: AVAudioSession.CategoryOptions = [.mixWithOthers, .duckOthers]
+        if session.category != .playback
+            || session.mode != .default
+            || !session.categoryOptions.contains(options)
+            || !session.categoryOptions.isDisjoint(with: unwanted) {
+            try? session.setCategory(.playback, mode: .default, options: options)
+        }
+        // Activation stays synchronous: playback paths call this immediately
+        // before starting a player and need the session live first.
+        do {
+            try session.setActive(true, options: [])
+            audioSessionIsActive = true
+        } catch {
+            audioSessionIsActive = false
+        }
         #endif
     }
 
@@ -363,7 +390,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
         #if os(iOS)
         audioSessionDeactivateTask?.cancel()
         audioSessionDeactivateTask = nil
-        guard !isPlaying else { return }
+        guard !isPlaying, audioSessionIsActive else { return }
+        audioSessionIsActive = false
         try? AVAudioSession.sharedInstance().setActive(
             false, options: [.notifyOthersOnDeactivation])
         #endif
@@ -384,6 +412,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
             // Capture EQ-playing too; the EQ node still claims to be playing
             // even though the system stopped the engine mid-interruption.
             wasPlayingBeforeInterruption = isPlaying || (equalizedPlayer?.isPlaying ?? false)
+            // The system took the session; the `.ended` branch must be able to
+            // re-activate it rather than short-circuit on a stale active flag.
+            audioSessionIsActive = false
             clearPlayIntent()
             equalizedPlayer?.pause()
             isPlaying = false

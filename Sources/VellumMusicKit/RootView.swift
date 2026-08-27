@@ -197,10 +197,17 @@ private struct MainShellView: View {
             showNowPlaying = true
         }
 #endif
+        // AddToPlaylist is presented through the UIKit `OverPlayerSheetPresenter` on iOS
+        // (see `AppModel.presentAddToPlaylist`) so a SwiftUI `.sheet` never shares the root
+        // presentation host with the Now Playing `.fullScreenCover`. That pairing aborts in
+        // `-[UIViewController _dismissViewControllerWithAnimationController…]` on iOS 26.6
+        // (SwiftUI `SheetBridge` dismiss). macOS has no UIKit presenter, so it keeps the sheet.
+        #if !canImport(UIKit)
         .sheet(item: $app.playlistPickerPayload) { payload in
             AddToPlaylistSheet(tracks: payload.tracks)
                 .environmentObject(app)
         }
+        #endif
         .modifier(LibraryTrackDeletionChrome())
         .modifier(LibraryErrorAlertChrome())
         .modifier(NowPlayingFullScreenCoverModifier(

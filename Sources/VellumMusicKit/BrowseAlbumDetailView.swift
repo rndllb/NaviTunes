@@ -18,6 +18,12 @@ struct BrowseAlbumDetailView: View {
     @State private var missingFromBrowseCatalogCount = 0
     @State private var isLoadingTracks = false
     @State private var isLoadingPreviewTracks = false
+    /// Debounced gate for the "couldn't load a track list" note. Off-server tracklists
+    /// arrive from the acquisition plugin / library and can land a beat after the first
+    /// load pass finishes empty, so the note is only shown once the empty state has held
+    /// for a short grace window — otherwise it flashes false info for tracks that do load.
+    @State private var emptyNoteVisible = false
+    @State private var emptyNoteDebounceTask: Task<Void, Never>?
     @State private var toast: String?
     @State private var backdropPalette: ArtworkDynamicGradient.BackdropPalette = .fallback
     @State private var isDownloading = false
@@ -30,6 +36,29 @@ struct BrowseAlbumDetailView: View {
 
     private var acquisitionRequestsEnabled: Bool {
         app.acquisitionConfigured && !artistRequestBlocked
+    }
+
+    /// True only once both track sources have finished loading and returned nothing.
+    /// Drives the debounced empty-state note (see ``emptyNoteVisible``).
+    private var tracksSettledEmpty: Bool {
+        !isLoadingTracks && !isLoadingPreviewTracks
+            && libraryTracks.isEmpty && previewTracks.isEmpty
+    }
+
+    /// Shows the empty-state note only after the empty result has held for a grace window.
+    /// A plugin/library re-fetch that lands late clears `settled` and cancels the pending
+    /// note, so tracks that do arrive never flash a "couldn't load" message.
+    private func scheduleEmptyNoteDebounce(settled: Bool) {
+        emptyNoteDebounceTask?.cancel()
+        guard settled else {
+            emptyNoteVisible = false
+            return
+        }
+        emptyNoteDebounceTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2.5))
+            guard !Task.isCancelled, tracksSettledEmpty else { return }
+            emptyNoteVisible = true
+        }
     }
 
     init(source: BrowseAlbumDetailSource) {
@@ -200,7 +229,9 @@ struct BrowseAlbumDetailView: View {
         }
     }
 
-    var body: some View {
+    // Split from `body` so the List content and the long modifier chain type-check as two
+    // separate expressions (the combined one exceeds the Swift type-checker's time budget).
+    private var detailContent: some View {
         ZStack(alignment: .top) {
             AlbumHeroBackdropView(artworkURL: displayArtworkURL, palette: backdropPalette)
 
@@ -247,6 +278,10 @@ struct BrowseAlbumDetailView: View {
             .environment(\.defaultMinListRowHeight, 0)
             .padding(.bottom, 36)
         }
+    }
+
+    var body: some View {
+        detailContent
         .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
         .coverZoomDestination(id: source.coverZoomId, dismissalPhase: $dismissalPhase)
         .detailDismissTracker(isBeingDismissed: $isBeingDismissed)
@@ -295,6 +330,9 @@ struct BrowseAlbumDetailView: View {
         .onChange(of: app.discoveryLibraryTracks.count) { _, _ in
             recomputeBrowseQueuedRows()
         }
+        .onChange(of: tracksSettledEmpty) { _, settled in
+            scheduleEmptyNoteDebounce(settled: settled)
+        }
         .onAppear(perform: seedCachedBrowseBackdropIfNeeded)
         .task(id: "\(displayArtworkURL?.absoluteString ?? "")-\(app.albumBackdropEnabled)-\(colorScheme)") {
             guard app.albumBackdropEnabled else {
@@ -310,7 +348,10 @@ struct BrowseAlbumDetailView: View {
             backdropPalette = p
         }
         .overlay {
-            if (isLoadingTracks || isLoadingPreviewTracks), libraryTracks.isEmpty, previewTracks.isEmpty {
+            // Keep the spinner up through the empty-state grace window (note not yet shown)
+            // so the tracklist reads as "still resolving" rather than blank or a false error.
+            if libraryTracks.isEmpty, previewTracks.isEmpty,
+               isLoadingTracks || isLoadingPreviewTracks || !emptyNoteVisible {
                 ProgressView().tint(MusicDesign.accent).scaleEffect(1.1)
             }
         }
@@ -529,7 +570,7 @@ struct BrowseAlbumDetailView: View {
                 .albumTrackListRowStyle()
         }
         if rows.isEmpty {
-            if !(isLoadingTracks || isLoadingPreviewTracks), libraryTracks.isEmpty, previewTracks.isEmpty {
+            if emptyNoteVisible {
                 Text(emptySongNote)
                     .font(.subheadline)
                     .foregroundStyle(backdropPalette.heroChromeSecondary.opacity(0.9))

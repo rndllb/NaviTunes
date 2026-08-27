@@ -83,7 +83,11 @@ struct MusicNewTabView: View {
                     await app.refreshNewTabBrowse()
                 }
                 guard app.isSignedIn else { return }
-                app.scheduleDiscoveryTrackIndexRefreshIfNeeded()
+                // Finish (or skip) the discovery index before chart reconcile. Reconcile used to
+                // pin matches one-by-one while the 50k-track index rebuilt on main and froze the tab.
+                if app.libraryTrackTitleIndex.isEmpty {
+                    await app.refreshLibraryTrackMatchIndex()
+                }
                 await app.reconcileNewTabChartServerPresence()
             }
             .refreshable {

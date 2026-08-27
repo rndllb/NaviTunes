@@ -8,198 +8,6 @@
 	<string>Vellum Music</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
-	<key>CFBundleIcons</key>
-	<dict>
-		<key>CFBundleAlternateIcons</key>
-		<dict>
-			<key>VellumIcon-blue</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>VellumIcon-blue</string>
-				</array>
-				<key>UIPrerenderedIcon</key>
-				<false/>
-			</dict>
-			<key>VellumIcon-green</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>VellumIcon-green</string>
-				</array>
-				<key>UIPrerenderedIcon</key>
-				<false/>
-			</dict>
-			<key>VellumIcon-indigo</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>VellumIcon-indigo</string>
-				</array>
-				<key>UIPrerenderedIcon</key>
-				<false/>
-			</dict>
-			<key>VellumIcon-lightgray</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>VellumIcon-lightgray</string>
-				</array>
-				<key>UIPrerenderedIcon</key>
-				<false/>
-			</dict>
-			<key>VellumIcon-orange</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>VellumIcon-orange</string>
-				</array>
-				<key>UIPrerenderedIcon</key>
-				<false/>
-			</dict>
-			<key>VellumIcon-pink</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>VellumIcon-pink</string>
-				</array>
-				<key>UIPrerenderedIcon</key>
-				<false/>
-			</dict>
-			<key>VellumIcon-purple</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>VellumIcon-purple</string>
-				</array>
-				<key>UIPrerenderedIcon</key>
-				<false/>
-			</dict>
-			<key>VellumIcon-teal</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>VellumIcon-teal</string>
-				</array>
-				<key>UIPrerenderedIcon</key>
-				<false/>
-			</dict>
-			<key>VellumIcon-yellow</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>VellumIcon-yellow</string>
-				</array>
-				<key>UIPrerenderedIcon</key>
-				<false/>
-			</dict>
-		</dict>
-		<key>CFBundlePrimaryIcon</key>
-		<dict>
-			<key>CFBundleIconFiles</key>
-			<array>
-				<string>AppIcon</string>
-			</array>
-			<key>CFBundleIconName</key>
-			<string>AppIcon</string>
-		</dict>
-	</dict>
-	<key>CFBundleIcons~ipad</key>
-	<dict>
-		<key>CFBundleAlternateIcons</key>
-		<dict>
-			<key>VellumIcon-blue</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>VellumIcon-blue</string>
-				</array>
-				<key>UIPrerenderedIcon</key>
-				<false/>
-			</dict>
-			<key>VellumIcon-green</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>VellumIcon-green</string>
-				</array>
-				<key>UIPrerenderedIcon</key>
-				<false/>
-			</dict>
-			<key>VellumIcon-indigo</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>VellumIcon-indigo</string>
-				</array>
-				<key>UIPrerenderedIcon</key>
-				<false/>
-			</dict>
-			<key>VellumIcon-lightgray</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>VellumIcon-lightgray</string>
-				</array>
-				<key>UIPrerenderedIcon</key>
-				<false/>
-			</dict>
-			<key>VellumIcon-orange</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>VellumIcon-orange</string>
-				</array>
-				<key>UIPrerenderedIcon</key>
-				<false/>
-			</dict>
-			<key>VellumIcon-pink</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>VellumIcon-pink</string>
-				</array>
-				<key>UIPrerenderedIcon</key>
-				<false/>
-			</dict>
-			<key>VellumIcon-purple</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>VellumIcon-purple</string>
-				</array>
-				<key>UIPrerenderedIcon</key>
-				<false/>
-			</dict>
-			<key>VellumIcon-teal</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>VellumIcon-teal</string>
-				</array>
-				<key>UIPrerenderedIcon</key>
-				<false/>
-			</dict>
-			<key>VellumIcon-yellow</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>VellumIcon-yellow</string>
-				</array>
-				<key>UIPrerenderedIcon</key>
-				<false/>
-			</dict>
-		</dict>
-		<key>CFBundlePrimaryIcon</key>
-		<dict>
-			<key>CFBundleIconFiles</key>
-			<array>
-				<string>AppIcon</string>
-			</array>
-			<key>CFBundleIconName</key>
-			<string>AppIcon</string>
-		</dict>
-	</dict>
 	<key>CFBundleIdentifier</key>
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -209,7 +17,7 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>1.1</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -222,7 +30,7 @@
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>3</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>
@@ -232,6 +40,13 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Vellum Music connects to your Jellyfin or Navidrome server on your local network.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Vellum uses your location to confirm you're on your home Wi‑Fi before connecting to a local server address or reading your network name.</string>
+	<key>NSLocationTemporaryUsageDescriptionDictionary</key>
+	<dict>
+		<key>HomeWifiDetection</key>
+		<string>Vellum needs precise location briefly to read your Wi‑Fi network name for home server detection.</string>
+	</dict>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -249,9 +64,10 @@
 	</array>
 	<key>UISupportedInterfaceOrientations~ipad</key>
 	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
-		<string>UIInterfaceOrientationPortrait</string>
 	</array>
 </dict>
 </plist>

@@ -165,7 +165,6 @@ struct LibrarySongsView: View {
         .musicNativeSearchable(text: $searchText, prompt: Text("Songs"))
         .navigationDestination(item: $navigateAlbum) { album in
             ServerPlaylistDetailView(album: album, librarySource: true)
-                .onDisappear { navigateAlbum = nil }
         }
         .onChange(of: tracks) { _, _ in recomputeDisplayed() }
         .onChange(of: searchText) { _, _ in recomputeDisplayed() }
@@ -854,7 +853,7 @@ struct LibrarySongRow: View, Equatable {
                                 }
                             }
                         }
-                        .tint(MusicDesign.destructiveAction)
+                        .menuSectionDestructiveTint()
                     }
                 } label: {
                     Image(systemName: "ellipsis")

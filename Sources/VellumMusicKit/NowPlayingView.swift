@@ -160,8 +160,10 @@ struct NowPlayingView: View {
 
     private func artworkView(for track: Track, cornerRadius: CGFloat) -> some View {
         AlbumArtworkView(
-            url: isLiveRadio(track) ? nil : artworkURL(for: track),
-            meshArtworkSeed: RadioStationMeshArtwork.seedKey(for: track),
+            url: artworkURL(for: track),
+            meshArtworkSeed: isLiveRadio(track)
+                ? RadioStationMeshArtwork.seedKey(for: track)
+                : nil,
             cornerRadius: cornerRadius,
             showsSubtleBorder: false,
         )
@@ -169,6 +171,48 @@ struct NowPlayingView: View {
 
     private func isLiveRadio(_ track: Track) -> Bool {
         track.isInternetRadioStream
+    }
+
+    @ViewBuilder
+    private func nowPlayingLeadingActionButton(
+        track: Track,
+        font: Font,
+        foreground: Color,
+        frame: CGFloat,
+    ) -> some View {
+        if isLiveRadio(track) {
+            Button {
+                app.toggleRadioTrackInYourStations(track)
+            } label: {
+                Image(
+                    systemName: app.isRadioTrackInYourStations(track)
+                        ? "checkmark.circle.fill" : "plus.circle"
+                )
+                    .font(font)
+                    .foregroundStyle(foreground)
+                    .frame(width: frame, height: frame)
+                    .background(Circle().fill(fgCapsule))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(
+                app.isRadioTrackInYourStations(track)
+                    ? "Remove from Your Stations" : "Save to Your Stations"
+            )
+        } else {
+            Button {
+                app.toggleFavoriteTrack(id: track.id)
+            } label: {
+                Image(systemName: app.favoriteTrackIds.contains(track.id) ? "star.fill" : "star")
+                    .font(font)
+                    .foregroundStyle(foreground)
+                    .frame(width: frame, height: frame)
+                    .background(Circle().fill(fgCapsule))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(
+                app.favoriteTrackIds.contains(track.id) ? "Unfavorite" : "Favorite"
+            )
+        }
     }
 
     // MARK: - System fallback chrome (no active track)
@@ -983,16 +1027,12 @@ struct NowPlayingView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 10) {
-                Button {
-                    app.toggleFavoriteTrack(id: track.id)
-                } label: {
-                    Image(systemName: app.favoriteTrackIds.contains(track.id) ? "star.fill" : "star")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(fgPrimary)
-                        .frame(width: 30, height: 30)
-                        .background(Circle().fill(fgCapsule))
-                }
-                .buttonStyle(.plain)
+                nowPlayingLeadingActionButton(
+                    track: track,
+                    font: .body.weight(.semibold),
+                    foreground: fgPrimary,
+                    frame: 30,
+                )
 
                 Menu {
                     nowPlayingTrackMenuContent(track: track)
@@ -1073,17 +1113,12 @@ struct NowPlayingView: View {
     private func compactHeaderActionButtons(track: Track) -> some View {
         let liveRadio = isLiveRadio(track)
         HStack(spacing: 10) {
-            Button {
-                app.toggleFavoriteTrack(id: track.id)
-            } label: {
-                Image(systemName: app.favoriteTrackIds.contains(track.id) ? "star.fill" : "star")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(liveRadio ? fgMuted : fgPrimary)
-                    .frame(width: 30, height: 30)
-                    .background(Circle().fill(fgCapsule))
-            }
-            .buttonStyle(.plain)
-            .disabled(liveRadio)
+            nowPlayingLeadingActionButton(
+                track: track,
+                font: .body.weight(.semibold),
+                foreground: fgPrimary,
+                frame: 30,
+            )
 
             Menu {
                 nowPlayingTrackMenuContent(track: track)
@@ -1213,7 +1248,7 @@ struct NowPlayingView: View {
                     Label("Delete from Library", systemImage: "trash")
                 }
             }
-            .tint(MusicDesign.destructiveAction)
+            .menuSectionDestructiveTint()
         }
     }
 
@@ -1370,6 +1405,7 @@ struct NowPlayingView: View {
     }
 
     private func metadataRow(track: Track) -> some View {
+        let liveRadio = isLiveRadio(track)
         let artistKey = track.artist.trimmingCharacters(in: .whitespacesAndNewlines)
         let libraryAlbum = app.catalogAlbum(id: track.albumId)
         let albumSubtitle: String = {
@@ -1430,18 +1466,12 @@ struct NowPlayingView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 10) {
-                let liveRadio = isLiveRadio(track)
-                Button {
-                    app.toggleFavoriteTrack(id: track.id)
-                } label: {
-                    Image(systemName: app.favoriteTrackIds.contains(track.id) ? "star.fill" : "star")
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(liveRadio ? fgMuted : fgAccentChrome)
-                        .frame(width: 34, height: 34)
-                        .background(Circle().fill(fgCapsule))
-                }
-                .buttonStyle(.plain)
-                .disabled(liveRadio)
+                nowPlayingLeadingActionButton(
+                    track: track,
+                    font: .title3.weight(.semibold),
+                    foreground: fgAccentChrome,
+                    frame: 34,
+                )
 
                 Menu {
                     nowPlayingTrackMenuContent(track: track)
@@ -2240,7 +2270,8 @@ private struct VolumeScrubberBlock: View {
         .padding(.horizontal, 22)
         .padding(.bottom, 12)
         .onAppear {
-            try? AVAudioSession.sharedInstance().setActive(true)
+            // `outputVolume` is readable without activating the session, and
+            // activating here would block the main thread mid-presentation.
             volume = AVAudioSession.sharedInstance().outputVolume
         }
     }
