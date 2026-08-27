@@ -188,51 +188,31 @@ struct LibraryAlbumReleaseIndex {
         let artistKey: String
     }
     /// Strict album title key → entries. Same album may appear under both maps.
-    private let byStrictAlbumKey: [String: [Entry]]
+    private var byStrictAlbumKey: [String: [Entry]]
     /// Loose album title key (trailing "(Deluxe)" etc. stripped) → entries.
-    private let byLooseAlbumKey: [String: [Entry]]
+    private var byLooseAlbumKey: [String: [Entry]]
 
     static let empty = LibraryAlbumReleaseIndex(albums: [])
 
     init(albums: [AlbumSummary]) {
-        var strict: [String: [Entry]] = [:]
-        var loose: [String: [Entry]] = [:]
+        byStrictAlbumKey = [:]
+        byLooseAlbumKey = [:]
         for album in albums {
-            Self.insert(album, intoStrict: &strict, loose: &loose)
+            insert(album)
         }
-        self.byStrictAlbumKey = strict
-        self.byLooseAlbumKey = loose
     }
 
-    /// Cheap path when pinning a few albums during New-tab reconcile.
-    func inserting(_ albums: [AlbumSummary]) -> LibraryAlbumReleaseIndex {
-        guard !albums.isEmpty else { return self }
-        var strict = byStrictAlbumKey
-        var loose = byLooseAlbumKey
-        for album in albums {
-            Self.insert(album, intoStrict: &strict, loose: &loose)
-        }
-        return LibraryAlbumReleaseIndex(strict: strict, loose: loose)
-    }
-
-    private init(strict: [String: [Entry]], loose: [String: [Entry]]) {
-        self.byStrictAlbumKey = strict
-        self.byLooseAlbumKey = loose
-    }
-
-    private static func insert(
-        _ album: AlbumSummary,
-        intoStrict strict: inout [String: [Entry]],
-        loose: inout [String: [Entry]]
-    ) {
+    /// Folds one album in without rebuilding. Keying is identical to ``init(albums:)``,
+    /// so an incremental insert and a later full rebuild agree.
+    mutating func insert(_ album: AlbumSummary) {
         let strictAlbum = AlbumSummary.normalizedReleaseKey(album.title)
         let artistKey = AlbumSummary.normalizedReleaseKey(album.artist)
         guard !strictAlbum.isEmpty, !artistKey.isEmpty else { return }
         let entry = Entry(album: album, artistKey: artistKey)
-        strict[strictAlbum, default: []].append(entry)
+        byStrictAlbumKey[strictAlbum, default: []].append(entry)
         let looseAlbum = AlbumSummary.normalizedAlbumTitleLoose(album.title)
         if !looseAlbum.isEmpty, looseAlbum != strictAlbum {
-            loose[looseAlbum, default: []].append(entry)
+            byLooseAlbumKey[looseAlbum, default: []].append(entry)
         }
     }
 

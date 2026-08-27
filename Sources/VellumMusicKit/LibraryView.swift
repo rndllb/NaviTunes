@@ -188,6 +188,12 @@ struct LibraryView: View {
             .musicNewTabNavigationChrome()
             .musicNewTabRootHidesNavigationBar()
             .navigationTitle("")
+            // Deliberately *not* `musicBackHistoryTitle` here. Naming the root would name it in
+            // the back-history menu, but `backButtonTitle` also drives the visible label on every
+            // screen pushed from it — Genres, Artists, Settings and the rest would all change
+            // from a bare chevron to "‹ Library". Only screens that opt into
+            // `backButtonDisplayMode = .minimal` themselves can carry a history title safely, so
+            // the root's own entry in that menu stays blank.
             .musicNavigationBarTitleDisplayMode(.inline)
             .refreshable {
                 await app.refreshLibraryAlbums()
@@ -264,8 +270,11 @@ struct LibraryView: View {
                         NavigationLink {
                             pinnedItemDestination(item)
                         } label: {
-                            pinnedItemCell(item)
-                                .coverZoomSource(id: pinnedItemZoomId(item))
+                            pinnedItemCell(item, zoomId: pinnedItemZoomId(item))
+                                .coverZoomSource(
+                                    id: pinnedItemZoomId(item),
+                                    style: pinnedUsesCustomZoom(item) ? .custom : .system
+                                )
                         }
                         .buttonStyle(.plain)
                         .libraryPinnedItemContextMenu(item, pinnedStorage: $pinnedStorage)
@@ -418,19 +427,26 @@ struct LibraryView: View {
     private func recentItemLink(_ item: RecentLibraryItem) -> some View {
         switch item {
         case .album(let album):
-            NavigationLink { ServerPlaylistDetailView(album: album, librarySource: true) } label: { recentCell(item).coverZoomSource(id: album.id) }
+            NavigationLink { ServerPlaylistDetailView(album: album, librarySource: true) } label: {
+                recentCell(item, zoomId: album.id).coverZoomSource(id: album.id, style: .custom)
+            }
                 .buttonStyle(.plain)
                 .libraryAlbumContextMenu(album)
         case .playlist(let playlist):
-            NavigationLink { ServerPlaylistDetailView(playlist: playlist) } label: { recentCell(item).coverZoomSource(id: playlist.id) }
+            NavigationLink { ServerPlaylistDetailView(playlist: playlist) } label: {
+                recentCell(item, zoomId: playlist.id).coverZoomSource(id: playlist.id, style: .custom)
+            }
                 .buttonStyle(.plain)
                 .libraryPlaylistContextMenu(playlist)
         }
     }
 
-    private func recentCell(_ item: RecentLibraryItem) -> some View {
+    private func recentCell(_ item: RecentLibraryItem, zoomId: String) -> some View {
         LibraryHubGridCell(title: item.title, subtitle: item.subtitle) {
+            // Same anchor as the 52pt playlist rows, on a much larger square grid cell — the
+            // animator derives everything from the measured rect, so no size is baked in.
             AlbumArtworkView(url: resolvedRecentArtworkURL(for: item), cornerRadius: MusicDesign.gridAlbumCorner)
+                .coverZoomCellAnchor(id: zoomId, cornerRadius: MusicDesign.gridAlbumCorner)
         }
     }
 
@@ -473,10 +489,20 @@ struct LibraryView: View {
         }
     }
 
-    private func pinnedItemCell(_ item: LibraryPinnedItem) -> some View {
+    private func pinnedItemCell(_ item: LibraryPinnedItem, zoomId: String) -> some View {
         LibraryHubGridCell(title: item.title, style: .pinned) {
             pinnedItemArtwork(item)
+                .coverZoomCellAnchor(id: zoomId, cornerRadius: MusicDesign.gridAlbumCorner)
         }
+    }
+
+    /// Favorite Songs pushes `FavoritePlaylistView`, whose hero is laid out differently from
+    /// `ServerPlaylistDetailView`. The custom animator caches one hero rect globally, so let
+    /// that one keep the stock zoom rather than aim at the wrong destination.
+    private func pinnedUsesCustomZoom(_ item: LibraryPinnedItem) -> Bool {
+        // Favorite Songs used to stay on the stock zoom because the hero-rect cache was global;
+        // it is now keyed by destination kind and the Favorites hero carries its own anchor.
+        true
     }
 
     @ViewBuilder
@@ -787,7 +813,7 @@ struct LibraryPlaylistsView: View {
                         ForEach(visible) { playlist in
                             NavigationLink { destination(for: playlist) } label: {
                                 gridCell(playlist)
-                                    .coverZoomSource(id: playlist.id)
+                                    .coverZoomSource(id: playlist.id, style: .custom)
                             }
                             .buttonStyle(.plain)
                             .homeMixOrPlaylistContextMenu(playlist, app: app)
@@ -800,7 +826,7 @@ struct LibraryPlaylistsView: View {
                     ForEach(Array(visible.enumerated()), id: \.element.id) { index, playlist in
                         NavigationLink { destination(for: playlist) } label: {
                             listRow(playlist)
-                                .coverZoomSource(id: playlist.id)
+                                .coverZoomSource(id: playlist.id, style: .custom)
                         }
                         .buttonStyle(.plain)
                         .homeMixOrPlaylistContextMenu(playlist, app: app)
@@ -910,7 +936,10 @@ struct LibraryPlaylistsView: View {
 
     private func listRow(_ playlist: PlaylistSummary) -> some View {
         HStack(spacing: 14) {
+            // Origin rect for the custom cover-zoom animator, and the copy it hides while the
+            // card is in flight so only one cover is ever on screen.
             playlistArtworkFixed(playlist, size: 52, cornerRadius: 8)
+                .coverZoomCellAnchor(id: playlist.id, cornerRadius: 8)
             VStack(alignment: .leading, spacing: 1) {
                 Text(playlist.name)
                     .font(.body)
@@ -968,6 +997,7 @@ struct LibraryPlaylistsView: View {
     private func gridCell(_ playlist: PlaylistSummary) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             playlistArtworkFill(playlist, cornerRadius: MusicDesign.gridAlbumCorner)
+                .coverZoomCellAnchor(id: playlist.id, cornerRadius: MusicDesign.gridAlbumCorner)
             Text(playlist.name)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
@@ -1120,6 +1150,9 @@ struct FavoritePlaylistView: View {
                             )
                         }
                     )
+                    // Gate the hero only — wrapping the whole screen left scrolling and
+                    // every track row dead for ~0.6s after each open.
+                    .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 14, trailing: 20))
@@ -1134,7 +1167,6 @@ struct FavoritePlaylistView: View {
             .scrollContentBackground(.hidden)
             .background(Color.clear)
         }
-        .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
         .coverZoomDestination(id: "__favorite_songs__", dismissalPhase: $dismissalPhase)
         .detailDismissTracker(isBeingDismissed: $isBeingDismissed)
         .onAppear {
@@ -1142,6 +1174,7 @@ struct FavoritePlaylistView: View {
             if dismissalPhase == .gone { dismissalPhase = .idle }
         }
         .navigationTitle("")
+        .musicBackHistoryTitle(displayTitle)
         .musicNavigationBarTitleDisplayMode(.inline)
         .musicFavoriteSongsNavigationChrome()
         .musicNavigationBarVisibleWhenPushed()
@@ -1209,6 +1242,7 @@ struct FavoritePlaylistView: View {
     private var heroBlock: some View {
         VStack(spacing: 18) {
             FavoriteSongsHeroArtwork(side: heroArtSide, cornerRadius: 14)
+                .coverZoomHeroAnchor(id: "__favorite_songs__", cornerRadius: 14)
                 .shadow(color: .black.opacity(0.45), radius: 24, y: 14)
 
             VStack(spacing: 6) {
@@ -1710,7 +1744,7 @@ struct LibraryDownloadedView: View {
                         ServerPlaylistDetailView(album: album, librarySource: true)
                     } label: {
                         recentlyDownloadedCell(album)
-                            .coverZoomSource(id: album.id)
+                            .coverZoomSource(id: album.id, style: .custom)
                     }
                     .buttonStyle(.plain)
                     .libraryAlbumContextMenu(album)
@@ -2117,7 +2151,7 @@ struct AlbumsGridView: View {
                     ServerPlaylistDetailView(album: album, librarySource: true)
                 } label: {
                     AlbumGridCell(album: album)
-                        .coverZoomSource(id: album.id)
+                        .coverZoomSource(id: album.id, style: .custom)
                 }
                 .buttonStyle(.plain)
                 .libraryAlbumContextMenu(album)
@@ -2187,7 +2221,12 @@ struct AlbumsGridView: View {
             }
         }
         .onChange(of: query) { _, _ in
-            recomputeAlbumDisplay()
+            // Debounced: this is the only trigger here that fires per *keystroke*, and the
+            // recompute behind it re-filters and re-sorts the whole album list. The helper
+            // already existed in this file but was only wired to `downloadedTrackIds`. Sort and
+            // filter changes below stay synchronous on purpose — they are discrete taps, one
+            // recompute each, and deferring those would just make them feel laggy.
+            scheduleRecomputeAlbumDisplay()
             if isSearching {
                 endScrubbing()
             }
@@ -2342,7 +2381,7 @@ struct ArtistAlbumsView: View {
                             ServerPlaylistDetailView(album: album, librarySource: true)
                         } label: {
                             AlbumGridCell(album: album)
-                                .coverZoomSource(id: album.id)
+                                .coverZoomSource(id: album.id, style: .custom)
                         }
                         .buttonStyle(.plain)
                         .libraryAlbumContextMenu(album)

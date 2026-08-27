@@ -72,6 +72,9 @@ struct DeepLinkPushModifier: ViewModifier {
             }
             .onChange(of: app.presentedDeepLink) { _, newValue in
                 guard app.deepLinkTab == tab, let link = newValue else { return }
+#if DEBUG
+                DebugUIRemote.log("NP-DEEPLINK append tab=\(tab) depth=\(path.count)")
+#endif
                 path.append(link)
                 // Consume so a subsequent set of the same link still triggers onChange.
                 app.presentedDeepLink = nil
@@ -135,11 +138,19 @@ private struct MainShellView: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.scenePhase) private var scenePhase
     @State private var showNowPlaying = false
-    /// Source namespace for the iOS 18+ zoom transition. The mini-player tap
-    /// area marks itself as the source with ``matchedTransitionSource``; the
-    /// presented full player applies ``navigationTransition(.zoom(...))`` so
-    /// the system drives the entire shared-element animation between them —
-    /// no manual matched-geometry plumbing required.
+    /// Namespace for the mini-player → player morph.
+    ///
+    /// **The system does not drive this transition.** This comment used to say that it did —
+    /// that the accessory marked itself with `matchedTransitionSource` and the presented player
+    /// applied `navigationTransition(.zoom(...))`, with no manual plumbing. That mechanism is
+    /// not wired up anywhere: nothing applies a `navigationTransition` for `"playerArtwork"`,
+    /// and the paired `matchedTransitionSource` has been removed. The morph is driven entirely
+    /// by ``NowPlayingCoverPresenter`` and ``NowPlayingCoverAnimator`` in UIKit, deliberately —
+    /// see the presenter's own doc comment for the `fullScreenCover` crash class that exists to
+    /// avoid. Restoring the system mechanism would reintroduce it, which is why the description
+    /// is corrected here rather than deleted.
+    ///
+    /// The namespace itself is kept because it is still handed to the accessory.
     @Namespace private var playerArtworkNamespace
 
     var body: some View {
@@ -215,6 +226,7 @@ private struct MainShellView: View {
             artworkNamespace: playerArtworkNamespace,
         ))
         .musicTransientToastChrome()
+        .musicQueueReplacementChrome()
     }
 }
 
@@ -230,25 +242,46 @@ private struct NowPlayingFullScreenCoverModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         #if os(iOS)
-        content.fullScreenCover(isPresented: $isPresented) {
-            NowPlayingGestureHost(isPresented: $isPresented)
-                .background {
-                    #if os(iOS)
-                    NowPlayingZoomDestinationInstaller()
-                    #endif
-                }
-                .ignoresSafeArea()
-                .navigationTransition(
-                    .zoom(sourceID: "playerArtwork", in: artworkNamespace),
-                )
-                .environmentObject(app)
-                .environmentObject(app.offline)
-                .environmentObject(app.acquisition)
-                .environmentObject(app.subscriptions)
-                // The root toast overlay is occluded while this cover is up, so the
-                // cover carries its own copy ("1 song added", sleep timer, etc.).
-                // Never both visible at once — the cover is full-screen.
-                .musicTransientToastChrome()
+        // Deliberately **not** `fullScreenCover`. Both crash reports off the device end in
+        // `SwiftUI.SheetBridge.preferencesDidChange` → `dismissViewControllerAnimated:` →
+        // `objc_exception_throw`: SheetBridge dismisses the instant the binding changes, and on
+        // an open-then-immediately-close that lands on top of an unfinished present. The
+        // survivable version of the same collision is the one the touch probe caught — the
+        // presentation container left standing over the app with every tap going nowhere.
+        // ``NowPlayingCoverPresenter`` owns `present`/`dismiss` so those calls can wait for
+        // UIKit instead of being forced through, and the open and close are both run by
+        // `CoverZoomAnimator` — the same animator album and playlist detail use.
+        content.background {
+            NowPlayingCoverPresenter(
+                isPresented: $isPresented,
+                content: {
+                    NowPlayingGestureHost(isPresented: $isPresented)
+                        .ignoresSafeArea()
+                        // The root toast overlay is occluded while this cover is up, so the
+                        // cover carries its own copy ("1 song added", sleep timer, etc.).
+                        // Never both visible at once — the cover is full-screen.
+                        .musicTransientToastChrome()
+                        // Same occlusion argument as the toast: tap-to-play is reachable
+                        // from over-player sheets, so the cover carries its own alert.
+                        .musicQueueReplacementChrome()
+                        // Injected **outermost**, and every one of them, because a
+                        // `UIHostingController` inherits no SwiftUI environment. Under
+                        // `fullScreenCover` the cover picked these up from the shell's
+                        // ancestors, so injecting them further in was enough; here it is not.
+                        // With the toast chrome applied inside the injections, its
+                        // `@EnvironmentObject var app` trapped on the first tap:
+                        //   EnvironmentObject.error() ← MusicTransientToastChrome.body
+                        .environmentObject(app)
+                        .environmentObject(app.offline)
+                        .environmentObject(app.acquisition)
+                        .environmentObject(app.subscriptions)
+                        .tint(MusicDesign.accent)
+                },
+                // The one value-typed thing baked into the closure above. Everything else there
+                // is an object the player observes for itself. Add to this if that changes.
+                contentRevision: MusicDesign.accent,
+                canDismiss: { NowPlayingCoverState.shared.libraryNavigationDepth == 0 }
+            )
         }
         #else
         ZStack {
@@ -303,10 +336,16 @@ private struct TabViewMiniPlayerAccessory: View {
         )
         .background {
             #if os(iOS)
+            // NOT dead, despite sitting next to the scaffolding that was: this populates
+            // `MiniPlayerZoomSourceRegistry`, which `NowPlayingCoverAnimator` reads as the
+            // fallback origin rect for the zoom.
             MiniPlayerZoomSourceAnchor()
             #endif
         }
-        .matchedTransitionSource(id: "playerArtwork", in: artworkNamespace)
+        // The `.matchedTransitionSource(id: "playerArtwork", in: artworkNamespace)` that used to
+        // be here is removed: nothing in the module applies the paired
+        // `navigationTransition(.zoom(sourceID: "playerArtwork"))`, so it armed a SwiftUI zoom
+        // that had no destination and could never run.
     }
 
     private func expandNowPlaying() {
@@ -384,95 +423,36 @@ private struct LibraryTrackDeletionChrome: ViewModifier {
     }
 }
 
-/// Wraps NowPlayingView with its drag-to-dismiss gesture. Keeping drag state here
-/// prevents MainShellView from rebuilding every frame during a drag.
+/// Hosts NowPlayingView inside the cover.
+///
+/// The drag-to-dismiss used to live here as a SwiftUI `DragGesture` that faked the motion
+/// (scale + corner radius + offset) and then flipped `isPresented` for the system zoom to
+/// animate. Both halves are gone: ``NowPlayingCoverZoomController`` owns a `UIPanGestureRecognizer`
+/// that drives `CoverZoomAnimator` directly, so the page genuinely follows the finger and the
+/// transition is ours to complete. This view now only wires the two ends together.
 private struct NowPlayingGestureHost: View {
     @Binding var isPresented: Bool
     @EnvironmentObject private var app: AppModel
-    /// Persisted drag offset — unlike `@GestureState`, survives through dismiss animation.
-    @State private var dragOffset: CGFloat = 0
-    @State private var isDismissAnimating = false
-    @State private var libraryNavigationDepth = 0
-    @State private var hostHeight: CGFloat = 0
-    /// Guards the drag-to-dismiss gesture until the present animation has settled,
-    /// so incidental touches during the slide-up can't park the sheet at half height.
-    @State private var fullyPresented = false
-
-    /// 0…1 progress driving the Apple Music–style scale + corner-radius reveal.
-    private var dragProgress: CGFloat {
-        guard dragOffset > 0 else { return 0 }
-        return min(dragOffset / 360, 1)
-    }
-
     var body: some View {
         NowPlayingView(player: app.player, isPresented: $isPresented) { depth in
-            libraryNavigationDepth = depth
+            // Read imperatively by the dismiss gesture, which is a UIKit recognizer living
+            // outside this tree — see ``NowPlayingCoverState``.
+            NowPlayingCoverState.shared.libraryNavigationDepth = depth
         }
+#if DEBUG
+            // Diagnostic only. UIKit's hit-test shows a tap reaching the player's hosting view,
+            // but says nothing about what SwiftUI does with it afterwards. This logs every tap
+            // SwiftUI's own gesture system recognises, which separates "the touch never reaches
+            // SwiftUI's recogniser" from "it does, and the control still doesn't fire".
+            // `simultaneousGesture` so it cannot steal anything from a button.
+            .simultaneousGesture(
+                TapGesture().onEnded { DebugUIRemote.log("NP-SWIFTUI tap recognised") }
+            )
+#endif
             .environmentObject(app)
             .environmentObject(app.offline)
             .environmentObject(app.acquisition)
             .environmentObject(app.subscriptions)
-            .scaleEffect(1 - dragProgress * 0.06, anchor: .center)
-            .clipShape(RoundedRectangle(cornerRadius: dragProgress * 28, style: .continuous))
-            .offset(y: max(0, dragOffset))
-            .background {
-                GeometryReader { geo in
-                    Color.clear
-                        .onAppear { hostHeight = geo.size.height }
-                        .onChange(of: geo.size.height) { _, h in hostHeight = h }
-                }
-            }
-            .gesture(dismissDragGesture)
-            .onChange(of: isPresented) { _, presented in
-                if presented {
-                    dragOffset = 0
-                    isDismissAnimating = false
-                }
-            }
-            .task {
-                try? await Task.sleep(for: .milliseconds(500))
-                fullyPresented = true
-            }
     }
 
-    private var dismissDragGesture: some Gesture {
-        DragGesture(minimumDistance: 18)
-            .onChanged { value in
-                guard fullyPresented, libraryNavigationDepth == 0, !isDismissAnimating else { return }
-                let dy = value.translation.height
-                let dx = value.translation.width
-                guard dy > 0, abs(dy) > abs(dx) else { return }
-                dragOffset = dy
-            }
-            .onEnded { value in
-                guard fullyPresented, !isDismissAnimating else { return }
-                let dy = value.translation.height
-                let predictedDy = value.predictedEndTranslation.height
-                let shouldDismiss = libraryNavigationDepth == 0
-                    && (dy > 140 || predictedDy > 280)
-                guard shouldDismiss else {
-                    withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
-                        dragOffset = 0
-                    }
-                    return
-                }
-                // Hand the dismiss off to ``.fullScreenCover``'s
-                // `.navigationTransition(.zoom)` — *do not* slide the view down
-                // manually or disable animations on the `isPresented` mutation,
-                // both of which previously bypassed the zoom and made the
-                // dismiss look like the default cover slide-down. We just
-                // flip `isPresented` and let the system animate the zoom back
-                // to the mini player's matched-transition-source frame.
-                isDismissAnimating = true
-                isPresented = false
-                // Reset transient drag transforms after the cover's zoom
-                // animation has completed (slightly longer than the system
-                // transition window so the reset doesn't snap mid-animation).
-                Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(420))
-                    dragOffset = 0
-                    isDismissAnimating = false
-                }
-            }
-    }
 }

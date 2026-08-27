@@ -481,6 +481,35 @@ struct NewFolderNameSheet: View {
 
 // MARK: - Server playlist detail
 
+/// Session-lifetime memo of playlist/album sort results, as row-id order.
+///
+/// Stores only the resulting `rowId` order, not the rows themselves, so a remembered ordering
+/// costs an array of strings rather than a second copy of the tracklist. Bounded to a handful of
+/// entries — this exists to make *reopening* a playlist free, and the user is only ever a few
+/// details deep. Main-actor isolated because every caller is a SwiftUI view body or an `onChange`
+/// on one.
+@MainActor
+private enum PlaylistSortedRowsMemo {
+    private static let limit = 8
+    private static var keys: [Int] = []
+    private static var values: [Int: [String]] = [:]
+
+    static func rowIds(for key: Int) -> [String]? {
+        values[key]
+    }
+
+    static func store(_ rowIds: [String], for key: Int) {
+        if values[key] == nil {
+            keys.append(key)
+            if keys.count > limit {
+                let evicted = keys.removeFirst()
+                values.removeValue(forKey: evicted)
+            }
+        }
+        values[key] = rowIds
+    }
+}
+
 private enum PlaylistTrackSortOrder: String, CaseIterable, Identifiable {
     case playlistOrder = "Playlist Order"
     case title = "Title"
@@ -721,13 +750,25 @@ struct ServerPlaylistDetailView: View {
     /// the window grows ahead of the scroll position (sentinel row in the
     /// ForEach). Invisible to the user: no spinners, no pagination UI, and
     /// playback/search always operate on the full ``displayedRows``.
-    @State private var rowRenderLimit = ServerPlaylistDetailView.rowRenderChunk
+    @State private var rowRenderLimit = ServerPlaylistDetailView.firstRowRenderWindow
     /// ~4 screenfuls. Measured on a 1733-song playlist (Debug, simulator): a
     /// 150-row initial window stalled the main thread 633ms on first hydration,
     /// which swallowed taps from users who open + close quickly; 60 brings the
     /// stall under the system hang threshold while still rendering far past the
     /// fold. The window grows ahead of scroll, so the cap is invisible.
+    ///
+    /// This is the *growth* increment. The first window is ``firstRowRenderWindow``.
     private static let rowRenderChunk = 60
+    /// One screenful, and only for the very first render.
+    ///
+    /// The zoom's `prepare()` calls `layoutIfNeeded()` on the pushed page before the animator is
+    /// even built, so the first frame is gated behind a full layout of whatever this window
+    /// admits — and that layout was building 60 rows, roughly four screenfuls. At `p≈0` the
+    /// card is a few dozen points wide, so nothing past the first screenful can be seen no
+    /// matter what is built. `extendRowRenderWindow` backfills in `rowRenderChunk` steps as
+    /// rows realize, which it already did and which is already invisible by design — so the
+    /// only thing that changes is how much work the *first* forced layout does.
+    private static let firstRowRenderWindow = 20
 
     /// Album-mode unified row: a real library track, or an iTunes-catalog track the
     /// user can request via the request backend.
@@ -917,6 +958,9 @@ struct ServerPlaylistDetailView: View {
             .coverZoomDestination(id: coverZoomId, dismissalPhase: $dismissalPhase)
             .playlistTrackSearchable(enabled: !isAlbumStyleDetail, text: $searchText)
             .navigationTitle("")
+            // The bar stays untitled — the hero carries the name. This only fills in the entry
+            // UIKit shows when the back button is long-pressed.
+            .musicBackHistoryTitle(navigationTitleText.isEmpty ? source.displayName : navigationTitleText)
             .musicNavigationBarTitleDisplayMode(.inline)
             .modifier(DetailNavigationChrome(palette: backdropPalette))
             .musicNavigationBarVisibleWhenPushed()
@@ -1034,7 +1078,18 @@ struct ServerPlaylistDetailView: View {
         // not re-render hundreds of rows, so apply immediately even during the push
         // zoom instead of parking until `.appearing` clears (that caused a visible
         // fallback → color flash after the transition finished).
-        guard !Task.isCancelled, dismissalPhase != .gone else { return }
+        //
+        // A *dismissal* is different: this analysis costs the same whatever the
+        // playlist's size (it downloads and samples the cover), so on a quick
+        // open→swipe-back it reliably lands mid-pop. Re-rendering the detail then —
+        // chrome included — derails the interactive pop, which is the "toolbar buttons
+        // stranded over the list, input dead until it resolves" state the phase enum
+        // documents. The view is on its way out, so there is no flash to avoid: drop it.
+        guard !Task.isCancelled,
+              dismissalPhase != .gone,
+              dismissalPhase != .dismissing,
+              !isBeingDismissed
+        else { return }
         backdropPalette = palette
     }
 
@@ -1127,7 +1182,12 @@ struct ServerPlaylistDetailView: View {
                 AlbumHeroBackdropView(artworkURL: resolvedDetailArtworkURL, palette: backdropPalette)
                 detailTrackList(scrollProxy: scrollProxy)
             }
-            .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
+            // NOTE: the transition gate deliberately does *not* wrap this container. It
+            // used to, which made the whole screen — scrolling and every track row —
+            // non-interactive for ~0.6s after each open (350ms arming hold + the push's
+            // main-thread stall + a render). The gate exists only to stop a finger still
+            // down from the list tap releasing onto Play / Shuffle, so it is applied to the
+            // hero header alone; see `PlaylistHeroOrPillsHeader` below.
         }
     }
 
@@ -1148,6 +1208,7 @@ struct ServerPlaylistDetailView: View {
                         .padding(.bottom, 14)
                     }
                 )
+                .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets())
@@ -1689,6 +1750,10 @@ struct ServerPlaylistDetailView: View {
         VStack(spacing: 18) {
             heroArtwork
                 .frame(width: heroArtSide, height: heroArtSide)
+                // Destination rect for the custom cover-zoom animator. Stays visible during the
+                // flight — this is the copy that rides inside the animating card. The *cell*
+                // copy is the one that hides.
+                .coverZoomHeroAnchor(id: coverZoomId, cornerRadius: 14)
                 .shadow(color: .black.opacity(0.45), radius: 24, y: 14)
 
             VStack(spacing: 6) {
@@ -1917,7 +1982,85 @@ struct ServerPlaylistDetailView: View {
         }
     }
 
+    /// Sort key for the memo: everything the active ordering actually reads.
+    ///
+    /// Hashing per row is O(n) over cheap `String.hash`, against an O(n log n) sort whose
+    /// comparator is `localizedCaseInsensitiveCompare` — a locale-aware collation call per
+    /// comparison. So computing this key is far cheaper than the work it avoids, and it stays
+    /// correct when metadata changes underneath a stable `rowId` (a library refresh moving
+    /// `libraryAddedDate`, say), which hashing `rowId` alone would have missed.
+    private func sortMemoKey(for input: [PlaylistRowItem]) -> Int {
+        var hasher = Hasher()
+        hasher.combine(isAlbum)
+        hasher.combine(sortOrder)
+        hasher.combine(input.count)
+        if isAlbum {
+            hasher.combine(showCompleteAlbum)
+            hasher.combine(librarySource)
+            hasher.combine(albumOrNil.map { app.isAlbumInLibrary($0.id) } ?? false)
+            for row in input {
+                hasher.combine(row.rowId)
+                hasher.combine(row.track.discNumber)
+                hasher.combine(row.track.indexNumber)
+                hasher.combine(app.isSongInLibrary(row.track.id))
+            }
+            return hasher.finalize()
+        }
+        for row in input {
+            hasher.combine(row.rowId)
+            switch sortOrder {
+            case .playlistOrder:
+                break
+            case .title:
+                hasher.combine(row.track.title)
+                hasher.combine(row.track.artist)
+            case .artist:
+                hasher.combine(row.track.artist)
+                hasher.combine(row.track.title)
+            case .album:
+                hasher.combine(row.track.albumTitle)
+                hasher.combine(row.track.discNumber)
+                hasher.combine(row.track.indexNumber)
+                hasher.combine(row.track.title)
+            case .dateAdded:
+                hasher.combine(row.track.libraryAddedDate)
+                hasher.combine(row.track.title)
+            }
+        }
+        return hasher.finalize()
+    }
+
+    /// Memoized ``sortedRowsUncached(_:)``.
+    ///
+    /// The sort runs synchronously at the instant the zoom begins — the pushed view's `.task`
+    /// fires inside the animator's `layoutIfNeeded()`, and `hydrateFromCacheIfNeeded()` has no
+    /// `await` before it. The author's comment on `rowRenderChunk` records a **633ms** stall on
+    /// a 1,733-song playlist, and the render-window cap that was added to fix it is applied
+    /// *downstream* of this sort, so it never touched this cost at all.
+    ///
+    /// Deferring is not an option and is deliberately not done: `displayedRows.isEmpty` gates
+    /// `.disabled` on the hero Play/Shuffle buttons, so deferring makes them flash disabled.
+    /// Memoizing keeps the work on the same runloop pass the first time and makes every reopen
+    /// in the session free. Final order is identical by construction — this is the same function
+    /// with a cache in front of it.
     private func sortedRows(_ input: [PlaylistRowItem]) -> [PlaylistRowItem] {
+        let key = sortMemoKey(for: input)
+        if let cachedIds = PlaylistSortedRowsMemo.rowIds(for: key) {
+            var byId = [String: PlaylistRowItem](minimumCapacity: input.count)
+            for row in input { byId[row.rowId] = row }
+            let rebuilt = cachedIds.compactMap { byId[$0] }
+            // Only trust the memo if it still accounts for every row it claimed. Anything else
+            // (a duplicate `rowId`, a row that vanished) falls through to a real sort.
+            if rebuilt.count == cachedIds.count {
+                return rebuilt
+            }
+        }
+        let sorted = sortedRowsUncached(input)
+        PlaylistSortedRowsMemo.store(sorted.map(\.rowId), for: key)
+        return sorted
+    }
+
+    private func sortedRowsUncached(_ input: [PlaylistRowItem]) -> [PlaylistRowItem] {
         if isAlbum {
             // Album mode: always disc + index order (matches the track numbering on the
             // row chrome). Apply the Show-Complete-Album filter when the album is in

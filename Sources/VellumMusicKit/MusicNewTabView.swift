@@ -363,12 +363,13 @@ struct MusicNewTabView: View {
             } label: {
                 heroCarouselArtworkCard(
                     track: track,
+                    zoomId: lib.albumId,
                     cardWidth: cardWidth,
                     imageHeight: imageHeight,
                     showOverflow: true,
                     badgeText: browseHeroBadge,
                 )
-                .coverZoomSource(id: lib.albumId)
+                .coverZoomSource(id: lib.albumId, style: .custom)
             }
             .buttonStyle(.plain)
         case .serverAlbum(let album):
@@ -377,12 +378,13 @@ struct MusicNewTabView: View {
             } label: {
                 heroCarouselArtworkCard(
                     track: track,
+                    zoomId: album.id,
                     cardWidth: cardWidth,
                     imageHeight: imageHeight,
                     showOverflow: true,
                     badgeText: browseHeroBadge,
                 )
-                .coverZoomSource(id: album.id)
+                .coverZoomSource(id: album.id, style: .custom)
             }
             .buttonStyle(.plain)
         case .missing:
@@ -398,12 +400,13 @@ struct MusicNewTabView: View {
             } label: {
                 heroCarouselArtworkCard(
                     track: track,
+                    zoomId: source.coverZoomId,
                     cardWidth: cardWidth,
                     imageHeight: imageHeight,
                     showOverflow: true,
                     badgeText: browseHeroBadge,
                 )
-                .coverZoomSource(id: source.coverZoomId)
+                .coverZoomSource(id: source.coverZoomId, style: .custom)
             }
             .buttonStyle(.plain)
         }
@@ -411,6 +414,7 @@ struct MusicNewTabView: View {
 
     private func heroCarouselArtworkCard(
         track: ChartTrack,
+        zoomId: String,
         cardWidth: CGFloat,
         imageHeight: CGFloat,
         showOverflow: Bool,
@@ -441,6 +445,8 @@ struct MusicNewTabView: View {
             }
             .frame(width: cardWidth, height: imageHeight)
             .clipShape(RoundedRectangle(cornerRadius: MusicDesign.newTabHeroCardCorner, style: .continuous))
+            // Not an `AlbumArtworkView`, so the cover-zoom origin is marked by hand.
+            .coverZoomCellAnchor(id: zoomId, cornerRadius: MusicDesign.newTabHeroCardCorner)
 
             if showOverflow {
                 chartRowOverflowMenu(for: track)
@@ -526,7 +532,7 @@ struct MusicNewTabView: View {
                         navigateLibraryTrack = lib
                     } label: {
                         trendingSongRowMainContent(track: track)
-                            .coverZoomSource(id: lib.albumId)
+                            .coverZoomSource(id: lib.albumId, style: .custom)
                     }
                     .buttonStyle(.plain)
                 case .serverAlbum(let album):
@@ -534,7 +540,7 @@ struct MusicNewTabView: View {
                         navigateLibraryAlbum = album
                     } label: {
                         trendingSongRowMainContent(track: track)
-                            .coverZoomSource(id: album.id)
+                            .coverZoomSource(id: album.id, style: .custom)
                     }
                     .buttonStyle(.plain)
                 case .missing:
@@ -549,7 +555,7 @@ struct MusicNewTabView: View {
                         BrowseAlbumDetailView(source: source)
                     } label: {
                         trendingSongRowMainContent(track: track)
-                            .coverZoomSource(id: source.coverZoomId)
+                            .coverZoomSource(id: source.coverZoomId, style: .custom)
                     }
                     .buttonStyle(.plain)
                 }
@@ -650,7 +656,7 @@ struct MusicNewTabView: View {
                                     artist: album.artistName,
                                     onArtistTap: { navigateArtist = ArtistNameNavigation(id: album.artistName) },
                                 )
-                                    .coverZoomSource(id: lib.id)
+                                    .coverZoomSource(id: lib.id, style: .custom)
                             }
                             .buttonStyle(.plain)
                         } else {
@@ -670,7 +676,7 @@ struct MusicNewTabView: View {
                                     artist: album.artistName,
                                     onArtistTap: { navigateArtist = ArtistNameNavigation(id: album.artistName) },
                                 )
-                                    .coverZoomSource(id: source.coverZoomId)
+                                    .coverZoomSource(id: source.coverZoomId, style: .custom)
                             }
                             .buttonStyle(.plain)
                         }

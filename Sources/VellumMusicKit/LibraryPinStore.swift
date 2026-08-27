@@ -86,10 +86,29 @@ enum LibraryPinStore {
     private static let legacyMigrationKey = "pinnedLibraryMigratedFromFavoritedPlaylists"
     private static let favoriteSongsPlaylistId = "__favorite_songs__"
 
+    /// Last decode, memoized on the exact raw string it came from.
+    ///
+    /// `decode` is reached from `contains`, which `LibrarySongRow`'s `==` calls for *both* sides
+    /// — and the row's body calls it a third time. So the JSON was being parsed from scratch two
+    /// or three times per row per diff pass, inside the `Equatable` conformance whose entire
+    /// purpose is to *avoid* work. The pin list changes only when the user pins something, so
+    /// one entry keyed on the raw string collapses all of that to a single parse.
+    /// Same single-slot memo shape as `OfflineDownloadManager.manifestCache`.
+    private static var decodedCacheRaw: String?
+    private static var decodedCacheRefs: [LibraryPinnedRef] = []
+
     static func decode(_ raw: String) -> [LibraryPinnedRef] {
-        guard let data = raw.data(using: .utf8),
-              let refs = try? JSONDecoder().decode([LibraryPinnedRef].self, from: data)
-        else { return [] }
+        if decodedCacheRaw == raw { return decodedCacheRefs }
+        let refs: [LibraryPinnedRef]
+        if let data = raw.data(using: .utf8),
+           let parsed = try? JSONDecoder().decode([LibraryPinnedRef].self, from: data) {
+            refs = parsed
+        } else {
+            // Cache the failure too, so malformed storage is not re-parsed on every diff.
+            refs = []
+        }
+        decodedCacheRaw = raw
+        decodedCacheRefs = refs
         return refs
     }
 

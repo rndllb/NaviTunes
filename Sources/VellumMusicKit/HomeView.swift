@@ -14,6 +14,20 @@ struct HomeView: View {
     @EnvironmentObject private var app: AppModel
     @State private var showFloatingHeader = true
     @State private var navigationPath = NavigationPath()
+    /// Shelf covers push through `navigationDestination(item:)` rather than a destination-closure
+    /// `NavigationLink`.
+    ///
+    /// Not a style preference — it is what makes the cover-zoom transition possible here at all.
+    /// Measured on device: a `NavigationLink { destination } label:` inside these horizontal
+    /// shelves pushes with **`animated: false`** (`COVERZOOM willShow animated=false … depth=2
+    /// coordinator=false`), and UIKit never asks any delegate for an animator on a non-animated
+    /// push — so the custom animator was never even offered, on every Home cover, while Library
+    /// and the New tab reported `animated=true` on the identical code. The New tab already used
+    /// this button + `navigationDestination(item:)` shape and animates correctly; Home now
+    /// matches it.
+    @State private var navigateAlbum: AlbumSummary?
+    @State private var navigatePlaylist: PlaylistSummary?
+    @State private var navigateArtistName: String?
 
     private let inset: CGFloat = MusicDesign.newTabHorizontalInset
 
@@ -164,6 +178,15 @@ struct HomeView: View {
                 await app.refreshLibraryAlbums()
                 await app.refreshHome(forceDiscoveryReshuffle: true)
             }
+            .navigationDestination(item: $navigateAlbum) { album in
+                ServerPlaylistDetailView(album: album)
+            }
+            .navigationDestination(item: $navigatePlaylist) { playlist in
+                ServerPlaylistDetailView(playlist: playlist)
+            }
+            .navigationDestination(item: $navigateArtistName) { name in
+                ArtistPageView(input: .named(name))
+            }
             .deepLinkPush(tab: .home, path: $navigationPath)
         }
         .coverZoomContext()
@@ -206,11 +229,13 @@ struct HomeView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 16) {
                     ForEach(albums) { album in
-                        NavigationLink {
-                            ServerPlaylistDetailView(album: album)
+                        Button {
+                            navigateAlbum = album
                         } label: {
                             heroCard(album: album)
-                                .coverZoomSource(id: album.id)
+                                // The cover inside is square-cornered; the card's clip supplies
+                                // the visible rounding, so the origin rect takes that radius.
+                                .coverZoomSource(id: album.id, style: .custom, cellCornerRadius: MusicDesign.homeTopPickCardCorner)
                         }
                         .buttonStyle(.plain)
                         .libraryAlbumContextMenu(album)
@@ -229,11 +254,11 @@ struct HomeView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 14) {
                     ForEach(albums) { album in
-                        NavigationLink {
-                            ServerPlaylistDetailView(album: album)
+                        Button {
+                            navigateAlbum = album
                         } label: {
                             shelfCard(album: album)
-                                .coverZoomSource(id: album.id)
+                                .coverZoomSource(id: album.id, style: .custom)
                         }
                         .buttonStyle(.plain)
                         .libraryAlbumContextMenu(album)
@@ -255,20 +280,20 @@ struct HomeView: View {
                     ForEach(items) { item in
                         switch item {
                         case .album(let album):
-                            NavigationLink {
-                                ServerPlaylistDetailView(album: album)
+                            Button {
+                                navigateAlbum = album
                             } label: {
                                 shelfCard(album: album)
-                                    .coverZoomSource(id: album.id)
+                                    .coverZoomSource(id: album.id, style: .custom)
                             }
                             .buttonStyle(.plain)
                             .libraryAlbumContextMenu(album)
                         case .playlist(let playlist):
-                            NavigationLink {
-                                ServerPlaylistDetailView(playlist: playlist)
+                            Button {
+                                navigatePlaylist = playlist
                             } label: {
                                 playlistShelfCard(playlist: playlist)
-                                    .coverZoomSource(id: playlist.id)
+                                    .coverZoomSource(id: playlist.id, style: .custom)
                             }
                             .buttonStyle(.plain)
                             .libraryPlaylistContextMenu(playlist)
@@ -287,10 +312,17 @@ struct HomeView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 16) {
                     ForEach(artists) { artist in
-                        NavigationLink {
-                            ArtistPageView(input: .named(artist.name))
+                        Button {
+                            navigateArtistName = artist.name
                         } label: {
                             newArtistCircleTile(artist: artist)
+                                .coverZoomSource(
+                                    id: ArtistPageInput.coverZoomPageId(forName: artist.name),
+                                    style: .custom,
+                                    // The tile's rounding is a `clipShape(Circle())` outside the
+                                    // artwork, so the origin rect has to be told it is round.
+                                    cellCornerRadius: MusicDesign.artistCircleTileSize / 2,
+                                )
                         }
                         .buttonStyle(.plain)
                     }
@@ -332,11 +364,11 @@ struct HomeView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 14) {
                     ForEach(playlists) { playlist in
-                        NavigationLink {
-                            ServerPlaylistDetailView(playlist: playlist)
+                        Button {
+                            navigatePlaylist = playlist
                         } label: {
                             playlistShelfCard(playlist: playlist)
-                                .coverZoomSource(id: playlist.id)
+                                .coverZoomSource(id: playlist.id, style: .custom)
                         }
                         .buttonStyle(.plain)
                         .libraryPlaylistContextMenu(playlist)
@@ -493,9 +525,11 @@ private struct HomeTopPickCard: View, Equatable {
                 colorScheme: colorScheme,
             )
         }
-        .onAppear {
-            ArtworkDynamicGradient.prefetchBackdrop(for: album.artworkURL)
-        }
+        // The `.onAppear` prefetch that used to sit here is gone. It fired at the same moment as
+        // the `.task` below, and on a cold cache both missed and both ran the whole path —
+        // and `ArtworkURLCache.data(for:)` has no in-flight de-duplication, so one image cost
+        // two network requests, two decodes and two pixel analyses. The `.task` already reads
+        // the cache first, so it covers the warm case the prefetch was meant to win.
         .task(id: album.artworkURL?.absoluteString ?? album.id) {
             if let cached = ArtworkDynamicGradient.cachedBackdrop(for: album.artworkURL) {
                 palette = cached

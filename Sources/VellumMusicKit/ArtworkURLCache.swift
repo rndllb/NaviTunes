@@ -4,7 +4,14 @@ import Foundation
 /// Disk + memory cache for remote album artwork (shared across list cells and backdrops).
 enum ArtworkURLCache {
     private static let folderName = "VellumMusic/ArtworkCache"
-    private static let memory = NSCache<NSString, NSData>()
+    // Capped for the same reason as the decoded-image caches: an uncapped `NSCache` only evicts
+    // on a system memory warning, in one large purge. This one holds compressed bytes rather
+    // than decoded bitmaps, so it buys a lot more entries per megabyte.
+    private static let memory: NSCache<NSString, NSData> = {
+        let cache = NSCache<NSString, NSData>()
+        cache.totalCostLimit = 32 * 1024 * 1024
+        return cache
+    }()
 
     static func clearAll() {
         memory.removeAllObjects()
@@ -55,8 +62,16 @@ enum ArtworkURLCache {
         if let cached = memory.object(forKey: key as NSString) as Data? {
             return cached
         }
-        if let disk = loadFromDisk(key: key) {
-            memory.setObject(disk as NSData, forKey: key as NSString)
+        // Off the caller's executor. This function is `async` but not actor-isolated, and there
+        // is no suspension point before this line — so Swift ran `loadFromDisk`'s blocking
+        // `Data(contentsOf:)` synchronously on whoever called it, which for the hero image and
+        // the backdrop tint is the main actor, right as a detail page appears. It is hit
+        // whenever the memory cache was evicted but the file is still on disk, which is the
+        // common steady state. The network path below was already offloaded correctly; this was
+        // an inconsistency inside one function rather than a deliberate tradeoff. The in-memory
+        // lookup above is untouched, so warm hits still return without suspending.
+        if let disk = await Task.detached(priority: .utility, operation: { loadFromDisk(key: key) }).value {
+            memory.setObject(disk as NSData, forKey: key as NSString, cost: max(1, disk.count))
             return disk
         }
         var request = URLRequest(url: url)
@@ -77,7 +92,7 @@ enum ArtworkURLCache {
                 ArtworkImageDecoder.cgImage(from: data, maxPixelSize: 64) != nil
             }.value
             guard valid else { return nil }
-            memory.setObject(data as NSData, forKey: key as NSString)
+            memory.setObject(data as NSData, forKey: key as NSString, cost: max(1, data.count))
             saveToDisk(data: data, key: key)
             return data
         } catch {

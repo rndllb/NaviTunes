@@ -63,14 +63,20 @@ enum LibraryTrackMatcher {
     static func titleIndex(from tracks: [Track]) -> [String: Set<String>] {
         var map: [String: Set<String>] = [:]
         for t in tracks {
-            let titKeys = normalizedTitleKeys(from: t.title)
-            let art = normalize(t.artist)
-            guard !art.isEmpty else { continue }
-            for tk in titKeys {
-                map[tk, default: []].insert(art)
-            }
+            insert(t, into: &map)
         }
         return map
+    }
+
+    /// Folds one track into an existing title index. Same keying as ``titleIndex(from:)``
+    /// so a later full rebuild reproduces the identical map — callers that append a single
+    /// track must use this instead of rebuilding the whole index.
+    static func insert(_ track: Track, into map: inout [String: Set<String>]) {
+        let art = normalize(track.artist)
+        guard !art.isEmpty else { return }
+        for tk in normalizedTitleKeys(from: track.title) {
+            map[tk, default: []].insert(art)
+        }
     }
 
     /// True when this the request backend hit corresponds to at least one library track (same normalized title + overlapping artists).
@@ -256,51 +262,31 @@ struct LibraryChartTrackIndex {
     }
     /// Normalized title key → entries. A track is inserted under every key its
     /// title produces (strict + featured-stripped) so chart variants line up.
-    private let byTitleKey: [String: [Entry]]
+    private var byTitleKey: [String: [Entry]]
     /// Normalized **album** title keys — for chart rows whose `name` is a release title.
-    private let byAlbumTitleKey: [String: [Entry]]
+    private var byAlbumTitleKey: [String: [Entry]]
 
     static let empty = LibraryChartTrackIndex(tracks: [])
 
     init(tracks: [Track]) {
-        var titleMap: [String: [Entry]] = [:]
-        var albumMap: [String: [Entry]] = [:]
+        byTitleKey = [:]
+        byAlbumTitleKey = [:]
         for track in tracks {
-            Self.insert(track, intoTitle: &titleMap, album: &albumMap)
+            insert(track)
         }
-        self.byTitleKey = titleMap
-        self.byAlbumTitleKey = albumMap
     }
 
-    /// Cheap path for New-tab / pin reconcile — avoids rebuilding from the full 50k catalog.
-    func inserting(_ tracks: [Track]) -> LibraryChartTrackIndex {
-        guard !tracks.isEmpty else { return self }
-        var titleMap = byTitleKey
-        var albumMap = byAlbumTitleKey
-        for track in tracks {
-            Self.insert(track, intoTitle: &titleMap, album: &albumMap)
-        }
-        return LibraryChartTrackIndex(titleMap: titleMap, albumMap: albumMap)
-    }
-
-    private init(titleMap: [String: [Entry]], albumMap: [String: [Entry]]) {
-        self.byTitleKey = titleMap
-        self.byAlbumTitleKey = albumMap
-    }
-
-    private static func insert(
-        _ track: Track,
-        intoTitle titleMap: inout [String: [Entry]],
-        album albumMap: inout [String: [Entry]]
-    ) {
+    /// Folds one track in without rebuilding. Keying is identical to ``init(tracks:)``,
+    /// so an incremental insert and a later full rebuild agree.
+    mutating func insert(_ track: Track) {
         let artistKey = LibraryTrackMatcher.normalize(track.artist)
         guard !artistKey.isEmpty else { return }
         let entry = Entry(track: track, artistKey: artistKey)
         for titleKey in LibraryTrackMatcher.normalizedTitleKeys(from: track.title) {
-            titleMap[titleKey, default: []].append(entry)
+            byTitleKey[titleKey, default: []].append(entry)
         }
         for albumKey in LibraryTrackMatcher.normalizedAlbumTitleLookupKeys(from: track.albumTitle) {
-            albumMap[albumKey, default: []].append(entry)
+            byAlbumTitleKey[albumKey, default: []].append(entry)
         }
     }
 
