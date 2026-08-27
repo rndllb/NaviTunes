@@ -358,18 +358,40 @@ struct NowPlayingCoverPresenter<Content: View>: UIViewControllerRepresentable {
     @Binding var isPresented: Bool
     /// Re-evaluated on every SwiftUI update so the presented tree stays live.
     let content: () -> Content
+    /// Every *value*-typed input baked into `content`, collapsed into one comparable token.
+    ///
+    /// The reference-typed inputs — the four `environmentObject`s — reach the player on their
+    /// own, because it observes them. A value like `.tint` cannot: a `UIHostingController` only
+    /// picks up a new one when `rootView` is reassigned, and that reassignment was firing on
+    /// every shell render (`PlaybackEngine` publishes several times a second) to deliver a value
+    /// that had almost never changed. Comparing the values instead means the off-screen player
+    /// is rebuilt when one of them actually moves, and not otherwise.
+    ///
+    /// **Anything value-typed added to `content` must be added here too**, or it will not reach
+    /// the player until something else invalidates this token.
+    let contentRevision: AnyHashable
     /// False while the player has something pushed inside it.
     let canDismiss: () -> Bool
 
     func makeUIViewController(context: Context) -> Presenter<Content> {
         let presenter = Presenter<Content>()
         presenter.view.isUserInteractionEnabled = false
-        presenter.configure(isPresented: $isPresented, content: content, canDismiss: canDismiss)
+        presenter.configure(
+            isPresented: $isPresented,
+            content: content,
+            contentRevision: contentRevision,
+            canDismiss: canDismiss,
+        )
         return presenter
     }
 
     func updateUIViewController(_ presenter: Presenter<Content>, context: Context) {
-        presenter.configure(isPresented: $isPresented, content: content, canDismiss: canDismiss)
+        presenter.configure(
+            isPresented: $isPresented,
+            content: content,
+            contentRevision: contentRevision,
+            canDismiss: canDismiss,
+        )
         presenter.sync()
     }
 
@@ -379,9 +401,17 @@ struct NowPlayingCoverPresenter<Content: View>: UIViewControllerRepresentable {
         private var cover: UIHostingController<C>?
         private var isPresentedBinding: Binding<Bool> = .constant(false)
         private var makeContent: (() -> C)?
+        /// The `contentRevision` the off-screen `rootView` was last built from. `nil` until the
+        /// first refresh, so the player picks up whatever is current the first time it goes idle.
+        private var lastContentRevision: AnyHashable?
         private var isSyncScheduled = false
 
-        func configure(isPresented: Binding<Bool>, content: @escaping () -> C, canDismiss: @escaping () -> Bool) {
+        func configure(
+            isPresented: Binding<Bool>,
+            content: @escaping () -> C,
+            contentRevision: AnyHashable,
+            canDismiss: @escaping () -> Bool,
+        ) {
             isPresentedBinding = isPresented
             makeContent = content
             zoom.canDismiss = canDismiss
@@ -404,10 +434,15 @@ struct NowPlayingCoverPresenter<Content: View>: UIViewControllerRepresentable {
             // happened — because the tree recognising the tap was being swapped out from under
             // it before it could complete.
             //
-            // Reassigning is not needed anyway: the player reads everything through
-            // `@EnvironmentObject` and `@ObservedObject`, so it updates itself. Refresh only
-            // while it is off screen, where a rebuild costs nothing and cannot eat a touch.
-            if let cover, let makeContent, cover.presentingViewController == nil {
+            // Reassigning is not needed for anything the player *observes*: it reads those
+            // through `@EnvironmentObject` and `@ObservedObject`, so it updates itself. Refresh
+            // only while it is off screen, where a rebuild cannot eat a touch — and only when a
+            // value-typed input actually changed, which is what `contentRevision` answers.
+            // Without that second test this ran on every shell render, re-diffing the whole
+            // ~2,800-line tree several times a second for the entire time the player was closed.
+            if let cover, let makeContent, cover.presentingViewController == nil,
+               contentRevision != lastContentRevision {
+                lastContentRevision = contentRevision
                 cover.rootView = makeContent()
             }
         }

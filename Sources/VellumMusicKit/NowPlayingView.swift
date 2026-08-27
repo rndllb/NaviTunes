@@ -2187,6 +2187,15 @@ private struct NowPlayingQueueListTableChrome: UIViewRepresentable {
         var scrollIndicatorStyle: UIScrollView.IndicatorStyle = .white
         private weak var tableView: UITableView?
         private var scrollObservation: NSKeyValueObservation?
+        // Identities of the cells the reorder walk last ran over. `contentOffset` fires on every
+        // display-link tick while the queue scrolls or pages, and the walk below is a
+        // `String(describing:)` over every subview of every visible cell — so the tint was being
+        // re-derived at 120Hz to reapply a colour that had not changed, which is the cost that
+        // showed up as stutter on a long queue. The tint only ever needs reapplying when the set
+        // of visible cells changes, and comparing identities catches every case that matters:
+        // a cell scrolling in, one scrolling out, and a recycled cell arriving with a reorder
+        // control that has not been tinted yet.
+        private var lastStyledCells: [ObjectIdentifier] = []
 
         func apply(from anchor: UIView) {
             if let table = tableView {
@@ -2212,11 +2221,18 @@ private struct NowPlayingQueueListTableChrome: UIViewRepresentable {
         private func applyAll(to table: UITableView) {
             table.tintColor = reorderTint
             table.indicatorStyle = scrollIndicatorStyle
+            // The tint itself may have changed here, so the cached cell set cannot stand in for
+            // "already the right colour".
+            lastStyledCells = []
             styleReorderControls(in: table)
         }
 
         private func styleReorderControls(in table: UITableView) {
-            for cell in table.visibleCells {
+            let cells = table.visibleCells
+            let identities = cells.map(ObjectIdentifier.init)
+            guard identities != lastStyledCells else { return }
+            lastStyledCells = identities
+            for cell in cells {
                 for subview in cell.subviews {
                     let typeName = String(describing: type(of: subview))
                     guard typeName.contains("Reorder") else { continue }
