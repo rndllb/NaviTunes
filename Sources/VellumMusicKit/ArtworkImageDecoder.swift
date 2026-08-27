@@ -42,7 +42,16 @@ private final class CachedArtworkImage: NSObject {
 }
 
 enum DecodedArtworkCache {
-    private static let memory = NSCache<NSString, CachedArtworkImage>()
+    // Without a limit `NSCache` grows until the system posts a memory-pressure warning, and then
+    // dumps everything at once — one big unpredictable purge that is as likely to land in the
+    // middle of a zoom as anywhere else. A cost limit turns that into steady, boring eviction.
+    // `store` has always computed a per-entry cost; it was simply inert with no limit set.
+    // 64MB is roughly 27 covers at the 768px hero size (768 * 768 * 4 ≈ 2.3MB each).
+    private static let memory: NSCache<NSString, CachedArtworkImage> = {
+        let cache = NSCache<NSString, CachedArtworkImage>()
+        cache.totalCostLimit = 64 * 1024 * 1024
+        return cache
+    }()
 
     static func clearAll() {
         memory.removeAllObjects()
@@ -299,7 +308,13 @@ private final class CachedBleedImage: NSObject {
 }
 
 enum HomeTopPickBleedCache {
-    private static let memory = NSCache<NSString, CachedBleedImage>()
+    // Same reasoning as `DecodedArtworkCache` above; smaller because bleeds are only generated
+    // for the Home Top Pick shelf, not for every cover the user scrolls past.
+    private static let memory: NSCache<NSString, CachedBleedImage> = {
+        let cache = NSCache<NSString, CachedBleedImage>()
+        cache.totalCostLimit = 16 * 1024 * 1024
+        return cache
+    }()
 
     static func image(for key: String) -> CGImage? {
         memory.object(forKey: key as NSString)?.cgImage

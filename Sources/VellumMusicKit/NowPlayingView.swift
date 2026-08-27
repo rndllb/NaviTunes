@@ -158,11 +158,28 @@ struct NowPlayingView: View {
         return app.resolvedArtworkURL(for: track)
     }
 
-    private func artworkView(for track: Track, cornerRadius: CGFloat) -> some View {
+    /// Decode target for the small fixed-size rows in the queue and history lists.
+    ///
+    /// `AlbumArtworkView` defaults to 768px, which is the hero's size and correct for the hero.
+    /// A 44pt row on a 3x screen needs 132px and a 56pt row needs 168px, so the rows were
+    /// decoding and *cacheing* 16x the pixels they can display — the exact thing
+    /// `Rules/swiftui-render-cost.md` tells this project not to do. 192 is not a new number:
+    /// `LibrarySongsView.rowArtworkDecodePixels` already uses it for comparable rows.
+    private static let rowArtworkDecodePixels: CGFloat = 192
+
+    /// - Parameter maxDecodePixels: left at the `AlbumArtworkView` default for everything that
+    ///   morphs into or out of the hero — those views get resized to full artwork dimensions
+    ///   mid-transition, so a row-sized decode would be visibly soft while they travel.
+    private func artworkView(
+        for track: Track,
+        cornerRadius: CGFloat,
+        maxDecodePixels: CGFloat = 768,
+    ) -> some View {
         AlbumArtworkView(
             url: isLiveRadio(track) ? nil : artworkURL(for: track),
             meshArtworkSeed: RadioStationMeshArtwork.seedKey(for: track),
             cornerRadius: cornerRadius,
+            maxDecodePixels: maxDecodePixels,
             showsSubtleBorder: false,
         )
     }
@@ -551,7 +568,13 @@ struct NowPlayingView: View {
         HStack(alignment: .center, spacing: 12) {
             ZStack {
                 Color.clear.frame(width: 56, height: 56)
-                artworkView(for: track, cornerRadius: 6)
+                // Static slot: the shared header's artwork is what actually morphs through here,
+                // so this copy never travels and can decode at row size.
+                artworkView(
+                    for: track,
+                    cornerRadius: 6,
+                    maxDecodePixels: Self.rowArtworkDecodePixels,
+                )
                     .frame(width: 56, height: 56)
                     .shadow(
                         color: .black.opacity(backdropPalette.prefersDarkHeroChrome ? 0.22 : 0.45),
@@ -1986,7 +2009,11 @@ struct NowPlayingView: View {
 
     private func queueRow(track: Track) -> some View {
         HStack(spacing: 12) {
-            artworkView(for: track, cornerRadius: 4)
+            artworkView(
+                for: track,
+                cornerRadius: 4,
+                maxDecodePixels: Self.rowArtworkDecodePixels,
+            )
                 .frame(width: 44, height: 44)
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.title)
