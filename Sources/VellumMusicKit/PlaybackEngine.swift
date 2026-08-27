@@ -239,6 +239,13 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// Debounced task that releases the audio session after we go idle so iOS
     /// can suspend the app. Cancelled if playback resumes within the window.
     private var audioSessionDeactivateTask: Task<Void, Never>?
+    /// Whether ``activateAudioSession()`` currently believes the session is active, so repeat
+    /// calls can skip the `mediaserverd` round trip. Cleared by every path that gives the
+    /// session up — see the doc comment there.
+    private var isAudioSessionActive = false
+    /// When ``reconcilePlaybackSessionAfterUIMilestone()`` last ran, so the second of the two
+    /// milestones one player open produces can skip the redundant Now-Playing re-stamp.
+    private var lastUIMilestoneReconcile: TimeInterval = 0
     /// Context for (re)installing the periodic time observer at a new cadence
     /// (foreground 0.35s vs background 2.0s).
     private var timeObserverContext: (item: AVPlayerItem, track: Track, player: AVPlayer)?
@@ -318,10 +325,20 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
     func reconcilePlaybackSessionAfterUIMilestone() {
         activateAudioSession()
+        // One player open produces *two* UI milestones: the mini player's tap action calls this
+        // synchronously (before `present()` can even be reached), and the player's own
+        // `onAppear` calls it again a moment later. The corrective branches below are cheap and
+        // must always run. The `refreshNowPlaying()` re-stamp is the expensive half — a read and
+        // a write of `MPNowPlayingInfoCenter`, both synchronous IPC — and running it twice
+        // milliseconds apart wrote the same values twice. Only the repeat is skipped; the
+        // periodic time observer re-stamps on its own cadence regardless, so nothing is lost.
+        let elapsed = Date.timeIntervalSinceReferenceDate - lastUIMilestoneReconcile
+        let isRepeatMilestone = elapsed < 0.3
+        lastUIMilestoneReconcile = Date.timeIntervalSinceReferenceDate
         if let equalizedPlayer {
             if isPlaying, !equalizedPlayer.isPlaying {
                 equalizedPlayer.play(rate: playbackRate)
-            } else {
+            } else if !isRepeatMilestone {
                 refreshNowPlaying()
             }
             return
@@ -330,20 +347,41 @@ final class PlaybackEngine: NSObject, ObservableObject {
         player.isMuted = false
         if player.volume < 0.001 { player.volume = 1.0 }
         if isPlaying, player.rate < 0.01 { beginPlayback(on: player) }
-        else { refreshNowPlaying() }
+        else if !isRepeatMilestone { refreshNowPlaying() }
     }
 
+    /// Bring the audio session up, unless it is already up.
+    ///
+    /// `setCategory` + `setActive` are synchronous IPC round trips into `mediaserverd`, and this
+    /// is called from a dozen places — including twice per player open, once from the mini
+    /// player's tap action (which delays the runloop returning, and so delays the present
+    /// itself) and again from the player's `onAppear`. Neither call knew the other had happened,
+    /// so both paid the full cost inside the transition's setup window.
+    ///
+    /// The guard is only safe because every path that can take the session away from us clears
+    /// the flag: our own deactivation, and a system interruption (`.began`), where iOS hands the
+    /// session to a call or Siri. A failed activation deliberately does not set the flag, so the
+    /// next caller retries rather than assuming success — which is also stricter than the old
+    /// `try?`, where a failure was simply swallowed and never revisited.
     private func activateAudioSession() {
         #if os(iOS)
+        // Unconditional: a pending deferred deactivation has to be called off even when the
+        // session is already active, or it will tear down a session we just said we want.
         audioSessionDeactivateTask?.cancel()
         audioSessionDeactivateTask = nil
+        guard !isAudioSessionActive else { return }
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(
             .playback,
             mode: .default,
             options: [.allowBluetoothA2DP, .allowAirPlay],
         )
-        try? session.setActive(true, options: [])
+        do {
+            try session.setActive(true, options: [])
+            isAudioSessionActive = true
+        } catch {
+            isAudioSessionActive = false
+        }
         #endif
     }
 
@@ -370,6 +408,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         guard !isPlaying else { return }
         try? AVAudioSession.sharedInstance().setActive(
             false, options: [.notifyOthersOnDeactivation])
+        isAudioSessionActive = false
         #endif
     }
 
@@ -388,6 +427,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
             // Capture EQ-playing too; the EQ node still claims to be playing
             // even though the system stopped the engine mid-interruption.
             wasPlayingBeforeInterruption = isPlaying || (equalizedPlayer?.isPlaying ?? false)
+            // The session is no longer ours — a call or Siri has it. Anything that skipped
+            // reactivating because it looked active would come back to silence.
+            isAudioSessionActive = false
             clearPlayIntent()
             equalizedPlayer?.pause()
             isPlaying = false

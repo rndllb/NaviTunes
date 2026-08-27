@@ -2369,7 +2369,18 @@ private struct VolumeScrubberBlock: View {
         .padding(.horizontal, 22)
         .padding(.bottom, 12)
         .onAppear {
-            try? AVAudioSession.sharedInstance().setActive(true)
+            // The `setActive(true)` that used to sit here is gone: it was a third synchronous
+            // `mediaserverd` round trip on every player open, on top of the two the engine
+            // already did, and it was unconditional — unlike the lyrics and queue panes, this
+            // block is not behind a mode flag, so it ran whether or not anyone touched the
+            // volume bar. `PlaybackEngine.reconcilePlaybackSessionAfterUIMilestone()` activates
+            // the session on the same open, so there was nothing left for this one to do.
+            //
+            // The volume read stays. `HiddenSystemVolumeBridge` does KVO `outputVolume` and
+            // would catch any *change*, but the player's hosting controller is reused rather
+            // than rebuilt, so this `@State` survives between opens — and seeding it here is
+            // what guarantees the slider is in the right place the moment the player appears
+            // rather than a frame later. It is a property read, not a session round trip.
             volume = AVAudioSession.sharedInstance().outputVolume
         }
     }
