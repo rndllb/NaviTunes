@@ -239,9 +239,18 @@ enum DebugUIRemote {
     /// the churn is playback ticking, it is suppressible; if it is the dismiss itself, it is not.
     static var appPublishes = 0
     static var playerPublishes = 0
-    /// True only while a dismiss drag is in flight, so the stack capture below stays off the
-    /// rest of the app's life — `callStackSymbols` is far too expensive to run unconditionally.
+    /// True only while a dismiss drag is in flight.
     static var isDragActive = false
+
+    /// Arms the stack capture in ``logPublishOrigin(_:)``. **Off by default, deliberately.**
+    ///
+    /// It did its job — it named `scheduleLibraryBootstrap` as the source of the dismiss churn
+    /// (see the T054 entry in `OPTIMIZATIONS.md`) — but `Thread.callStackSymbols` is expensive
+    /// enough that leaving it armed would put a real cost back into the exact gesture this work
+    /// was fixing, on the DEBUG builds that run on device every day. The counters below stay on,
+    /// because they are two integer increments; only the symbolication is parked. Flip this to
+    /// `true` (or set it from the debugger) to get the attribution back.
+    static var capturePublishOrigins = false
 
     /// Names the setter behind an `objectWillChange`.
     ///
@@ -249,7 +258,7 @@ enum DebugUIRemote {
     /// question here: 14 `AppModel` publishes land during a single dismiss drag and nothing
     /// says why. `objectWillChange` fires from `willSet`, so the setter is still on the stack.
     static func logPublishOrigin(_ label: String) {
-        guard isDragActive else { return }
+        guard capturePublishOrigins, isDragActive else { return }
         let frames = Thread.callStackSymbols
             .compactMap { line -> String? in
                 guard line.contains("VellumMusic") else { return nil }
