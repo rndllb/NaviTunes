@@ -172,11 +172,35 @@ final class NowPlayingCoverAnimator: NSObject, UIViewControllerAnimatedTransitio
         // taking it from there and flying it *down* to the pill's rect means the cover the user
         // ends up looking at is the cover that travelled. The pill's is the stand-in, not the
         // player's.
-        player.frame = full
-        player.layoutIfNeeded()
+        // Only lay out if the frame is actually wrong. On a dismiss the player has been on
+        // screen at full size the whole time the user was looking at it, so this was forcing a
+        // layout pass to arrive at the size it already had. (`layoutIfNeeded` is cheap when
+        // nothing is dirty, but the assignment above it marks the layer dirty first, which is
+        // what made it not cheap.)
+        if player.frame != full {
+            player.frame = full
+            player.layoutIfNeeded()
+        }
+        // **`afterScreenUpdates` is decided per direction, not once for both.**
+        //
+        // On the *present* it stays `true`, and must: the player's tree has just been built and
+        // has not drawn yet, so without the flush the snapshot comes back blank — the documented
+        // "empty square" first-open regression. That path is unchanged.
+        //
+        // On a *dismiss* it is `false`. `true` forces UIKit to flush and re-render the entire
+        // player before returning, and this runs inside `beginDrag` — i.e. on the finger going
+        // down, before the first drag delta is honoured. That flush is the lag spike on
+        // swipe-down. It also bought nothing: a dismiss snapshots a player that has been fully
+        // rendered on screen for as long as the user has been looking at it, so there is nothing
+        // pending for the flush to reveal.
+        //
+        // Where they genuinely differ, `false` is the more faithful of the two. `true` flushes
+        // *pending* changes into the bitmap — so the cover would fly showing a frame the user has
+        // not been shown yet. `false` captures what is on screen at the moment the finger lands,
+        // which is the thing the gesture is supposed to be dragging.
         var artworkSnapshot = player.resizableSnapshotView(
             from: geometry.artEnd,
-            afterScreenUpdates: true,
+            afterScreenUpdates: isPresent,
             withCapInsets: .zero
         )
         if artworkSnapshot == nil {
@@ -230,7 +254,7 @@ final class NowPlayingCoverAnimator: NSObject, UIViewControllerAnimatedTransitio
         Self.current = self
 #if DEBUG
         DebugUIRemote.log(
-            "NP-ANIM prepare present=\(isPresent) pill=\(short(geometry.pill)) "
+            "NP-ANIM prepare present=\(isPresent) flush=\(isPresent) pill=\(short(geometry.pill)) "
             + "artStart=\(short(geometry.artStart)) artEnd=\(short(geometry.artEnd)) "
             + "art=\(artworkSnapshot != nil) pillSnap=\(pillSnapshot != nil)"
         )
