@@ -138,11 +138,19 @@ private struct MainShellView: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.scenePhase) private var scenePhase
     @State private var showNowPlaying = false
-    /// Source namespace for the iOS 18+ zoom transition. The mini-player tap
-    /// area marks itself as the source with ``matchedTransitionSource``; the
-    /// presented full player applies ``navigationTransition(.zoom(...))`` so
-    /// the system drives the entire shared-element animation between them —
-    /// no manual matched-geometry plumbing required.
+    /// Namespace for the mini-player → player morph.
+    ///
+    /// **The system does not drive this transition.** This comment used to say that it did —
+    /// that the accessory marked itself with `matchedTransitionSource` and the presented player
+    /// applied `navigationTransition(.zoom(...))`, with no manual plumbing. That mechanism is
+    /// not wired up anywhere: nothing applies a `navigationTransition` for `"playerArtwork"`,
+    /// and the paired `matchedTransitionSource` has been removed. The morph is driven entirely
+    /// by ``NowPlayingCoverPresenter`` and ``NowPlayingCoverAnimator`` in UIKit, deliberately —
+    /// see the presenter's own doc comment for the `fullScreenCover` crash class that exists to
+    /// avoid. Restoring the system mechanism would reintroduce it, which is why the description
+    /// is corrected here rather than deleted.
+    ///
+    /// The namespace itself is kept because it is still handed to the accessory.
     @Namespace private var playerArtworkNamespace
 
     var body: some View {
@@ -321,10 +329,16 @@ private struct TabViewMiniPlayerAccessory: View {
         )
         .background {
             #if os(iOS)
+            // NOT dead, despite sitting next to the scaffolding that was: this populates
+            // `MiniPlayerZoomSourceRegistry`, which `NowPlayingCoverAnimator` reads as the
+            // fallback origin rect for the zoom.
             MiniPlayerZoomSourceAnchor()
             #endif
         }
-        .matchedTransitionSource(id: "playerArtwork", in: artworkNamespace)
+        // The `.matchedTransitionSource(id: "playerArtwork", in: artworkNamespace)` that used to
+        // be here is removed: nothing in the module applies the paired
+        // `navigationTransition(.zoom(sourceID: "playerArtwork"))`, so it armed a SwiftUI zoom
+        // that had no destination and could never run.
     }
 
     private func expandNowPlaying() {

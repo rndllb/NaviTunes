@@ -525,9 +525,11 @@ private struct HomeTopPickCard: View, Equatable {
                 colorScheme: colorScheme,
             )
         }
-        .onAppear {
-            ArtworkDynamicGradient.prefetchBackdrop(for: album.artworkURL)
-        }
+        // The `.onAppear` prefetch that used to sit here is gone. It fired at the same moment as
+        // the `.task` below, and on a cold cache both missed and both ran the whole path —
+        // and `ArtworkURLCache.data(for:)` has no in-flight de-duplication, so one image cost
+        // two network requests, two decodes and two pixel analyses. The `.task` already reads
+        // the cache first, so it covers the warm case the prefetch was meant to win.
         .task(id: album.artworkURL?.absoluteString ?? album.id) {
             if let cached = ArtworkDynamicGradient.cachedBackdrop(for: album.artworkURL) {
                 palette = cached
