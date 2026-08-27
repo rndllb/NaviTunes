@@ -501,6 +501,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             savedAt: Date(),
             unshuffledQueue: unshuffledQueue,
             sourceQueueOrder: sourceQueueOrder,
+            userQueuedTrackIds: Array(userQueuedTrackIds),
         )
     }
 
@@ -527,6 +528,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
         isPlaying = false
         unshuffledQueue = snapshot.unshuffledQueue
         sourceQueueOrder = snapshot.sourceQueueOrder
+        // Snapshots written before this field existed decode as nil — start empty rather
+        // than inheriting the previous session's ids.
+        userQueuedTrackIds = Set(snapshot.userQueuedTrackIds ?? [])
+        pruneUserQueuedIds()
         duration = activeTrack?.duration ?? 0
         // A restored snapshot represents real playback the user wants to resume — surface
         // the mini player so the saved track + playhead are visible on launch. Only the
@@ -591,7 +596,12 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// the Now Playing shuffle button reflects the hero shuffle action.
     func playAlbumShuffled(library: MusicLibraryProviding?, tracks: [Track], source: PlaybackSource? = nil) async throws {
         guard !tracks.isEmpty else { return }
-        try await playAlbum(library: library, tracks: tracks.shuffled(), startIndex: 0, source: source)
+        let shuffled = tracks.shuffled()
+        try await playAlbum(library: library, tracks: shuffled, startIndex: 0, source: source)
+        // `playAlbum` suspends. If another album started meanwhile, these stamps would land
+        // on *that* queue — and a later shuffle-off would then restore `unshuffledQueue`,
+        // swapping this album wholesale into the queue the user is actually listening to.
+        guard queue.elementsEqual(shuffled, by: { $0.id == $1.id }) else { return }
         unshuffledQueue = tracks
         sourceQueueOrder = tracks
         shuffleMode = .on
@@ -681,8 +691,14 @@ final class PlaybackEngine: NSObject, ObservableObject {
         }
         let normalized = tracksWithResolvedArtwork(tracks)
         removeUpcomingOccurrences(of: Set(normalized.map(\.id)))
-        queue.append(contentsOf: normalized)
-        for t in normalized { userQueuedTrackIds.insert(t.id) }
+        // End of the user-queued block, NOT the end of the array. Now Playing renders
+        // "Queue" above "Continue Playing", so appending past the source tail would show
+        // these tracks at the top of up-next while playing them dead last.
+        let insertAt = userQueueBlockEnd
+        for (i, t) in normalized.enumerated() {
+            queue.insert(t, at: insertAt + i)
+            userQueuedTrackIds.insert(t.id)
+        }
         recordTrackOriginPlaylist(normalized.map(\.id), playlistId: sourcePlaylistId)
         refreshEnqueuedNextItem()
     }
@@ -703,6 +719,24 @@ final class PlaybackEngine: NSObject, ObservableObject {
         let head = queue.prefix(currentIndex + 1)
         let tail = queue.suffix(from: currentIndex + 1).filter { !idSet.contains($0.id) }
         queue = Array(head) + Array(tail)
+    }
+
+    /// Index just past the contiguous run of user-queued tracks sitting directly after the
+    /// cursor. "Play Next" inserts at the front of that block, "Add to Queue" at its end,
+    /// which keeps the block contiguous so the rendered order is the play order.
+    private var userQueueBlockEnd: Int {
+        var idx = min(currentIndex + 1, queue.count)
+        while idx < queue.count, userQueuedTrackIds.contains(queue[idx].id) { idx += 1 }
+        return idx
+    }
+
+    /// Drops ids whose tracks are no longer anywhere in the queue. Without this the set
+    /// outlives its tracks and mis-tags an unrelated track that later enters the queue
+    /// under a matching id — and both the Queue section and ``isQueueOutOfNaturalOrder``
+    /// read it.
+    private func pruneUserQueuedIds() {
+        guard !userQueuedTrackIds.isEmpty else { return }
+        userQueuedTrackIds.formIntersection(Set(queue.map(\.id)))
     }
 
     /// Removes everything in the user-queued section (Now Playing → Queue → "Clear").
@@ -1281,6 +1315,15 @@ final class PlaybackEngine: NSObject, ObservableObject {
         }
     }
 
+    /// Tracks the user explicitly queued (Play Next / Add to Queue) that have not played
+    /// yet. Starting a new source discards exactly these, so it drives the confirmation
+    /// prompt. Counts the up-next slice rather than the whole set: ids linger in
+    /// `userQueuedTrackIds` for tracks already behind the cursor.
+    var pendingUserQueuedCount: Int {
+        guard !userQueuedTrackIds.isEmpty, currentIndex + 1 < queue.count else { return 0 }
+        return queue[(currentIndex + 1)...].filter { userQueuedTrackIds.contains($0.id) }.count
+    }
+
     /// True when the "continue playing" section is out of the natural source order, but shuffle
     /// was not used — e.g. the user dragged tracks in the queue. Also returns true when
     /// `shuffleMode == .on` so the shuffle button stays lit in both entry paths.
@@ -1291,50 +1334,87 @@ final class PlaybackEngine: NSObject, ObservableObject {
               let sourceIdx = source.firstIndex(where: { $0.id == current.id })
         else { return false }
         let continuePlaying = queue[(currentIndex + 1)...].filter { !userQueuedTrackIds.contains($0.id) }
-        let expectedTail = Array(source[(sourceIdx + 1)...])
+        // Ignore tracks that Play Next pulled out of the natural tail into the user queue.
+        // Relocating a track is not a manual reorder and must not light the shuffle button.
+        let expectedTail = source[(sourceIdx + 1)...].filter { !userQueuedTrackIds.contains($0.id) }
         guard continuePlaying.count == expectedTail.count else { return true }
         return zip(continuePlaying, expectedTail).contains { $0.id != $1.id }
     }
 
     func toggleShuffle() {
-        if shuffleMode == .off {
-            // Turning shuffle ON: save current queue and randomize the rest.
-            // Bail if there's no valid current track (empty/invalid queue) —
-            // remove(at:) below would otherwise crash on an out-of-range index.
-            guard queue.indices.contains(currentIndex) else { return }
-            unshuffledQueue = queue
-            let currentTrack = activeTrack
-            var remaining = queue
-            remaining.remove(at: currentIndex)
-            remaining.shuffle()
-            if let current = currentTrack {
-                queue = [current] + remaining
-                currentIndex = 0
-            }
-            shuffleMode = .on
+        // Branch on the same property the button lights from. Branching on `shuffleMode`
+        // while the button read `isQueueOutOfNaturalOrder` inverted the affordance: a lit
+        // button would re-randomize instead of restoring natural order.
+        if isQueueOutOfNaturalOrder {
+            restoreNaturalQueueOrder()
         } else {
-            // Turning shuffle OFF: restore original queue order
-            if let original = unshuffledQueue {
-                if let currentTrack = activeTrack, let originalIndex = original.firstIndex(where: { $0.id == currentTrack.id }) {
-                    queue = original
-                    currentIndex = originalIndex
-                } else {
-                    queue = original
-                }
-                unshuffledQueue = nil
-            } else if let source = sourceQueueOrder,
-                      let currentTrack = activeTrack,
-                      let sourceIdx = source.firstIndex(where: { $0.id == currentTrack.id }) {
-                // Manually reordered without using shuffle button — restore natural tail,
-                // keeping user-queued tracks at their current positions.
-                let naturalTail = Array(source[(sourceIdx + 1)...])
-                let userQueued = Array(queue[(currentIndex + 1)...].filter { userQueuedTrackIds.contains($0.id) })
-                let prefix = Array(queue[...currentIndex])
-                queue = prefix + userQueued + naturalTail
-            }
-            shuffleMode = .off
+            shuffleQueueFromCurrentTrack()
         }
         refreshEnqueuedNextItem()
+    }
+
+    /// Turning shuffle ON: snapshot the current order and randomize everything after the
+    /// playing track.
+    private func shuffleQueueFromCurrentTrack() {
+        // Bail if there's no valid current track (empty/invalid queue) —
+        // remove(at:) below would otherwise crash on an out-of-range index.
+        guard queue.indices.contains(currentIndex) else { return }
+        unshuffledQueue = queue
+        let currentTrack = activeTrack
+        var remaining = queue
+        remaining.remove(at: currentIndex)
+        remaining.shuffle()
+        if let current = currentTrack {
+            queue = [current] + remaining
+            currentIndex = 0
+        }
+        shuffleMode = .on
+    }
+
+    /// Turning shuffle OFF (or undoing a manual reorder): rebuild the natural order while
+    /// preserving everything the user explicitly queued.
+    private func restoreNaturalQueueOrder() {
+        defer {
+            shuffleMode = .off
+            pruneUserQueuedIds()
+        }
+        // Play Next / Add to Queue items added *after* shuffle was turned on are absent
+        // from `unshuffledQueue`, so restoring that snapshot verbatim silently deleted
+        // them. Carry the whole up-next user block across in its current order.
+        let upNextStart = min(currentIndex + 1, queue.count)
+        let carried = Array(queue[upNextStart...]).filter { userQueuedTrackIds.contains($0.id) }
+        let carriedIds = Set(carried.map(\.id))
+
+        if let original = unshuffledQueue {
+            unshuffledQueue = nil
+            if let current = activeTrack,
+               let originalIndex = original.firstIndex(where: { $0.id == current.id }) {
+                let head = Array(original[...originalIndex])
+                let tail = original[(originalIndex + 1)...].filter { !carriedIds.contains($0.id) }
+                queue = head + carried + tail
+                currentIndex = originalIndex
+            } else if let current = activeTrack {
+                // The playing track was itself queued while shuffle was on, so it isn't in
+                // the snapshot. Keep it under the cursor rather than leaving `currentIndex`
+                // pointing into a different array while audio keeps playing.
+                let tail = original.filter { !carriedIds.contains($0.id) && $0.id != current.id }
+                queue = [current] + carried + tail
+                currentIndex = 0
+            } else {
+                queue = original
+                currentIndex = min(max(0, currentIndex), max(original.count - 1, 0))
+            }
+            return
+        }
+
+        guard let source = sourceQueueOrder,
+              let current = activeTrack,
+              let sourceIdx = source.firstIndex(where: { $0.id == current.id })
+        else { return }
+        // Manually reordered without using the shuffle button — restore the natural tail,
+        // keeping user-queued tracks at the front of up-next.
+        let naturalTail = source[(sourceIdx + 1)...].filter { !carriedIds.contains($0.id) }
+        queue = Array(queue[...currentIndex]) + carried + naturalTail
     }
 
     func cycleRepeat() {
