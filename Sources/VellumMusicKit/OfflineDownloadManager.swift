@@ -158,6 +158,15 @@ final class OfflineDownloadManager: ObservableObject {
     private static let manifestFilename = "offline-manifest.json"
     static let queueFilename = "offline-queue.json"
     private static var manifestCache: OfflineManifestPayload?
+    /// `albumId → records`, derived from ``manifestCache``.
+    ///
+    /// `localArtworkURL(forAlbumId:)` used to walk every record in the manifest — twice — to
+    /// answer "is there artwork for this album", and `AppModel.resolvedArtworkURL` calls it once
+    /// per row. That is O(visible rows × downloaded tracks) of main-thread work, and the rows
+    /// realized when a detail page is pushed are realized inside the zoom's forced layout. Built
+    /// once per manifest change instead. `nil` means "not built yet"; every site that assigns
+    /// `manifestCache` clears this alongside it.
+    private static var manifestAlbumIndex: [String: [OfflineTrackRecord]]?
     /// One-time index of legacy `{trackId}__*` files at the downloads root.
     private static var legacyFlatFileByTrackId: [String: URL]?
 
@@ -237,10 +246,24 @@ final class OfflineDownloadManager: ObservableObject {
               let m = try? JSONDecoder().decode(OfflineManifestPayload.self, from: data)
         else {
             manifestCache = OfflineManifestPayload()
+            manifestAlbumIndex = nil
             return manifestCache!
         }
         manifestCache = m
+        manifestAlbumIndex = nil
         return m
+    }
+
+    /// `albumId → records`, built once per manifest change. See ``manifestAlbumIndex``.
+    static func manifestRecordsByAlbumId() -> [String: [OfflineTrackRecord]] {
+        if let manifestAlbumIndex { return manifestAlbumIndex }
+        let payload = (try? loadManifest()) ?? OfflineManifestPayload()
+        var index: [String: [OfflineTrackRecord]] = [:]
+        for record in payload.records.values where !record.track.albumId.isEmpty {
+            index[record.track.albumId, default: []].append(record)
+        }
+        manifestAlbumIndex = index
+        return index
     }
 
     /// The in-memory cache updates synchronously (readers on the main actor always
@@ -252,6 +275,7 @@ final class OfflineDownloadManager: ObservableObject {
     static func saveManifest(_ payload: OfflineManifestPayload) throws {
         let url = try manifestURL()
         manifestCache = payload
+        manifestAlbumIndex = nil
         legacyFlatFileByTrackId = nil
         manifestDiskWriter.schedule {
             guard let data = try? JSONEncoder().encode(payload) else { return }
@@ -261,6 +285,7 @@ final class OfflineDownloadManager: ObservableObject {
 
     static func invalidateManifestCache() {
         manifestCache = nil
+        manifestAlbumIndex = nil
         legacyFlatFileByTrackId = nil
     }
 
@@ -956,16 +981,22 @@ final class OfflineDownloadManager: ObservableObject {
 
     func localArtworkURL(forAlbumId albumId: String) -> URL? {
         guard !albumId.isEmpty, let root = try? Self.downloadsFolder() else { return nil }
-        let payload = (try? Self.loadManifest()) ?? OfflineManifestPayload()
+        // Was two full linear scans of every record in the manifest, run once per row by
+        // `AppModel.resolvedArtworkURL`. Now a dictionary lookup. Albums with nothing downloaded
+        // — the overwhelmingly common case while scrolling a server catalog — get an empty list
+        // and skip straight to the standard path, doing no scanning at all.
+        let records = Self.manifestRecordsByAlbumId()[albumId] ?? []
 
-        for record in payload.records.values where record.track.albumId == albumId {
+        for record in records {
             if let rel = record.artworkRelativePath,
                let url = Self.localFileArtworkURL(relative: rel, root: root) {
                 return url
             }
         }
 
-        if let track = payload.records.values.first(where: { $0.track.albumId == albumId })?.track,
+        // Any record of this album will do: `existingArtworkRelativePath` derives the path from
+        // `track.albumId` alone, so which one is picked cannot change the answer.
+        if let track = records.first?.track,
            let rel = Self.existingArtworkRelativePath(for: track, downloadsRoot: root) {
             return root.appendingPathComponent(rel)
         }
