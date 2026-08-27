@@ -67,6 +67,35 @@ final class QueueHistorySwipeTests: XCTestCase {
         assertStillInPlayer(app, "flick")
     }
 
+    /// Long press on a queue row opens the standard song menu.
+    func testLongPressOnQueueRowOpensSongMenu() {
+        let app = XCUIApplication()
+        openQueue(app)
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.55)).press(forDuration: 1.3)
+        Thread.sleep(forTimeInterval: 2)
+        XCTAssertTrue(
+            app.buttons["Add to Playlist"].firstMatch.waitForExistence(timeout: 5),
+            "no song menu on long-pressing a queue row"
+        )
+    }
+
+    /// Same for a history row, one page up.
+    func testLongPressOnHistoryRowOpensSongMenu() {
+        let app = XCUIApplication()
+        openQueue(app)
+        post("com.vellum.debug.seedHistory")
+        Thread.sleep(forTimeInterval: 5)
+        dragDown(app, velocity: .slow)
+        let row = app.staticTexts["lemmings in love"].firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10), "seeded history row not found")
+        row.press(forDuration: 1.3)
+        Thread.sleep(forTimeInterval: 2)
+        XCTAssertTrue(
+            app.buttons["Add to Playlist"].firstMatch.waitForExistence(timeout: 5),
+            "no song menu on long-pressing a history row"
+        )
+    }
+
     /// The dismiss itself: with no queue open there is no scroll view under the finger, so a
     /// downward drag still closes the player.
     func testDragDownWithoutQueueDismissesPlayer() {

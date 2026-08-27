@@ -45,6 +45,8 @@ enum DebugUIRemote {
         observe("com.vellum.debug.pop")
         observe("com.vellum.debug.playFirst")
         observe("com.vellum.debug.playQueue")
+        observe("com.vellum.debug.seedHistory")
+        observe("com.vellum.debug.playHistoryQuery")
         observe("com.vellum.debug.openPlayer")
         observe("com.vellum.debug.libraryTab")
         observe("com.vellum.debug.ping")
@@ -123,10 +125,35 @@ enum DebugUIRemote {
             // swipe has to work in.
             Task {
                 let albums = app.libraryAlbums
-                guard let album = albums.first(where: { ($0.trackCount ?? 0) >= 8 }) ?? albums.first,
+                let wanted = ProcessInfo.processInfo.environment["VELLUM_DEBUG_ALBUM_QUERY"] ?? ""
+                guard let album = albums.first(where: {
+                          !wanted.isEmpty && $0.title.localizedCaseInsensitiveContains(wanted)
+                      }) ?? albums.first(where: { ($0.trackCount ?? 0) >= 8 }) ?? albums.first,
                       let tracks = try? await app.activeLibrary?.tracks(forAlbumId: album.id),
                       !tracks.isEmpty else { return }
                 try? await app.player.playAlbum(library: app.activeLibrary, tracks: tracks, startIndex: 0)
+            }
+        case "com.vellum.debug.seedHistory":
+            // Fills the Now Playing → Queue → History list without waiting out the scrobble
+            // threshold. `VELLUM_DEBUG_HISTORY_QUERY` picks the track (default: the demo
+            // server's "lemmings in love", one of the few there that has server lyrics).
+            Task {
+                let query = ProcessInfo.processInfo.environment["VELLUM_DEBUG_HISTORY_QUERY"]
+                    ?? "lemmings in love"
+                guard let results = try? await app.activeLibrary?.searchCatalog(query: query, limit: 5)
+                else { return }
+                for track in results.songs.prefix(3).reversed() {
+                    app.recordRecentTrackPlay(track)
+                }
+            }
+        case "com.vellum.debug.playHistoryQuery":
+            // The baseline for `seedHistory`: play that same track the ordinary way.
+            Task {
+                let query = ProcessInfo.processInfo.environment["VELLUM_DEBUG_HISTORY_QUERY"]
+                    ?? "lemmings in love"
+                guard let results = try? await app.activeLibrary?.searchCatalog(query: query, limit: 5),
+                      let track = results.songs.first else { return }
+                try? await app.player.playAlbum(library: app.activeLibrary, tracks: [track], startIndex: 0)
             }
         case "com.vellum.debug.openPlayer":
             app.debugOpenPlayerRequests += 1

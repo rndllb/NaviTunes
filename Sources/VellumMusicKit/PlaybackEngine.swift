@@ -3156,12 +3156,21 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
     private func loadLyrics() async throws {
         guard let library, let track = currentTrack, !track.isInternetRadioStream else {
+#if DEBUG
+            DebugUIRemote.log("NP-LYRICS skip library=\(self.library != nil) track=\(currentTrack?.id ?? "nil")")
+#endif
             lyrics = []
             return
         }
         let trackId = track.id
         let epoch = playbackEpoch
         let fetched = (try? await library.lyrics(for: track)) ?? []
+#if DEBUG
+        DebugUIRemote.log(
+            "NP-LYRICS fetched=\(fetched.count) id=\(trackId) epochOK=\(isPlaybackEpochCurrent(epoch)) "
+            + "current=\(currentTrack?.id ?? "nil")"
+        )
+#endif
         guard isPlaybackEpochCurrent(epoch), currentTrack?.id == trackId else { return }
         lyrics = fetched
     }

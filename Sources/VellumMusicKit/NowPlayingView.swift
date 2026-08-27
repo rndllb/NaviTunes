@@ -752,6 +752,7 @@ struct NowPlayingView: View {
                 Label("Remove", systemImage: "trash")
             }
         }
+        .contextMenu { queueSongMenuContent(track: t) }
     }
 
     /// Translates an `onMove` IndexSet+destination from a section's local coordinates into
@@ -822,6 +823,7 @@ struct NowPlayingView: View {
                                     .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .contextMenu { queueSongMenuContent(track: t) }
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .top)
@@ -1473,6 +1475,52 @@ struct NowPlayingView: View {
     /// When the playing track's album isn't in the user's library (so ``libraryAlbum``
     /// is nil), synthesize an ``AlbumSummary`` from track metadata so "Go to Album"
     /// can still navigate — `dismissAndNavigate` will set `librarySource: false` on it.
+    /// Long-press menu for the queue and history rows — the shared
+    /// ``StandardSongMenuContent``, so a song offers the same actions here as it does in
+    /// search, the artist page, or a playlist. (The player's own header ellipsis keeps its
+    /// now-playing variant: Play Next / Add to Queue make no sense for the track that is
+    /// already playing.)
+    @ViewBuilder
+    private func queueSongMenuContent(track: Track) -> some View {
+        let album = app.catalogAlbum(id: track.albumId) ?? catalogAlbumFallback(from: track)
+        let artist = track.artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        StandardSongMenuContent(
+            track: track,
+            onPlayNext: {
+                Task { @MainActor in
+                    try? await player.playTracksNext(library: app.activeLibrary, tracks: [track])
+                }
+            },
+            onAddToQueue: {
+                Task { @MainActor in
+                    guard let lib = app.activeLibrary else { return }
+                    try? await player.addToQueue(library: lib, track: track, sourcePlaylistId: nil)
+                }
+            },
+            onFavorite: { app.toggleFavoriteTrack(id: track.id) },
+            onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
+            onAddToLibrary: app.isSongInLibrary(track.id)
+                ? nil
+                : { Task { await app.addSongToLibrary(track) } },
+            onDownload: app.isSongInLibrary(track.id) && !app.offline.downloadedTrackIds.contains(track.id)
+                ? { app.enqueueOfflineTrack(track) }
+                : nil,
+            onRemoveDownload: app.offline.downloadedTrackIds.contains(track.id)
+                ? { try? app.offline.remove(trackId: track.id) }
+                : nil,
+            onGoToAlbum: album.map { album in { dismissAndNavigate(to: .album(album)) } },
+            onGoToArtist: ArtistNavigation.isTappable(artist)
+                ? { dismissAndNavigate(to: .artist(track.artist)) }
+                : nil,
+            onRemoveFromLibrary: app.isSongInLibrary(track.id)
+                ? { Task { await app.removeSongFromLibrary(track) } }
+                : nil,
+            onDeleteFromLibrary: app.canDeleteFromLibrary
+                ? { app.beginLibraryTrackDeletion(track) }
+                : nil
+        )
+    }
+
     private func catalogAlbumFallback(from track: Track) -> AlbumSummary? {
         guard !track.albumId.isEmpty else { return nil }
         let title = track.albumTitle.isEmpty ? "Unknown Album" : track.albumTitle
