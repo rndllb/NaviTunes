@@ -67,6 +67,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// reports the transcode target, not the file's source codec.
     @Published private(set) var nowPlayingFormatLabel: String?
     @Published private(set) var lyrics: [LyricLine] = []
+    /// Track id ``lyrics`` were loaded for — or that a load is in flight for. Lets a track
+    /// start ask for lyrics without knowing whether some earlier path already did
+    /// (``scheduleLyricsLoadIfNeeded(for:)``).
+    private var lyricsTrackId: String?
     @Published var shuffleMode: ShuffleMode = .off
     @Published var repeatMode: RepeatMode = .off
     @Published private(set) var playbackSource: PlaybackSource?
@@ -83,7 +87,17 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// Reactive stale-id recovery when every stream candidate fails (``AppModel``).
     var recoverStaleTrackOnFailure: ((Track) async -> StaleSongRecoveryResult?)?
     /// Drives the tab-bar mini player pill — false after a cold restore until the user starts playback.
-    @Published private(set) var showsMiniPlayerChrome = false
+    @Published private(set) var showsMiniPlayerChrome = false {
+        didSet {
+#if DEBUG
+            // T054: this flag is forwarded into `AppModel.objectWillChange`, so a flip is a
+            // whole-tree invalidation. If one lands mid-drag it would explain the stall.
+            if oldValue != showsMiniPlayerChrome {
+                DebugUIRemote.log("NP-CHROME showsMiniPlayerChrome=\(showsMiniPlayerChrome)")
+            }
+#endif
+        }
+    }
     /// Stores the pre-shuffle queue order for restoring when shuffle is toggled off.
     private var unshuffledQueue: [Track]?
     /// Natural ordered track list from the most recently loaded source — used to detect
@@ -235,16 +249,17 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// Debounced task that releases the audio session after we go idle so iOS
     /// can suspend the app. Cancelled if playback resumes within the window.
     private var audioSessionDeactivateTask: Task<Void, Never>?
-    /// Best-effort mirror of the session's activation state. `AVAudioSession` has
-    /// no cheap "is active" query, and every call into it blocks the caller for
-    /// milliseconds-to-tens-of-milliseconds, so redundant activations must be
-    /// skipped rather than re-issued from every play path and UI milestone.
+    /// Whether ``activateAudioSession()`` currently believes the session is active, so repeat
+    /// calls can skip the `mediaserverd` round trip. Cleared by every path that gives the
+    /// session up — interruption, our own deactivation, and returning to the foreground while
+    /// paused (iOS may have torn the session down while suspended).
     ///
-    /// A stale `false` is harmless (one redundant activation); a stale `true`
-    /// would skip a required activation, so this is cleared on every event that
-    /// can drop the session out from under us: interruption, our own
-    /// deactivation, and returning to the foreground.
-    private var audioSessionIsActive = false
+    /// A stale `false` is harmless (one redundant activation); a stale `true` would skip a
+    /// required activation, so this is cleared aggressively.
+    private var isAudioSessionActive = false
+    /// When ``reconcilePlaybackSessionAfterUIMilestone()`` last ran, so the second of the two
+    /// milestones one player open produces can skip the redundant Now-Playing re-stamp.
+    private var lastUIMilestoneReconcile: TimeInterval = 0
     /// Context for (re)installing the periodic time observer at a new cadence
     /// (foreground 0.35s vs background 2.0s).
     private var timeObserverContext: (item: AVPlayerItem, track: Track, player: AVPlayer)?
@@ -313,7 +328,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
                 self.isAppBackgrounded = false
                 // iOS may have torn down the session while we were suspended, so
                 // let the next play path re-assert it instead of trusting the flag.
-                if !self.isPlaying { self.audioSessionIsActive = false }
+                if !self.isPlaying { self.isAudioSessionActive = false }
                 // Restore the fast foreground time-observer cadence.
                 self.installPeriodicTimeObserver()
                 // Resync the scrubber + Now-Playing after a stretch of
@@ -327,10 +342,20 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
     func reconcilePlaybackSessionAfterUIMilestone() {
         activateAudioSession()
+        // One player open produces *two* UI milestones: the mini player's tap action calls this
+        // synchronously (before `present()` can even be reached), and the player's own
+        // `onAppear` calls it again a moment later. The corrective branches below are cheap and
+        // must always run. The `refreshNowPlaying()` re-stamp is the expensive half — a read and
+        // a write of `MPNowPlayingInfoCenter`, both synchronous IPC — and running it twice
+        // milliseconds apart wrote the same values twice. Only the repeat is skipped; the
+        // periodic time observer re-stamps on its own cadence regardless, so nothing is lost.
+        let elapsed = Date.timeIntervalSinceReferenceDate - lastUIMilestoneReconcile
+        let isRepeatMilestone = elapsed < 0.3
+        lastUIMilestoneReconcile = Date.timeIntervalSinceReferenceDate
         if let equalizedPlayer {
             if isPlaying, !equalizedPlayer.isPlaying {
                 equalizedPlayer.play(rate: playbackRate)
-            } else {
+            } else if !isRepeatMilestone {
                 refreshNowPlaying()
             }
             return
@@ -339,14 +364,29 @@ final class PlaybackEngine: NSObject, ObservableObject {
         player.isMuted = false
         if player.volume < 0.001 { player.volume = 1.0 }
         if isPlaying, player.rate < 0.01 { beginPlayback(on: player) }
-        else { refreshNowPlaying() }
+        else if !isRepeatMilestone { refreshNowPlaying() }
     }
 
+    /// Bring the audio session up, unless it is already up.
+    ///
+    /// `setCategory` + `setActive` are synchronous IPC round trips into `mediaserverd`, and this
+    /// is called from a dozen places — including twice per player open, once from the mini
+    /// player's tap action (which delays the runloop returning, and so delays the present
+    /// itself) and again from the player's `onAppear`. Neither call knew the other had happened,
+    /// so both paid the full cost inside the transition's setup window.
+    ///
+    /// The guard is only safe because every path that can take the session away from us clears
+    /// the flag: our own deactivation, and a system interruption (`.began`), where iOS hands the
+    /// session to a call or Siri. A failed activation deliberately does not set the flag, so the
+    /// next caller retries rather than assuming success — which is also stricter than the old
+    /// `try?`, where a failure was simply swallowed and never revisited.
     private func activateAudioSession() {
         #if os(iOS)
+        // Unconditional: a pending deferred deactivation has to be called off even when the
+        // session is already active, or it will tear down a session we just said we want.
         audioSessionDeactivateTask?.cancel()
         audioSessionDeactivateTask = nil
-        guard !audioSessionIsActive else { return }
+        guard !isAudioSessionActive else { return }
         let session = AVAudioSession.sharedInstance()
         // Reading the configuration is cheap; setting it is not, and setting it
         // while the session is active fails with `-50`. Only write when it
@@ -363,9 +403,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
         // before starting a player and need the session live first.
         do {
             try session.setActive(true, options: [])
-            audioSessionIsActive = true
+            isAudioSessionActive = true
         } catch {
-            audioSessionIsActive = false
+            isAudioSessionActive = false
         }
         #endif
     }
@@ -390,8 +430,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
         #if os(iOS)
         audioSessionDeactivateTask?.cancel()
         audioSessionDeactivateTask = nil
-        guard !isPlaying, audioSessionIsActive else { return }
-        audioSessionIsActive = false
+        guard !isPlaying, isAudioSessionActive else { return }
+        isAudioSessionActive = false
         try? AVAudioSession.sharedInstance().setActive(
             false, options: [.notifyOthersOnDeactivation])
         #endif
@@ -414,7 +454,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             wasPlayingBeforeInterruption = isPlaying || (equalizedPlayer?.isPlaying ?? false)
             // The system took the session; the `.ended` branch must be able to
             // re-activate it rather than short-circuit on a stale active flag.
-            audioSessionIsActive = false
+            isAudioSessionActive = false
             clearPlayIntent()
             equalizedPlayer?.pause()
             isPlaying = false
@@ -492,6 +532,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         queue = []
         currentIndex = 0
         lyrics = []
+        lyricsTrackId = nil
         didConfigureRemoteCommands = false
         currentTime = 0
         playbackHead = 0
@@ -532,6 +573,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             savedAt: Date(),
             unshuffledQueue: unshuffledQueue,
             sourceQueueOrder: sourceQueueOrder,
+            userQueuedTrackIds: Array(userQueuedTrackIds),
         )
     }
 
@@ -553,11 +595,18 @@ final class PlaybackEngine: NSObject, ObservableObject {
         playbackHead = pending
         currentTime = pending
         lastEmittedUIProgress = pending
+        // Nothing is loaded yet and nothing is fetching: leave the id unclaimed so the first
+        // play tap's `startCurrentItem` fetches this track's lyrics.
         lyrics = []
+        lyricsTrackId = nil
         scrobbledForCurrentTrack = false
         isPlaying = false
         unshuffledQueue = snapshot.unshuffledQueue
         sourceQueueOrder = snapshot.sourceQueueOrder
+        // Snapshots written before this field existed decode as nil — start empty rather
+        // than inheriting the previous session's ids.
+        userQueuedTrackIds = Set(snapshot.userQueuedTrackIds ?? [])
+        pruneUserQueuedIds()
         duration = activeTrack?.duration ?? 0
         // A restored snapshot represents real playback the user wants to resume — surface
         // the mini player so the saved track + playhead are visible on launch. Only the
@@ -622,7 +671,12 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// the Now Playing shuffle button reflects the hero shuffle action.
     func playAlbumShuffled(library: MusicLibraryProviding?, tracks: [Track], source: PlaybackSource? = nil) async throws {
         guard !tracks.isEmpty else { return }
-        try await playAlbum(library: library, tracks: tracks.shuffled(), startIndex: 0, source: source)
+        let shuffled = tracks.shuffled()
+        try await playAlbum(library: library, tracks: shuffled, startIndex: 0, source: source)
+        // `playAlbum` suspends. If another album started meanwhile, these stamps would land
+        // on *that* queue — and a later shuffle-off would then restore `unshuffledQueue`,
+        // swapping this album wholesale into the queue the user is actually listening to.
+        guard queue.elementsEqual(shuffled, by: { $0.id == $1.id }) else { return }
         unshuffledQueue = tracks
         sourceQueueOrder = tracks
         shuffleMode = .on
@@ -712,8 +766,14 @@ final class PlaybackEngine: NSObject, ObservableObject {
         }
         let normalized = tracksWithResolvedArtwork(tracks)
         removeUpcomingOccurrences(of: Set(normalized.map(\.id)))
-        queue.append(contentsOf: normalized)
-        for t in normalized { userQueuedTrackIds.insert(t.id) }
+        // End of the user-queued block, NOT the end of the array. Now Playing renders
+        // "Queue" above "Continue Playing", so appending past the source tail would show
+        // these tracks at the top of up-next while playing them dead last.
+        let insertAt = userQueueBlockEnd
+        for (i, t) in normalized.enumerated() {
+            queue.insert(t, at: insertAt + i)
+            userQueuedTrackIds.insert(t.id)
+        }
         recordTrackOriginPlaylist(normalized.map(\.id), playlistId: sourcePlaylistId)
         refreshEnqueuedNextItem()
     }
@@ -734,6 +794,24 @@ final class PlaybackEngine: NSObject, ObservableObject {
         let head = queue.prefix(currentIndex + 1)
         let tail = queue.suffix(from: currentIndex + 1).filter { !idSet.contains($0.id) }
         queue = Array(head) + Array(tail)
+    }
+
+    /// Index just past the contiguous run of user-queued tracks sitting directly after the
+    /// cursor. "Play Next" inserts at the front of that block, "Add to Queue" at its end,
+    /// which keeps the block contiguous so the rendered order is the play order.
+    private var userQueueBlockEnd: Int {
+        var idx = min(currentIndex + 1, queue.count)
+        while idx < queue.count, userQueuedTrackIds.contains(queue[idx].id) { idx += 1 }
+        return idx
+    }
+
+    /// Drops ids whose tracks are no longer anywhere in the queue. Without this the set
+    /// outlives its tracks and mis-tags an unrelated track that later enters the queue
+    /// under a matching id — and both the Queue section and ``isQueueOutOfNaturalOrder``
+    /// read it.
+    private func pruneUserQueuedIds() {
+        guard !userQueuedTrackIds.isEmpty else { return }
+        userQueuedTrackIds.formIntersection(Set(queue.map(\.id)))
     }
 
     /// Removes everything in the user-queued section (Now Playing → Queue → "Clear").
@@ -1312,6 +1390,15 @@ final class PlaybackEngine: NSObject, ObservableObject {
         }
     }
 
+    /// Tracks the user explicitly queued (Play Next / Add to Queue) that have not played
+    /// yet. Starting a new source discards exactly these, so it drives the confirmation
+    /// prompt. Counts the up-next slice rather than the whole set: ids linger in
+    /// `userQueuedTrackIds` for tracks already behind the cursor.
+    var pendingUserQueuedCount: Int {
+        guard !userQueuedTrackIds.isEmpty, currentIndex + 1 < queue.count else { return 0 }
+        return queue[(currentIndex + 1)...].filter { userQueuedTrackIds.contains($0.id) }.count
+    }
+
     /// True when the "continue playing" section is out of the natural source order, but shuffle
     /// was not used — e.g. the user dragged tracks in the queue. Also returns true when
     /// `shuffleMode == .on` so the shuffle button stays lit in both entry paths.
@@ -1322,50 +1409,87 @@ final class PlaybackEngine: NSObject, ObservableObject {
               let sourceIdx = source.firstIndex(where: { $0.id == current.id })
         else { return false }
         let continuePlaying = queue[(currentIndex + 1)...].filter { !userQueuedTrackIds.contains($0.id) }
-        let expectedTail = Array(source[(sourceIdx + 1)...])
+        // Ignore tracks that Play Next pulled out of the natural tail into the user queue.
+        // Relocating a track is not a manual reorder and must not light the shuffle button.
+        let expectedTail = source[(sourceIdx + 1)...].filter { !userQueuedTrackIds.contains($0.id) }
         guard continuePlaying.count == expectedTail.count else { return true }
         return zip(continuePlaying, expectedTail).contains { $0.id != $1.id }
     }
 
     func toggleShuffle() {
-        if shuffleMode == .off {
-            // Turning shuffle ON: save current queue and randomize the rest.
-            // Bail if there's no valid current track (empty/invalid queue) —
-            // remove(at:) below would otherwise crash on an out-of-range index.
-            guard queue.indices.contains(currentIndex) else { return }
-            unshuffledQueue = queue
-            let currentTrack = activeTrack
-            var remaining = queue
-            remaining.remove(at: currentIndex)
-            remaining.shuffle()
-            if let current = currentTrack {
-                queue = [current] + remaining
-                currentIndex = 0
-            }
-            shuffleMode = .on
+        // Branch on the same property the button lights from. Branching on `shuffleMode`
+        // while the button read `isQueueOutOfNaturalOrder` inverted the affordance: a lit
+        // button would re-randomize instead of restoring natural order.
+        if isQueueOutOfNaturalOrder {
+            restoreNaturalQueueOrder()
         } else {
-            // Turning shuffle OFF: restore original queue order
-            if let original = unshuffledQueue {
-                if let currentTrack = activeTrack, let originalIndex = original.firstIndex(where: { $0.id == currentTrack.id }) {
-                    queue = original
-                    currentIndex = originalIndex
-                } else {
-                    queue = original
-                }
-                unshuffledQueue = nil
-            } else if let source = sourceQueueOrder,
-                      let currentTrack = activeTrack,
-                      let sourceIdx = source.firstIndex(where: { $0.id == currentTrack.id }) {
-                // Manually reordered without using shuffle button — restore natural tail,
-                // keeping user-queued tracks at their current positions.
-                let naturalTail = Array(source[(sourceIdx + 1)...])
-                let userQueued = Array(queue[(currentIndex + 1)...].filter { userQueuedTrackIds.contains($0.id) })
-                let prefix = Array(queue[...currentIndex])
-                queue = prefix + userQueued + naturalTail
-            }
-            shuffleMode = .off
+            shuffleQueueFromCurrentTrack()
         }
         refreshEnqueuedNextItem()
+    }
+
+    /// Turning shuffle ON: snapshot the current order and randomize everything after the
+    /// playing track.
+    private func shuffleQueueFromCurrentTrack() {
+        // Bail if there's no valid current track (empty/invalid queue) —
+        // remove(at:) below would otherwise crash on an out-of-range index.
+        guard queue.indices.contains(currentIndex) else { return }
+        unshuffledQueue = queue
+        let currentTrack = activeTrack
+        var remaining = queue
+        remaining.remove(at: currentIndex)
+        remaining.shuffle()
+        if let current = currentTrack {
+            queue = [current] + remaining
+            currentIndex = 0
+        }
+        shuffleMode = .on
+    }
+
+    /// Turning shuffle OFF (or undoing a manual reorder): rebuild the natural order while
+    /// preserving everything the user explicitly queued.
+    private func restoreNaturalQueueOrder() {
+        defer {
+            shuffleMode = .off
+            pruneUserQueuedIds()
+        }
+        // Play Next / Add to Queue items added *after* shuffle was turned on are absent
+        // from `unshuffledQueue`, so restoring that snapshot verbatim silently deleted
+        // them. Carry the whole up-next user block across in its current order.
+        let upNextStart = min(currentIndex + 1, queue.count)
+        let carried = Array(queue[upNextStart...]).filter { userQueuedTrackIds.contains($0.id) }
+        let carriedIds = Set(carried.map(\.id))
+
+        if let original = unshuffledQueue {
+            unshuffledQueue = nil
+            if let current = activeTrack,
+               let originalIndex = original.firstIndex(where: { $0.id == current.id }) {
+                let head = Array(original[...originalIndex])
+                let tail = original[(originalIndex + 1)...].filter { !carriedIds.contains($0.id) }
+                queue = head + carried + tail
+                currentIndex = originalIndex
+            } else if let current = activeTrack {
+                // The playing track was itself queued while shuffle was on, so it isn't in
+                // the snapshot. Keep it under the cursor rather than leaving `currentIndex`
+                // pointing into a different array while audio keeps playing.
+                let tail = original.filter { !carriedIds.contains($0.id) && $0.id != current.id }
+                queue = [current] + carried + tail
+                currentIndex = 0
+            } else {
+                queue = original
+                currentIndex = min(max(0, currentIndex), max(original.count - 1, 0))
+            }
+            return
+        }
+
+        guard let source = sourceQueueOrder,
+              let current = activeTrack,
+              let sourceIdx = source.firstIndex(where: { $0.id == current.id })
+        else { return }
+        // Manually reordered without using the shuffle button — restore the natural tail,
+        // keeping user-queued tracks at the front of up-next.
+        let naturalTail = source[(sourceIdx + 1)...].filter { !carriedIds.contains($0.id) }
+        queue = Array(queue[...currentIndex]) + carried + naturalTail
     }
 
     func cycleRepeat() {
@@ -1942,6 +2066,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             }
         }
         guard let activeTrack = currentTrack else { throw PlaybackEngineError.missingTrack }
+        scheduleLyricsLoadIfNeeded(for: activeTrack)
 
         var candidates: [(url: URL, headers: [String: String])] = []
         if let saved = offline?.localFile(for: activeTrack.id) {
@@ -3102,19 +3227,47 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// track the user already skipped past is dropped.
     private func scheduleLyricsLoad() {
         lyrics = []
+        lyricsTrackId = currentTrack?.id
         Task { [weak self] in try? await self?.loadLyrics() }
+    }
+
+    /// Lyrics for a track start that no other path has claimed.
+    ///
+    /// ``playAlbum`` / ``advance`` schedule the load themselves, before the (slow) item
+    /// start, so the previous track's lines leave the screen immediately — this then finds
+    /// the id already claimed and does nothing. What it catches is every *other* way a track
+    /// can start: the first play after a cold restore (``startFromPendingRestore``, which was
+    /// the one path that reached playback with no lyrics load anywhere behind it), and a
+    /// reload that changed the track id under us (stale-id recovery). A same-track reload —
+    /// EQ toggle, stall recovery, spurious end — keeps what is already on screen.
+    private func scheduleLyricsLoadIfNeeded(for track: Track) {
+        guard lyricsTrackId != track.id else { return }
+        scheduleLyricsLoad()
     }
 
     private func loadLyrics() async throws {
         guard let library, let track = currentTrack, !track.isInternetRadioStream else {
+#if DEBUG
+            DebugUIRemote.log("NP-LYRICS skip library=\(self.library != nil) track=\(currentTrack?.id ?? "nil")")
+#endif
             lyrics = []
+            lyricsTrackId = nil
             return
         }
         let trackId = track.id
-        let epoch = playbackEpoch
         let fetched = (try? await library.lyrics(for: track)) ?? []
-        guard isPlaybackEpochCurrent(epoch), currentTrack?.id == trackId else { return }
+#if DEBUG
+        DebugUIRemote.log(
+            "NP-LYRICS fetched=\(fetched.count) id=\(trackId) current=\(currentTrack?.id ?? "nil")"
+        )
+#endif
+        // Keyed on the track alone, not the playback epoch. Lyrics depend on nothing else, so
+        // a result that arrives after a same-track reload (EQ handoff, stall recovery — each
+        // begins a new epoch) is still the right text; dropping it left the song playing with
+        // an empty lyrics tab until the next track.
+        guard currentTrack?.id == trackId else { return }
         lyrics = fetched
+        lyricsTrackId = trackId
     }
 
     private func resolvedArtworkURL(for track: Track) -> URL? {

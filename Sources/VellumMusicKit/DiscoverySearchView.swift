@@ -501,7 +501,7 @@ struct DiscoverySearchView: View {
                             tapRecent(item)
                         } label: {
                             recentEntityRow(item)
-                                .coverZoomSource(id: recentZoomId(item))
+                                .coverZoomSource(id: recentZoomId(item), style: .custom)
                         }
                         .buttonStyle(.plain)
                         .listRowBackground(discoverRowBackground)
@@ -647,6 +647,11 @@ struct DiscoverySearchView: View {
             .musicChevronRowPadding()
             .padding(.vertical, entityVerticalPadding)
             .contentShape(Rectangle())
+            .coverZoomSource(
+                id: ArtistPageInput.coverZoomPageId(forName: artist.name),
+                style: .custom,
+                cellCornerRadius: rowArtworkSide / 2,
+            )
         }
         .buttonStyle(.plain)
         .listRowBackground(discoverRowBackground)
@@ -725,7 +730,7 @@ struct DiscoverySearchView: View {
             .musicChevronRowPadding()
             .padding(.vertical, entityVerticalPadding)
             .contentShape(Rectangle())
-            .coverZoomSource(id: album.id)
+            .coverZoomSource(id: album.id, style: .custom)
         }
         .buttonStyle(.plain)
         .listRowBackground(discoverRowBackground)
@@ -767,7 +772,7 @@ struct DiscoverySearchView: View {
                 Spacer(minLength: 8)
                 MusicNavigationChevron()
             }
-            .coverZoomSource(id: track.albumId)
+            .coverZoomSource(id: track.albumId, style: .custom)
             .musicChevronRowPadding()
             .padding(.vertical, songVerticalPadding)
             .contentShape(Rectangle())
@@ -1042,7 +1047,7 @@ struct DiscoverySearchView: View {
                             tapRecent(item)
                         } label: {
                             recentEntityRow(item)
-                                .coverZoomSource(id: recentZoomId(item))
+                                .coverZoomSource(id: recentZoomId(item), style: .custom)
                         }
                         .buttonStyle(.plain)
                         .listRowBackground(libraryRowBackground)
@@ -1107,7 +1112,7 @@ struct DiscoverySearchView: View {
                                 }
                                 .musicChevronRowPadding()
                                 .contentShape(Rectangle())
-                                .coverZoomSource(id: track.albumId)
+                                .coverZoomSource(id: track.albumId, style: .custom)
                             }
                             .buttonStyle(.plain)
                             .listRowBackground(libraryRowBackground)
@@ -1137,7 +1142,7 @@ struct DiscoverySearchView: View {
                                 }
                                 .musicChevronRowPadding()
                                 .contentShape(Rectangle())
-                                .coverZoomSource(id: album.id)
+                                .coverZoomSource(id: album.id, style: .custom)
                             }
                             .buttonStyle(.plain)
                             .listRowBackground(libraryRowBackground)
@@ -1167,7 +1172,7 @@ struct DiscoverySearchView: View {
                                 }
                                 .musicChevronRowPadding()
                                 .contentShape(Rectangle())
-                                .coverZoomSource(id: playlist.id)
+                                .coverZoomSource(id: playlist.id, style: .custom)
                             }
                             .buttonStyle(.plain)
                             .listRowBackground(libraryRowBackground)
@@ -1201,6 +1206,10 @@ struct DiscoverySearchView: View {
                                 .musicChevronRowPadding()
                                 .padding(.vertical, entityVerticalPadding)
                                 .contentShape(Rectangle())
+                                .coverZoomSource(
+                                    id: ArtistPageInput.coverZoomPageId(forName: artist.name),
+                                    style: .custom,
+                                )
                             }
                             .buttonStyle(.plain)
                             .listRowBackground(libraryRowBackground)
@@ -1326,14 +1335,13 @@ struct DiscoverySearchView: View {
         .contentShape(Rectangle())
     }
 
-    /// Zoom key mirroring ``tapRecent(_:)`` — songs route to their album
-    /// detail, so they zoom on the album id; artist rows never match a
-    /// detail destination, so their key is inert.
+    /// Zoom key mirroring ``tapRecent(_:)`` — songs route to their album detail, so they zoom
+    /// on the album id; artists route to the artist page and take its name-derived key.
     private func recentZoomId(_ entity: RecentSearchEntity) -> String {
         switch entity.kind {
         case .song: return entity.secondaryId ?? ""
         case .album, .playlist: return entity.primaryId
-        case .artist: return "recent-artist-no-zoom"
+        case .artist: return ArtistPageInput.coverZoomPageId(forName: entity.title)
         }
     }
 

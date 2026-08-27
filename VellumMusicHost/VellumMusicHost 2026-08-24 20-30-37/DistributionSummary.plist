@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>VellumMusicHost.ipa</key>
+	<array>
+		<dict>
+			<key>architectures</key>
+			<array>
+				<string>arm64</string>
+			</array>
+			<key>buildNumber</key>
+			<string>1</string>
+			<key>certificate</key>
+			<dict>
+				<key>SHA1</key>
+				<string>077CE0494251A7A04211E42D7558382099D96F0D</string>
+				<key>dateExpires</key>
+				<string>8/24/27</string>
+				<key>type</key>
+				<string>Apple Distribution</string>
+			</dict>
+			<key>embeddedBinaries</key>
+			<array>
+				<dict>
+					<key>architectures</key>
+					<array>
+						<string>arm64</string>
+					</array>
+					<key>buildNumber</key>
+					<string>1</string>
+					<key>certificate</key>
+					<dict>
+						<key>SHA1</key>
+						<string>077CE0494251A7A04211E42D7558382099D96F0D</string>
+						<key>dateExpires</key>
+						<string>8/24/27</string>
+						<key>type</key>
+						<string>Apple Distribution</string>
+					</dict>
+					<key>entitlements</key>
+					<dict>
+						<key>application-identifier</key>
+						<string>F7YZT72GUX.com.randll.vellum.widgets</string>
+						<key>beta-reports-active</key>
+						<true/>
+						<key>com.apple.developer.team-identifier</key>
+						<string>F7YZT72GUX</string>
+						<key>com.apple.security.application-groups</key>
+						<array>
+							<string>group.com.randll.vellum</string>
+						</array>
+						<key>get-task-allow</key>
+						<false/>
+					</dict>
+					<key>name</key>
+					<string>VellumWidgets.appex</string>
+					<key>profile</key>
+					<dict>
+						<key>UUID</key>
+						<string>ac3be29b-70cd-47b5-8d47-7f7d7a4a004b</string>
+						<key>dateExpires</key>
+						<string>8/24/27</string>
+						<key>name</key>
+						<string>iOS Team Store Provisioning Profile: com.randll.vellum.widgets</string>
+					</dict>
+					<key>symbols</key>
+					<true/>
+					<key>team</key>
+					<dict>
+						<key>id</key>
+						<string>F7YZT72GUX</string>
+						<key>name</key>
+						<string>Randall Brown</string>
+					</dict>
+					<key>versionNumber</key>
+					<string>1.0</string>
+				</dict>
+			</array>
+			<key>entitlements</key>
+			<dict>
+				<key>application-identifier</key>
+				<string>F7YZT72GUX.com.randll.vellum</string>
+				<key>beta-reports-active</key>
+				<true/>
+				<key>com.apple.developer.team-identifier</key>
+				<string>F7YZT72GUX</string>
+				<key>com.apple.security.application-groups</key>
+				<array>
+					<string>group.com.randll.vellum</string>
+				</array>
+				<key>get-task-allow</key>
+				<false/>
+			</dict>
+			<key>name</key>
+			<string>VellumMusicHost.app</string>
+			<key>profile</key>
+			<dict>
+				<key>UUID</key>
+				<string>e889504c-b61d-4a08-8b1a-8288387ffd39</string>
+				<key>dateExpires</key>
+				<string>8/24/27</string>
+				<key>name</key>
+				<string>iOS Team Store Provisioning Profile: com.randll.vellum</string>
+			</dict>
+			<key>symbols</key>
+			<true/>
+			<key>team</key>
+			<dict>
+				<key>id</key>
+				<string>F7YZT72GUX</string>
+				<key>name</key>
+				<string>Randall Brown</string>
+			</dict>
+			<key>versionNumber</key>
+			<string>1.0</string>
+		</dict>
+	</array>
+</dict>
+</plist>

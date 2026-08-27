@@ -115,11 +115,22 @@ struct NowPlayingView: View {
     @State private var prevTapPulse = 0
     @State private var nextTapPulse = 0
     @State private var libraryPath: [NowPlayingLibraryRoute] = []
-    /// Which of the three paged queue sections is currently snapped. Drives the
-    /// inter-section haptic so each swipe-and-snap fires its own impact, and
-    /// reaching the boundary the user is swiping toward requires a second swipe.
-    @State private var queueScrollAnchor: QueueScrollAnchor? = .nowPlayingHeader
-    @State private var lastQueueHapticAnchor: QueueScrollAnchor? = .nowPlayingHeader
+    /// Which of the paged queue sections is currently snapped, held in its own object.
+    ///
+    /// It used to be `@State` here, which meant every page settle invalidated *this* view — the
+    /// NavigationStack, `sharedHeader`'s GeometryReader, the backdrop and the whole bottom
+    /// chrome — rather than just the scroll region that moved. Only ``QueuePagingScroll``
+    /// observes this object, so a settle now re-runs that view and nothing else. Same shape as
+    /// `PlaybackTimeModel`, which exists so the playhead tick does not re-render every player
+    /// view; this is that pattern applied to the one place it had not been.
+    ///
+    /// Held with `@State` rather than `@StateObject` deliberately: `@State` on a reference type
+    /// does not subscribe to `objectWillChange`, so this view keeps the object *alive* without
+    /// observing it. Lifetime is therefore exactly what it was — it survives leaving and
+    /// re-entering the queue pane, and survives a close/reopen, so which page you return to is
+    /// unchanged. (Scoping it to the queue pane's own view would have reset it on every visit,
+    /// which is the kind of pane-restoration change this pass must not make.)
+    @State private var queuePageAnchor = QueuePageAnchorModel()
     @Namespace private var artworkNamespace
 
     init(
@@ -133,10 +144,6 @@ struct NowPlayingView: View {
     }
 
     var onLibraryNavigationDepthChanged: ((Int) -> Void)
-
-    private enum QueueScrollAnchor: Hashable {
-        case historyTop, nowPlayingHeader
-    }
 
     /// Paused artwork size. Bigger → cover shrinks LESS when paused
     /// (296/315 ≈ 94% of playing size). Only affects the paused state.
@@ -158,13 +165,30 @@ struct NowPlayingView: View {
         return app.resolvedArtworkURL(for: track)
     }
 
-    private func artworkView(for track: Track, cornerRadius: CGFloat) -> some View {
+    /// Decode target for the small fixed-size rows in the queue and history lists.
+    ///
+    /// `AlbumArtworkView` defaults to 768px, which is the hero's size and correct for the hero.
+    /// A 44pt row on a 3x screen needs 132px and a 56pt row needs 168px, so the rows were
+    /// decoding and *cacheing* 16x the pixels they can display — the exact thing
+    /// `Rules/swiftui-render-cost.md` tells this project not to do. 192 is not a new number:
+    /// `LibrarySongsView.rowArtworkDecodePixels` already uses it for comparable rows.
+    private static let rowArtworkDecodePixels: CGFloat = 192
+
+    /// - Parameter maxDecodePixels: left at the `AlbumArtworkView` default for everything that
+    ///   morphs into or out of the hero — those views get resized to full artwork dimensions
+    ///   mid-transition, so a row-sized decode would be visibly soft while they travel.
+    private func artworkView(
+        for track: Track,
+        cornerRadius: CGFloat,
+        maxDecodePixels: CGFloat = 768,
+    ) -> some View {
         AlbumArtworkView(
             url: artworkURL(for: track),
             meshArtworkSeed: isLiveRadio(track)
                 ? RadioStationMeshArtwork.seedKey(for: track)
                 : nil,
             cornerRadius: cornerRadius,
+            maxDecodePixels: maxDecodePixels,
             showsSubtleBorder: false,
         )
     }
@@ -315,6 +339,13 @@ struct NowPlayingView: View {
     #endif
 
     var body: some View {
+#if DEBUG
+        // Diagnostic: how often this body is re-evaluated. A control cannot complete a tap if
+        // the subtree holding it is rebuilt between touch-down and touch-up, and the device log
+        // shows taps reaching SwiftUI's recogniser while buttons stay dead — so the rebuild rate
+        // right after the player opens is the thing to measure.
+        let _ = NowPlayingBodyCounter.shared.tick()
+#endif
         // Drive layout only from this column. Avoid placing `AsyncImage` / blurred artwork in a sibling
         // `ZStack` above this column — intrinsic bitmap sizes can blow up layout width.
         NavigationStack(path: $libraryPath) {
@@ -535,25 +566,10 @@ struct NowPlayingView: View {
             .reversed()
             .map { $0 }
 
-        return ScrollView(.vertical, showsIndicators: false) {
-            LazyVStack(spacing: 0) {
-                historySection(history: queueHistory)
-                    .containerRelativeFrame(.vertical)
-                    .id(QueueScrollAnchor.historyTop)
-                nowPlayingPage(track: track, upNext: upNext)
-                    .containerRelativeFrame(.vertical)
-                    .id(QueueScrollAnchor.nowPlayingHeader)
-            }
-            .scrollTargetLayout()
-        }
-        .scrollTargetBehavior(.paging)
-        .scrollPosition(id: $queueScrollAnchor)
-        .onChange(of: queueScrollAnchor) { _, new in
-            guard let new, new != lastQueueHapticAnchor else { return }
-            lastQueueHapticAnchor = new
-            #if os(iOS)
-            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            #endif
+        return QueuePagingScroll(model: queuePageAnchor) {
+            historySection(history: queueHistory)
+        } nowPlaying: {
+            nowPlayingPage(track: track, upNext: upNext)
         }
     }
 
@@ -588,7 +604,13 @@ struct NowPlayingView: View {
         HStack(alignment: .center, spacing: 12) {
             ZStack {
                 Color.clear.frame(width: 56, height: 56)
-                artworkView(for: track, cornerRadius: 6)
+                // Static slot: the shared header's artwork is what actually morphs through here,
+                // so this copy never travels and can decode at row size.
+                artworkView(
+                    for: track,
+                    cornerRadius: 6,
+                    maxDecodePixels: Self.rowArtworkDecodePixels,
+                )
                     .frame(width: 56, height: 56)
                     .shadow(
                         color: .black.opacity(backdropPalette.prefersDarkHeroChrome ? 0.22 : 0.45),
@@ -789,6 +811,7 @@ struct NowPlayingView: View {
                 Label("Remove", systemImage: "trash")
             }
         }
+        .contextMenu { queueSongMenuContent(track: t) }
     }
 
     /// Translates an `onMove` IndexSet+destination from a section's local coordinates into
@@ -859,6 +882,7 @@ struct NowPlayingView: View {
                                     .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .contextMenu { queueSongMenuContent(track: t) }
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .top)
@@ -1353,6 +1377,12 @@ struct NowPlayingView: View {
                 // not the morph's frame/position/shadow changes.
                 artworkView(for: track, cornerRadius: cornerRadius)
                     .frame(width: artworkSize, height: artworkSize)
+                    // Destination rect for the mini-player cover zoom. The shared header is the
+                    // one artwork that is on screen when the player opens and closes.
+                    .coverZoomHeroAnchor(id: NowPlayingCoverZoom.id, cornerRadius: cornerRadius)
+                    // Hidden while the transition carries a copy of this cover, so only one is
+                    // ever on screen. Observes a single small object — not the player's state.
+                    .nowPlayingHeroFlightHiding()
                     .modifier(PlayPulseScale(scale: playPulseScale, isPlaying: app.player.isPlaying))
                     .shadow(
                         color: .black.opacity(backdropPalette.prefersDarkHeroChrome ? 0.22 : 0.45),
@@ -1490,6 +1520,52 @@ struct NowPlayingView: View {
     /// When the playing track's album isn't in the user's library (so ``libraryAlbum``
     /// is nil), synthesize an ``AlbumSummary`` from track metadata so "Go to Album"
     /// can still navigate — `dismissAndNavigate` will set `librarySource: false` on it.
+    /// Long-press menu for the queue and history rows — the shared
+    /// ``StandardSongMenuContent``, so a song offers the same actions here as it does in
+    /// search, the artist page, or a playlist. (The player's own header ellipsis keeps its
+    /// now-playing variant: Play Next / Add to Queue make no sense for the track that is
+    /// already playing.)
+    @ViewBuilder
+    private func queueSongMenuContent(track: Track) -> some View {
+        let album = app.catalogAlbum(id: track.albumId) ?? catalogAlbumFallback(from: track)
+        let artist = track.artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        StandardSongMenuContent(
+            track: track,
+            onPlayNext: {
+                Task { @MainActor in
+                    try? await player.playTracksNext(library: app.activeLibrary, tracks: [track])
+                }
+            },
+            onAddToQueue: {
+                Task { @MainActor in
+                    guard let lib = app.activeLibrary else { return }
+                    try? await player.addToQueue(library: lib, track: track, sourcePlaylistId: nil)
+                }
+            },
+            onFavorite: { app.toggleFavoriteTrack(id: track.id) },
+            onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
+            onAddToLibrary: app.isSongInLibrary(track.id)
+                ? nil
+                : { Task { await app.addSongToLibrary(track) } },
+            onDownload: app.isSongInLibrary(track.id) && !app.offline.downloadedTrackIds.contains(track.id)
+                ? { app.enqueueOfflineTrack(track) }
+                : nil,
+            onRemoveDownload: app.offline.downloadedTrackIds.contains(track.id)
+                ? { try? app.offline.remove(trackId: track.id) }
+                : nil,
+            onGoToAlbum: album.map { album in { dismissAndNavigate(to: .album(album)) } },
+            onGoToArtist: ArtistNavigation.isTappable(artist)
+                ? { dismissAndNavigate(to: .artist(track.artist)) }
+                : nil,
+            onRemoveFromLibrary: app.isSongInLibrary(track.id)
+                ? { Task { await app.removeSongFromLibrary(track) } }
+                : nil,
+            onDeleteFromLibrary: app.canDeleteFromLibrary
+                ? { app.beginLibraryTrackDeletion(track) }
+                : nil
+        )
+    }
+
     private func catalogAlbumFallback(from track: Track) -> AlbumSummary? {
         guard !track.albumId.isEmpty else { return nil }
         let title = track.albumTitle.isEmpty ? "Unknown Album" : track.albumTitle
@@ -1502,8 +1578,25 @@ struct NowPlayingView: View {
         )
     }
 
+    /// Closes the player from inside the player.
+    ///
+    /// The binding is only half of it. `NowPlayingCoverPresenter` acts on the binding from
+    /// `updateUIViewController`, which needs the *shell* to re-render — and the shell is
+    /// completely covered while the player is up, so SwiftUI stops updating it. Device log:
+    /// "Go to Playlist" wrote the binding at t=462.13 and the presenter's next `NP-SYNC` did
+    /// not arrive for 1.3s, when the user gave up and swiped the player down by hand; the deep
+    /// link had been sitting queued behind a player that never left. Write the binding so
+    /// SwiftUI's state stays truthful, then tell UIKit directly.
+    private func closeCover() {
+        isPresented = false
+        NowPlayingCoverState.shared.requestDismiss?()
+    }
+
     private func dismissAndNavigate(to route: NowPlayingLibraryRoute) {
         let activeTrackId = player.activeTrack?.id
+#if DEBUG
+        DebugUIRemote.log("NP-NAV enter route=\(route) isPresented=\(isPresented)")
+#endif
 
         // Special case: behind the player the user is already on this destination on the current
         // tab — dismiss the overlay and let the underlying view scroll + highlight.
@@ -1512,14 +1605,14 @@ struct NowPlayingView: View {
             if let activeTrackId {
                 app.pendingAlbumScroll = PendingAlbumScroll(albumId: album.id, trackId: activeTrackId)
             }
-            isPresented = false
+            closeCover()
             return
         case .playlist:
             if let track = player.activeTrack,
                let p = sourcePlaylistForActiveTrack(track),
                app.currentlyVisiblePlaylistId == p.id {
                 app.pendingPlaylistScroll = PendingPlaylistScroll(playlistId: p.id, trackId: track.id)
-                isPresented = false
+                closeCover()
                 return
             }
         default:
@@ -1545,7 +1638,7 @@ struct NowPlayingView: View {
         }
 
         let targetTab = app.selectedTab
-        isPresented = false
+        closeCover()
         guard let nav else { return }
         if case .playlist(let playlist, _) = nav {
             // Warm the rows cache concurrently with the dismiss animation. Never
@@ -1558,6 +1651,9 @@ struct NowPlayingView: View {
         }
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(450))
+#if DEBUG
+            DebugUIRemote.log("NP-NAV deepLink set tab=\(targetTab)")
+#endif
             app.deepLinkTab = targetTab
             app.presentedDeepLink = nav
         }
@@ -1935,7 +2031,11 @@ struct NowPlayingView: View {
 
     private func queueRow(track: Track) -> some View {
         HStack(spacing: 12) {
-            artworkView(for: track, cornerRadius: 4)
+            artworkView(
+                for: track,
+                cornerRadius: 4,
+                maxDecodePixels: Self.rowArtworkDecodePixels,
+            )
                 .frame(width: 44, height: 44)
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.title)
@@ -2014,6 +2114,9 @@ private struct ScrubberBlock: View {
             }
             .frame(height: NowPlayingScrubberMetrics.slotHeight)
             .allowsHitTesting(isEnabled)
+            // A diagonal seek must stay a seek. Without this the window-level dismiss pan sees
+            // a downward-ish drag outside any scroll view and starts closing the player.
+            .nowPlayingDismissExclusionZone()
 
             HStack {
                 Text(formatTime(displayTime))
@@ -2133,6 +2236,15 @@ private struct NowPlayingQueueListTableChrome: UIViewRepresentable {
         var scrollIndicatorStyle: UIScrollView.IndicatorStyle = .white
         private weak var tableView: UITableView?
         private var scrollObservation: NSKeyValueObservation?
+        // Identities of the cells the reorder walk last ran over. `contentOffset` fires on every
+        // display-link tick while the queue scrolls or pages, and the walk below is a
+        // `String(describing:)` over every subview of every visible cell — so the tint was being
+        // re-derived at 120Hz to reapply a colour that had not changed, which is the cost that
+        // showed up as stutter on a long queue. The tint only ever needs reapplying when the set
+        // of visible cells changes, and comparing identities catches every case that matters:
+        // a cell scrolling in, one scrolling out, and a recycled cell arriving with a reorder
+        // control that has not been tinted yet.
+        private var lastStyledCells: [ObjectIdentifier] = []
 
         func apply(from anchor: UIView) {
             if let table = tableView {
@@ -2158,11 +2270,18 @@ private struct NowPlayingQueueListTableChrome: UIViewRepresentable {
         private func applyAll(to table: UITableView) {
             table.tintColor = reorderTint
             table.indicatorStyle = scrollIndicatorStyle
+            // The tint itself may have changed here, so the cached cell set cannot stand in for
+            // "already the right colour".
+            lastStyledCells = []
             styleReorderControls(in: table)
         }
 
         private func styleReorderControls(in table: UITableView) {
-            for cell in table.visibleCells {
+            let cells = table.visibleCells
+            let identities = cells.map(ObjectIdentifier.init)
+            guard identities != lastStyledCells else { return }
+            lastStyledCells = identities
+            for cell in cells {
                 for subview in cell.subviews {
                     let typeName = String(describing: type(of: subview))
                     guard typeName.contains("Reorder") else { continue }
@@ -2260,6 +2379,8 @@ private struct VolumeScrubberBlock: View {
                 )
             }
             .frame(height: NowPlayingScrubberMetrics.slotHeight)
+            // Same reason as ``ScrubberBlock``: a diagonal volume drag must not become a dismiss.
+            .nowPlayingDismissExclusionZone()
 
             Image(systemName: "speaker.wave.3.fill")
                 .font(.footnote.weight(.semibold))
@@ -2270,8 +2391,18 @@ private struct VolumeScrubberBlock: View {
         .padding(.horizontal, 22)
         .padding(.bottom, 12)
         .onAppear {
-            // `outputVolume` is readable without activating the session, and
-            // activating here would block the main thread mid-presentation.
+            // The `setActive(true)` that used to sit here is gone: it was a third synchronous
+            // `mediaserverd` round trip on every player open, on top of the two the engine
+            // already did, and it was unconditional — unlike the lyrics and queue panes, this
+            // block is not behind a mode flag, so it ran whether or not anyone touched the
+            // volume bar. `PlaybackEngine.reconcilePlaybackSessionAfterUIMilestone()` activates
+            // the session on the same open, so there was nothing left for this one to do.
+            //
+            // The volume read stays. `HiddenSystemVolumeBridge` does KVO `outputVolume` and
+            // would catch any *change*, but the player's hosting controller is reused rather
+            // than rebuilt, so this `@State` survives between opens — and seeding it here is
+            // what guarantees the slider is in the right place the moment the player appears
+            // rather than a frame later. It is a property read, not a session round trip.
             volume = AVAudioSession.sharedInstance().outputVolume
         }
     }
@@ -2612,7 +2743,13 @@ private struct LyricsFocusScrollView: View {
     private var lyricsScroll: some View {
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 0) {
+                // Lazy, because this was an eager `VStack`: every line of the song was
+                // instantiated regardless of the viewport, and each line carries its own
+                // `.blur()` — one offscreen Gaussian pass per line, for the whole song. That
+                // cost is paid again whenever the player is snapshotted or rebuilt with the
+                // lyrics pane open. `.id()` and the `scrollTo` calls below are unchanged, which
+                // is what keeps the focus scrolling working.
+                LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(displayItems.enumerated()), id: \.element.id) { index, item in
                         renderItemView(item, index: index)
                             .id(item.id)
@@ -2800,6 +2937,56 @@ private struct LyricsFocusScrollView: View {
 /// and fade out just before the next line lands. Runs on a `TimelineView`
 /// animation schedule (paused when playback is paused) so the fill is
 /// per-frame smooth instead of stepping on the coarse observer tick.
+/// Which paged queue section is currently snapped.
+enum QueueScrollAnchor: Hashable {
+    case historyTop, nowPlayingHeader
+}
+
+/// The queue pager's snap position, isolated from ``NowPlayingView``'s `objectWillChange`.
+///
+/// See the comment on `NowPlayingView.queuePageAnchor` for why this is its own object.
+@MainActor
+final class QueuePageAnchorModel: ObservableObject {
+    @Published var anchor: QueueScrollAnchor? = .nowPlayingHeader
+    /// Last anchor that fired a haptic. Deliberately **not** `@Published`: it is bookkeeping for
+    /// the impact below, and publishing it would cause a second render for no visible reason.
+    var lastHapticAnchor: QueueScrollAnchor? = .nowPlayingHeader
+}
+
+/// The two-page vertical pager inside the queue (History above, Now Playing + Up Next below).
+///
+/// Exists so that a page settle invalidates this view instead of the whole ~2,800-line player
+/// body. The pages themselves are passed in as builders, so their content is still assembled by
+/// `NowPlayingView` — this owns only the scroll container and the snap position.
+private struct QueuePagingScroll<History: View, NowPlaying: View>: View {
+    @ObservedObject var model: QueuePageAnchorModel
+    @ViewBuilder var history: () -> History
+    @ViewBuilder var nowPlaying: () -> NowPlaying
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVStack(spacing: 0) {
+                history()
+                    .containerRelativeFrame(.vertical)
+                    .id(QueueScrollAnchor.historyTop)
+                nowPlaying()
+                    .containerRelativeFrame(.vertical)
+                    .id(QueueScrollAnchor.nowPlayingHeader)
+            }
+            .scrollTargetLayout()
+        }
+        .scrollTargetBehavior(.paging)
+        .scrollPosition(id: $model.anchor)
+        .onChange(of: model.anchor) { _, new in
+            guard let new, new != model.lastHapticAnchor else { return }
+            model.lastHapticAnchor = new
+            #if os(iOS)
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            #endif
+        }
+    }
+}
+
 private struct SilenceBreathingDots: View {
     let start: TimeInterval
     let end: TimeInterval

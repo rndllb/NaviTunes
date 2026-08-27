@@ -617,6 +617,9 @@ struct AlbumArtworkView: View {
     var showsSubtleBorder: Bool = true
 
     @Environment(\.colorScheme) private var colorScheme
+    /// Set by an enclosing `coverZoomSource(id:style: .custom)` cell — this artwork is then the
+    /// transition's origin rect, and the one copy hidden while the card is in flight.
+    @Environment(\.coverZoomCellAnchorRequest) private var coverZoomAnchorRequest
     @State private var decoded: CGImage?
     @State private var loadFailed = false
     @State private var loadedArtworkID: String?
@@ -647,6 +650,7 @@ struct AlbumArtworkView: View {
                     )
                 }
             }
+            .coverZoomCellAnchorIfRequested(coverZoomAnchorRequest, ownCornerRadius: cornerRadius)
     }
 
     @ViewBuilder
@@ -1107,6 +1111,64 @@ extension View {
         #endif
     }
 }
+
+/// Names a screen for UIKit's back-history menu without putting a title in the bar.
+///
+/// Hero screens (album, playlist, Library root) all use `navigationTitle("")` so no inline title
+/// sits over the artwork. UIKit builds the long-press-the-back-button history from each stack
+/// entry's `backButtonTitle` / `title`, so an empty title produced a menu of blank rows.
+///
+/// Sets `backButtonTitle` (what the *next* screen's back button would say, and what the history
+/// menu lists) and pins `backButtonDisplayMode` to `.minimal` so the visible button stays a bare
+/// chevron — the label is only ever wanted in the menu.
+extension View {
+    @ViewBuilder
+    func musicBackHistoryTitle(_ title: String) -> some View {
+        #if os(iOS)
+        background(MusicBackHistoryTitleInstaller(title: title).allowsHitTesting(false))
+        #else
+        self
+        #endif
+    }
+}
+
+#if os(iOS)
+private struct MusicBackHistoryTitleInstaller: UIViewControllerRepresentable {
+    let title: String
+
+    func makeUIViewController(context: Context) -> Installer {
+        let installer = Installer()
+        installer.view.isUserInteractionEnabled = false
+        installer.historyTitle = title
+        return installer
+    }
+
+    func updateUIViewController(_ controller: Installer, context: Context) {
+        controller.historyTitle = title
+    }
+
+    final class Installer: UIViewController {
+        /// Not `title`: that is `UIViewController`'s own optional property, and this controller
+        /// must stay untitled — naming it would put the text in the bar.
+        var historyTitle: String = "" {
+            didSet { apply() }
+        }
+
+        override func viewWillAppear(_ animated: Bool) {
+            super.viewWillAppear(animated)
+            apply()
+        }
+
+        private func apply() {
+            guard let item = parent?.navigationItem else { return }
+            let trimmed = historyTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            if item.backButtonTitle != trimmed { item.backButtonTitle = trimmed }
+            if item.backButtonDisplayMode != .minimal { item.backButtonDisplayMode = .minimal }
+        }
+    }
+}
+#endif
 
 enum MusicTextAutocapitalization {
     case never
@@ -1798,6 +1860,38 @@ struct MusicTransientToastChrome: ViewModifier {
     }
 }
 
+/// Centered system alert warning that starting a new song discards hand-queued tracks.
+/// Driven by ``AppModel/pendingQueueReplacement``. Stock `.alert` rather than
+/// `.confirmationDialog` — this is a blocking destructive choice, not an action sheet.
+/// Render at the app root (and once on the Now Playing cover, which occludes the root).
+struct MusicQueueReplacementChrome: ViewModifier {
+    @EnvironmentObject private var app: AppModel
+
+    func body(content: Content) -> some View {
+        content.alert(
+            "Clear your queue?",
+            isPresented: Binding(
+                get: { app.pendingQueueReplacement != nil },
+                set: { if !$0 { app.pendingQueueReplacement = nil } },
+            ),
+            presenting: app.pendingQueueReplacement,
+        ) { _ in
+            Button("Clear Queue and Play", role: .destructive) {
+                app.confirmPendingQueueReplacement()
+            }
+            Button("Cancel", role: .cancel) {
+                app.pendingQueueReplacement = nil
+            }
+        } message: { pending in
+            Text(
+                pending.queuedCount == 1
+                    ? "Playing this song will remove 1 song you added to Up Next."
+                    : "Playing this song will remove \(pending.queuedCount) songs you added to Up Next.",
+            )
+        }
+    }
+}
+
 extension View {
     /// Renders the app-wide transient toast above this view (used at the root).
     func musicTransientToastChrome() -> some View {
@@ -1812,5 +1906,10 @@ extension View {
     /// Destructive menu sections — system red icons/labels, never accent.
     func menuSectionDestructiveTint() -> some View {
         tint(MusicDesign.destructiveAction)
+    }
+
+    /// Presents the "starting this song clears your queue" confirmation (used at the root).
+    func musicQueueReplacementChrome() -> some View {
+        modifier(MusicQueueReplacementChrome())
     }
 }

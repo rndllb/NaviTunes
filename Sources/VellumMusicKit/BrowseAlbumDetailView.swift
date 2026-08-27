@@ -241,6 +241,11 @@ struct BrowseAlbumDetailView: View {
                     AppleMusicAlbumTrackDivider(palette: backdropPalette)
                         .padding(.top, 22)
                 }
+                // The transition gate is scoped to the hero alone. Wrapping the whole
+                // screen (as it used to) made scrolling and every track row dead for
+                // ~0.6s after each open; all it needs to stop is a finger still down from
+                // the list tap releasing onto Play / Request / +.
+                .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
                 .albumTrackListRowStyle()
 
                 tracklistSection
@@ -282,7 +287,6 @@ struct BrowseAlbumDetailView: View {
 
     var body: some View {
         detailContent
-        .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
         .coverZoomDestination(id: source.coverZoomId, dismissalPhase: $dismissalPhase)
         .detailDismissTracker(isBeingDismissed: $isBeingDismissed)
         .onAppear {
@@ -290,6 +294,9 @@ struct BrowseAlbumDetailView: View {
             if dismissalPhase == .gone { dismissalPhase = .idle }
         }
         .navigationTitle("")
+        // Bar stays untitled (the hero carries the name); this names the screen only in the
+        // back button's long-press history menu.
+        .musicBackHistoryTitle(displayTitle)
         .musicNavigationBarTitleDisplayMode(.inline)
         .musicNavigationBarVisibleWhenPushed()
         .musicHeroAlbumNavigationChrome(palette: backdropPalette)
@@ -421,6 +428,8 @@ struct BrowseAlbumDetailView: View {
         VStack(spacing: 18) {
             AlbumArtworkView(url: displayArtworkURL, cornerRadius: 14)
                 .frame(width: heroArtSide, height: heroArtSide)
+                // Destination rect for the custom cover-zoom animator (see ServerPlaylistViews).
+                .coverZoomHeroAnchor(id: source.coverZoomId, cornerRadius: 14)
                 .shadow(color: .black.opacity(0.45), radius: 24, y: 14)
 
             VStack(spacing: 8) {

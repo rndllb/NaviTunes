@@ -18,7 +18,19 @@ func coverZoomDetailInteractionEnabled(
     isBeingDismissed: Bool = false
 ) -> Bool {
     guard !vellumDismissFixesDisabledForAB else { return true }
-    return !isBeingDismissed && phase == .idle
+    guard !isBeingDismissed else { return false }
+    // `.appearing` counts as interactive. Measured on device: the zoom push holds a live
+    // transition coordinator for ~0.94s before `viewDidAppear` reports `.idle`, and
+    // requiring `.idle` here left the entire detail non-interactive for that whole second
+    // after every open — touches landed on the bare hosting view instead of the track
+    // list (the "open a playlist and nothing responds" soft lock). The nav bar sits
+    // outside this gate, which is why the back button always worked and nothing else did.
+    //
+    // The gate's actual job is narrow: stop a finger still down from the list tap from
+    // landing on Play / Request / + underneath the morph. `CoverZoomDetailInteractionGate`
+    // already covers that with a 350ms arming hold during `.appearing` — a branch that
+    // could never take effect while this predicate demanded `.idle`.
+    return phase == .idle || phase == .appearing
 }
 
 /// Shared-element "cover zoom" for album / playlist detail pushes.
@@ -58,13 +70,53 @@ private struct CoverZoomContext: ViewModifier {
 
 private struct CoverZoomSource: ViewModifier {
     let id: String
+    let style: CoverZoomStyle
+    let cellCornerRadius: CGFloat?
     @Environment(\.coverZoomNamespace) private var namespace
 
     func body(content: Content) -> some View {
-        if let namespace {
-            content.matchedTransitionSource(id: id, in: namespace)
-        } else {
+        switch style {
+        case .custom:
+            // The custom animator resolves its own geometry from `coverZoomCellAnchor`, and a
+            // `matchedTransitionSource` here would additionally arm SwiftUI's zoom on the same
+            // id. Register the style so the pushed detail knows which transition it was opened
+            // with, and otherwise stay out of the way.
+#if os(iOS)
+            // The row anchor lets a touch be resolved back to this cover. Two other ways of
+            // recording the tap were tried and reverted: a `simultaneousGesture(TapGesture())`
+            // here swallowed the `NavigationLink`'s activation so nothing opened at all, and
+            // setting it from the link's destination closure named whichever row SwiftUI
+            // happened to build last — including buffered rows past the fold, which made the
+            // card fly in from below the bottom of the screen.
+            //
+            // The environment request is what lets the cover inside register itself: every
+            // `AlbumArtworkView` under this cell becomes the origin anchor, so call sites need
+            // no knowledge of where their artwork lives.
             content
+                .onAppear { CoverZoomRegistry.shared.setStyle(.custom, for: id) }
+                .coverZoomRowAnchor(id: id)
+                .environment(\.coverZoomCellAnchorRequest, CoverZoomCellAnchorRequest(id: id, cornerRadius: cellCornerRadius))
+#else
+            content
+#endif
+        case .system:
+            // Registered explicitly, because an unregistered id now answers `.custom` — see
+            // `CoverZoomRegistry.style(for:)`. Without this the opt-out would be silent.
+#if os(iOS)
+            if let namespace {
+                content
+                    .onAppear { CoverZoomRegistry.shared.setStyle(.system, for: id) }
+                    .matchedTransitionSource(id: id, in: namespace)
+            } else {
+                content
+            }
+#else
+            if let namespace {
+                content.matchedTransitionSource(id: id, in: namespace)
+            } else {
+                content
+            }
+#endif
         }
     }
 }
@@ -102,19 +154,38 @@ private struct CoverZoomDestination: ViewModifier {
     @Environment(\.coverZoomNamespace) private var namespace
 
     func body(content: Content) -> some View {
-        if let namespace {
-            content
-                .navigationTransition(.zoom(sourceID: id, in: namespace))
 #if os(iOS)
+        // Opened from a `.custom` cell: our own animator drives this push, and
+        // `preferredTransition` must stay unset for UIKit to consult the delegate at all.
+        // (Handoff §3 records *clearing* `preferredTransition` after the push breaking
+        // swipe-back — that failed because SwiftUI was still setting it in the first place.
+        // Never setting it is a different thing.)
+        if CoverZoomRegistry.shared.style(for: id) == .custom {
+            content
+                .coverZoomCustomTransition(id: id)
                 .background {
                     if let dismissalPhase {
                         CoverZoomDismissalObserver(phase: dismissalPhase)
                     }
                 }
-#endif
+        } else if let namespace {
+            content
+                .navigationTransition(.zoom(sourceID: id, in: namespace))
+                .background {
+                    if let dismissalPhase {
+                        CoverZoomDismissalObserver(phase: dismissalPhase)
+                    }
+                }
         } else {
             content
         }
+#else
+        if let namespace {
+            content.navigationTransition(.zoom(sourceID: id, in: namespace))
+        } else {
+            content
+        }
+#endif
     }
 }
 
@@ -133,12 +204,20 @@ private struct CoverZoomDismissalObserver: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> Helper {
         let helper = Helper()
         helper.report = { phase = $0 }
+        // This controller exists only to observe appearance callbacks — it draws nothing.
+        // But SwiftUI hosts it as a real, interactive view filling the `.background`
+        // (measured 440x701 on device), and during a push/pop it ends up in front of the
+        // list, swallowing every touch: the "open a playlist, swipe straight back, now
+        // nothing responds" soft lock. Touch-probe logging caught it red-handed —
+        // `hit=UIView[440x701] up=…CoverZoomDismissalObserver…` while the list was dead.
+        helper.view.isUserInteractionEnabled = false
         return helper
     }
 
     func updateUIViewController(_ controller: Helper, context: Context) {
         controller.report = { phase = $0 }
     }
+
 
     final class Helper: UIViewController {
         var report: (CoverZoomTransitionPhase) -> Void = { _ in }
@@ -181,6 +260,9 @@ private struct CoverZoomDismissalObserver: UIViewControllerRepresentable {
             // waiting for didAppear leaves them invisible through the whole
             // pop-back animation.
             setBarItemAlpha(1, animated: false)
+            // The push builds the same window-level morph container as the pop; clear it
+            // for this direction too so a tap during the open isn't eaten either.
+            startMorphPassthrough()
             disableZoomContentDismissGestures()
             forceStackedSearchBarPlacement()
             // The bar starts hidden (it's revealed only by a pull, see
@@ -311,12 +393,88 @@ private struct CoverZoomDismissalObserver: UIViewControllerRepresentable {
             }
         }
 
+        /// The navigation bar's own back-button views, found by class name because UIKit exposes
+        /// no handle on them. Same technique as the morph-container and zoom-gesture lookups
+        /// elsewhere in this file.
+        private static func backButtonViews(in bar: UIView?) -> [UIView] {
+            guard let bar else { return [] }
+            var found: [UIView] = []
+            func walk(_ view: UIView) {
+                let name = String(describing: type(of: view))
+                if name.contains("BackButton") || name.contains("BackIndicator") {
+                    found.append(view)
+                    return
+                }
+                view.subviews.forEach(walk)
+            }
+            walk(bar)
+            return found
+        }
+
         private static func firstScrollView(in view: UIView) -> UIScrollView? {
             if let s = view as? UIScrollView { return s }
             for sub in view.subviews {
                 if let found = firstScrollView(in: sub) { return found }
             }
             return nil
+        }
+
+        // Tried and reverted: clearing `parent.preferredTransition` after the push, to keep
+        // the zoom morph on open while handing the pop to the plain parallax animator. On
+        // device it left the *push* unresolved instead — UIKit then vetoes starting a pop
+        // while a transition is in flight, so the swipe-back stopped working at all for the
+        // same window. Whatever drives SwiftUI's `.navigationTransition(.zoom)`, mutating
+        // that property mid-flight is not a safe seam.
+
+        // MARK: Morph-container touch passthrough
+
+        /// The zoom transition animates its morph inside `_UIMorphAnimationContainerView`,
+        /// a full-screen view UIKit adds **directly to the window** — above the navigation
+        /// controller entirely. It is purely decorative, but it ships interactive, so for
+        /// the ~1.1s an interactive (swipe) pop runs it covers the revealed list and eats
+        /// every touch. That is the "swipe back and the list is dead for a second" soft
+        /// lock, and it is why the back button never triggered it: a button-driven pop
+        /// doesn't route through the morph container.
+        ///
+        /// Measured on device — touch during a swipe pop:
+        ///     hit=_UIMagicMorphTransformView … <_UIMorphAnimationContainerView<UIWindow
+        /// versus the same moment of a back-button pop:
+        ///     hit=_UIGraphicsView (a real cover) / PlatformGroupContainer (the real list)
+        ///
+        /// UIKit creates the container *after* `viewWillDisappear` and reuses it between
+        /// transitions, so one pass at dismiss-time misses it — this re-applies each frame
+        /// for the length of the pop.
+        private var morphPassthroughLink: CADisplayLink?
+        private weak var morphPassthroughWindow: UIWindow?
+
+        private func startMorphPassthrough() {
+            morphPassthroughWindow = view.window
+                ?? parent?.view.window
+                ?? UIApplication.shared.connectedScenes
+                    .compactMap { $0 as? UIWindowScene }
+                    .flatMap(\.windows)
+                    .first { $0.isKeyWindow }
+            guard morphPassthroughWindow != nil else { return }
+            morphPassthroughLink?.invalidate()
+            let link = CADisplayLink(target: self, selector: #selector(applyMorphPassthrough))
+            link.add(to: .main, forMode: .common)
+            morphPassthroughLink = link
+            applyMorphPassthrough()
+        }
+
+        @objc private func applyMorphPassthrough() {
+            guard let window = morphPassthroughWindow else { return }
+            for candidate in window.subviews
+            where String(describing: type(of: candidate)).contains("MorphAnimationContainer") {
+                if candidate.isUserInteractionEnabled {
+                    candidate.isUserInteractionEnabled = false
+                }
+            }
+        }
+
+        private func stopMorphPassthrough() {
+            morphPassthroughLink?.invalidate()
+            morphPassthroughLink = nil
         }
 
         /// The zoom navigation transition installs two extra interactive-dismiss gestures
@@ -344,6 +502,9 @@ private struct CoverZoomDismissalObserver: UIViewControllerRepresentable {
             DebugUIRemote.log("PHASE willDisappear")
 #endif
             report(.dismissing)
+            // Keep the window-level zoom morph container from swallowing touches meant for
+            // the view being revealed underneath (see `startMorphPassthrough`).
+            startMorphPassthrough()
             // Fade the bar-item content out in place as the dismissal/pop begins.
             // SwiftUI toolbar items live in the navigation item's leading/trailing
             // item *groups* (rightBarButtonItems stays empty), and UINavigationBar
@@ -379,6 +540,12 @@ private struct CoverZoomDismissalObserver: UIViewControllerRepresentable {
 #if DEBUG
             DebugUIRemote.log("PHASE didDisappear popped=\(popped)")
 #endif
+            // The morph container outlives `didDisappear` by a frame or two; keep clearing
+            // it briefly rather than stopping exactly on the callback.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(400))
+                self?.stopMorphPassthrough()
+            }
             report(popped ? .gone : .idle)
         }
 
@@ -393,6 +560,9 @@ private struct CoverZoomDismissalObserver: UIViewControllerRepresentable {
             disableZoomContentDismissGestures()
             forceStackedSearchBarPlacement()
             setBarItemAlpha(1, animated: false)
+            // Push finished — the container is gone. (CADisplayLink retains its target, so
+            // every start needs a matching stop or this controller never deallocates.)
+            stopMorphPassthrough()
             report(.idle)
             installPullToRevealSearch()
             // Keep the KVO alive for the screen's lifetime: whenever SwiftUI (re)attaches
@@ -408,9 +578,14 @@ private struct CoverZoomDismissalObserver: UIViewControllerRepresentable {
         /// bar item group on the navigation stack entry's navigation item.
         private func setBarItemAlpha(_ alpha: CGFloat, animated: Bool) {
             guard let item = parent?.navigationItem else { return }
+            // The system back chevron is owned by `UINavigationBar`, not by the navigation
+            // item's leading/trailing groups, so fading only those left it on screen after the
+            // rest of the header had gone — visible for the whole pop and beyond.
+            let backViews = Self.backButtonViews(in: parent?.navigationController?.navigationBar)
             let views = (item.trailingItemGroups + item.leadingItemGroups)
                 .flatMap(\.barButtonItems)
                 .compactMap(\.customView)
+                + backViews
             guard !views.isEmpty else { return }
             if animated {
                 UIView.animate(withDuration: 0.15) {
@@ -473,24 +648,14 @@ private struct CoverZoomDetailInteractionGate: ViewModifier {
         armGeneration &+= 1
         let generation = armGeneration
         if enabledNow {
+            // Hold long enough that a finger still down from the list tap cannot release
+            // onto Play / Request / + under the morph, then arm. The hold is measured from
+            // whichever event scheduled it, so a push (`.appearing`, fires the instant the
+            // transition starts) needs the longer one; a settle to `.idle` — which UIKit
+            // reports before the morph has finished drawing — needs only a short one.
+            let holdMilliseconds = phase == .appearing ? 350 : 180
             Task { @MainActor in
-                // UIKit reports `.idle` before the zoom morph finishes; hold hero
-                // buttons briefly so a list-tap release cannot land on Play / +.
-                try? await Task.sleep(for: .milliseconds(180))
-                guard generation == armGeneration,
-                      coverZoomDetailInteractionEnabled(phase: phase, isBeingDismissed: isBeingDismissed)
-                else { return }
-                interactionArmed = true
-            }
-        } else if phase == .appearing, !isBeingDismissed {
-            // The zoom push takes ~0.9s to report `viewDidAppear` on device, and waiting
-            // for it froze the whole detail (scrolling included) for over a second after
-            // every open. The only thing the gate must stop is a finger still down from
-            // the list tap landing on a control under the morph, which a short hold
-            // covers — so arm early while the push is still animating. Dismissals
-            // (`isBeingDismissed` / `.dismissing`) keep the full gate.
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(350))
+                try? await Task.sleep(for: .milliseconds(holdMilliseconds))
                 guard generation == armGeneration,
                       !isBeingDismissed,
                       phase == .appearing || phase == .idle
@@ -523,8 +688,15 @@ extension View {
     /// Marks an album/playlist cover cell as the zoom origin. `id` must match
     /// the id the pushed detail passes to ``coverZoomDestination(id:)``
     /// (album id / playlist id / home-mix id).
-    func coverZoomSource(id: String) -> some View {
-        modifier(CoverZoomSource(id: id))
+    ///
+    /// Pass `style: .custom` to route the push through the local animator in
+    /// `CoverZoomCustomTransition.swift` instead of SwiftUI's `.zoom`. A `.custom` cell must
+    /// also mark its artwork with ``coverZoomCellAnchor(id:cornerRadius:)`` so the animator
+    /// has an origin rect; without one the push degrades to a cross-fade.
+    /// `cellCornerRadius` overrides the artwork's own radius for the origin rect — use it when the
+    /// visible rounding belongs to a clipping container (Home Top Picks), not the artwork view.
+    func coverZoomSource(id: String, style: CoverZoomStyle = .system, cellCornerRadius: CGFloat? = nil) -> some View {
+        modifier(CoverZoomSource(id: id, style: style, cellCornerRadius: cellCornerRadius))
     }
 
     /// Applies the zoom transition on a pushed album/playlist detail root.

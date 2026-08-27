@@ -63,6 +63,16 @@ struct TransientToastContent: Equatable {
     var artworkURL: URL? = nil
 }
 
+/// A tap-to-play request held back pending confirmation, because starting it would replace
+/// a queue containing tracks the user hand-added via Play Next / Add to Queue.
+/// Driven by ``AppModel/pendingQueueReplacement``; rendered by ``MusicQueueReplacementChrome``.
+struct PendingQueueReplacement: Identifiable {
+    let id = UUID()
+    /// Unplayed user-queued tracks this request would discard — shown in the prompt.
+    let queuedCount: Int
+    let play: @MainActor @Sendable () async -> Void
+}
+
 /// Holds a UIKit background assertion for the life of a bulk operation.
 ///
 /// Without one, iOS suspends the app a few seconds after it leaves the foreground, which
@@ -180,6 +190,10 @@ public final class AppModel: ObservableObject {
     var currentlyVisiblePlaylistId: String? = nil
     /// Album equivalent of ``currentlyVisiblePlaylistId``.
     var currentlyVisibleAlbumId: String? = nil
+
+    /// A tap-to-play request held back because starting it would discard tracks the user
+    /// explicitly queued. Presented as a confirmation; cleared on either choice.
+    @Published var pendingQueueReplacement: PendingQueueReplacement? = nil
 
     /// Brief bottom toast (e.g. "Added to Queue"). Auto-clears after ``showTransientToast``
     /// is called; the ``MusicTransientToastChrome`` view modifier renders it.
@@ -380,6 +394,8 @@ public final class AppModel: ObservableObject {
     /// the player's transient queue. Newest first.
     private static let recentlyPlayedTracksKey = "VellumMusic.recentlyPlayedTracks"
     private static let recentlyPlayedTracksLimit = 100
+    /// Guards against an older off-main history encode landing after a newer one.
+    private var recentlyPlayedSaveGeneration = 0
     @Published private(set) var recentlyPlayedTracks: [Track] = []
 
     /// Playlist id → last time the user meaningfully played from that playlist (scrobble threshold).
@@ -984,6 +1000,18 @@ public final class AppModel: ObservableObject {
         player.bind(offline: offline, resolveArtwork: { [weak self] track in
             self?.resolvedArtworkURL(for: track)
         })
+#if DEBUG
+        // T054: attribute the shell re-render churn during a dismiss drag to its driver.
+        objectWillChange
+            .sink { _ in
+                DebugUIRemote.appPublishes += 1
+                DebugUIRemote.logPublishOrigin("AppModel")
+            }
+            .store(in: &cancellables)
+        player.objectWillChange
+            .sink { _ in DebugUIRemote.playerPublishes += 1 }
+            .store(in: &cancellables)
+#endif
         // Mini-player chrome is the only playback signal most tabs need from AppModel.
         player.$showsMiniPlayerChrome
             .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
@@ -1012,8 +1040,16 @@ public final class AppModel: ObservableObject {
             .removeDuplicates()
             .sink { [weak self] _ in self?.writeWidgetData() }
             .store(in: &cancellables)
+        // Throttled, because `removeDuplicates()` never suppresses anything here: each track
+        // that finishes downloading inserts into the Set, so every value is strictly larger than
+        // the last and always "different". Saving an album therefore fired one full-tree
+        // invalidation per track — and ~40 view files hold `@EnvironmentObject var app`,
+        // including RootView, NowPlayingView and MiniPlayerView, i.e. exactly the views alive
+        // during a cover zoom. `latest: true` guarantees the final state still arrives, so a
+        // download-complete checkmark can be up to 250ms late but is never dropped.
         offline.$downloadedTrackIds
             .removeDuplicates()
+            .throttle(for: .milliseconds(250), scheduler: DispatchQueue.main, latest: true)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         acquisition.onJobFinished = { [weak self] job in
@@ -1228,6 +1264,7 @@ public final class AppModel: ObservableObject {
                 jellyfin = nil
                 navidrome = nil
                 isSignedIn = false
+                hasCompletedLibraryBootstrap = false
                 serverConnectionHealth = .unknown
                 errorMessage = error.localizedDescription
             } else {
@@ -1301,6 +1338,8 @@ public final class AppModel: ObservableObject {
         navidromeUserMetadata = nil
         navidromeMagicPlaylistAvatarURL = nil
         isSignedIn = false
+        // Signing out ends the session this flag describes — the next sign-in must bootstrap.
+        hasCompletedLibraryBootstrap = false
         libraryAlbums = []
         recentlyAddedAlbums = []
         homeRecentlyPlayedServerAlbums = []
@@ -1868,12 +1907,34 @@ public final class AppModel: ObservableObject {
     }
 
     /// Single cold-start / sign-in library refresh (deduped).
+    /// Whether a full bootstrap has already completed for the current session.
+    ///
+    /// The in-flight check below is not enough on its own. `RootView` kicks the bootstrap from a
+    /// `.task` on the shell content, and that task is cancelled when the Now Playing cover is
+    /// presented over the shell and re-fires when the shell comes back — so **every dismiss of
+    /// the player re-ran a whole library bootstrap**, by which time the previous task had
+    /// finished and nil'd itself, so nothing stopped it. Measured on device: each dismiss drag
+    /// carried 8–22 `AppModel` publishes (`refreshLibraryAlbums` → `mergeOfflineCatalog` →
+    /// `rebuildDiscoveryTrackIndices`, plus the home rebuild), every one a whole-tree
+    /// invalidation across the ~40 views holding `@EnvironmentObject var app` — and one of the
+    /// resulting render passes was a ~290ms SwiftUI layout+commit, which is the swipe-down lag
+    /// spike. One drag in the same session happened to carry zero publishes and had no stall at
+    /// all, which is what tied the two together.
+    ///
+    /// Reset wherever the session ends, so signing out and back in bootstraps properly.
+    private var hasCompletedLibraryBootstrap = false
+
     public func scheduleLibraryBootstrap() {
         guard isSignedIn else { return }
         if let libraryBootstrapTask, !libraryBootstrapTask.isCancelled { return }
+        // Already done for this session: a re-fired `.task` must not redo the whole thing.
+        // Explicit refreshes (pull-to-refresh, "Refresh library", sync) call
+        // `refreshLibraryAlbums` / `syncLibraryNow` directly and are unaffected.
+        if hasCompletedLibraryBootstrap { return }
         libraryBootstrapTask = Task { [weak self] in
             guard let self else { return }
             await self.runLibraryBootstrap()
+            self.hasCompletedLibraryBootstrap = true
             self.libraryBootstrapTask = nil
         }
     }
@@ -3022,29 +3083,33 @@ public final class AppModel: ObservableObject {
 
     /// Appends an album to `libraryAlbums` if it isn't already cached, so views that
     /// resolve `libraryAlbumEntries` against the catalog don't drop newly-added albums.
-    /// Updates the O(1) lookup without rescanning every discovery track (that full
-    /// rebuild is O(tracks) and was freezing the New tab during reconcile).
+    ///
+    /// Index maintenance is **incremental** (O(1)) rather than a full rebuild: callers
+    /// like ``reconcileNewTabChartServerPresence`` insert one row at a time in a loop, and
+    /// a full `rebuildLibraryAlbumIndex` per row is O(catalog + tracks) of unicode folding
+    /// and regex on the main actor — hundreds of milliseconds each on a real library.
     private func ensureAlbumInCatalog(_ album: AlbumSummary) {
-        ensureAlbumsInCatalog([album])
+        if libraryAlbumsById[album.id] != nil { return }
+        appendCatalogAlbumIncrementally(album)
     }
 
+    /// Batch form used by New-tab reconcile / pin restore — one skip-flag wrap for many albums.
     private func ensureAlbumsInCatalog(_ albums: [AlbumSummary]) {
-        var seen = Set(libraryAlbumsById.keys)
-        var missing: [AlbumSummary] = []
-        missing.reserveCapacity(albums.count)
         for album in albums {
-            if seen.insert(album.id).inserted {
-                missing.append(album)
-            }
+            ensureAlbumInCatalog(album)
         }
-        guard !missing.isEmpty else { return }
+    }
+
+    /// Appends to ``libraryAlbums`` with the `didSet` rebuild suppressed, then folds the
+    /// album into the derived indices by hand. Equivalent to what a full rebuild would
+    /// produce, because both indices key off the same arrays this appends to.
+    private func appendCatalogAlbumIncrementally(_ album: AlbumSummary) {
+        let previousSkip = skipAlbumIndexRebuild
         skipAlbumIndexRebuild = true
-        libraryAlbums.append(contentsOf: missing)
-        skipAlbumIndexRebuild = false
-        for album in missing {
-            libraryAlbumsById[album.id] = album
-        }
-        libraryAlbumReleaseIndex = libraryAlbumReleaseIndex.inserting(missing)
+        libraryAlbums.append(album)
+        skipAlbumIndexRebuild = previousSkip
+        libraryAlbumsById[album.id] = album
+        libraryAlbumReleaseIndex.insert(album)
         invalidateMembershipLookups()
     }
 
@@ -3054,76 +3119,74 @@ public final class AppModel: ObservableObject {
     }
 
     /// Ensures a pinned song can render in the Library hub grid before the track index finishes loading.
+    ///
+    /// Same rule as ``ensureAlbumInCatalog(_:)`` — one appended track updates the four
+    /// derived indices in place instead of rebuilding all of them over the whole library.
     func retainTrackForLibraryPin(_ track: Track) {
         retainTracksForLibraryPin([track])
     }
 
     /// Batch form of ``retainTrackForLibraryPin``. New-tab reconcile used to call the
     /// single-track path in a loop, which rebuilt the 50k-track title/chart indices on
-    /// the main actor once per song (~3s each) and froze the UI. One pass, one index patch.
+    /// the main actor once per song and froze the UI. One pass, one index patch.
     func retainTracksForLibraryPin(_ tracks: [Track]) {
-        var seen = Set(discoveryTrackById.keys)
         var missing: [Track] = []
         missing.reserveCapacity(tracks.count)
         for track in tracks.map(trackWithResolvedArtwork) {
-            if seen.insert(track.id).inserted {
+            if discoveryTrackById[track.id] == nil {
                 missing.append(track)
             }
         }
         guard !missing.isEmpty else { return }
 
+        let previousSkip = skipDiscoveryIndexRebuild
         skipDiscoveryIndexRebuild = true
         discoveryLibraryTracks.append(contentsOf: missing)
-        skipDiscoveryIndexRebuild = false
+        skipDiscoveryIndexRebuild = previousSkip
 
-        var synthesizedAlbums: [AlbumSummary] = []
-        for track in missing {
-            discoveryTrackById[track.id] = track
-            let art = LibraryTrackMatcher.normalize(track.artist)
-            if !art.isEmpty {
-                for titleKey in LibraryTrackMatcher.normalizedTitleKeys(from: track.title) {
-                    libraryTrackTitleIndex[titleKey, default: []].insert(art)
-                }
-            }
-            if !track.albumId.isEmpty, !track.albumTitle.isEmpty, libraryAlbumsById[track.albumId] == nil {
-                synthesizedAlbums.append(
-                    AlbumSummary(
-                        id: track.albumId,
-                        title: track.albumTitle,
-                        artist: track.artist,
-                        artworkURL: track.artworkURL,
-                        coverArtId: navidromeCoverArtId(for: track),
-                        trackCount: nil,
-                        libraryAddedDate: track.libraryAddedDate,
-                        genres: track.genres,
-                        releaseYear: track.releaseYear,
-                    )
+        for resolved in missing {
+            discoveryTrackById[resolved.id] = resolved
+            LibraryTrackMatcher.insert(resolved, into: &libraryTrackTitleIndex)
+            libraryChartTrackIndex.insert(resolved)
+            // Mirrors the track-derived album merge in ``rebuildLibraryAlbumIndex``.
+            if !resolved.albumId.isEmpty,
+               !resolved.albumTitle.isEmpty,
+               libraryAlbumsById[resolved.albumId] == nil {
+                let derived = AlbumSummary(
+                    id: resolved.albumId,
+                    title: resolved.albumTitle,
+                    artist: resolved.artist,
+                    artworkURL: resolved.artworkURL,
+                    coverArtId: navidromeCoverArtId(for: resolved),
+                    trackCount: nil,
+                    libraryAddedDate: resolved.libraryAddedDate,
+                    genres: resolved.genres,
+                    releaseYear: resolved.releaseYear,
                 )
+                libraryAlbumsById[derived.id] = derived
+                libraryAlbumReleaseIndex.insert(derived)
             }
         }
-        libraryChartTrackIndex = libraryChartTrackIndex.inserting(missing)
-        ensureAlbumsInCatalog(synthesizedAlbums)
+        invalidateMembershipLookups()
     }
 
     /// Synthesizes a minimal AlbumSummary from a track and inserts it when the album
     /// isn't already known. Used by ``addSongToLibrary`` so the album appears in
     /// Library → Albums even when we never loaded its full summary.
     private func ensureAlbumInCatalog(albumIdOrFallback id: String, derivedFrom track: Track) {
-        if libraryAlbumsById[id] == nil {
-            ensureAlbumsInCatalog([
-                AlbumSummary(
-                    id: id,
-                    title: track.albumTitle.isEmpty ? "Album" : track.albumTitle,
-                    artist: track.artist,
-                    artworkURL: track.artworkURL,
-                    coverArtId: navidromeCoverArtId(for: track),
-                    trackCount: nil,
-                    libraryAddedDate: track.libraryAddedDate,
-                    genres: track.genres,
-                    releaseYear: track.releaseYear,
-                )
-            ])
-        }
+        if libraryAlbumsById[id] != nil { return }
+        let synthesized = AlbumSummary(
+            id: id,
+            title: track.albumTitle.isEmpty ? "Album" : track.albumTitle,
+            artist: track.artist,
+            artworkURL: track.artworkURL,
+            coverArtId: navidromeCoverArtId(for: track),
+            trackCount: nil,
+            libraryAddedDate: track.libraryAddedDate,
+            genres: track.genres,
+            releaseYear: track.releaseYear,
+        )
+        appendCatalogAlbumIncrementally(synthesized)
     }
 
     /// Removes a single song from the user's library (magic playlist tracks). Does NOT
@@ -4738,6 +4801,25 @@ public final class AppModel: ObservableObject {
     // MARK: - Playback helpers
 
     /// Starts playback and surfaces stream/load failures via the root toast.
+    /// Runs `play` now, or holds it behind a confirmation when starting it would throw away
+    /// tracks the user explicitly queued via Play Next / Add to Queue. Silent in the common
+    /// case — a plain album/playlist queue has nothing hand-curated to lose.
+    func playReplacingQueue(_ play: @escaping @MainActor @Sendable () async -> Void) async {
+        let queued = player.pendingUserQueuedCount
+        guard queued > 0 else {
+            await play()
+            return
+        }
+        pendingQueueReplacement = PendingQueueReplacement(queuedCount: queued, play: play)
+    }
+
+    /// Confirm handler for ``pendingQueueReplacement`` — runs the held request.
+    func confirmPendingQueueReplacement() {
+        guard let pending = pendingQueueReplacement else { return }
+        pendingQueueReplacement = nil
+        Task { await pending.play() }
+    }
+
     func playAlbumOrToast(
         library: MusicLibraryProviding? = nil,
         tracks: [Track],
@@ -4761,10 +4843,13 @@ public final class AppModel: ObservableObject {
             showTransientToast("Every song here has been listened. Clear listen history in Kill Mode to start over.")
             return
         }
-        do {
-            try await player.playAlbum(library: lib, tracks: playTracks, startIndex: playStart, source: source)
-        } catch {
-            showTransientToast(error.musicPlaybackToastMessage)
+        await playReplacingQueue { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.player.playAlbum(library: lib, tracks: playTracks, startIndex: playStart, source: source)
+            } catch {
+                self.showTransientToast(error.musicPlaybackToastMessage)
+            }
         }
     }
 
@@ -5471,9 +5556,27 @@ public final class AppModel: ObservableObject {
         recentlyPlayedTracks = decoded
     }
 
+    /// Persist the history list, encoding off the main actor.
+    ///
+    /// This is reached from `recordRecentTrackPlay`, which is wired to
+    /// `PlaybackEngine.onTrackStarted` — so it fires on every track change, including the
+    /// `jumpToQueueItem` that a queue row's own Button calls. Encoding up to 100 `Track` structs
+    /// synchronously put a full JSON encode in the same runloop pass as the page-snap animation
+    /// that tap had just started.
+    ///
+    /// The write itself stays on the main actor and is generation-checked, so two saves racing
+    /// cannot land out of order and persist an older history than the one in memory.
     private func saveRecentlyPlayedTracksToDefaults() {
-        guard let data = try? JSONEncoder().encode(recentlyPlayedTracks) else { return }
-        UserDefaults.standard.set(data, forKey: Self.recentlyPlayedTracksKey)
+        recentlyPlayedSaveGeneration &+= 1
+        let generation = recentlyPlayedSaveGeneration
+        let snapshot = recentlyPlayedTracks
+        Task.detached(priority: .utility) {
+            guard let data = try? JSONEncoder().encode(snapshot) else { return }
+            await MainActor.run { [weak self] in
+                guard let self, self.recentlyPlayedSaveGeneration == generation else { return }
+                UserDefaults.standard.set(data, forKey: Self.recentlyPlayedTracksKey)
+            }
+        }
     }
 
     /// Logs a single track as actually-played. Called by `PlaybackEngine` only when the
@@ -5710,7 +5813,11 @@ public final class AppModel: ObservableObject {
                 guard let self else { return }
                 let online = path.status == .satisfied
                 let wasOnline = self.hasInternetPath
-                self.hasInternetPath = online
+                // `@Published` has no equality check, and this handler fires on interface
+                // reordering and `isExpensive` flips, not just online↔offline — so an
+                // unconditional assignment was a full-tree invalidation on events where nothing
+                // had actually changed. Every comparable path in this file is guarded already.
+                if self.hasInternetPath != online { self.hasInternetPath = online }
                 let wifiLike = path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet)
                 self.prefersWifiLikePath = wifiLike
                 if !online {

@@ -86,6 +86,8 @@ struct TrackOfflineDownloadIndicator: View {
     var backdropPalette: ArtworkDynamicGradient.BackdropPalette? = nil
 
     @Environment(\.colorScheme) private var colorScheme
+    /// Drives `paused` on the indeterminate spinner — see ``indeterminateRing``.
+    @Environment(\.scenePhase) private var scenePhase
 
     private var chrome: ArtworkDynamicGradient.BackdropPalette {
         backdropPalette ?? .listSurface(colorScheme: colorScheme)
@@ -257,7 +259,15 @@ struct TrackOfflineDownloadIndicator: View {
     }
 
     private var indeterminateRing: some View {
-        TimelineView(.animation(minimumInterval: 1 / 60, paused: false)) { timeline in
+        // 30Hz, and paused when the app is not frontmost. This was hard-coded to 60Hz and
+        // `paused: false`, so every queued download drove its own row's timeline at 60Hz
+        // forever, including in the background, and several queued downloads meant several
+        // independent 60Hz timelines. The reference for the right shape is `SilenceBreathingDots`
+        // in `NowPlayingView`, which runs at 30Hz and gates `paused` on whether it has any
+        // reason to tick. `reduceMotion` is deliberately NOT wired in here: this is a
+        // progress spinner, and freezing it would read as a stalled download rather than as
+        // reduced motion.
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: scenePhase != .active)) { timeline in
             let t = timeline.date.timeIntervalSinceReferenceDate
             let angle = (t.truncatingRemainder(dividingBy: 1.15)) / 1.15 * 360
             ZStack {

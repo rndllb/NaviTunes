@@ -16,6 +16,10 @@ struct PlaybackQueueSnapshot: Codable {
     /// Natural ordered track list from the most recently loaded source — used to detect
     /// manual queue reordering and to restore order when shuffle is disabled.
     var sourceQueueOrder: [Track]? = nil
+    /// Ids inserted via Play Next / Add to Queue. Persisted so the "Queue" section, and the
+    /// shuffle-off carry-over that reads it, survive a relaunch — without this, toggling
+    /// shuffle off after a cold start deleted every queued track.
+    var userQueuedTrackIds: [String]? = nil
 }
 
 enum PlaybackQueueStore {

@@ -25,7 +25,15 @@ enum ArtworkDynamicGradient {
     private final class PaletteBox { let palette: BackdropPalette; init(_ p: BackdropPalette) { palette = p } }
     /// Memoizes computed palettes per (artwork URL, style) so reopening an album shows its
     /// backdrop instantly instead of re-downloading + re-analyzing the cover every time.
-    private static let paletteCache = NSCache<NSString, PaletteBox>()
+    /// Bounded by count rather than cost: a palette is a handful of colours, so the memory here
+    /// is trivial and the only real reason for a limit is the same one as the image caches — an
+    /// uncapped `NSCache` is emptied in a single purge on a system memory warning, which can
+    /// land mid-transition. 512 is far more albums than a session realistically visits.
+    private static let paletteCache: NSCache<NSString, PaletteBox> = {
+        let cache = NSCache<NSString, PaletteBox>()
+        cache.countLimit = 512
+        return cache
+    }()
 
     static func clearPaletteCache() {
         paletteCache.removeAllObjects()
@@ -161,16 +169,21 @@ enum ArtworkDynamicGradient {
         await analyzeBackdrop(from: artworkURL).gradientStops
     }
 
+    /// Decode target for backdrop analysis.
+    ///
+    /// The only consumer of this bitmap is ``downsampleArtworkPixels``, which immediately caps
+    /// the longest side at 120px — so decoding the cover at its full size (`UIImage(data:)`
+    /// decodes everything) was producing a multi-megapixel bitmap to read a 120px sample from.
+    /// Every track change did that twice over the same bytes, once from the pill and once from
+    /// the hero, off-main but competing for the same CPU as the zoom. 160 leaves the downsampler
+    /// a comfortable margin over the 120 it wants.
+    private static let backdropAnalysisDecodePixels: CGFloat = 160
+
     private static func cgImage(fromImageData data: Data) -> CGImage? {
-#if canImport(UIKit)
-        return UIImage(data: data)?.cgImage
-#elseif canImport(AppKit)
-        guard let img = NSImage(data: data) else { return nil }
-        var rect = CGRect(origin: .zero, size: img.size)
-        return img.cgImage(forProposedRect: &rect, context: nil, hints: nil)
-#else
-        return nil
-#endif
+        // ImageIO thumbnail generation, which is also what the rest of the artwork pipeline
+        // uses — and it is cross-platform, so the UIKit/AppKit split this replaced is no longer
+        // needed here.
+        ArtworkImageDecoder.cgImage(from: data, maxPixelSize: backdropAnalysisDecodePixels)
     }
 
     /// WCAG relative luminance for **linear** sRGB channels in 0…1.
