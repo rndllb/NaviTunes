@@ -998,6 +998,18 @@ public final class AppModel: ObservableObject {
         player.bind(offline: offline, resolveArtwork: { [weak self] track in
             self?.resolvedArtworkURL(for: track)
         })
+#if DEBUG
+        // T054: attribute the shell re-render churn during a dismiss drag to its driver.
+        objectWillChange
+            .sink { _ in
+                DebugUIRemote.appPublishes += 1
+                DebugUIRemote.logPublishOrigin("AppModel")
+            }
+            .store(in: &cancellables)
+        player.objectWillChange
+            .sink { _ in DebugUIRemote.playerPublishes += 1 }
+            .store(in: &cancellables)
+#endif
         // Mini-player chrome is the only playback signal most tabs need from AppModel.
         player.$showsMiniPlayerChrome
             .sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
