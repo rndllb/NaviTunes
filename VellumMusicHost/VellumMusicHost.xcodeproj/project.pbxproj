@@ -28,6 +28,7 @@
 		CC0000000000000000000012 /* SimulatorSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000004 /* SimulatorSignIn.swift */; };
 		CC0000000000000000000013 /* ScreenshotCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000005 /* ScreenshotCapture.swift */; };
 		CC0000000000000000000015 /* QueueHistorySwipe.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000008 /* QueueHistorySwipe.swift */; };
+		CC0000000000000000000016 /* HistoryPlaybackLyrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000009 /* HistoryPlaybackLyrics.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -89,6 +90,7 @@
 		CC0000000000000000000004 /* SimulatorSignIn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimulatorSignIn.swift; sourceTree = "<group>"; };
 		CC0000000000000000000005 /* ScreenshotCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotCapture.swift; sourceTree = "<group>"; };
 		CC0000000000000000000008 /* QueueHistorySwipe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueHistorySwipe.swift; sourceTree = "<group>"; };
+		CC0000000000000000000009 /* HistoryPlaybackLyrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryPlaybackLyrics.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -186,6 +188,7 @@
 				CC0000000000000000000004 /* SimulatorSignIn.swift */,
 				CC0000000000000000000005 /* ScreenshotCapture.swift */,
 				CC0000000000000000000008 /* QueueHistorySwipe.swift */,
+				CC0000000000000000000009 /* HistoryPlaybackLyrics.swift */,
 			);
 			path = VellumMusicUITests;
 			sourceTree = "<group>";
@@ -368,6 +371,7 @@
 				CC0000000000000000000012 /* SimulatorSignIn.swift in Sources */,
 				CC0000000000000000000013 /* ScreenshotCapture.swift in Sources */,
 				CC0000000000000000000015 /* QueueHistorySwipe.swift in Sources */,
+				CC0000000000000000000016 /* HistoryPlaybackLyrics.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
