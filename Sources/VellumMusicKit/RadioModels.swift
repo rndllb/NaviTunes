@@ -1,7 +1,7 @@
 import Foundation
 
-/// Internet radio entry from Subsonic ``getInternetRadioStations`` (Navidrome)
-/// or a user-added station stored locally in Vellum.
+/// Internet radio entry from Subsonic ``getInternetRadioStations`` (Navidrome),
+/// the Radio Browser directory, or a user-added station stored locally in Vellum.
 struct InternetRadioStation: Identifiable, Hashable {
     let id: String
     let name: String
@@ -11,6 +11,11 @@ struct InternetRadioStation: Identifiable, Hashable {
     var artworkURL: URL? = nil
     /// Stations added in Vellum (editable/removable); server entries are false.
     var isUserAdded: Bool = false
+    /// Set when the station came from the Radio Browser directory. Playback reports
+    /// it back so the directory's popularity counts stay meaningful.
+    var directoryStationUUID: String? = nil
+    /// "Jazz · 320 kbps" for directory stations; nil falls back to "Live stream".
+    var detailLine: String? = nil
 }
 
 /// Live internet stations grouped by genre words in the station title.

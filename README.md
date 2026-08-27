@@ -30,7 +30,9 @@ A browse tab for new releases and artist pages, built from your own server catal
 
 ### Radio
 
-Internet radio stations from Navidrome, plus your own custom stream URLs.
+A live station directory backed by [Radio Browser](https://www.radio-browser.info) — roughly 57,000 community-maintained stations, about 7,800 of them in the US, across 238 countries. Browse what's popular where you are, dig in by genre or country, or search by name. Save anything you like to Your Stations.
+
+It needs no server sign-in, only a network connection. Alongside the directory you also get internet radio stations configured on your Navidrome server, plus your own custom stream URLs.
 
 ### Library
 

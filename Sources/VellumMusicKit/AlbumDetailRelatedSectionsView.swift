@@ -36,7 +36,8 @@ struct AlbumDetailRelatedSectionsView: View {
                 carouselShelf(title: "You Might Also Like", albums: youMightAlsoLike)
             }
         }
-        .onAppear(perform: applyMemoryShelves)
+        // `.task(id:)` already fires on appear, so a separate `.onAppear` here just
+        // built the shelves twice on the frame that mounts this footer mid-scroll.
         .task(id: reloadToken) {
             applyMemoryShelves()
             await refreshShelvesFromServer()
@@ -128,6 +129,7 @@ private struct AlbumDetailRelatedShelfCard: View {
             AlbumArtworkView(
                 url: app.resolvedArtworkURL(for: album),
                 cornerRadius: MusicDesign.heroCorner,
+                maxDecodePixels: MusicDesign.shelfArtworkDecodePixels,
             )
             .frame(width: MusicDesign.shelfCardWidth, height: MusicDesign.shelfCardHeight)
 

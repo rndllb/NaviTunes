@@ -209,6 +209,9 @@ struct AcquisitionPluginSettingsView: View {
     @State private var isPlexSigningIn = false
     @State private var plexSignInMessage: String?
     @State private var loginMethodSelection = "local"
+    @State private var revealedFieldIds: Set<String> = []
+    /// Which plugins already have stored credentials, so the source list can show it.
+    @State private var configuredKinds: Set<AcquisitionPluginKind> = []
 
     private var activeKind: AcquisitionPluginKind { acquisition.activePlugin }
     private var capabilities: AcquisitionCapabilities { app.acquisitionCapabilities }
@@ -254,9 +257,8 @@ struct AcquisitionPluginSettingsView: View {
 
     var body: some View {
         List {
-            pluginSummarySection
-            sourceSection
-            serverSection
+            pluginSection
+            setupSection
             if activeKind == .droppedNeedle, droppedNeedleLoginMethod == "plex" {
                 plexSignInSection
             }
@@ -281,6 +283,7 @@ struct AcquisitionPluginSettingsView: View {
             validateSucceeded = false
             plexSignInMessage = nil
             isPlexSigningIn = false
+            revealedFieldIds = []
             Task { await acquisition.refreshFromServer() }
         }
         .onChange(of: loginMethodSelection) { oldValue, newValue in
@@ -313,43 +316,56 @@ struct AcquisitionPluginSettingsView: View {
 
     // MARK: Sections
 
-    private var pluginSummarySection: some View {
+    private var pluginSection: some View {
         Section {
-            HStack(spacing: 16) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(MusicDesign.accent.opacity(0.14))
-                        .frame(width: 56, height: 56)
-                    Image(systemName: capabilities.iconName)
-                        .font(.system(size: 24, weight: .semibold))
-                        .foregroundStyle(MusicDesign.accent)
+            ForEach(AcquisitionPluginKind.allCases) { kind in
+                Button {
+                    guard kind != activeKind else { return }
+                    acquisition.activePlugin = kind
+                } label: {
+                    pluginRow(kind)
                 }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(capabilities.displayName)
-                        .font(.title3.weight(.semibold))
-                    Text(pluginSubtitle)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
+                .buttonStyle(.plain)
             }
-            .padding(.vertical, 4)
-        }
-    }
-
-    private var sourceSection: some View {
-        Section {
-            Picker("Source", selection: pluginBinding) {
-                ForEach(AcquisitionPluginKind.allCases) { kind in
-                    Text(AcquisitionManager.capabilities(for: kind).displayName).tag(kind)
-                }
-            }
-            .pickerStyle(.navigationLink)
+        } header: {
+            Text("Request Source")
         } footer: {
             Text(capabilities.blurb)
         }
     }
 
-    private var serverSection: some View {
+    private func pluginRow(_ kind: AcquisitionPluginKind) -> some View {
+        let caps = AcquisitionManager.capabilities(for: kind)
+        let isActive = kind == activeKind
+        let isSetUp = configuredKinds.contains(kind)
+        return HStack(spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(isActive ? MusicDesign.accent.opacity(0.16) : Color.secondary.opacity(0.12))
+                    .frame(width: 38, height: 38)
+                Image(systemName: caps.iconName)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(isActive ? MusicDesign.accent : .secondary)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(caps.displayName)
+                    .font(.body.weight(.medium))
+                Text("\(caps.granularity == .album ? "Albums" : "Tracks") · \(isSetUp ? "Set up" : "Needs setup")")
+                    .font(.caption)
+                    .foregroundStyle(isSetUp ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
+            }
+            Spacer(minLength: 8)
+            if isActive {
+                Image(systemName: "checkmark")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(MusicDesign.accent)
+            }
+        }
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+    }
+
+    private var setupSection: some View {
         Section {
             if activeKind == .droppedNeedle {
                 Picker("Sign-In Method", selection: $loginMethodSelection) {
@@ -363,7 +379,9 @@ struct AcquisitionPluginSettingsView: View {
                 configField(field)
             }
         } header: {
-            Text("Server")
+            Text("\(capabilities.displayName) Setup")
+        } footer: {
+            Text(capabilities.requirementsSummary)
         }
     }
 
@@ -430,11 +448,32 @@ struct AcquisitionPluginSettingsView: View {
         } else if let validateMessage {
             Text(validateMessage)
                 .foregroundStyle(.secondary)
+        } else if !missingRequirements.isEmpty {
+            Text("Still needed: \(missingRequirements.formatted(.list(type: .and))).")
+                .foregroundStyle(.secondary)
         } else if app.acquisitionConfigured {
             Text("Credentials saved. Requests use \(capabilities.displayName).")
         } else {
-            Text("Enter your server details, then test the connection.")
+            Text("Credentials are saved as you go. Test the connection to check them.")
         }
+    }
+
+    /// Names of the fields still blocking ``hasMinimumDraft``, so the footer can say
+    /// exactly what's missing instead of a generic "enter your details".
+    private var missingRequirements: [String] {
+        if activeKind == .droppedNeedle, droppedNeedleLoginMethod == "plex" {
+            var missing: [String] = []
+            if (drafts["baseURL"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                missing.append("Server Address")
+            }
+            if !hasPlexSessionToken {
+                missing.append("Plex sign-in")
+            }
+            return missing
+        }
+        return visibleConfigFields
+            .filter { $0.required && (drafts[$0.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .map(\.label)
     }
 
     private var disconnectSection: some View {
@@ -576,30 +615,75 @@ struct AcquisitionPluginSettingsView: View {
             }
             .pickerStyle(.navigationLink)
         } else {
-            switch field.kind {
-            case .apiKey, .password:
-                SecureField(field.label, text: binding(for: field), prompt: Text(field.placeholder))
-                    .musicTextInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-            default:
-                TextField(field.label, text: binding(for: field), prompt: Text(field.placeholder))
-                    .textContentType(field.kind == .url ? .URL : nil)
-                    .musicTextInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    #if os(iOS)
-                    .keyboardType(field.kind == .url ? .URL : .default)
-                    #endif
+            let isFilled = !(drafts[field.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Text(field.label)
+                        .font(.subheadline.weight(.semibold))
+                    if field.required, !isFilled {
+                        Text("Required")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.orange)
+                    }
+                    Spacer(minLength: 8)
+                    if isFilled {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.footnote)
+                            .foregroundStyle(.green)
+                    }
+                }
+                configFieldInput(field)
+                if let help = field.helpText {
+                    Text(help)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
+            .padding(.vertical, 4)
+        }
+    }
+
+    @ViewBuilder
+    private func configFieldInput(_ field: AcquisitionConfigField) -> some View {
+        switch field.kind {
+        case .apiKey, .password:
+            let isRevealed = revealedFieldIds.contains(field.id)
+            HStack(spacing: 10) {
+                if isRevealed {
+                    TextField(field.label, text: binding(for: field), prompt: Text(field.placeholder))
+                        .musicTextInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } else {
+                    SecureField(field.label, text: binding(for: field), prompt: Text(field.placeholder))
+                        .musicTextInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                Button {
+                    if isRevealed {
+                        revealedFieldIds.remove(field.id)
+                    } else {
+                        revealedFieldIds.insert(field.id)
+                    }
+                } label: {
+                    Image(systemName: isRevealed ? "eye.slash" : "eye")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(isRevealed ? "Hide \(field.label)" : "Show \(field.label)")
+            }
+        default:
+            TextField(field.label, text: binding(for: field), prompt: Text(field.placeholder))
+                .textContentType(field.kind == .url ? .URL : nil)
+                .musicTextInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                #if os(iOS)
+                .keyboardType(field.kind == .url ? .URL : .default)
+                #endif
         }
     }
 
     // MARK: Helpers
-
-    private var pluginSubtitle: String {
-        let mode = capabilities.granularity == .album ? "Album requests" : "Track downloads"
-        let status = app.acquisitionConfigured ? "Ready" : "Not configured"
-        return "\(mode) · \(status)"
-    }
 
     private func acquisitionStatusTitle(_ status: AcquisitionJobStatus) -> String {
         switch status {
@@ -611,13 +695,6 @@ struct AcquisitionPluginSettingsView: View {
         case .failed: return "Failed"
         case .unknown: return "In progress"
         }
-    }
-
-    private var pluginBinding: Binding<AcquisitionPluginKind> {
-        Binding(
-            get: { acquisition.activePlugin },
-            set: { acquisition.activePlugin = $0 }
-        )
     }
 
     private func binding(for field: AcquisitionConfigField) -> Binding<String> {
@@ -639,6 +716,7 @@ struct AcquisitionPluginSettingsView: View {
             loginMethodSelection = resolved
         }
         drafts = next
+        refreshConfiguredKinds()
     }
 
     private func saveDrafts() {
@@ -648,6 +726,16 @@ struct AcquisitionPluginSettingsView: View {
         for field in capabilities.configFields {
             app.setAcquisitionConfig(drafts[field.id] ?? "", for: activeKind, field: field.id)
         }
+        refreshConfiguredKinds()
+    }
+
+    private func refreshConfiguredKinds() {
+        var next: Set<AcquisitionPluginKind> = []
+        for kind in AcquisitionPluginKind.allCases where AcquisitionManager.makeProvider(kind).isConfigured {
+            next.insert(kind)
+        }
+        guard next != configuredKinds else { return }
+        configuredKinds = next
     }
 
     private func runPlexSignIn() {

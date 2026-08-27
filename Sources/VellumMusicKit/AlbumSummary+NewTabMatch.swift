@@ -198,18 +198,42 @@ struct LibraryAlbumReleaseIndex {
         var strict: [String: [Entry]] = [:]
         var loose: [String: [Entry]] = [:]
         for album in albums {
-            let strictAlbum = AlbumSummary.normalizedReleaseKey(album.title)
-            let artistKey = AlbumSummary.normalizedReleaseKey(album.artist)
-            guard !strictAlbum.isEmpty, !artistKey.isEmpty else { continue }
-            let entry = Entry(album: album, artistKey: artistKey)
-            strict[strictAlbum, default: []].append(entry)
-            let looseAlbum = AlbumSummary.normalizedAlbumTitleLoose(album.title)
-            if !looseAlbum.isEmpty, looseAlbum != strictAlbum {
-                loose[looseAlbum, default: []].append(entry)
-            }
+            Self.insert(album, intoStrict: &strict, loose: &loose)
         }
         self.byStrictAlbumKey = strict
         self.byLooseAlbumKey = loose
+    }
+
+    /// Cheap path when pinning a few albums during New-tab reconcile.
+    func inserting(_ albums: [AlbumSummary]) -> LibraryAlbumReleaseIndex {
+        guard !albums.isEmpty else { return self }
+        var strict = byStrictAlbumKey
+        var loose = byLooseAlbumKey
+        for album in albums {
+            Self.insert(album, intoStrict: &strict, loose: &loose)
+        }
+        return LibraryAlbumReleaseIndex(strict: strict, loose: loose)
+    }
+
+    private init(strict: [String: [Entry]], loose: [String: [Entry]]) {
+        self.byStrictAlbumKey = strict
+        self.byLooseAlbumKey = loose
+    }
+
+    private static func insert(
+        _ album: AlbumSummary,
+        intoStrict strict: inout [String: [Entry]],
+        loose: inout [String: [Entry]]
+    ) {
+        let strictAlbum = AlbumSummary.normalizedReleaseKey(album.title)
+        let artistKey = AlbumSummary.normalizedReleaseKey(album.artist)
+        guard !strictAlbum.isEmpty, !artistKey.isEmpty else { return }
+        let entry = Entry(album: album, artistKey: artistKey)
+        strict[strictAlbum, default: []].append(entry)
+        let looseAlbum = AlbumSummary.normalizedAlbumTitleLoose(album.title)
+        if !looseAlbum.isEmpty, looseAlbum != strictAlbum {
+            loose[looseAlbum, default: []].append(entry)
+        }
     }
 
     /// Mirror of ``AlbumSummary.matchesNewTabRelease`` — equality on title (strict

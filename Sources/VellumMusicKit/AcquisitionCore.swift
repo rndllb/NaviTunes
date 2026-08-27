@@ -184,6 +184,9 @@ struct AcquisitionConfigField: Identifiable, Hashable, Sendable {
     let kind: Kind
     let label: String
     let placeholder: String
+    /// Where the value comes from, shown under the field. Placeholders are examples,
+    /// not instructions — anything the user has to go find belongs here.
+    let helpText: String?
     /// Whether ``AcquisitionProviding/isConfigured`` requires this field.
     let required: Bool
     /// When set, Settings renders a picker instead of a free-text field.
@@ -194,6 +197,7 @@ struct AcquisitionConfigField: Identifiable, Hashable, Sendable {
         kind: Kind,
         label: String,
         placeholder: String,
+        helpText: String? = nil,
         required: Bool = true,
         pickerOptions: [PickerOption]? = nil,
     ) {
@@ -201,6 +205,7 @@ struct AcquisitionConfigField: Identifiable, Hashable, Sendable {
         self.kind = kind
         self.label = label
         self.placeholder = placeholder
+        self.helpText = helpText
         self.required = required
         self.pickerOptions = pickerOptions
     }
@@ -216,6 +221,9 @@ struct AcquisitionCapabilities: Sendable {
     let displayName: String
     let iconName: String
     let blurb: String
+    /// One line naming the credentials this plugin needs, shown above its fields so
+    /// "does this want an API key?" is answered before the user starts typing.
+    let requirementsSummary: String
     let granularity: Granularity
     /// True when the plugin can return concrete ``AcquisitionResult`` rows for a query.
     let supportsTrackSearch: Bool
@@ -228,6 +236,7 @@ struct AcquisitionCapabilities: Sendable {
         displayName: String,
         iconName: String,
         blurb: String,
+        requirementsSummary: String,
         granularity: Granularity,
         supportsTrackSearch: Bool,
         supportsReleaseCatalog: Bool = false,
@@ -236,6 +245,7 @@ struct AcquisitionCapabilities: Sendable {
         self.displayName = displayName
         self.iconName = iconName
         self.blurb = blurb
+        self.requirementsSummary = requirementsSummary
         self.granularity = granularity
         self.supportsTrackSearch = supportsTrackSearch
         self.supportsReleaseCatalog = supportsReleaseCatalog
