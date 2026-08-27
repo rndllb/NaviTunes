@@ -137,6 +137,9 @@ final class NowPlayingCoverZoomController: NSObject, UIViewControllerTransitioni
 #if DEBUG
     /// T054 investigation: numbers the drag deltas so the log names the slow frame.
     private var dragUpdateIndex = 0
+    /// Publish counts at drag start, so the drag's own churn can be isolated.
+    private var dragAppPublishBase = 0
+    private var dragPlayerPublishBase = 0
 #endif
 
     // MARK: Install
@@ -231,6 +234,9 @@ final class NowPlayingCoverZoomController: NSObject, UIViewControllerTransitioni
             isInteractiveDismiss = true
 #if DEBUG
             dragUpdateIndex = 0
+            dragAppPublishBase = DebugUIRemote.appPublishes
+            dragPlayerPublishBase = DebugUIRemote.playerPublishes
+            DebugUIRemote.isDragActive = true
             DebugUIRemote.log("NP-DRAG began at \(Int(finger.x)),\(Int(finger.y))")
 #endif
             // SwiftUI drives the dismissal; UIKit then asks us for the animator and the
@@ -265,6 +271,14 @@ final class NowPlayingCoverZoomController: NSObject, UIViewControllerTransitioni
 
     private func endDrag(committed: Bool, velocity: CGFloat) {
         guard isInteractiveDismiss else { return }
+#if DEBUG
+        DebugUIRemote.log(
+            "NP-DRAG ended committed=\(committed) deltas=\(dragUpdateIndex) "
+            + "appPublishes=\(DebugUIRemote.appPublishes - dragAppPublishBase) "
+            + "playerPublishes=\(DebugUIRemote.playerPublishes - dragPlayerPublishBase)"
+        )
+        DebugUIRemote.isDragActive = false
+#endif
         isInteractiveDismiss = false
         interaction?.finish(committed: committed, velocity: velocity)
         if !committed {

@@ -231,6 +231,37 @@ enum DebugUIRemote {
         turnObserver = observer
     }
 
+    /// Counts of `objectWillChange` emissions, so a drag can be attributed to its driver.
+    ///
+    /// The dismiss drives 9–10 shell re-renders and ~12 mini-player probe re-attachments, and
+    /// one of those render passes is the 257ms stall. Knowing *what publishes* during the drag
+    /// is what decides whether the chrome can be prepared up front or deferred to the end: if
+    /// the churn is playback ticking, it is suppressible; if it is the dismiss itself, it is not.
+    static var appPublishes = 0
+    static var playerPublishes = 0
+    /// True only while a dismiss drag is in flight, so the stack capture below stays off the
+    /// rest of the app's life — `callStackSymbols` is far too expensive to run unconditionally.
+    static var isDragActive = false
+
+    /// Names the setter behind an `objectWillChange`.
+    ///
+    /// `ObservableObject` publishes without saying which property moved, which is exactly the
+    /// question here: 14 `AppModel` publishes land during a single dismiss drag and nothing
+    /// says why. `objectWillChange` fires from `willSet`, so the setter is still on the stack.
+    static func logPublishOrigin(_ label: String) {
+        guard isDragActive else { return }
+        let frames = Thread.callStackSymbols
+            .compactMap { line -> String? in
+                guard line.contains("VellumMusic") else { return nil }
+                // Trim the address/offset noise, keep the demangled symbol.
+                guard let range = line.range(of: "0x") else { return line }
+                return String(line[range.upperBound...].dropFirst(18).prefix(90))
+            }
+            .filter { !$0.contains("logPublishOrigin") && !$0.contains("DebugUIRemote") }
+            .prefix(3)
+        log("NP-PUBLISH \(label) ← \(frames.joined(separator: " | "))")
+    }
+
     /// Times a block and logs it only when it is slow enough to matter.
     ///
     /// Investigation instrumentation for the swipe-down stall (T054). The hang watcher says
