@@ -262,6 +262,9 @@ private struct NowPlayingFullScreenCoverModifier: ViewModifier {
                         .environmentObject(app.subscriptions)
                         .tint(MusicDesign.accent)
                 },
+                // The one value-typed thing baked into the closure above. Everything else there
+                // is an object the player observes for itself. Add to this if that changes.
+                contentRevision: MusicDesign.accent,
                 canDismiss: { NowPlayingCoverState.shared.libraryNavigationDepth == 0 }
             )
         }

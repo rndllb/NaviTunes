@@ -594,6 +594,13 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
     private var barFadeLink: CADisplayLink?
     private var barFadeStart: CFTimeInterval = 0
     private var barFadeHoldUntil: TimeInterval = 0
+    // The chevron half of `incomingBarViews`, resolved once per fade instead of once per frame.
+    // The bar owns the chevron and does not restructure it mid-transition, so re-deriving it on
+    // every display-link tick bought nothing and cost a recursive subview walk with
+    // `String(describing:)` at every node. Empty means "not resolved yet", which is why the walk
+    // still re-runs while it comes back empty — the chevron is installed partway through the
+    // push, and giving up on the first miss would leave it un-faded.
+    private var cachedChevronViews: [UIView] = []
 
     /// Set the moment `prepare` gives up on the geometry and hands the transition to
     /// ``crossFade``. A cross-fade owns the context from then on — it will call
@@ -1148,6 +1155,7 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
         fadingBar = session.navigationBar
         fadingIncludesChevron = session.fadesBackChevron
         barFadeReleased = false
+        cachedChevronViews = []
 
         let views = incomingBarViews()
         guard !views.isEmpty || fadingIncludesChevron else { return }
@@ -1189,7 +1197,10 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
             .flatMap(\.barButtonItems)
             .compactMap(\.customView)
         if fadingIncludesChevron, let bar = fadingBar {
-            views += Self.backChevronViews(in: bar)
+            if cachedChevronViews.isEmpty {
+                cachedChevronViews = Self.backChevronViews(in: bar)
+            }
+            views += cachedChevronViews
         }
         return views
     }
@@ -1226,6 +1237,7 @@ final class CoverZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
         barFadeLink?.invalidate()
         barFadeLink = nil
         let views = incomingBarViews()
+        cachedChevronViews = []
         guard !views.isEmpty else { return }
         if animated {
             UIView.animate(withDuration: CoverZoomTuning.barFadeIn, delay: 0, options: [.curveEaseIn]) {
