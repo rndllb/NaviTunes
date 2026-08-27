@@ -1262,6 +1262,7 @@ public final class AppModel: ObservableObject {
                 jellyfin = nil
                 navidrome = nil
                 isSignedIn = false
+                hasCompletedLibraryBootstrap = false
                 serverConnectionHealth = .unknown
                 errorMessage = error.localizedDescription
             } else {
@@ -1335,6 +1336,8 @@ public final class AppModel: ObservableObject {
         navidromeUserMetadata = nil
         navidromeMagicPlaylistAvatarURL = nil
         isSignedIn = false
+        // Signing out ends the session this flag describes — the next sign-in must bootstrap.
+        hasCompletedLibraryBootstrap = false
         libraryAlbums = []
         recentlyAddedAlbums = []
         homeRecentlyPlayedServerAlbums = []
@@ -1831,12 +1834,34 @@ public final class AppModel: ObservableObject {
     }
 
     /// Single cold-start / sign-in library refresh (deduped).
+    /// Whether a full bootstrap has already completed for the current session.
+    ///
+    /// The in-flight check below is not enough on its own. `RootView` kicks the bootstrap from a
+    /// `.task` on the shell content, and that task is cancelled when the Now Playing cover is
+    /// presented over the shell and re-fires when the shell comes back — so **every dismiss of
+    /// the player re-ran a whole library bootstrap**, by which time the previous task had
+    /// finished and nil'd itself, so nothing stopped it. Measured on device: each dismiss drag
+    /// carried 8–22 `AppModel` publishes (`refreshLibraryAlbums` → `mergeOfflineCatalog` →
+    /// `rebuildDiscoveryTrackIndices`, plus the home rebuild), every one a whole-tree
+    /// invalidation across the ~40 views holding `@EnvironmentObject var app` — and one of the
+    /// resulting render passes was a ~290ms SwiftUI layout+commit, which is the swipe-down lag
+    /// spike. One drag in the same session happened to carry zero publishes and had no stall at
+    /// all, which is what tied the two together.
+    ///
+    /// Reset wherever the session ends, so signing out and back in bootstraps properly.
+    private var hasCompletedLibraryBootstrap = false
+
     public func scheduleLibraryBootstrap() {
         guard isSignedIn else { return }
         if let libraryBootstrapTask, !libraryBootstrapTask.isCancelled { return }
+        // Already done for this session: a re-fired `.task` must not redo the whole thing.
+        // Explicit refreshes (pull-to-refresh, "Refresh library", sync) call
+        // `refreshLibraryAlbums` / `syncLibraryNow` directly and are unaffected.
+        if hasCompletedLibraryBootstrap { return }
         libraryBootstrapTask = Task { [weak self] in
             guard let self else { return }
             await self.runLibraryBootstrap()
+            self.hasCompletedLibraryBootstrap = true
             self.libraryBootstrapTask = nil
         }
     }
