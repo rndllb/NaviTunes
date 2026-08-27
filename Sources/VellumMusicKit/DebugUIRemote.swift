@@ -38,6 +38,8 @@ enum DebugUIRemote {
         // DEBUG builds only (whole file is #if DEBUG): always-on main-thread stall log so
         // device runs record hangs without needing the simulator-only notify trigger.
         startHangWatch()
+        // Companion to the above: the hang watcher gives the duration, this gives the phase.
+        startTurnWatch()
         observe("com.vellum.debug.openPlaylist")
         observe("com.vellum.debug.addToPlaylist")
         observe("com.vellum.debug.toast")
@@ -175,6 +177,58 @@ enum DebugUIRemote {
                 log("MARK " + name.dropFirst("com.vellum.debug.mark.".count))
             }
         }
+    }
+
+    /// Names the runloop phase a long main-thread turn was spent in.
+    ///
+    /// The hang watcher says *that* the main thread stalled and for how long. It cannot say
+    /// what it was doing, which is why the ~300ms swipe-down stall has stayed anonymous: it
+    /// falls in a window where nothing else logs. A runloop observer fires on every phase
+    /// boundary, so the gap between two consecutive boundaries is one attributable span —
+    /// and the phase names say which kind of work it was:
+    ///
+    ///   - `beforeSources → beforeWaiting` is app + UIKit work for this turn, and a
+    ///     `CATransaction` commit (layout, display, SwiftUI render) lands at its end.
+    ///   - `afterWaiting → beforeSources` is source0/source1 delivery — a callback.
+    ///   - anything `→ afterWaiting` is the thread having been idle, not stalled.
+    ///
+    /// Threshold is well above a dropped frame so ordinary rendering stays silent.
+    private static var turnObserver: CFRunLoopObserver?
+    private static var lastTurnAt: CFAbsoluteTime = 0
+    private static var lastTurnPhase = "start"
+
+    private static func startTurnWatch() {
+        guard turnObserver == nil else { return }
+        lastTurnAt = CFAbsoluteTimeGetCurrent()
+        let activities: CFRunLoopActivity = [
+            .entry, .beforeTimers, .beforeSources, .beforeWaiting, .afterWaiting, .exit,
+        ]
+        let observer = CFRunLoopObserverCreateWithHandler(
+            kCFAllocatorDefault, activities.rawValue, true, 0,
+        ) { _, activity in
+            MainActor.assumeIsolated {
+                let now = CFAbsoluteTimeGetCurrent()
+                let elapsed = now - lastTurnAt
+                let phase: String
+                switch activity {
+                case .entry: phase = "entry"
+                case .beforeTimers: phase = "beforeTimers"
+                case .beforeSources: phase = "beforeSources"
+                case .beforeWaiting: phase = "beforeWaiting"
+                case .afterWaiting: phase = "afterWaiting"
+                case .exit: phase = "exit"
+                default: phase = "other"
+                }
+                // `→ afterWaiting` means the thread was parked, which is not a stall.
+                if elapsed > 0.06, phase != "afterWaiting" {
+                    log(String(format: "SLOWTURN %@→%@ %.0fms", lastTurnPhase, phase, elapsed * 1000))
+                }
+                lastTurnAt = now
+                lastTurnPhase = phase
+            }
+        }
+        CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+        turnObserver = observer
     }
 
     /// Times a block and logs it only when it is slow enough to matter.
