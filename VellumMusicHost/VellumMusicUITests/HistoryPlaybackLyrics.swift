@@ -36,6 +36,35 @@ final class HistoryPlaybackLyricsTests: XCTestCase {
         )
     }
 
+    /// Reported: after quitting and relaunching, resuming the restored song shows no lyrics.
+    /// `restore()` stages the queue without loading any, and the first play tap goes straight
+    /// to `startCurrentItem` — the one track-start path that never asked for them.
+    func testLyricsLoadAfterRelaunchingAndResuming() {
+        let app = XCUIApplication()
+        app.launch()
+        SimulatorSignIn.ensureSignedIn(app)
+
+        post("com.vellum.debug.playHistoryQuery")
+        Thread.sleep(forTimeInterval: 14)
+        // Quit: the queue snapshot is written and restored on the next launch.
+        app.terminate()
+        Thread.sleep(forTimeInterval: 2)
+        app.launch()
+
+        // Resume from the restored snapshot, then look at the lyrics.
+        let pill = app.buttons["play.fill"].firstMatch
+        XCTAssertTrue(pill.waitForExistence(timeout: 20), "mini player did not come back after relaunch")
+        pill.tap()
+        Thread.sleep(forTimeInterval: 10)
+        post("com.vellum.debug.openPlayer")
+        openLyrics(app)
+
+        XCTAssertTrue(
+            app.staticTexts[lyricLine].waitForExistence(timeout: 20),
+            "lyrics did not load for a song resumed after relaunch"
+        )
+    }
+
     /// The everyday case: the history entry is still sitting in the queue you are playing, so
     /// the row jumps within the queue instead of starting a fresh one. Playing the album the
     /// lyrics track belongs to puts it at index 2 while track 1 plays.
