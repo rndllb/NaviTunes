@@ -15,8 +15,14 @@ struct StandardSongMenuContent: View {
 
     let track: Track
 
+    /// Play this song now. Only some surfaces offer it — on a list row, tapping the row already
+    /// plays it, so it is redundant there and those call sites pass `nil`.
+    var onPlay: (() -> Void)? = nil
     var onPlayNext: (() -> Void)? = nil
     var onAddToQueue: (() -> Void)? = nil
+    /// Album-scoped, not song-scoped: adds the song's whole album. Search offers it because a
+    /// search result is often the way you find an album you do not have yet.
+    var onAddAlbumToLibrary: (() -> Void)? = nil
     var onFavorite: (() -> Void)? = nil
     var onAddToPlaylist: (() -> Void)? = nil
     var onAddToLibrary: (() -> Void)? = nil
@@ -77,11 +83,25 @@ struct StandardSongMenuContent: View {
                     Label("Add to Playlist", systemImage: "rectangle.stack.badge.plus")
                 }
             }
+            if let onAddAlbumToLibrary {
+                Button(action: onAddAlbumToLibrary) {
+                    // `plus.square.on.square` is what `LibraryAlbumContextMenuContent` already
+                    // uses for adding an album, and it is a symbol this module verifies at
+                    // runtime. Do not invent a name here — see T063, where `music.note.square`
+                    // did not exist and rendered as blank space with no error.
+                    Label("Add Album to Library", systemImage: "plus.square.on.square")
+                }
+            }
         }
         .tint(Color.primary)
 
-        if onPlayNext != nil || onAddToQueue != nil {
+        if onPlay != nil || onPlayNext != nil || onAddToQueue != nil {
             Section {
+                if let onPlay {
+                    Button(action: onPlay) {
+                        Label("Play", systemImage: "play")
+                    }
+                }
                 if let onPlayNext {
                     Button(action: onPlayNext) {
                         Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
