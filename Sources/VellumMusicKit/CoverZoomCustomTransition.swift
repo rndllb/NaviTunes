@@ -1733,6 +1733,84 @@ final class CoverZoomTouchSpy: UIGestureRecognizer {
 /// which is written only by the touch spy hit-testing a registered cover row, and cleared as
 /// soon as a push consumes it. Every other push in the app keeps the flag it was given. And the
 /// change it makes is to animate a push, which is the ordinary case everywhere else.
+/// Forces `animated: true` on a Settings push that SwiftUI would otherwise run instantly.
+///
+/// **This is a workaround for a SwiftUI defect, not a root-cause fix.** What is wrong is
+/// upstream: SwiftUI itself calls `pushViewController(_:animated: false)` for the Settings hub
+/// and for every Settings subpage on most tabs. Measured on the simulator, same build, same
+/// code — `willShow`→`didShow` is ~4 ms in the false case and ~500 ms in the true case, and
+/// pops are always animated, which is exactly why Settings snapped open but slid back:
+///
+///     PUSHDIAG animated=false  nav=1575   ← Home     hub and subpage
+///     PUSHDIAG animated=false  nav=32935  ← New      hub and subpage
+///     PUSHDIAG animated=true   nav=17689  ← Radio    hub and subpage
+///     PUSHDIAG animated=false  nav=43879  ← Library  hub and subpage
+///
+/// The deciding input inside SwiftUI was never identified, and it is **not structural**: the
+/// Library stack measured `animated: true` twice and `animated: false` four times on
+/// byte-identical code, so no amount of restructuring could have reached it. Ruled out by
+/// measurement, so don't re-spend the time: no `disablesAnimations` transaction on the path;
+/// `UIView.areAnimationsEnabled` is `true` at the push; no `AppModel` publish in flight (3–17 s
+/// since the last one, in both cases); the tab roots carry identical chrome, `deepLinkPush` and
+/// header overlay, and `RootView`'s `Tab` declarations are uniform; and the call stacks for an
+/// animated and an unanimated push are identical through `NavigationStackCoordinator.update`.
+/// Four call-site rewrites changed nothing: destination-closure `NavigationLink`,
+/// `NavigationLink(value:)` + `navigationDestination(for:)` at the tab root, removing the
+/// stack's `navigationDestination(item:)` modifiers, and an explicit
+/// `withAnimation { path.append(…) }` — that last one still measured `animated: false`.
+///
+/// **Scope.** Never blanket-forces. It fires only while a Settings screen is actually on the
+/// stack, or for the single push the Settings entry point armed. Everything else on every stack
+/// keeps the flag SwiftUI gave it.
+///
+/// **Why there is no gesture here.** An earlier attempt armed this from
+/// `simultaneousGesture(TapGesture())` on the Settings rows. That swallows `NavigationLink`
+/// activation and every Settings row went dead — the same failure `CoverZoomSource` already
+/// documents. Arming is done from a real `Button` action and from screen lifecycle only.
+@MainActor
+enum SettingsPushAnimationFix {
+    /// Set by the Settings entry button; consumed by the next push.
+    private static var entryArmed = false
+    /// How many Settings screens are currently on a navigation stack. While this is > 0, the
+    /// next push from one of them is another Settings screen.
+    private static var screensOnStack = 0
+
+    /// Called from the Settings entry button, immediately before it pushes the hub.
+    static func armEntry() {
+        // Normally installed by the first cover-zoom cell to reach a window; Settings is
+        // reachable from tabs that may not have shown one yet.
+        CoverZoomPushAnimationFix.installIfNeeded()
+        entryArmed = true
+    }
+
+    static func noteScreenAppeared() {
+        CoverZoomPushAnimationFix.installIfNeeded()
+        screensOnStack += 1
+    }
+
+    static func noteScreenDisappeared() {
+        screensOnStack = max(0, screensOnStack - 1)
+    }
+
+    /// Whether the push happening right now is a Settings push.
+    static func shouldForceAnimation() -> Bool {
+        if entryArmed {
+            entryArmed = false
+            return true
+        }
+        return screensOnStack > 0
+    }
+}
+
+extension View {
+    /// Marks a Settings screen so pushes made while it is on screen are animated.
+    /// See ``SettingsPushAnimationFix``.
+    func tracksSettingsPushAnimation() -> some View {
+        onAppear { SettingsPushAnimationFix.noteScreenAppeared() }
+            .onDisappear { SettingsPushAnimationFix.noteScreenDisappeared() }
+    }
+}
+
 @MainActor
 enum CoverZoomPushAnimationFix {
     private static var installed = false
@@ -1757,6 +1835,11 @@ extension UINavigationController {
     @objc fileprivate func coverZoomForcedAnimatedPush(_ viewController: UIViewController, animated: Bool) {
         var animated = animated
         MainActor.assumeIsolated {
+            // A Settings push SwiftUI is about to run instantly. Setting `animated` here makes
+            // the cover-zoom guard below fall through untouched, so the two never interact.
+            if !animated, SettingsPushAnimationFix.shouldForceAnimation() {
+                animated = true
+            }
             guard !animated,
                   CoverZoomNavigationDelegate.isInstalled(on: self),
                   let id = CoverZoomRegistry.shared.pendingPushID,
