@@ -26,6 +26,9 @@ struct StandardSongMenuContent: View {
     var onGoToArtist: (() -> Void)? = nil
     var onRemoveFromLibrary: (() -> Void)? = nil
     var onDeleteFromLibrary: (() -> Void)? = nil
+    /// Only meaningful when the row actually belongs to a user playlist. Album detail and home
+    /// mixes pass `nil`, and the item is then hidden — an album track is not "in" a playlist.
+    var onRemoveFromPlaylist: (() -> Void)? = nil
 
     private var isInLibrary: Bool { app.isSongInLibrary(track.id) }
     private var isOfflineCached: Bool { app.offline.downloadedTrackIds.contains(track.id) }
@@ -97,7 +100,10 @@ struct StandardSongMenuContent: View {
             Section {
                 if let onGoToAlbum {
                     Button(action: onGoToAlbum) {
-                        Label("Go to Album", systemImage: "music.note.square")
+                        // `music.note.square` does not exist in SF Symbols — it resolved to nil
+                        // and rendered as blank space with no build error. `square.stack` is the
+                        // glyph this app already uses for Albums in the Library filter.
+                        Label("Go to Album", systemImage: "square.stack")
                     }
                 }
                 if let onGoToArtist {
@@ -121,6 +127,15 @@ struct StandardSongMenuContent: View {
                 }
             }
             .tint(Color.primary)
+        }
+
+        if let onRemoveFromPlaylist {
+            Section {
+                Button(role: .destructive, action: onRemoveFromPlaylist) {
+                    Label("Remove from Playlist", systemImage: "text.badge.minus")
+                }
+            }
+            .tint(MusicDesign.destructiveAction)
         }
 
         if onRemoveFromLibrary != nil || (canDeleteFromLibrary && onDeleteFromLibrary != nil) {

@@ -208,7 +208,7 @@ struct SongOverflowPanel: View {
             onGoToAlbum(); onDismiss()
         } label: {
             HStack(alignment: .center, spacing: iconTextGap) {
-                Image(systemName: "music.note.square")
+                Image(systemName: "square.stack")
                     .font(.system(size: 17, weight: .regular))
                     .foregroundStyle(Color.primary)
                     .frame(width: iconColumnWidth, alignment: .center)

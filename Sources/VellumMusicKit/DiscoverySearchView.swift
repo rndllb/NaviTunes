@@ -839,7 +839,7 @@ struct DiscoverySearchView: View {
             Button {
                 navigationPath.append(SearchNavTarget.album(app.albumSummary(for: track)))
             } label: {
-                Label("Go to Album", systemImage: "music.note.square")
+                Label("Go to Album", systemImage: "square.stack")
             }
             ShareLink(item: "\(track.title) — \(track.artist)") {
                 Label("Share", systemImage: "square.and.arrow.up")

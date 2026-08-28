@@ -466,6 +466,8 @@ struct LibrarySongRow: View, Equatable {
     /// Drives whether ``onAddToQueue`` is surfaced as the full-swipe leading action.
     var hasActiveQueue: Bool = false
     var onGoToAlbum: (() -> Void)? = nil
+    /// Nil where the surface has no artist to navigate to (or the artist is "Various Artists").
+    var onGoToArtist: (() -> Void)? = nil
     var onAddToPlaylist: (() -> Void)? = nil
     var onRemoveFromPlaylist: (() -> Void)? = nil
     /// User-level remove from Vellum library (drops the song from the magic playlist).
@@ -808,107 +810,31 @@ struct LibrarySongRow: View, Equatable {
     /// the ⋯ already offered.
     @ViewBuilder
     private var songMenuContent: some View {
-                    ControlGroup {
-                        if !isInLibrary, let onAddToLibrary {
-                            Button(action: onAddToLibrary) {
-                                Label("Add to Library", systemImage: "plus")
-                            }
-                        } else if isInLibrary, !isOfflineCached {
-                            Button(action: onDownload) {
-                                Label("Download", systemImage: "arrow.down")
-                            }
-                        }
-                        Button(action: onFavorite) {
-                            Label(
-                                isFavorite ? "Unfavorite" : "Favorite",
-                                systemImage: isFavorite ? "star.fill" : "star"
-                            )
-                        }
-                        ShareLink(item: "\(track.title) — \(track.artist)") {
-                            Label("Share", systemImage: "square.and.arrow.up")
-                        }
-                    }
-                    .tint(Color.primary)
-
-                    Section {
-                        Button {
-                            if !isPinnedToLibrary {
-                                app.retainTrackForLibraryPin(track)
-                            }
-                            LibraryPinStore.toggle(trackPinRef, storage: &pinnedStorage)
-                        } label: {
-                            Label(
-                                LibraryPinStore.menuLabel(kind: .track, isPinned: isPinnedToLibrary),
-                                systemImage: isPinnedToLibrary ? "pin.slash" : "pin"
-                            )
-                        }
-                        if let onAddToPlaylist {
-                            Button(action: onAddToPlaylist) {
-                                Label("Add to Playlist", systemImage: "rectangle.stack.badge.plus")
-                            }
-                        } else {
-                            Button {} label: { Label("Add to Playlist", systemImage: "rectangle.stack.badge.plus") }
-                        }
-                    }
-                    .tint(Color.primary)
-
-                    Section {
-                        Button(action: onPlayNext) {
-                            Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
-                        }
-                    }
-                    .tint(Color.primary)
-
-                    if let onGoToAlbum {
-                        Section {
-                            Button(action: onGoToAlbum) {
-                                Label("Go to Album", systemImage: "music.note.square")
-                            }
-                        }
-                        .tint(Color.primary)
-                    }
-
-                    NavidromeShareMenuSection(
-                        itemId: track.id,
-                        description: "\(track.title) — \(track.artist)"
-                    )
-
-                    if isOfflineCached {
-                        Section {
-                            // Informational "this song is on device" row — disabled so it
-                            // reads as a status indicator, not an action.
-                            Button {} label: {
-                                Label("Downloaded", systemImage: "checkmark.circle.fill")
-                            }
-                            .disabled(true)
-                            if let onRemoveDownload {
-                                Button(action: onRemoveDownload) {
-                                    Label("Remove Download", systemImage: "arrow.down.circle.dotted")
-                                }
-                            }
-                        }
-                        .tint(Color.primary)
-                    }
-
-                    if onRemoveFromLibrary != nil || canDeleteFromLibrary {
-                        Section {
-                            if let onRemoveFromLibrary {
-                                // User-level (magic playlist) — always available when the
-                                // host view supplied the callback. Album entry is left alone;
-                                // the album stays in library with one fewer track.
-                                Button(role: .destructive, action: onRemoveFromLibrary) {
-                                    Label("Delete from Library", systemImage: "trash")
-                                }
-                            }
-                            // Admin-only: removes the file from the server entirely.
-                            if canDeleteFromLibrary {
-                                Button(role: .destructive, action: onDeleteFromLibrary) {
-                                    Label("Delete File from Server", systemImage: "xmark.bin")
-                                }
-                            }
-                        }
-                        .tint(MusicDesign.destructiveAction)
-                    }
+        // Converged onto the shared template instead of keeping a fourth hand-maintained
+        // variant. The Now Playing view's long-press menu is already this same template
+        // (`NowPlayingView.swift:770` → `queueSongMenuContent` → `StandardSongMenuContent`),
+        // which is the layout this row was asked to match — so converging settles the layout
+        // question and the three previously-missing actions (Add to Queue, Go to Artist,
+        // Remove from Playlist) in one move.
+        //
+        // Dropped in the process: an informational, disabled "Downloaded ✓" row. The row itself
+        // already shows a download glyph through `TrackOfflineDownloadIndicator`, so nothing
+        // the user can actually see is lost.
+        StandardSongMenuContent(
+            track: track,
+            onPlayNext: onPlayNext,
+            onAddToQueue: onAddToQueue,
+            onFavorite: onFavorite,
+            onAddToPlaylist: onAddToPlaylist,
+            onAddToLibrary: onAddToLibrary,
+            onDownload: onDownload,
+            onRemoveDownload: onRemoveDownload,
+            onGoToAlbum: onGoToAlbum,
+            onGoToArtist: onGoToArtist,
+            onRemoveFromLibrary: onRemoveFromLibrary,
+            onDeleteFromLibrary: onDeleteFromLibrary,
+            onRemoveFromPlaylist: onRemoveFromPlaylist
+        )
     }
 }
 
