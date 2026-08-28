@@ -201,3 +201,22 @@ Ethan reported three things about the song-row menu: actions missing versus the 
 - **One thing removed:** an informational, disabled "Downloaded ✓" row that only the song-row copy had. The row already shows a download glyph through `TrackOfflineDownloadIndicator`, so nothing visible to the user is lost, and keeping it would have meant adding a row to every other surface to stay converged.
 - **Verified on the simulator, and the menu was actually looked at, not just asserted on.** On a playlist row all of Play Next, Add to Queue, Add to Playlist, Go to Album, Go to Artist and Remove from Playlist are present, every item renders its icon, and the previously blank Go to Album icon now draws. On an album row Add to Queue is present and Remove from Playlist is correctly absent. Tap-to-play still starts playback and the swipe actions still appear.
 - **Unproven:** device. Simulator only. Ethan's report of missing icons was on device, and while `music.note.square` is invalid on every iOS version, it is worth him confirming that the icon he was missing is the one now fixed.
+
+## 2026-08-28 — track-list duration footer: hours then minutes, from one formatter (T065)
+
+Ethan: *"only shows minutes at the bottom but should be hours then mins"*. At his library sizes the raw-minutes number was meaningless — a long playlist read "3120 minutes" instead of "52 hours".
+
+- **One formatter, three call sites.** The string was duplicated in `ServerPlaylistViews` and twice in `BrowseAlbumDetailView`. T060 deliberately left the two browse copies alone as out of scope; they were in scope this time. All three now call a new `TrackListSummary` (`TrackListSummary.swift`) — the same one-panel principle Ethan stated for menus, applied to a formatter. Fixing the format in one place and leaving two behind would have recreated exactly the situation that let two bugs live in all three copies at once.
+- **Second bug, fixed in the same place.** Every copy pluralised the song count but hardcoded "minutes", so a one-minute track read **"1 song, 1 minutes"**. Both units are singularised now.
+- **The format, and what it does at the edges.** `"N songs, 1 hour 5 minutes"` — song count and duration separated by a comma, hours and minutes by a space, each unit singularised and the empty unit dropped:
+  - **zero / unknown duration** → the duration clause is **omitted entirely** ("3 songs"), rather than printing "0 minutes". Browse preview tracks often carry no duration at all, and that copy already did this by hand; now it falls out of the shared formatter.
+  - **under a minute** → "1 minute". A real track is never "0 minutes".
+  - **59 min** → "59 minutes".
+  - **exactly 60 min** → **"1 hour"**, not "1 hour 0 minutes".
+  - **61 min** → "1 hour 1 minute".
+  - **empty list** → "No songs" (unchanged).
+- **Rounding changed from ceil to nearest.** At album and playlist scale, rounding to the nearest minute is closer to the truth than always rounding up; `max(1, …)` still keeps a very short list from reading as zero.
+- **Left alignment unchanged**, as settled in T060 — two differently-aligned footers in one view would be worse than either choice alone.
+- **Verified on the simulator, on a playlist and an album, reading the actual rendered strings** rather than asserting a regex: a 3-song playlist renders `3 songs, 11 minutes`, and *Live at The Casbah* (22 tracks, 141 minutes) renders `22 songs, 2 hours 21 minutes`. Both format branches exercised on real screens.
+- **Out of scope, deliberately:** the sleep-timer label in `NowPlayingView` also reads "N minutes", but it is a timer setting, not a track-list total.
+- **Unproven:** device. Simulator only.

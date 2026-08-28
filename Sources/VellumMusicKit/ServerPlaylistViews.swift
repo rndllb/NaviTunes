@@ -2581,11 +2581,7 @@ struct ServerPlaylistDetailView: View {
     /// 12-track album it would not have mattered; on the playlists this footer now covers, it
     /// does. See ``recomputeTrackDurationTotal()``.
     private var trackListDurationSummary: String {
-        let n = rows.count
-        let totalMin = max(1, Int(ceil(trackDurationTotalSeconds / 60.0)))
-        if n == 0 { return "No songs" }
-        if n == 1 { return "1 song, \(totalMin) minutes" }
-        return "\(n) songs, \(totalMin) minutes"
+        TrackListSummary.text(songCount: rows.count, totalSeconds: trackDurationTotalSeconds)
     }
 
     /// Sums row durations once per tracklist change instead of once per body evaluation.
