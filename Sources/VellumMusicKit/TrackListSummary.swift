@@ -21,6 +21,30 @@ enum TrackListSummary {
         count == 1 ? "1 song" : "\(count) songs"
     }
 
+    /// The date line above the summary: when an album came out, or when a playlist was made.
+    ///
+    /// Both are **labelled**. The album line used to render a bare date ("14 March 2019"), which
+    /// was unambiguous only because albums were the sole surface that had one. Now that a
+    /// playlist shows a date in the same position, an unlabelled date could mean either thing,
+    /// so both say which they are.
+    ///
+    /// Returns `nil` when the date is unknown, and callers render nothing — no placeholder, no
+    /// empty row. That is the common case on a real library, where plenty of albums carry no
+    /// release metadata at all.
+    static func releasedLine(for album: AlbumSummary) -> String? {
+        // Reuses `releaseFooterDisplayString`, which already prefers a full date and falls back
+        // to a bare year, rejecting implausible ones (before 1900 or more than two years out).
+        album.releaseFooterDisplayString.map { "Released \($0)" }
+    }
+
+    /// Navidrome returns `created` on every playlist, but `PlaylistSummary.libraryAddedDate` was
+    /// always nil until this shipped: the field was wired end to end, and only the date *parser*
+    /// rejected Navidrome's ISO-8601 format. See `parsePlaylistDictSummary` in `NavidromeClient`.
+    static func createdLine(_ created: Date?) -> String? {
+        guard let created else { return nil }
+        return "Created \(created.formatted(date: .long, time: .omitted))"
+    }
+
     /// Hours then minutes, each singularised, with the empty unit dropped:
     ///
     /// - `0` (or unknown) → `nil`, so the caller omits the clause

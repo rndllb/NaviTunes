@@ -1648,8 +1648,17 @@ final class NavidromeClient: MusicLibraryProviding {
         let count = navidromeInt(dict["songCount"])
         let coverId = navidromeCoerceString(dict["coverArt"])
         let art = coverId.flatMap { streamURLForCover(coverArt: $0) }
-        let created = navidromeCreatedDate(dict["created"])
-        let updated = navidromeCreatedDate(dict["changed"])
+        // `navidromeCreatedDate` parses NUMERIC epochs only. Navidrome sends these two as
+        // ISO-8601 strings with nanosecond precision ("2026-08-26T14:42:46.697696187Z"), so it
+        // returned nil for every playlist and `libraryAddedDate` was always empty — which is why
+        // the footer's "Created …" line never appeared. `navidromeOptionalDate` tries the numeric
+        // form first and then the ISO formatters; `withFractionalSeconds` does accept 8-9
+        // fractional digits despite being documented for milliseconds (verified against this
+        // server's real payloads). Its formatter order matters: `.withFullDate` also matches a
+        // full timestamp by parsing just the leading date, so it must stay last or every date
+        // would silently collapse to midnight UTC.
+        let created = navidromeOptionalDate(dict["created"])
+        let updated = navidromeOptionalDate(dict["changed"])
         let isPublic = navidromeCoerceBool(dict["public"])
         return PlaylistSummary(
             id: id,

@@ -1519,8 +1519,15 @@ struct ServerPlaylistDetailView: View {
             if count > 0 {
                 parts.append("\(count) song\(count == 1 ? "" : "s")")
             }
-            if let date = p.libraryAddedDate {
-                parts.append("Updated \(Self.relativeDateFormatter.localizedString(for: date, relativeTo: Date()))")
+            // This said "Updated" while reading `libraryAddedDate`, which is the server's
+            // *created* date — `serverUpdatedDate` (`changed`) is the one that means "updated".
+            // The mislabel was invisible until now only because both fields were always nil (the
+            // date parser rejected Navidrome's ISO-8601 format); fixing the parser is what would
+            // have put a wrong word on screen, so it is corrected in the same commit.
+            if let updated = p.serverUpdatedDate {
+                parts.append("Updated \(Self.relativeDateFormatter.localizedString(for: updated, relativeTo: Date()))")
+            } else if let created = p.libraryAddedDate {
+                parts.append("Created \(Self.relativeDateFormatter.localizedString(for: created, relativeTo: Date()))")
             }
             return parts.isEmpty ? nil : parts.joined(separator: " · ")
         case .homeMix:
@@ -2548,7 +2555,21 @@ struct ServerPlaylistDetailView: View {
         }
     }
 
-    /// Footer under the last row — release year / date (albums only) + total duration.
+    /// Date line above the summary: an album's release date, a playlist's creation date, and
+    /// nothing at all for a home mix (generated, so it has no meaningful date) or when the
+    /// server supplied no date.
+    ///
+    /// O(1) — reads two already-parsed fields. Nothing here scales with the row count, which
+    /// matters because this footer sits on the screen T059 is about.
+    private var footerDateLine: String? {
+        if let album = albumOrNil {
+            return TrackListSummary.releasedLine(for: album)
+        }
+        guard let playlist = source.playlistOrNil else { return nil }
+        return TrackListSummary.createdLine(playlist.libraryAddedDate)
+    }
+
+    /// Footer under the last row — a date line + the total duration.
     ///
     /// Albums always had this; playlists and home mixes had nothing below the last row. The
     /// summary line is the same one, rendered for all three, so a playlist reads the same way an
@@ -2558,8 +2579,8 @@ struct ServerPlaylistDetailView: View {
     private var trackListFooterBlock: some View {
         if !rows.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
-                if let album = albumOrNil, let line = album.releaseFooterDisplayString {
-                    Text(line)
+                if let dateLine = footerDateLine {
+                    Text(dateLine)
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(backdropPalette.heroChromeSecondary)
                 }
