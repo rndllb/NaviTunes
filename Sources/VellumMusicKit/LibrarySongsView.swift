@@ -771,6 +771,43 @@ struct LibrarySongRow: View, Equatable {
             }
 
                 Menu {
+                    songMenuContent
+                } label: {
+                    rowMenuGlyph
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, usesAlbumSwipeChrome ? AlbumTrackRowLayout.horizontalPadding : 20)
+            .padding(.vertical, usesAlbumSwipeChrome ? AlbumTrackRowLayout.verticalRowPadding : itemSize.libraryVerticalPadding)
+            .background(rowBackgroundFill)
+            // Apple-Music-style long press. Stock `contextMenu(menuItems:preview:)` owns the
+            // lift, the dim/blur behind it and the dismissal — none of that is hand-rolled.
+            // The same `songMenuContent` backs this and the ⋯ button, so one row can never
+            // offer different actions depending on how it was opened. `preview:` is only built
+            // when a menu actually opens, so the card costs nothing for the other rows.
+            .contextMenu {
+                songMenuContent
+            } preview: {
+                SongLongPressPreviewCard(track: track, artworkURL: artworkURL)
+            }
+    }
+
+    private var rowMenuGlyph: some View {
+        Image(systemName: "ellipsis")
+            .font(usesAlbumSwipeChrome ? .caption.weight(.semibold) : .body.weight(.semibold))
+            .foregroundStyle(rowMenuGlyphColor)
+            .frame(
+                width: usesAlbumSwipeChrome ? 22 : 32,
+                height: usesAlbumSwipeChrome ? 22 : 36
+            )
+            .contentShape(Rectangle())
+    }
+
+    /// Backs both the row's ⋯ button and its long-press context menu. Extracted verbatim from
+    /// the ⋯ menu — same options, same order — so adding the long press could not change what
+    /// the ⋯ already offered.
+    @ViewBuilder
+    private var songMenuContent: some View {
                     ControlGroup {
                         if !isInLibrary, let onAddToLibrary {
                             Button(action: onAddToLibrary) {
@@ -872,21 +909,59 @@ struct LibrarySongRow: View, Equatable {
                         }
                         .tint(MusicDesign.destructiveAction)
                     }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(usesAlbumSwipeChrome ? .caption.weight(.semibold) : .body.weight(.semibold))
-                        .foregroundStyle(rowMenuGlyphColor)
-                        .frame(
-                            width: usesAlbumSwipeChrome ? 22 : 32,
-                            height: usesAlbumSwipeChrome ? 22 : 36
-                        )
-                        .contentShape(Rectangle())
+    }
+}
+
+/// The floating card shown above the menu when a song row is long-pressed.
+///
+/// Mirrors Apple Music's: artwork, then title, artist, and `album · year`. Every value is read
+/// straight off ``Track`` — `albumTitle` and `releaseYear` are already stored on it — so there
+/// is no catalog lookup here and nothing to memoize. Built only when a menu opens, never as
+/// part of a row's normal body pass.
+struct SongLongPressPreviewCard: View {
+    let track: Track
+    let artworkURL: URL?
+
+    private var albumLine: String? {
+        let album = track.albumTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch (album.isEmpty, track.releaseYear) {
+        case (true, nil): return nil
+        case (true, let year?): return "\(year)"
+        case (false, nil): return album
+        case (false, let year?): return "\(album) · \(year)"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            AlbumArtworkView(
+                url: artworkURL,
+                cornerRadius: 6,
+                maxDecodePixels: 192
+            )
+            .frame(width: 56, height: 56)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(track.title)
+                    .font(.body.weight(.semibold))
+                    .lineLimit(1)
+                if !track.artist.isEmpty {
+                    Text(track.artist)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
-                .buttonStyle(.plain)
+                if let albumLine {
+                    Text(albumLine)
+                        .font(.footnote)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(2)
+                }
             }
-            .padding(.horizontal, usesAlbumSwipeChrome ? AlbumTrackRowLayout.horizontalPadding : 20)
-            .padding(.vertical, usesAlbumSwipeChrome ? AlbumTrackRowLayout.verticalRowPadding : itemSize.libraryVerticalPadding)
-            .background(rowBackgroundFill)
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(width: 300, alignment: .leading)
     }
 }
 
