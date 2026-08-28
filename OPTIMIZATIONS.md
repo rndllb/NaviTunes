@@ -236,3 +236,41 @@ Ethan, on being told the missing icon was Go to Album: *"and it shouldn't even m
 - **Verified on the running app** for the search surface: the menu on a real song row (`Nekozilla, Song · Different Heaven`) shows Play, Play Next, Add to Queue, Add to Playlist, Add Album to Library and Go to Album, and Add to Library works. All three SF Symbols used are asserted to resolve at runtime.
 - **NOT verified, and worth knowing why:** that the converged **"Delete from Library"** removes rather than favourites could not be exercised on that surface, because **a song that is in your library stops appearing in Discover search results** — the row vanishes the moment it is added, so the removal item is barely reachable there at all. The change itself is a direct rewiring (`toggleFavoriteTrack` → `removeSongFromLibrary`) and the same callback is exercised on the library-row surfaces converged in T063, but the Discover round-trip is unproven. That reachability quirk is a separate product question worth putting to Ethan.
 - **Unproven:** device. Simulator only.
+
+## 2026-08-28 — the date under the track list, and the parser that made it impossible (T067)
+
+The ask was small: a date under the track list — an album's release date, and a playlist's creation date **only if Navidrome genuinely returns one**. It does. The reason it had never appeared is not the reason I expected.
+
+- **My earlier audit was wrong, and the code is why.** I reported that `created` was "already parsed into `PlaylistSummary.libraryAddedDate`, so no new plumbing is needed." The field *is* wired end to end — model, decode site, call sites, all correct. Only the **parser** was broken: `parsePlaylistDictSummary` called `navidromeCreatedDate`, which handles **numeric epochs only**. Navidrome sends ISO-8601 with nanosecond precision (`2026-08-26T14:42:46.697696187Z`), so it returned `nil` for **every playlist, always**. Reading the call site is not the same as reading the function it calls.
+- **The fix is one helper swap**, to the `navidromeOptionalDate` sitting ten lines above it, which tries the numeric form and then the ISO formatters.
+- **Checked, not assumed:** `ISO8601DateFormatter` with `.withFractionalSeconds` is documented for *milliseconds*, so I probed it against this server's real payloads before relying on it — it does accept 8 and 9 fractional digits. The formatter **order** also matters and is already correct: `.withFullDate` happily matches a full timestamp by parsing just the leading date, so if it ran first every date would silently collapse to midnight UTC.
+
+### What else depended on it
+
+`libraryAddedDate` was `nil` for every Navidrome playlist, so each of these was silently falling back to `.distantPast`. They now get real dates and **will order differently**:
+
+- **Library → Recently Added** — server-side playlists never sorted in by their true creation date unless this app had stamped one locally.
+- **Sort by Date Added / Recently Updated** (`LibraryView`, `ServerPlaylistViews`) — the fallback made these effectively source-order.
+- **The playlist hero subtitle — which was mislabelled, and my fix would have put the wrong word on screen.** It read `libraryAddedDate` (the server's **created** date) and labelled it **"Updated"**. That was invisible only because the value was always `nil`. It now prefers `serverUpdatedDate` (`changed`, also newly parsed) and says "Created" only when it falls back. **Fixed in this commit because this commit is what made it visible** — shipping the parser fix alone would have introduced a user-visible lie.
+
+### Deliberately not fixed
+
+**Albums and tracks have the identical bug** — `NavidromeClient.swift:182` and `:971` also call `navidromeCreatedDate` on `created`, and I confirmed from real payloads that `getAlbumList2` and `getRandomSongs` return the same ISO format. So `libraryAddedDate` is `nil` for every Navidrome album and song too. The one-line fix is the same. **I did not ship it**: album/track "date added" feeds Library sort order and `NewTabPersonalizationEngine` recency across the app, and changing that is a behaviour change of its own, not part of a footer line. It needs its own diagnosis and sign-off. **Flagged, not silently expanded.**
+
+### The feature itself
+
+- **Both dates are labelled** — "Released 14 March 2019", "Created 26 August 2026". The album line previously rendered a **bare date**, which was unambiguous only while albums were the sole surface with one; now that a playlist shows a date in the same position, an unlabelled date could mean either. **This is a visible change to the album line.**
+- **Missing date → the line is omitted entirely.** No placeholder, no empty row. That is the common case: plenty of albums carry no release metadata.
+- **Home mixes show no date** — they are generated, so they have none to show.
+- **One formatter, three call sites.** `releasedLine` / `createdLine` joined `TrackListSummary` (T065), and `BrowseAlbumDetailView` was switched over to it rather than keeping its own copy — the T064 rule applied to new code.
+- **O(1)** — reads two already-parsed fields. Nothing here scales with row count, which matters because this footer sits on the screen T059 is about.
+- **Verified on the simulator, reading the actual rendered strings**, on a playlist *and* an album, plus the corrected subtitle:
+  - playlist footer → `Created August 28, 2026`
+  - album footer → `Released 2005` (*Live at The Casbah* — the year-only fallback branch)
+  - playlist hero → `2 songs · Updated 2 hr. ago`
+  - and the negative assertions hold: no "Released" on a playlist, no "Created" on an album.
+- **Unproven:** device. Simulator only.
+
+### Tooling, same day — buildbot install/launch reporting (not in this repo)
+
+`buildbot.sh` inferred a successful install by grepping for devicectl's own `App installed:` line. The last real device run proved that unreliable: the app **was** installed and the result line still said `installed=no`. `build-to-phone.sh` now prints its own `==> Installed` / `==> Launched` markers, each reachable only after its command returned 0 (the script runs under `set -e`), and `buildbot.sh` reads those, keeping Apple's wording as a fallback so older logs still parse. Replaying the failed run against the new logic yields `installed=yes launched=no` — which is what actually happened: installed fine, launch refused because the phone was locked. **Install and launch stay separate flags**; collapsing them would report a locked-phone deploy as a total failure. These two scripts live in `~/.claude/scripts`, outside this repo, so they are not part of this commit.

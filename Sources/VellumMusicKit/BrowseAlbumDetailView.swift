@@ -737,7 +737,7 @@ struct BrowseAlbumDetailView: View {
 
     private var footerBlock: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let album = matchedLibraryAlbum, let line = album.releaseFooterDisplayString {
+            if let album = matchedLibraryAlbum, let line = TrackListSummary.releasedLine(for: album) {
                 Text(line)
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(backdropPalette.heroChromeSecondary)
