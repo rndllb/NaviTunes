@@ -151,8 +151,15 @@ struct StandardSongMenuContent: View {
 
         if let onRemoveFromPlaylist {
             Section {
+                // Deliberately text-only. The icon was `text.badge.minus`, which resolves fine —
+                // this is not a missing-symbol bug — but it is a "lines with a badge" glyph sitting
+                // in the same menu as `text.append` (Add to Queue) and
+                // `text.line.first.and.arrowtriangle.forward` (Play Next). At menu size the three
+                // are near-indistinguishable, so the one destructive item in the menu read as just
+                // another queue action. No icon is clearer than a misleading one; the red
+                // destructive tint already carries the weight.
                 Button(role: .destructive, action: onRemoveFromPlaylist) {
-                    Label("Remove from Playlist", systemImage: "text.badge.minus")
+                    Text("Remove from Playlist")
                 }
             }
             .tint(MusicDesign.destructiveAction)
