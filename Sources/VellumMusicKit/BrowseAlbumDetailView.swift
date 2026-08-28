@@ -766,9 +766,8 @@ struct BrowseAlbumDetailView: View {
             }
 
             if !libraryTracks.isEmpty {
-                let totalMin = max(1, Int(ceil(libraryTracks.reduce(0) { $0 + max($1.duration, 0) } / 60.0)))
-                let n = libraryTracks.count
-                Text(n == 1 ? "1 song, \(totalMin) minutes" : "\(n) songs, \(totalMin) minutes")
+                let totalSeconds = libraryTracks.reduce(0.0) { $0 + max($1.duration, 0) }
+                Text(TrackListSummary.text(songCount: libraryTracks.count, totalSeconds: totalSeconds))
                     .font(.subheadline)
                     .foregroundStyle(backdropPalette.heroChromeSecondary)
             } else if !previewTracks.isEmpty, let line = previewTracksFooterSummary {
@@ -852,13 +851,10 @@ struct BrowseAlbumDetailView: View {
 
     private var previewTracksFooterSummary: String? {
         guard !previewTracks.isEmpty else { return nil }
-        let totalSec = previewTracks.compactMap(\.duration).reduce(0, +)
-        let n = previewTracks.count
-        if totalSec > 1 {
-            let totalMin = max(1, Int(ceil(totalSec / 60.0)))
-            return n == 1 ? "1 song, \(totalMin) minutes" : "\(n) songs, \(totalMin) minutes"
-        }
-        return n == 1 ? "1 song" : "\(n) songs"
+        // Preview tracks often carry no duration at all; `TrackListSummary` drops the duration
+        // clause on its own in that case, which is what this used to do by hand.
+        let totalSeconds = previewTracks.compactMap(\.duration).reduce(0, +)
+        return TrackListSummary.text(songCount: previewTracks.count, totalSeconds: totalSeconds)
     }
 
     private func formattedTrackDuration(_ seconds: TimeInterval?) -> String? {
