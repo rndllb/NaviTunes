@@ -274,3 +274,14 @@ The ask was small: a date under the track list — an album's release date, and 
 ### Tooling, same day — buildbot install/launch reporting (not in this repo)
 
 `buildbot.sh` inferred a successful install by grepping for devicectl's own `App installed:` line. The last real device run proved that unreliable: the app **was** installed and the result line still said `installed=no`. `build-to-phone.sh` now prints its own `==> Installed` / `==> Launched` markers, each reachable only after its command returned 0 (the script runs under `set -e`), and `buildbot.sh` reads those, keeping Apple's wording as a fallback so older logs still parse. Replaying the failed run against the new logic yields `installed=yes launched=no` — which is what actually happened: installed fine, launch refused because the phone was locked. **Install and launch stay separate flags**; collapsing them would report a locked-phone deploy as a total failure. These two scripts live in `~/.claude/scripts`, outside this repo, so they are not part of this commit.
+
+## 2026-08-28 — Remove from Playlist goes text-only (T068)
+
+The menu item kept its icon through T063 and T064 and it was never a missing-symbol bug — I checked before changing anything, because that is exactly what T063 turned out to be. **All fourteen SF Symbols in `StandardSongMenuContent` resolve at runtime, `text.badge.minus` included**, and the icon rendered on both presentations: the row ⋯ menu and T061's long-press `contextMenu(menuItems:preview:)`. Those two share one definition (`songMenuContent`), so there was no second copy to blame either.
+
+- **The real problem was legibility, not absence.** `text.badge.minus` is a "lines with a badge" glyph sitting in the same menu as `text.append` (Add to Queue) and `text.line.first.and.arrowtriangle.forward` (Play Next). At menu size the three are near-indistinguishable, so the only destructive item in the menu read as another queue action.
+- **Now text-only.** The red destructive tint already carries the weight, and no icon is clearer than a misleading one.
+- **Known side effect, visible in the capture:** with no image, iOS reserves no icon gutter for that row, so the label sits flush against the menu edge rather than aligning with the text column of the items above it. It sits alone in its own bottom section, so it reads as deliberate — but it is a real alignment difference and not a rendering accident.
+- **Scope:** the menu item only. The swipe action keeps its icon, because a swipe action *is* its icon.
+- **Verified on the simulator** by capturing the menu before and after on a real playlist row (`zz-perf-778`), reading the rendered image rather than the source.
+- **Unproven:** device. Simulator only.
