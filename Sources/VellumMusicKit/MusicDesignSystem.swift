@@ -747,15 +747,25 @@ struct MusicToolbarSettingsAvatarLink: View {
     /// Circular artwork diameter (New tab uses 45; compact pills may use less).
     var diameter: CGFloat = 45
 
+    /// Drives the push from a real `Button` action rather than a `NavigationLink`, so the
+    /// Settings push-animation workaround has somewhere to arm from. A gesture layered on a
+    /// `NavigationLink` is not an option — it swallows the link's activation.
+    /// `navigationDestination(isPresented:)` keeps this an ordinary push on the enclosing stack.
+    @State private var showSettings = false
+
     var body: some View {
-        NavigationLink {
-            SettingsView()
+        Button {
+            SettingsPushAnimationFix.armEntry()
+            showSettings = true
         } label: {
             AccountProfileAvatarView(diameter: diameter)
                 .id("vellum-account-profile-avatar")
                 .frame(minWidth: max(44, diameter), minHeight: max(44, diameter))
         }
         .buttonStyle(.plain)
+        .navigationDestination(isPresented: $showSettings) {
+            SettingsView()
+        }
         .accessibilityLabel("Settings")
     }
 }

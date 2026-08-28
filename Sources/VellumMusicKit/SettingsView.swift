@@ -23,6 +23,8 @@ struct SettingsView: View {
         .scrollContentBackground(.hidden)
         .background(MusicDesign.settingsBackground)
         .musicNavigationChrome()
+        // The hub itself: makes every push made *from* this list animate.
+        .tracksSettingsPushAnimation()
         .onAppear {
             app.prefetchAccountAvatar()
             Task { await app.refreshLibraryStatistics() }
