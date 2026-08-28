@@ -2215,6 +2215,11 @@ struct ServerPlaylistDetailView: View {
             },
             hasActiveQueue: !app.player.queue.isEmpty,
             onGoToAlbum: isAlbumStyleDetail ? nil : { pushAlbumDetailNavigation(app.albumSummary(for: row.track), into: $navigateAlbum) },
+            // Same tappability rule the Now Playing menu uses — "Various Artists" is not a
+            // navigable artist, so the item is hidden rather than dead.
+            onGoToArtist: ArtistNavigation.isTappable(row.track.artist)
+                ? { navigateArtist = ArtistNameNavigation(id: row.track.artist) }
+                : nil,
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [row.track]) },
             onRemoveFromPlaylist: removeFromPlaylist,
             onRemoveFromLibrary: app.isSongInLibrary(row.track.id)

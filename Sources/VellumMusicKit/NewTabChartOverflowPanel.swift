@@ -33,7 +33,7 @@ enum ChartStyleSongOverflowChrome {
         if let onGoToAlbum {
             Section {
                 Button(action: onGoToAlbum) {
-                    Label("Go to Album", systemImage: "music.note.square")
+                    Label("Go to Album", systemImage: "square.stack")
                 }
             }
             .tint(Color.primary)

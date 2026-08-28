@@ -1188,7 +1188,7 @@ struct NowPlayingView: View {
                 Button {
                     dismissAndNavigate(to: .album(album))
                 } label: {
-                    Label("Go to Album", systemImage: "music.note.square")
+                    Label("Go to Album", systemImage: "square.stack")
                 }
             }
             .tint(Color.primary)
