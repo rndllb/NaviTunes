@@ -714,6 +714,9 @@ struct ServerPlaylistDetailView: View {
     /// the user's interactive dismissal and hold the gesture system captive.
     @State private var dismissalPhase: CoverZoomTransitionPhase = .idle
     @State private var rows: [PlaylistRowItem] = []
+    /// Total playing time of ``rows``, recomputed on tracklist change — see
+    /// ``recomputeTrackDurationTotal()``.
+    @State private var trackDurationTotalSeconds: Double = 0
     @State private var previewTracks: [BrowseAlbumPreviewTrack] = []
     /// Album mode only: held true while the iTunes catalog tracklist is in flight so the
     /// whole list stays in its loading state and the missing rows never pop in late.
@@ -1226,6 +1229,7 @@ struct ServerPlaylistDetailView: View {
         .environment(\.defaultMinListRowHeight, isAlbumStyleDetail ? 0 : 44)
         .onChange(of: rowsContentToken, initial: true) { _, _ in
             scrollToFocusedTrackIfNeeded(proxy: scrollProxy)
+            recomputeTrackDurationTotal()
         }
         .modifier(DetailScrollSignalObserver(
             playlistId: source.playlistOrNil?.id,
@@ -1299,7 +1303,7 @@ struct ServerPlaylistDetailView: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets())
-            albumFooterBlock
+            trackListFooterBlock
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets())
@@ -1340,27 +1344,30 @@ struct ServerPlaylistDetailView: View {
                     extendRowRenderWindow(afterRealizing: index, totalRows: visible.count)
                 }
             }
+            // Album order is unchanged — toggle, then footer, then related shelves. The footer
+            // is simply no longer inside the `isAlbum` gate, so playlists and home mixes get it
+            // too; the toggle and the related-albums shelves stay album-only.
             if isAlbum {
                 showCompleteAlbumToggle
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets())
-                albumFooterBlock
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets())
-                if let album = albumOrNil {
-                    AlbumDetailRelatedSectionsView(
-                        artist: album.artist,
-                        title: album.title,
-                        excludingAlbumId: album.id,
-                        backdropPalette: backdropPalette,
-                        onSelectAlbum: { pushAlbumDetailNavigation($0, into: $navigateAlbum) },
-                    )
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets())
-                }
+            }
+            trackListFooterBlock
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets())
+            if isAlbum, let album = albumOrNil {
+                AlbumDetailRelatedSectionsView(
+                    artist: album.artist,
+                    title: album.title,
+                    excludingAlbumId: album.id,
+                    backdropPalette: backdropPalette,
+                    onSelectAlbum: { pushAlbumDetailNavigation($0, into: $navigateAlbum) },
+                )
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets())
             }
         }
     }
@@ -2536,21 +2543,24 @@ struct ServerPlaylistDetailView: View {
         }
     }
 
-    /// Album footer — release year / date + total duration summary.
+    /// Footer under the last row — release year / date (albums only) + total duration.
+    ///
+    /// Albums always had this; playlists and home mixes had nothing below the last row. The
+    /// summary line is the same one, rendered for all three, so a playlist reads the same way an
+    /// album does rather than getting a second, differently-styled implementation. Left-aligned
+    /// to match the album footer it sits in place of.
     @ViewBuilder
-    private var albumFooterBlock: some View {
-        if let album = albumOrNil {
+    private var trackListFooterBlock: some View {
+        if !rows.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
-                if let line = album.releaseFooterDisplayString {
+                if let album = albumOrNil, let line = album.releaseFooterDisplayString {
                     Text(line)
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(backdropPalette.heroChromeSecondary)
                 }
-                if !rows.isEmpty {
-                    Text(albumFooterDurationSummary)
-                        .font(.subheadline)
-                        .foregroundStyle(backdropPalette.heroChromeSecondary)
-                }
+                Text(trackListDurationSummary)
+                    .font(.subheadline)
+                    .foregroundStyle(backdropPalette.heroChromeSecondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 22)
@@ -2558,13 +2568,31 @@ struct ServerPlaylistDetailView: View {
         }
     }
 
-    private var albumFooterDurationSummary: String {
+    /// Reads the memoized total rather than summing here.
+    ///
+    /// This is a body path, and on a 778-song playlist summing every row's duration on each
+    /// body evaluation is the same shape of work ``rowsContentToken`` was introduced to remove
+    /// (its own note: a per-body N-element pass "scales badly on 1000+ song playlists"). On a
+    /// 12-track album it would not have mattered; on the playlists this footer now covers, it
+    /// does. See ``recomputeTrackDurationTotal()``.
+    private var trackListDurationSummary: String {
         let n = rows.count
-        let total = rows.reduce(0.0) { $0 + max($1.track.duration, 0) }
-        let totalMin = max(1, Int(ceil(total / 60.0)))
+        let totalMin = max(1, Int(ceil(trackDurationTotalSeconds / 60.0)))
         if n == 0 { return "No songs" }
         if n == 1 { return "1 song, \(totalMin) minutes" }
         return "\(n) songs, \(totalMin) minutes"
+    }
+
+    /// Sums row durations once per tracklist change instead of once per body evaluation.
+    ///
+    /// Driven from the existing `rowsContentToken` observer, which is this view's established
+    /// O(1) "the tracklist landed / changed" signal. Known limitation, stated rather than
+    /// hidden: a metadata refresh that rewrote durations while leaving the row count and the
+    /// first/last row ids identical would leave this total stale until the next tracklist
+    /// change. That is a narrow window and it self-heals; paying an N-element sum on every
+    /// body evaluation to close it is the worse trade on a long playlist.
+    private func recomputeTrackDurationTotal() {
+        trackDurationTotalSeconds = rows.reduce(0.0) { $0 + max($1.track.duration, 0) }
     }
 
     /// Grows the render window when the user nears its end. Realized rows call
