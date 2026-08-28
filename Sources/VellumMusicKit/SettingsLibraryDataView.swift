@@ -17,7 +17,6 @@ struct SettingsLibraryDataView: View {
         }
         .navigationTitle("Library")
         .settingsSubpageChrome()
-        .task { await reloadServerStatistics() }
     }
 
     private var yourLibraryStatsSection: some View {
@@ -32,6 +31,23 @@ struct SettingsLibraryDataView: View {
         }
     }
 
+    /// Whether totals are already in hand — from a previous tap here, or from a "Sync now",
+    /// which refreshes them as part of its work.
+    private var hasServerTotals: Bool {
+        let stats = app.libraryStatistics
+        return stats.artistCount != nil
+            || stats.albumCount != nil
+            || stats.songCount != nil
+            || stats.playlistCount != nil
+    }
+
+    /// Loaded on request, not on appear.
+    ///
+    /// Counting the server catalog is the most expensive thing on this page: on Navidrome it
+    /// paginates `getAlbumList2` 500 at a time across the whole library and fetches
+    /// `libraryArtists(limit: 20_000)`. It used to run from this page's `.task` *and* from the
+    /// Settings hub's `onAppear`, so simply opening Settings paid for it. The numbers are
+    /// informational, so they are now behind a button.
     private var serverCatalogStatsSection: some View {
         Section {
             if isRefreshingServerStats {
@@ -41,11 +57,26 @@ struct SettingsLibraryDataView: View {
                     ProgressView()
                         .tint(MusicDesign.accent)
                 }
+            } else if hasServerTotals {
+                statRow(title: "Artists", value: app.libraryStatistics.artistCount)
+                statRow(title: "Albums", value: app.libraryStatistics.albumCount)
+                statRow(title: "Songs", value: app.libraryStatistics.songCount)
+                statRow(title: "Playlists", value: app.libraryStatistics.playlistCount)
+                Button {
+                    Task { await reloadServerStatistics() }
+                } label: {
+                    Label("Refresh totals", systemImage: "arrow.clockwise")
+                }
+                .tint(MusicDesign.accent)
+            } else {
+                Button {
+                    Task { await reloadServerStatistics() }
+                } label: {
+                    Label("Load totals", systemImage: "number")
+                }
+                .tint(MusicDesign.accent)
+                .disabled(!app.isSignedIn)
             }
-            statRow(title: "Artists", value: app.libraryStatistics.artistCount)
-            statRow(title: "Albums", value: app.libraryStatistics.albumCount)
-            statRow(title: "Songs", value: app.libraryStatistics.songCount)
-            statRow(title: "Playlists", value: app.libraryStatistics.playlistCount)
         } header: {
             Text("Server Catalog")
         } footer: {
