@@ -35,6 +35,9 @@ final class AcquisitionManager: ObservableObject {
     /// meaningful rather than just "not started yet". See `noteAbsentFromQueue`.
     private var observedInServerQueue: Set<String> = []
     private var absentPolls: [String: Int] = [:]
+    /// Requests whose plugin answers ``AcquisitionProviding/requestState(for:)``. For these the
+    /// backend is the only source of state and the queue-snapshot inference is skipped entirely.
+    private var backendAuthoritativeKeys: Set<String> = []
     private var unattendedPollingStartedAt: ContinuousClock.Instant?
     /// Settings → Downloads (and similar surfaces) hold this > 0 while visible so
     /// server queue progress keeps updating without a manual refresh.
@@ -107,7 +110,9 @@ final class AcquisitionManager: ObservableObject {
             let lActive = !lhs.status.isTerminal
             let rActive = !rhs.status.isTerminal
             if lActive != rActive { return lActive }
-            if lhs.progress != rhs.progress { return lhs.progress > rhs.progress }
+            // Sort-only comparison. A job with no reported fraction sorts last among active ones;
+            // this never reaches the screen as a value.
+            if lhs.progress != rhs.progress { return (lhs.progress ?? -1) > (rhs.progress ?? -1) }
             return (lhs.title ?? "") < (rhs.title ?? "")
         }
     }
@@ -203,33 +208,32 @@ final class AcquisitionManager: ObservableObject {
         if isActive(key: key) { return .alreadyActive }
 
         finishedNotified.remove(key)
-        // Optimistic entry so the UI flips immediately, before the first poll.
+        backendAuthoritativeKeys.remove(key)
+        // Optimistic about the *phase* only. `progress: nil` because nothing has been measured —
+        // the request is still being placed.
         jobs[key] = AcquisitionJob(
             id: key,
             title: request.displayTitle,
             artist: request.artist,
             albumTitle: request.albumTitle,
             status: .searching,
-            progress: 0.05,
+            progress: nil,
             kind: provider.kind
         )
 
         do {
-            let nativeId = try await provider.enqueue(request) { [weak self] fraction in
-                Task { @MainActor in self?.applyProgress(key: key, fraction: fraction) }
-            }
+            let nativeId = try await provider.enqueue(request)
             if let job = jobs[key] {
-                // `.queued`, not `.downloading`, and the progress the plugin actually reported
-                // rather than a floor of 0.4. The request has been placed; for an album-granularity
-                // backend that means the server is only now going looking for a release. Claiming
-                // a transfer that has not started is how the bar ended up parked at 100%.
+                // Still `.searching` and still no fraction. All the enqueue proved is that the
+                // server accepted the request; whether anything is downloading is a question only
+                // the server can answer, and the very next poll asks it.
                 jobs[key] = AcquisitionJob(
                     id: key,
                     title: job.title,
                     artist: job.artist,
                     albumTitle: job.albumTitle,
-                    status: .queued,
-                    progress: job.progress,
+                    status: .searching,
+                    progress: nil,
                     message: job.message,
                     kind: provider.kind,
                     nativeId: nativeId
@@ -245,7 +249,7 @@ final class AcquisitionManager: ObservableObject {
                 artist: request.artist,
                 albumTitle: request.albumTitle,
                 status: .failed,
-                progress: 0,
+                progress: nil,
                 message: message,
                 kind: provider.kind
             )
@@ -254,25 +258,10 @@ final class AcquisitionManager: ObservableObject {
         }
     }
 
-    private func applyProgress(key: String, fraction: Double) {
-        guard let job = jobs[key], !job.status.isTerminal else { return }
-        jobs[key] = AcquisitionJob(
-            id: key,
-            title: job.title,
-            artist: job.artist,
-            albumTitle: job.albumTitle,
-            // The status used to flip to `.downloading` the moment a plugin reported 1.0, which
-            // for an album backend was the *request* completing, not the download. A plugin's
-            // progress callback reports how far along it is, and says nothing about which phase
-            // the job is in — the phase comes from the enqueue result and the server queue.
-            status: job.status,
-            progress: min(1, max(job.progress, fraction)),
-            message: job.message,
-            kind: job.kind,
-            nativeId: job.nativeId,
-            files: job.files
-        )
-    }
+    // `applyProgress(key:fraction:)` used to live here: the manager's own setter for a job's
+    // fraction, fed by the enqueue progress callback. Both are gone. Nothing in the manager can
+    // write a progress value any more — the only writes are whole `AcquisitionJob`s built from a
+    // plugin's reading of its server.
 
     private func scheduleFailedJobRemoval(key: String) {
         Task { [weak self] in
@@ -384,14 +373,56 @@ final class AcquisitionManager: ObservableObject {
         // This loop runs at 1 Hz while the Activity list is open. Reassigning unconditionally
         // republished the manager (and every view observing it) on every idle poll.
         if snapshot != serverJobs { serverJobs = snapshot }
+        // Ask the backend about our own requests first, so its answer wins over anything the
+        // snapshot-shaped inference below would otherwise conclude.
+        await applyBackendStates()
         reconcile(with: snapshot)
         if snapshot.contains(where: { !$0.status.isTerminal }) {
             startPollingIfNeeded()
         }
     }
 
+    /// Asks the plugin for the truth about every live request and renders exactly that.
+    ///
+    /// This is the shell. Where `reconcile(with:)` infers state by pattern-matching our job against
+    /// a queue snapshot — and cannot see anything the queue does not show — this asks a direct
+    /// question per request and takes the answer whole. A plugin that has no answer returns nil and
+    /// the snapshot path below still applies, so nothing else has to change.
+    private func applyBackendStates() async {
+        let provider = self.provider
+        let live = jobs.filter { !$0.value.status.isTerminal && $0.value.nativeId != nil }
+        guard !live.isEmpty else { return }
+
+        for (key, job) in live {
+            guard let nativeId = job.nativeId else { continue }
+            guard let state = await provider.requestState(for: nativeId) else { continue }
+            backendAuthoritativeKeys.insert(key)
+            guard let current = jobs[key], !current.status.isTerminal else { continue }
+            let resolved = AcquisitionJob(
+                id: current.id,
+                title: current.title,
+                artist: current.artist,
+                albumTitle: current.albumTitle,
+                status: state.status,
+                // Straight through. If Lidarr gave no fraction this stays nil and the UI says so.
+                progress: state.progress,
+                message: state.detail ?? current.message,
+                kind: current.kind,
+                nativeId: current.nativeId,
+                source: current.source,
+                files: current.files,
+            )
+            guard resolved != current else { continue }
+            jobs[key] = resolved
+            if resolved.status.isTerminal { finish(key: key, job: resolved) }
+        }
+    }
+
     private func reconcile(with snapshot: [AcquisitionJob]) {
         for (key, current) in jobs where !current.status.isTerminal {
+            // A plugin that answers `requestState` owns this job's state completely; the
+            // queue-shaped guesswork below must not fight it.
+            if current.nativeId != nil, backendAuthoritativeKeys.contains(key) { continue }
             guard let match = bestMatch(for: current, in: snapshot) else {
                 noteAbsentFromQueue(key: key, job: current)
                 continue
@@ -465,7 +496,9 @@ final class AcquisitionManager: ObservableObject {
                     artist: current.artist,
                     albumTitle: current.albumTitle,
                     status: done ? .done : .failed,
-                    progress: done ? 1 : current.progress,
+                    // Not 1.0 on success: "complete" is a *status*, and inventing a fraction to
+                    // go with it would be the same fiction in a happier costume.
+                    progress: current.progress,
                     message: done ? current.message : "The download stopped without completing.",
                     kind: current.kind,
                     nativeId: current.nativeId,
@@ -477,13 +510,20 @@ final class AcquisitionManager: ObservableObject {
         }
     }
 
-    /// Fires the completion hook exactly once, then retires the row.
+    /// Fires the completion hook exactly once, then retires the row — but only when it succeeded.
+    ///
+    /// A `.done` row is retired quickly because the track itself takes its place. `.notFound` and
+    /// `.failed` **stay**, because they are the answer: dropping them 1.5s later would return the
+    /// row to a plain "Request" button and leave the user exactly where the original bug did,
+    /// staring at a control that gives no account of what happened. They clear when the user
+    /// retries (`enqueue` resets the key) or when the active plugin changes.
     private func finish(key: String, job: AcquisitionJob) {
         guard !finishedNotified.contains(key) else { return }
         finishedNotified.insert(key)
         observedInServerQueue.remove(key)
         absentPolls[key] = nil
         onJobFinished?(job)
+        guard job.status == .done else { return }
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(1.5))
             self?.jobs.removeValue(forKey: key)

@@ -655,7 +655,9 @@ struct BrowseAlbumDetailView: View {
         let isRequestingPreview = previewJob.map { !$0.status.isTerminal } ?? false
         let acquireOfflineState: OfflineDownloadUIState? = {
             guard let previewJob, !previewJob.status.isTerminal else { return nil }
-            return .progress(min(1, max(0, previewJob.progress)))
+            // No backend fraction → the existing indeterminate ring, not a fabricated one.
+            guard let fraction = previewJob.progress else { return .indeterminate }
+            return .progress(min(1, max(0, fraction)))
         }()
 
         return AppleMusicAlbumTrackRow(

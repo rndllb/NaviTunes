@@ -522,8 +522,9 @@ struct AcquisitionPluginSettingsView: View {
                 Spacer(minLength: 0)
                 acquisitionJobTrailing(job)
             }
-            if !job.status.isTerminal {
-                ProgressView(value: min(1, max(0, job.progress)))
+            // Only when the backend supplied a fraction — see `AcquisitionJob.progress`.
+            if !job.status.isTerminal, let fraction = job.progress {
+                ProgressView(value: min(1, max(0, fraction)))
             }
         }
         .padding(.vertical, 2)
@@ -534,9 +535,14 @@ struct AcquisitionPluginSettingsView: View {
         if job.status.isTerminal {
             Image(systemName: job.status == .done ? "checkmark.circle.fill" : "xmark.circle.fill")
                 .foregroundStyle(job.status == .done ? .green : .red)
-        } else {
-            Text("\(Int((min(1, job.progress) * 100).rounded()))%")
+        } else if let fraction = job.progress {
+            Text("\(Int((min(1, max(0, fraction)) * 100).rounded()))%")
                 .font(.subheadline.weight(.medium).monospacedDigit())
+                .foregroundStyle(.secondary)
+        } else {
+            // The server is doing something it does not quantify. Name the phase, invent nothing.
+            Text(job.status.displayTitle)
+                .font(.subheadline.weight(.medium))
                 .foregroundStyle(.secondary)
         }
     }
@@ -608,15 +614,7 @@ struct AcquisitionPluginSettingsView: View {
     }
 
     private func acquisitionStatusTitle(_ status: AcquisitionJobStatus) -> String {
-        switch status {
-        case .queued: return "Queued"
-        case .searching: return "Searching"
-        case .downloading: return "Downloading"
-        case .importing: return "Importing"
-        case .done: return "Complete"
-        case .failed: return "Failed"
-        case .unknown: return "In progress"
-        }
+        status.displayTitle
     }
 
     private var pluginBinding: Binding<AcquisitionPluginKind> {

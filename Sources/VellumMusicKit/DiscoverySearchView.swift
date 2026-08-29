@@ -104,6 +104,24 @@ private struct RecentSearchEntity: Codable, Identifiable, Equatable {
 
     var dedupeKey: String { id }
 
+    /// Prefix once used for request rows stored into Recently Searched.
+    static let acquireIdPrefix = "acquire:"
+
+    /// An entry that cannot be navigated to, because it never described a library entity.
+    ///
+    /// Request rows used to be recorded here with `primaryId: "acquire:<id>"` and no album id.
+    /// Tapping one built a stub `Track` with `albumId: ""`, which `ServerPlaylistDetailView`
+    /// rendered as a page literally titled "Album" with no artwork, the words "Album not found",
+    /// and a Play button that looked live and did nothing.
+    ///
+    /// New ones are no longer written. This catches the ones already sitting in people's stores,
+    /// which would otherwise keep that dead route reachable for ever.
+    var isUnnavigable: Bool {
+        primaryId.hasPrefix(Self.acquireIdPrefix)
+            || primaryId.trimmingCharacters(in: .whitespaces).isEmpty
+            || (kind == .song && (secondaryId ?? "").isEmpty)
+    }
+
     /// Subtitle prefix used to disambiguate kinds in the recent list (e.g. "Song · …").
     var displaySubtitle: String {
         let prefix: String
@@ -192,10 +210,13 @@ struct DiscoverySearchView: View {
     @State private var recentLibrary: [RecentSearchEntity] = RecentSearchEntityStore.load(for: .library)
 
     /// Recently-Searched entries for the currently-selected tab.
+    ///
+    /// Filtered, not just trimmed at the point of writing: stores already on people's devices hold
+    /// request rows that navigate to a dead album page. See ``RecentSearchEntity/isUnnavigable``.
     private var recent: [RecentSearchEntity] {
         switch scope {
-        case .discover: return recentDiscover
-        case .library: return recentLibrary
+        case .discover: return recentDiscover.filter { !$0.isUnnavigable }
+        case .library: return recentLibrary.filter { !$0.isUnnavigable }
         }
     }
 
@@ -942,13 +963,10 @@ struct DiscoverySearchView: View {
         let job = acquisition.job(forKey: result.request.requestKey)
         return HStack(spacing: 12) {
             Button {
-                recordRecent(.init(
-                    kind: .song,
-                    primaryId: "acquire:\(result.id)",
-                    title: result.title,
-                    subtitle: result.artistLine,
-                    artworkURL: result.coverURL,
-                ))
+                // Deliberately NOT recorded into Recently Searched. An un-acquired release is not
+                // a library entity, and storing it produced a recent row that navigated to an
+                // album page titled with the literal placeholder "Album", no artwork, "Album not
+                // found", and a Play button that did nothing.
                 navigationPath.append(SearchNavTarget.acquire(result))
             } label: {
                 HStack {
@@ -959,35 +977,86 @@ struct DiscoverySearchView: View {
             }
             .buttonStyle(.plain)
 
-            if let job, !job.status.isTerminal {
-                VStack(alignment: .trailing, spacing: 3) {
-                    ProgressView(value: min(1, job.progress))
-                        .tint(MusicDesign.accent)
-                        .frame(width: 56)
-                    Text("\(Int((min(1, job.progress) * 100).rounded()))%")
-                        .font(.caption2.weight(.medium).monospacedDigit())
-                        .foregroundStyle(MusicDesign.secondaryLabel)
-                }
-                .frame(width: 56, alignment: .trailing)
-            } else if let job, job.status == .failed {
-                Image(systemName: "exclamationmark.circle.fill")
-                    .foregroundStyle(.red)
-                    .frame(width: 56, alignment: .trailing)
-            } else {
-                statePillButton(
-                    label: "Request",
-                    systemImage: "arrow.down.circle",
-                    busy: false,
-                    disabled: !app.acquisitionConfigured || acquisition.isActive(key: result.request.requestKey),
-                ) {
-                    Task { await requestResult(result) }
-                }
-            }
+            acquireRowAccessory(result: result, job: job)
         }
         .musicChevronRowPadding()
         .padding(.vertical, songVerticalPadding)
         .listRowBackground(discoverRowBackground)
         .discoverySearchListRowChrome()
+    }
+
+    /// The trailing control on a request row: what the backend says, or the way to ask.
+    ///
+    /// Every branch here is driven by a state the server reported. Note there is no
+    /// percentage unless `hasDeterminateProgress` is set — a backend can say "downloading"
+    /// without saying how far, and drawing a precise bar in that case would be the app making
+    /// a number up, which is the whole complaint this pass exists to answer.
+    @ViewBuilder
+    private func acquireRowAccessory(result: AcquisitionResult, job: AcquisitionJob?) -> some View {
+        if let job, job.status == .stalled {
+            // Not a spinner and not a number. The backend says nothing is happening, so the row
+            // says nothing is happening — that is the whole point of this pass.
+            VStack(alignment: .trailing, spacing: 4) {
+                Text("Nothing\nhappening")
+                    .font(.caption2.weight(.semibold))
+                    .multilineTextAlignment(.trailing)
+                    .foregroundStyle(MusicDesign.secondaryLabel)
+                Button("Try Again") {
+                    Task { await requestResult(result) }
+                }
+                .font(.caption2.weight(.semibold))
+                .buttonStyle(.plain)
+                .foregroundStyle(MusicDesign.accent)
+            }
+            .frame(width: 84, alignment: .trailing)
+        } else if let job, !job.status.isTerminal {
+            VStack(alignment: .trailing, spacing: 3) {
+                // A bar and a percentage exist only when Lidarr supplied a fraction. Otherwise the
+                // row shows the phase word alone — no bar, because there is nothing to fill it in
+                // with that anyone measured.
+                if let fraction = job.progress {
+                    ProgressView(value: min(1, max(0, fraction)))
+                        .tint(MusicDesign.accent)
+                        .frame(width: 56)
+                    Text("\(Int((min(1, max(0, fraction)) * 100).rounded()))%")
+                        .font(.caption2.weight(.medium).monospacedDigit())
+                        .foregroundStyle(MusicDesign.secondaryLabel)
+                } else {
+                    Text(job.status.displayTitle)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(MusicDesign.secondaryLabel)
+                }
+            }
+            .frame(width: 72, alignment: .trailing)
+        } else if let job, job.status == .notFound || job.status == .failed {
+            // Terminal and unhappy. This is the state the app simply did not have before: a
+            // search that came back empty looked identical to one still running, for ever.
+            VStack(alignment: .trailing, spacing: 4) {
+                Label(
+                    job.status == .notFound ? "Not found" : "Failed",
+                    systemImage: job.status == .notFound ? "magnifyingglass" : "exclamationmark.circle.fill",
+                )
+                .font(.caption2.weight(.semibold))
+                .labelStyle(.titleAndIcon)
+                .foregroundStyle(job.status == .notFound ? MusicDesign.secondaryLabel : Color.red)
+                Button("Try Again") {
+                    Task { await requestResult(result) }
+                }
+                .font(.caption2.weight(.semibold))
+                .buttonStyle(.plain)
+                .foregroundStyle(MusicDesign.accent)
+            }
+            .frame(width: 84, alignment: .trailing)
+        } else {
+            statePillButton(
+                label: "Request",
+                systemImage: "arrow.down.circle",
+                busy: false,
+                disabled: !app.acquisitionConfigured || acquisition.isActive(key: result.request.requestKey),
+            ) {
+                Task { await requestResult(result) }
+            }
+        }
     }
 
     @ViewBuilder
@@ -1017,11 +1086,41 @@ struct DiscoverySearchView: View {
                             .foregroundStyle(MusicDesign.secondaryLabel)
                     }
                 }
-                Text(result.subtitle ?? "Song · \(result.artistLine)")
+                acquireRowSubtitle(result)
+            }
+        }
+    }
+
+    /// Second line of a request row, with the **artist as its own tap target**.
+    ///
+    /// It used to be one baked string ("Single · Daniel Caesar"), so tapping the artist did
+    /// nothing — the whole row just opened the request detail. The kind and the artist are now
+    /// laid out separately and the artist routes to the artist page, the same as everywhere else
+    /// in the app. A plugin-supplied `subtitle` (a quality or source hint) is still rendered
+    /// verbatim, because that is not an artist and must not pretend to be tappable.
+    @ViewBuilder
+    private func acquireRowSubtitle(_ result: AcquisitionResult) -> some View {
+        let artist = result.artists.first ?? result.artistLine
+        if let subtitle = result.subtitle, !subtitle.isEmpty {
+            Text(subtitle)
+                .font(songSubtitleFont)
+                .foregroundStyle(MusicDesign.secondaryLabel)
+                .lineLimit(1)
+        } else {
+            HStack(spacing: 4) {
+                Text("\(result.kindLabel ?? "Song") ·")
                     .font(songSubtitleFont)
                     .foregroundStyle(MusicDesign.secondaryLabel)
-                    .lineLimit(1)
+                ArtistNameButton(
+                    name: artist,
+                    font: songSubtitleFont,
+                    foreground: MusicDesign.secondaryLabel,
+                ) {
+                    navigationPath.append(SearchNavTarget.namedArtist(artist))
+                }
+                Spacer(minLength: 0)
             }
+            .lineLimit(1)
         }
     }
 
@@ -1810,12 +1909,26 @@ struct AcquireResultDetailView: View {
                 .background(Capsule().fill(MusicDesign.chromeCapsuleFill))
         } else if let job, !job.status.isTerminal {
             VStack(spacing: 6) {
-                ProgressView(value: min(1, job.progress))
-                    .tint(MusicDesign.accent)
-                    .frame(width: 220)
-                Text("\(Int((min(1, job.progress) * 100).rounded()))%")
-                    .font(.subheadline.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(MusicDesign.secondaryLabel)
+                // Same rule as the row: a bar only when the backend gave a fraction.
+                if let fraction = job.progress {
+                    ProgressView(value: min(1, max(0, fraction)))
+                        .tint(MusicDesign.accent)
+                        .frame(width: 220)
+                    Text("\(Int((min(1, max(0, fraction)) * 100).rounded()))%")
+                        .font(.subheadline.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(MusicDesign.secondaryLabel)
+                } else {
+                    Text(job.status.displayTitle)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(MusicDesign.secondaryLabel)
+                }
+                if let message = job.message, !message.isEmpty {
+                    Text(message)
+                        .font(.footnote)
+                        .foregroundStyle(MusicDesign.secondaryLabel)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                }
             }
         } else if let job, job.status == .failed {
             Label("Request failed", systemImage: "exclamationmark.circle.fill")
