@@ -729,3 +729,103 @@ those are two different releases). If it recurs, the untruncated titles of both 
 distinguish these.
 
 **Unproven:** device. Device build is clean; the interaction was exercised on the simulator only.
+
+## 2026-08-29 — a finished request shows up without relaunching (T070)
+
+"requesting them gets to 100% then does nothing until i refresh the app". This, not the ranking,
+was what "finicky" meant.
+
+**Both suspected defects checked against the running server, not just read**
+
+- **Defect 1 — the bar hit 100% on *request* — CONFIRMED, and worse than described.**
+  `LidarrAcquisitionPlugin.enqueue` ended on `progress?(1.0)` after merely adding the album and
+  triggering `AlbumSearch`. `AcquisitionManager.enqueue` then applied its own floor
+  (`max(job.progress, 0.4)`) and `status: .downloading`. The part the brief did not have: even
+  once real queue progress arrived, `reconcile` merged it as
+  `max(current.progress, match.progress)` — **ratchet-only** — so the fake 100% permanently
+  masked the true fraction. The one guard against exactly this was gated on
+  `match.files?.isEmpty == false`, i.e. plugins that report per-file progress, which is precisely
+  the set Lidarr is not in.
+- **Defect 2 — "nothing reloads the library on completion" — WRONG as stated.** The reload exists
+  and is correct: `AppModel.handleAcquisitionJobFinished` triggers a server scan and retries
+  `searchCatalog` for ~60s, then adds the result to the library. It never *ran*. `onJobFinished`
+  is fired from `reconcile`, which only ever looks at jobs it can find in the server snapshot — and
+  **a finished Lidarr download disappears from `/queue` the moment it imports**. No match, no
+  terminal status, no callback. A third problem falls out of the same knot: the job stayed
+  non-terminal forever, so `hasActiveWork` stayed true forever and the 2.5s poll loop ran for the
+  life of the process. The battery cost the brief warned against was already there.
+
+Also found while reading the live queue, which the brief could not have known: **`bestMatch` could
+not match a Lidarr download at all.** A queue row's `title` is the indexer's release name
+("Daniel.Caesar-Japanese.Denim-SINGLE-WEB-2016-ENRiCH"), and matching compares whole normalized
+title strings, so it never overlapped the album title. The nativeIds could not match either
+(`lidarr:<foreignAlbumId>` vs `lidarr-queue:<id>`).
+
+**The fix**
+
+- `enqueue` reports `acceptedProgress` (0.1) instead of 1.0 — placing a request is not a transfer.
+  The manager's post-enqueue state is `.queued` at the reported progress, not `.downloading` at 0.4,
+  and `applyProgress` no longer flips status on a fraction.
+- `reconcile` takes the server's fraction **verbatim** instead of ratcheting.
+- The queue is fetched with `includeAlbum`/`includeArtist`, and each row is stamped with the same
+  `lidarr:<foreignAlbumId>` native id `enqueue` returns — so a request can be followed into the
+  queue. Rows now carry the real album title and artist instead of a scene string, which the
+  Settings activity list gets for free.
+- **Completion is detected by disappearance, carefully.** Absence alone proves nothing: before a
+  release is found the job is not in the queue *yet*, and a failed grab is removed just like a
+  successful one. So a conclusion is only drawn once the job has actually been seen in the queue,
+  after two consecutive absences, and then the plugin is *asked*: new
+  `AcquisitionProviding.isRequestSatisfied(nativeId:)`, which Lidarr answers from the album's
+  `statistics.trackFileCount`. Files on disk, not merely gone.
+- `trackedDownloadState` is now read: a download that transferred and then failed to import reads
+  `status: completed` and **stays in the queue in that state indefinitely**. On the live server
+  that was **52 of 133** queued items. Those were previously shown as "importing" at 100% forever —
+  the same complaint wearing a different hat. They now report as failed.
+
+**Polling lifetime, stated plainly.** Unchanged at 1 Hz while a progress UI is on screen
+(Settings → Music Requests holds `liveRefreshClients`). Otherwise it backs off 5s → 10s → 20s → 30s
+and **stops entirely after 20 minutes**, leaving the job untouched. `refreshOnForeground()` — wired
+to the existing `scenePhase` hook in `RootView` — does one refresh when the app returns to the
+front and restarts the loop only if work remains. There is no permanent high-frequency poll; the
+one that existed before this pass is gone.
+
+**Observed end to end against the live Lidarr**
+
+Real request, placed through Discover in the app, for `Get Out My Face aka Bad Kitty` (Garbage) — a
+2-track release his Lidarr had monitored and missing. The app ran on the simulator pointed at his
+real Lidarr; a second process polled Lidarr directly every 15s as an independent witness.
+
+| time | app row | Lidarr itself |
+|---|---|---|
+| 16:32:01 | request tapped | absent from queue, files 0/2 |
+| 16:32:18 | **10%** | — |
+| 16:32:33 | — | in queue, downloading, **33.5%** |
+| 16:32:52 | **34%** | 33.5% |
+| 16:33:35 | 34% | 33.5% |
+| 16:33:50 | — | **gone from queue, files 2/2** |
+| 16:34:34 | progress gone, row back to **Request** | — |
+
+The app tracked the real transfer (34% against Lidarr's 33.5%) instead of sitting at 100%, and the
+job reached a terminal state **~30–45s** after the download actually finished — the row reverting
+to "Request" is `finish()` retiring it, which only happens after `onJobFinished` has fired.
+
+**What is still unverified, and why.** The last hop — the track becoming visible **in his
+Navidrome library** without a relaunch — was not observed. The simulator is signed in to the public
+demo server, so the file Lidarr imported to *his* server can never appear there; the completion
+handler runs its search budget and gives up, exactly as designed. The phone has both his servers
+and is the right vehicle, but it is **locked** (`passcodeRequired: true`, and the install below
+reported `FBSOpenApplicationErrorDomain error 7`), and a UI test needs it unlocked throughout. So:
+everything up to and including "the completion callback fires" is observed on live data; the
+`triggerLibraryScan` + `searchCatalog` step it hands off to is unchanged code that previously never
+ran.
+
+**Also unverified:** the failure branch. No request failed during the run, so
+`isRequestSatisfied` returning false — the "left the queue without producing files" path — was
+exercised only by reading.
+
+**Noticed, not fixed:** Discover's title-only search feeds the query straight to `album/lookup`, so
+a generic title finds the wrong artist entirely ("STATICA", "Crazy Rainbow" both come back as
+unrelated acts). Distinctive titles are fine. Separate problem from this pass.
+
+**Build:** device build clean via buildbot — `errSec=0 errors=0 installed=yes`. `launched=no` is
+the locked phone refusing the launch, not a build failure.

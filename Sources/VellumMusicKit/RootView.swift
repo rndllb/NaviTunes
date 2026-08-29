@@ -195,6 +195,9 @@ private struct MainShellView: View {
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active, app.isSignedIn else { return }
             Task { await app.refreshLibraryMembershipIfStale() }
+            // Unattended download polling is deliberately time-boxed, so coming back to the app
+            // is when a request that finished while it was away gets noticed.
+            app.acquisition.refreshOnForeground()
         }
         .onChange(of: showNowPlaying) { _, presented in
             app.isNowPlayingCoverPresented = presented

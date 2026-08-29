@@ -392,6 +392,14 @@ protocol AcquisitionProviding: Sendable {
     /// outside this app. Default: empty.
     func activeJobs() async -> [AcquisitionJob]
 
+    /// Did this request actually land — files on disk, not merely gone from the queue?
+    ///
+    /// A finished download **disappears** from the queue, and so does a failed one, so vanishing
+    /// on its own says nothing. This is the plugin's chance to answer authoritatively for the
+    /// native id it handed back from ``enqueue(_:progress:)``. `nil` means "no opinion", which is
+    /// the default and leaves the manager to assume the optimistic case.
+    func isRequestSatisfied(nativeId: String) async -> Bool?
+
     /// Albums the plugin already knows for this artist (Lidarr library, or DN search).
     func artistReleases(named name: String) async -> [AcquisitionRelease]
 
@@ -415,6 +423,7 @@ extension AcquisitionProviding {
     func search(query: String) async throws -> [AcquisitionResult] { [] }
     func searchAlbums(query: String) async -> [AcquisitionRelease] { [] }
     func activeJobs() async -> [AcquisitionJob] { [] }
+    func isRequestSatisfied(nativeId: String) async -> Bool? { nil }
     /// Whether the active plugin's catalog (Lidarr → MusicBrainz) knows this artist.
     func canRequestArtist(named name: String) async -> Bool { true }
     func artistReleases(named name: String) async -> [AcquisitionRelease] { [] }
