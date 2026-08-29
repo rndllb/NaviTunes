@@ -1,7 +1,13 @@
 import Foundation
 
-/// Progress callback shared by every acquisition plugin (0...1).
-typealias AcquisitionProgress = @Sendable (Double) -> Void
+// There is deliberately no progress callback in this file.
+//
+// Plugins used to be handed a `(Double) -> Void` to call during `enqueue`, and all three used it
+// the same way: to report how far through *placing the request* they were — 0.05 after validating
+// config, 0.5 after picking a release, 1.0 once the server accepted it. None of that measures a
+// transfer, and all of it reached the screen as a download percentage. Removing the channel is
+// what makes an invented figure unrepresentable rather than merely discouraged: the only way a
+// fraction can now reach `AcquisitionJob.progress` is by being read from a server response.
 
 /// The selectable acquisition backends. Only one is active at a time
 /// (`AcquisitionManager.activePlugin`); every request flows through the active one.
@@ -28,9 +34,89 @@ enum AcquisitionJobStatus: String, Sendable {
     case importing
     case done
     case failed
+    /// The backend looked and came back empty-handed. **Terminal**, and distinct from `failed`:
+    /// nothing went wrong, there is simply nothing to fetch. Without this the UI had no way to
+    /// stop waiting, so a search that found nothing looked identical to one still running — the
+    /// request sat at "searching" for ever.
+    case notFound
+    /// The backend has the request but reports **nothing happening**: not queued, not searching,
+    /// no files. Ethan's "Back to Strangers" case — Lidarr grabbed twice and the job never entered
+    /// the download queue.
+    ///
+    /// Not terminal, because it can still start moving on its own, but never shown as a spinner or
+    /// a percentage: silence dressed up as progress is the exact defect this pass exists to remove.
+    case stalled
     case unknown
 
-    var isTerminal: Bool { self == .done || self == .failed }
+    var isTerminal: Bool { self == .done || self == .failed || self == .notFound }
+
+    /// One wording for a state, everywhere it is shown.
+    var displayTitle: String {
+        switch self {
+        case .queued: return "Queued"
+        case .searching: return "Searching"
+        case .downloading: return "Downloading"
+        case .importing: return "Importing"
+        case .done: return "Complete"
+        case .failed: return "Failed"
+        case .notFound: return "Not found"
+        case .stalled: return "Nothing happening"
+        case .unknown: return "In progress"
+        }
+    }
+}
+
+/// What the backend says about one request, sampled fresh.
+///
+/// The point of this type is that **the app does not get a vote**. Every phase and every fraction
+/// below is read from a field the server owns; when the server reports no fraction, `progress` is
+/// `nil` and the UI shows indeterminate rather than inventing a number. Returning `nil` from
+/// ``AcquisitionProviding/requestState(for:)`` means "this plugin cannot say", which is different
+/// from any of these phases and leaves the existing state alone.
+struct AcquisitionBackendState: Sendable {
+    enum Phase: Sendable {
+        /// A search is running on the server right now.
+        case searching
+        /// Accepted into the download queue, transfer not started.
+        case queued
+        /// Transferring. `progress` carries the fraction only if the server reports one.
+        case downloading
+        /// Transferred; the server is moving it into the library.
+        case importing
+        /// Files exist in the library. Terminal.
+        case completed
+        /// The search finished and grabbed nothing. Terminal.
+        case notFound
+        /// The backend knows about the request and reports no activity against it at all.
+        case noActivity
+        /// Something went wrong, with the server's own words in `detail`. Terminal.
+        case failed
+    }
+
+    let phase: Phase
+    /// 0–1, and **only** when the backend reports a real fraction. `nil` = indeterminate.
+    let progress: Double?
+    /// Server-supplied explanation, shown as-is.
+    let detail: String?
+
+    init(phase: Phase, progress: Double? = nil, detail: String? = nil) {
+        self.phase = phase
+        self.progress = progress
+        self.detail = detail
+    }
+
+    var status: AcquisitionJobStatus {
+        switch phase {
+        case .searching: return .searching
+        case .queued: return .queued
+        case .downloading: return .downloading
+        case .importing: return .importing
+        case .completed: return .done
+        case .notFound: return .notFound
+        case .noActivity: return .stalled
+        case .failed: return .failed
+        }
+    }
 }
 
 /// The single unified request type. Every UI call site builds one of these and
@@ -105,9 +191,38 @@ struct AcquisitionResult: Identifiable, Hashable, Sendable {
     let coverURL: URL?
     let year: Int?
     let explicit: Bool
-    /// Optional secondary line (format/quality/source hint).
+    /// Optional secondary line (format/quality/source hint), rendered verbatim.
     let subtitle: String?
+    /// "Single" / "EP" / "Album" — the *kind* on its own, without the artist appended.
+    ///
+    /// Kept apart from ``subtitle`` so a row can lay the second line out itself and make the
+    /// artist a separate tap target. Baked into one string, the artist could not be tapped.
+    let kindLabel: String?
     let request: AcquisitionRequest
+
+    init(
+        id: String,
+        title: String,
+        artists: [String],
+        albumName: String,
+        coverURL: URL?,
+        year: Int?,
+        explicit: Bool,
+        subtitle: String?,
+        kindLabel: String? = nil,
+        request: AcquisitionRequest
+    ) {
+        self.id = id
+        self.title = title
+        self.artists = artists
+        self.albumName = albumName
+        self.coverURL = coverURL
+        self.year = year
+        self.explicit = explicit
+        self.subtitle = subtitle
+        self.kindLabel = kindLabel
+        self.request = request
+    }
 
     var artistLine: String { artists.joined(separator: ", ") }
 }
@@ -129,7 +244,18 @@ struct AcquisitionJob: Identifiable, Hashable, Sendable {
     let artist: String?
     let albumTitle: String?
     let status: AcquisitionJobStatus
-    let progress: Double
+    /// How far along the backend says this is, 0–1 — or **nil, meaning the backend did not say**.
+    ///
+    /// Optional on purpose, and the optionality is the feature. While this was a plain `Double`
+    /// every construction site had to put *something* in it, and what went in were numbers nobody
+    /// measured: `0.05` on enqueue, a floor of `0.4`, `1.0` the moment a request was accepted. Each
+    /// of those reached the screen as a percentage and each was fiction — the 100% stall and then
+    /// the 10% stall were both exactly this.
+    ///
+    /// There is no longer anywhere to put a made-up number: a caller with no backend figure has to
+    /// write `nil`, and `nil` renders as an explicit "no progress reported" state rather than a
+    /// bar. The only values that can appear here are ones a plugin read from its server.
+    let progress: Double?
     let message: String?
     let kind: AcquisitionPluginKind
     let nativeId: String?
@@ -143,7 +269,7 @@ struct AcquisitionJob: Identifiable, Hashable, Sendable {
         artist: String?,
         albumTitle: String? = nil,
         status: AcquisitionJobStatus,
-        progress: Double,
+        progress: Double?,
         message: String? = nil,
         kind: AcquisitionPluginKind,
         nativeId: String? = nil,
@@ -338,7 +464,10 @@ struct AcquisitionRelease: Identifiable, Hashable, Sendable {
             coverURL: artworkURL,
             year: releaseYear,
             explicit: false,
-            subtitle: artist.isEmpty ? releaseKindLabel : "\(releaseKindLabel) · \(artist)",
+            // `subtitle` stays nil and the kind travels separately, so the row can render
+            // "Single · <artist>" with the artist as its own tap target.
+            subtitle: nil,
+            kindLabel: releaseKindLabel,
             request: acquisitionRequest
         )
     }
@@ -386,7 +515,7 @@ protocol AcquisitionProviding: Sendable {
     func searchAlbums(query: String) async -> [AcquisitionRelease]
 
     /// Kicks off acquisition. Returns the plugin's native id for the new job.
-    func enqueue(_ request: AcquisitionRequest, progress: AcquisitionProgress?) async throws -> String
+    func enqueue(_ request: AcquisitionRequest) async throws -> String
 
     /// Snapshot of the plugin's server-side queue/activity, including items started
     /// outside this app. Default: empty.
@@ -399,6 +528,18 @@ protocol AcquisitionProviding: Sendable {
     /// native id it handed back from ``enqueue(_:progress:)``. `nil` means "no opinion", which is
     /// the default and leaves the manager to assume the optimistic case.
     func isRequestSatisfied(nativeId: String) async -> Bool?
+
+    /// The whole state of one request, straight from the backend.
+    ///
+    /// This is the contract that makes the request UI a shell. The manager renders what comes back
+    /// and derives nothing of its own; a plugin that returns `nil` keeps the old behaviour, where
+    /// state was inferred from the queue snapshot.
+    ///
+    /// Watching the queue alone is not enough, which is the lesson that produced this method: a
+    /// download can finish between two polls, sit beyond the first page of a long queue, or be
+    /// handed to a client that never reports a queue row at all — and in each case the request
+    /// froze mid-progress for ever, because the app had no other way to ask.
+    func requestState(for nativeId: String) async -> AcquisitionBackendState?
 
     /// Albums the plugin already knows for this artist (Lidarr library, or DN search).
     func artistReleases(named name: String) async -> [AcquisitionRelease]
@@ -424,6 +565,7 @@ extension AcquisitionProviding {
     func searchAlbums(query: String) async -> [AcquisitionRelease] { [] }
     func activeJobs() async -> [AcquisitionJob] { [] }
     func isRequestSatisfied(nativeId: String) async -> Bool? { nil }
+    func requestState(for nativeId: String) async -> AcquisitionBackendState? { nil }
     /// Whether the active plugin's catalog (Lidarr → MusicBrainz) knows this artist.
     func canRequestArtist(named name: String) async -> Bool { true }
     func artistReleases(named name: String) async -> [AcquisitionRelease] { [] }

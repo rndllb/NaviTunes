@@ -159,12 +159,20 @@ struct NewTabChartRowOverflowMenu: View {
     var body: some View {
         if let job = acquisition.job(forKey: chart.acquisitionRequest.requestKey), !job.status.isTerminal {
             VStack(alignment: .trailing, spacing: 3) {
-                ProgressView(value: min(1, job.progress))
-                    .tint(MusicDesign.accent)
-                    .frame(width: 52)
-                Text("\(Int((min(1, job.progress) * 100).rounded()))%")
-                    .font(.caption2.weight(.medium).monospacedDigit())
-                    .foregroundStyle(MusicDesign.secondaryLabel)
+                // Bar and percentage only when the backend reported a fraction; otherwise the
+                // phase word on its own. See `AcquisitionJob.progress`.
+                if let fraction = job.progress {
+                    ProgressView(value: min(1, max(0, fraction)))
+                        .tint(MusicDesign.accent)
+                        .frame(width: 52)
+                    Text("\(Int((min(1, max(0, fraction)) * 100).rounded()))%")
+                        .font(.caption2.weight(.medium).monospacedDigit())
+                        .foregroundStyle(MusicDesign.secondaryLabel)
+                } else {
+                    Text(job.status.displayTitle)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(MusicDesign.secondaryLabel)
+                }
             }
             .frame(width: 54, alignment: .trailing)
         } else if let track = app.resolvedServerTrack(for: chart) {

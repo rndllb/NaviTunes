@@ -39,9 +39,8 @@ struct DowntifyAcquisitionPlugin: AcquisitionProviding {
         return songs.map { Self.result(from: $0) }
     }
 
-    func enqueue(_ request: AcquisitionRequest, progress: AcquisitionProgress?) async throws -> String {
+    func enqueue(_ request: AcquisitionRequest) async throws -> String {
         guard isConfigured else { throw AcquisitionError("Configure Downtify in Settings first.") }
-        progress?(0.05)
         let url: String
         if let direct = request.sourceURL, !direct.isEmpty {
             url = direct
@@ -53,9 +52,7 @@ struct DowntifyAcquisitionPlugin: AcquisitionProviding {
             }
             url = best.url
         }
-        progress?(0.5)
         try await DowntifyClient.enqueue(base: base, url: url)
-        progress?(1.0)
         return url
     }
 

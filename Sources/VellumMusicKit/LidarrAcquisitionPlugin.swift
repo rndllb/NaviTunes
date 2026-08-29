@@ -9,13 +9,6 @@ import Foundation
 struct LidarrAcquisitionPlugin: AcquisitionProviding {
     let kind: AcquisitionPluginKind = .lidarr
 
-    /// How far a *successfully placed request* counts towards a finished download.
-    ///
-    /// Lidarr has accepted the album and started looking for a release; nothing has been
-    /// transferred. Everything past this comes from Lidarr's own queue, so the bar can only reach
-    /// 100% when the transfer really is at 100%.
-    static let acceptedProgress = 0.1
-
     /// Prefix for the native id this plugin hands back from ``enqueue(_:progress:)`` — and the
     /// same one ``activeJobs()`` stamps on a queue row once it knows which album it belongs to.
     /// Matching the two is what lets the manager follow a request into the download queue.
@@ -55,15 +48,13 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
         }
     }
 
-    func enqueue(_ request: AcquisitionRequest, progress: AcquisitionProgress?) async throws -> String {
+    func enqueue(_ request: AcquisitionRequest) async throws -> String {
         guard isConfigured else { throw AcquisitionError("Configure Lidarr in Settings first.") }
-        // These fractions describe *placing the request*, which is all this function does — the
-        // catalog lookup, the add, and triggering the indexer search. None of it transfers a byte
-        // of audio. It used to end on `progress?(1.0)`, so the row read 100% the instant Lidarr
-        // accepted the request and then sat there for the entire real download: the "gets to 100%
-        // then does nothing" report. The ceiling is now well short of complete, and everything
-        // above it comes from Lidarr's own queue.
-        progress?(0.02)
+        // **No progress is reported from here at all**, deliberately. This function places a
+        // request — catalog lookup, add, trigger a search — and does not transfer a byte of audio,
+        // so any fraction it emits is the app describing its own bookkeeping as though it were a
+        // download. That is what produced first the 100% stall and then the 10% one. Everything
+        // displayed for a Lidarr request now comes from `requestState(for:)`, which reads Lidarr.
         let albumTitle = request.albumTitle ?? request.trackTitle ?? ""
         let term: String
         if !albumTitle.isEmpty {
@@ -72,13 +63,10 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
             term = request.artist
         }
         let candidates = try await albumLookup(term: term)
-        progress?(0.05)
         guard let pick = pickBestAlbum(from: candidates, artist: request.artist, albumTitle: albumTitle) else {
             throw AcquisitionError("No matching album found in Lidarr for \"\(term)\".")
         }
-        progress?(0.08)
         let foreignId = try await addOrSearchExistingAlbum(lookup: pick)
-        progress?(Self.acceptedProgress)
         return "\(Self.nativeIdPrefix)\(foreignId)"
     }
 
@@ -91,7 +79,9 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
             guard let qid = AcquisitionHTTP.int(row["id"]) else { continue }
             let size = AcquisitionHTTP.double(row["size"]) ?? 0
             let left = AcquisitionHTTP.double(row["sizeleft"]) ?? 0
-            let progress = size > 0 ? max(0, min(1, 1 - left / size)) : 0
+            // nil, not 0, when Lidarr gives no size: "we don't know" and "nothing transferred yet"
+            // are different facts and must not render the same.
+            let progress: Double? = size > 0 ? max(0, min(1, 1 - left / size)) : nil
             let album = row["album"] as? [String: Any]
             let artist = row["artist"] as? [String: Any]
             // A queue row's `title` is the *release* name from the indexer
@@ -128,7 +118,9 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
                 title: Self.friendlyCommand(name),
                 artist: nil,
                 status: Self.status(fromCommand: AcquisitionHTTP.string(cmd["status"]) ?? ""),
-                progress: 0.4,
+                // A running Lidarr command exposes no completion fraction, so there is none to
+                // show. This used to read `0.4`, a number chosen to make the bar look busy.
+                progress: nil,
                 message: AcquisitionHTTP.string(cmd["message"]),
                 kind: .lidarr,
                 nativeId: "lidarr-cmd:\(cid)",
@@ -152,6 +144,151 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
         if let files = AcquisitionHTTP.int(stats["trackFileCount"]) { return files > 0 }
         if let percent = AcquisitionHTTP.double(stats["percentOfTracks"]) { return percent > 0 }
         return false
+    }
+
+    /// The whole state of one request, derived entirely from Lidarr's own records.
+    ///
+    /// Read in order of authority, and every branch ends somewhere terminal so a request can never
+    /// hang:
+    ///
+    /// 1. **Files on disk** (`statistics.trackFileCount`) — the only proof of success, and true
+    ///    whether or not the app ever saw the download happen.
+    /// 2. **The download queue** — real transfer fraction from `size`/`sizeleft`, and the
+    ///    import-failure state from `trackedDownloadState`.
+    /// 3. **The search command** — still running means still searching.
+    /// 4. **History** — a completed search that grabbed nothing is `notFound`; a grab with no queue
+    ///    row means the download client took it without reporting one (Soulseek and the YouTube
+    ///    client both do this on Ethan's server), so it is downloading with no fraction to show.
+    ///
+    /// Nothing here is invented: when Lidarr reports no fraction, `progress` is nil and the UI
+    /// shows indeterminate rather than a made-up number.
+    func requestState(for nativeId: String) async -> AcquisitionBackendState? {
+        guard isConfigured, nativeId.hasPrefix(Self.nativeIdPrefix) else { return nil }
+        let foreignId = String(nativeId.dropFirst(Self.nativeIdPrefix.count))
+        guard let album = await libraryAlbum(foreignAlbumId: foreignId) else { return nil }
+
+        let stats = album["statistics"] as? [String: Any]
+        if let files = AcquisitionHTTP.int(stats?["trackFileCount"]), files > 0 {
+            // No fraction. "Complete" is a status; attaching a manufactured 1.0 to it would be the
+            // same invention this pass removes, just pointing the right way.
+            return AcquisitionBackendState(phase: .completed)
+        }
+        guard let albumId = AcquisitionHTTP.int(album["id"]) else { return nil }
+
+        if let row = await queueRecord(forAlbumId: albumId) {
+            let size = AcquisitionHTTP.double(row["size"]) ?? 0
+            let left = AcquisitionHTTP.double(row["sizeleft"]) ?? 0
+            let fraction = size > 0 ? max(0, min(1, 1 - left / size)) : nil
+            let tracked = (AcquisitionHTTP.string(row["trackedDownloadState"]) ?? "").lowercased()
+            let status = (AcquisitionHTTP.string(row["status"]) ?? "").lowercased()
+            let message = AcquisitionHTTP.string(row["errorMessage"])
+
+            if ["importfailed", "failedpending", "failed"].contains(tracked) {
+                return AcquisitionBackendState(
+                    phase: .failed,
+                    progress: fraction,
+                    detail: message ?? "The download finished but Lidarr could not import it.",
+                )
+            }
+            if ["importpending", "importing"].contains(tracked) || status == "completed" {
+                return AcquisitionBackendState(phase: .importing, progress: fraction, detail: message)
+            }
+            if status == "failed" || status == "warning" {
+                return AcquisitionBackendState(phase: .failed, progress: fraction, detail: message)
+            }
+            if status == "downloading" || status == "paused" {
+                return AcquisitionBackendState(phase: .downloading, progress: fraction, detail: message)
+            }
+            return AcquisitionBackendState(phase: .queued, progress: fraction, detail: message)
+        }
+
+        let search = await latestAlbumSearchCommand(albumId: albumId)
+        if let search, ["queued", "started", "running"].contains(
+            (AcquisitionHTTP.string(search["status"]) ?? "").lowercased()
+        ) {
+            return AcquisitionBackendState(phase: .searching)
+        }
+
+        // Nothing queued and no files. Did the search actually grab anything? A grab with no queue
+        // row is a download client that does not report one — Soulseek and the YouTube client both
+        // behave this way here — so it is genuinely in flight, just invisible.
+        let since = search.flatMap { AcquisitionHTTP.date($0["started"]) }
+        if let grabbedAt = await lastGrab(albumId: albumId, since: since) {
+            // Lidarr grabbed something, and then: no queue row, no files. Calling that
+            // "downloading" would be the app asserting a transfer the backend never reported —
+            // which is the whole complaint. It is reported as what it is. This is exactly the
+            // "Back to Strangers" case: two grabs, nothing queued, nothing on disk.
+            guard Date().timeIntervalSince(grabbedAt) < Self.grabStaleAfter else {
+                return AcquisitionBackendState(
+                    phase: .failed,
+                    detail: "Lidarr grabbed a release but nothing ever arrived.",
+                )
+            }
+            return AcquisitionBackendState(
+                phase: .noActivity,
+                detail: "Lidarr grabbed a release. Nothing is downloading and no files have arrived.",
+            )
+        }
+        if let search {
+            return AcquisitionBackendState(
+                phase: .notFound,
+                detail: AcquisitionHTTP.string(search["message"]),
+            )
+        }
+        // Lidarr has the album and reports nothing against it at all.
+        return AcquisitionBackendState(
+            phase: .noActivity,
+            detail: "Lidarr isn't reporting any activity for this.",
+        )
+    }
+
+    /// The queue row for an album, across **every** page.
+    ///
+    /// Paging matters: Ethan's queue holds 133 records and a single `pageSize=100` read misses 33
+    /// of them, which is one of the ways a request could be downloading in plain sight and still
+    /// look stalled to the app.
+    private func queueRecord(forAlbumId albumId: Int) async -> [String: Any]? {
+        for row in await allQueueRecords() {
+            let nested = AcquisitionHTTP.int((row["album"] as? [String: Any])?["id"])
+            if nested == albumId || AcquisitionHTTP.int(row["albumId"]) == albumId { return row }
+        }
+        return nil
+    }
+
+    private func latestAlbumSearchCommand(albumId: Int) async -> [String: Any]? {
+        guard let data = try? await send(path: "command") else { return nil }
+        let rows = (data as? [[String: Any]] ?? []).filter { cmd in
+            guard (AcquisitionHTTP.string(cmd["name"]) ?? "").lowercased() == "albumsearch" else { return false }
+            let ids = (cmd["body"] as? [String: Any])?["albumIds"] as? [Any] ?? []
+            return ids.compactMap { AcquisitionHTTP.int($0) }.contains(albumId)
+        }
+        return rows.max { lhs, rhs in
+            let l = AcquisitionHTTP.date(lhs["started"]) ?? .distantPast
+            let r = AcquisitionHTTP.date(rhs["started"]) ?? .distantPast
+            return l < r
+        }
+    }
+
+    /// How long a grab with nothing to show for it still counts as "in flight".
+    private static let grabStaleAfter: TimeInterval = 2 * 60 * 60
+
+    /// When Lidarr last grabbed a release for this album, optionally only counting grabs since a
+    /// given moment. `nil` when it never did.
+    private func lastGrab(albumId: Int, since: Date?) async -> Date? {
+        guard let data = try? await send(path: "history", query: [
+            "page": "1",
+            "pageSize": "20",
+            "albumId": String(albumId),
+        ]) else { return nil }
+        let records = (data as? [String: Any])?["records"] as? [[String: Any]] ?? []
+        let dates = records.compactMap { row -> Date? in
+            guard (AcquisitionHTTP.string(row["eventType"]) ?? "").lowercased() == "grabbed" else { return nil }
+            guard let date = AcquisitionHTTP.date(row["date"]) else { return nil }
+            // A minute of slack: the grab is logged a moment after the search starts.
+            if let since, date < since.addingTimeInterval(-60) { return nil }
+            return date
+        }
+        return dates.max()
     }
 
     // MARK: - REST
@@ -390,16 +527,37 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
     }
 
     private func downloadQueueRecords() async -> [[String: Any]] {
-        // `includeAlbum` / `includeArtist` are what put the real album title and its
-        // `foreignAlbumId` on each row — see the note in `activeJobs()`.
-        guard let data = try? await send(path: "queue", query: [
-            "page": "1",
-            "pageSize": "100",
-            "includeAlbum": "true",
-            "includeArtist": "true",
-        ]) else { return [] }
-        if let page = data as? [String: Any], let records = page["records"] as? [[String: Any]] { return records }
-        return data as? [[String: Any]] ?? []
+        await allQueueRecords()
+    }
+
+    /// Every queue record, following `totalRecords` across pages.
+    ///
+    /// A single `pageSize=100` read used to be the whole of it. Ethan's queue holds 133, so 33
+    /// records were invisible to the app — and a request sitting in that tail looked, to the UI,
+    /// exactly like one that had vanished. Bounded at five pages so a pathological queue cannot
+    /// turn one poll into an unbounded crawl.
+    private func allQueueRecords() async -> [[String: Any]] {
+        var out: [[String: Any]] = []
+        for page in 1 ... 5 {
+            // `includeAlbum` / `includeArtist` are what put the real album title and its
+            // `foreignAlbumId` on each row — see the note in `activeJobs()`.
+            guard let data = try? await send(path: "queue", query: [
+                "page": String(page),
+                "pageSize": "100",
+                "includeAlbum": "true",
+                "includeArtist": "true",
+            ]) else { break }
+            guard let payload = data as? [String: Any],
+                  let records = payload["records"] as? [[String: Any]]
+            else {
+                out.append(contentsOf: data as? [[String: Any]] ?? [])
+                break
+            }
+            out.append(contentsOf: records)
+            let total = AcquisitionHTTP.int(payload["totalRecords"]) ?? out.count
+            if records.isEmpty || out.count >= total { break }
+        }
+        return out
     }
 
     private func activeCommands() async -> [[String: Any]] {
@@ -463,13 +621,68 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
         return foreignAlbumId
     }
 
+    /// Force-monitor the album, **prove it stuck**, and only then search.
+    ///
+    /// The original workaround for Lidarr #5012 wrote the monitor flag once with `try?` and fired
+    /// the search regardless. On 2026-08-29 that failed in the field and the failure was invisible:
+    /// album 76243 ("Here Comes The Rain / Back To Strangers", Rehash) came out of a request with
+    /// `monitored: false`, and the app sat at a made-up 10% for ever.
+    ///
+    /// What actually goes wrong is a race. Adding an album whose artist is new makes Lidarr create
+    /// the artist and queue a `RefreshArtist`; the artist row for that album was stamped
+    /// `added: 21:04:24Z` and `RefreshArtist` completed at `21:04:24` — the same second the app was
+    /// writing its monitor flag. The refresh rewrites album rows from metadata and takes the flag
+    /// back out. Writing once and hoping loses that race about as often as it wins it. (Verified
+    /// afterwards from this session: the identical PUT, issued with no refresh in flight, sticks
+    /// first time.)
+    ///
+    /// An unmonitored album is not a cosmetic problem. `statistics.trackCount` reads **0** while it
+    /// is unmonitored — measured: monitoring 76243 flipped it straight from 0 to 2 — so a search
+    /// has nothing to work with.
+    ///
+    /// So: wait for any refresh of this artist to finish, then write-and-verify in a loop, and
+    /// throw rather than search into the void if it will not hold.
     private func monitorAndSearch(album: [String: Any], albumId: Int) async throws {
-        if album["monitored"] as? Bool != true {
-            var body = album
+        await waitForArtistRefresh(artistId: AcquisitionHTTP.int(album["artistId"]))
+        try await ensureAlbumMonitored(albumId: albumId, fallbackBody: album)
+        try await triggerAlbumSearch(albumIds: [albumId])
+    }
+
+    /// Blocks while Lidarr is refreshing this artist, so the monitor write lands after the rewrite
+    /// rather than under it. Bounded — a refresh that never ends must not wedge a request.
+    private func waitForArtistRefresh(artistId: Int?) async {
+        guard let artistId else { return }
+        for _ in 0 ..< 12 {
+            guard let data = try? await send(path: "command") else { return }
+            let running = (data as? [[String: Any]] ?? []).contains { cmd in
+                let name = (AcquisitionHTTP.string(cmd["name"]) ?? "").lowercased()
+                guard name == "refreshartist" else { return false }
+                let status = (AcquisitionHTTP.string(cmd["status"]) ?? "").lowercased()
+                guard status == "queued" || status == "started" || status == "running" else { return false }
+                let body = cmd["body"] as? [String: Any]
+                // A refresh with no artist id refreshes everything, which includes this one.
+                guard let target = AcquisitionHTTP.int(body?["artistId"]) else { return true }
+                return target == artistId
+            }
+            if !running { return }
+            try? await Task.sleep(for: .milliseconds(750))
+        }
+    }
+
+    /// Writes `monitored = true` and re-reads until Lidarr agrees.
+    private func ensureAlbumMonitored(albumId: Int, fallbackBody: [String: Any]) async throws {
+        for attempt in 0 ..< 5 {
+            let current = (try? await send(path: "album/\(albumId)")) as? [String: Any]
+            if (current?["monitored"] as? Bool) == true { return }
+            var body = current ?? fallbackBody
             body["monitored"] = true
             _ = try? await send(path: "album/\(albumId)", method: "PUT", jsonBody: body)
+            try? await Task.sleep(for: .milliseconds(attempt == 0 ? 400 : 1200))
         }
-        try await triggerAlbumSearch(albumIds: [albumId])
+        let final = (try? await send(path: "album/\(albumId)")) as? [String: Any]
+        guard (final?["monitored"] as? Bool) == true else {
+            throw AcquisitionError("Lidarr would not keep this album monitored, so a search would find nothing.")
+        }
     }
 
     private func resolveAddedAlbum(foreignAlbumId: String) async throws -> (row: [String: Any], id: Int) {

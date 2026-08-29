@@ -2145,7 +2145,10 @@ struct ServerPlaylistDetailView: View {
         let isRequesting = previewJob.map { !$0.status.isTerminal } ?? false
         let acquireProgress: OfflineDownloadUIState? = {
             guard let previewJob, !previewJob.status.isTerminal else { return nil }
-            return .progress(min(1, max(0, previewJob.progress)))
+            // `.indeterminate` already exists for "the server did not advertise a length", which is
+            // exactly the case when a request has no backend fraction. Same distinction, reused.
+            guard let fraction = previewJob.progress else { return .indeterminate }
+            return .progress(min(1, max(0, fraction)))
         }()
 
         AppleMusicAlbumTrackRow(

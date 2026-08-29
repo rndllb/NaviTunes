@@ -120,21 +120,17 @@ struct DroppedNeedleAcquisitionPlugin: AcquisitionProviding {
         }
     }
 
-    func enqueue(_ request: AcquisitionRequest, progress: AcquisitionProgress?) async throws -> String {
+    func enqueue(_ request: AcquisitionRequest) async throws -> String {
         guard isConfigured else { throw AcquisitionError("Configure DroppedNeedle in Settings first.") }
-        progress?(0.05)
 
         if let trackTitle = request.trackTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
            !trackTitle.isEmpty {
-            let nativeId = try await enqueueTrack(request, trackTitle: trackTitle, progress: progress)
-            progress?(1.0)
+            let nativeId = try await enqueueTrack(request, trackTitle: trackTitle)
             return nativeId
         }
 
-        let mbid = try await resolveReleaseGroupMBID(for: request, progress: progress)
-        progress?(0.55)
+        let mbid = try await resolveReleaseGroupMBID(for: request)
         try await submitAlbumRequest(mbid: mbid, request: request)
-        progress?(1.0)
         return "droppedneedle:rg:\(mbid)"
     }
 
@@ -460,11 +456,8 @@ struct DroppedNeedleAcquisitionPlugin: AcquisitionProviding {
     private func enqueueTrack(
         _ request: AcquisitionRequest,
         trackTitle: String,
-        progress: AcquisitionProgress?,
     ) async throws -> String {
-        progress?(0.2)
         let recordingMBID = try await resolveRecordingMBID(for: request, trackTitle: trackTitle)
-        progress?(0.45)
         let response = try await send(
             path: "/tracks/\(recordingMBID)/request",
             method: "POST",
@@ -485,10 +478,8 @@ struct DroppedNeedleAcquisitionPlugin: AcquisitionProviding {
 
     private func resolveReleaseGroupMBID(
         for request: AcquisitionRequest,
-        progress: AcquisitionProgress?,
     ) async throws -> String {
         if let mbid = normalizedMBID(request.releaseGroupMBID) { return mbid }
-        progress?(0.15)
         let albumTitle = request.albumTitle ?? request.trackTitle ?? ""
         let term: String
         if !albumTitle.isEmpty {
@@ -497,7 +488,6 @@ struct DroppedNeedleAcquisitionPlugin: AcquisitionProviding {
             term = request.artist
         }
         let candidates = try await searchAlbums(term: term)
-        progress?(0.35)
         guard let pick = pickBestAlbum(from: candidates, artist: request.artist, albumTitle: albumTitle),
               let mbid = AcquisitionHTTP.string(pick["musicbrainz_id"]),
               !mbid.isEmpty
@@ -519,7 +509,7 @@ struct DroppedNeedleAcquisitionPlugin: AcquisitionProviding {
         for request: AcquisitionRequest,
         trackTitle: String,
     ) async throws -> String {
-        let releaseGroupMBID = try await resolveReleaseGroupMBID(for: request, progress: nil)
+        let releaseGroupMBID = try await resolveReleaseGroupMBID(for: request)
         let tracks = try await albumTracks(releaseGroupMBID: releaseGroupMBID)
         let keys = Set(LibraryTrackMatcher.normalizedTitleKeys(from: trackTitle))
         if let match = tracks.first(where: { row in
@@ -659,8 +649,11 @@ struct DroppedNeedleAcquisitionPlugin: AcquisitionProviding {
     private func mapDownloadTask(_ row: [String: Any]) -> AcquisitionJob? {
         guard let taskId = AcquisitionHTTP.string(row["id"]), !taskId.isEmpty else { return nil }
         let statusRaw = AcquisitionHTTP.string(row["status"]) ?? ""
-        let progressPercent = AcquisitionHTTP.int(row["progress_percent"]) ?? 0
-        let progress = max(0, min(1, Double(progressPercent) / 100))
+        // nil when DroppedNeedle omits `progress_percent`. It used to default to 0, which drew an
+        // empty bar as though the transfer had measurably not started, rather than admitting the
+        // server said nothing.
+        let progress = AcquisitionHTTP.int(row["progress_percent"])
+            .map { max(0, min(1, Double($0) / 100)) }
         let title = AcquisitionHTTP.string(row["track_title"])
             ?? AcquisitionHTTP.string(row["album_title"])
             ?? "Download"

@@ -876,3 +876,115 @@ That is a server-side problem, not an app one, and it is **deliberately not addr
 with Ethan. It does bear on this pass in one way worth recording: T070 makes those rows report as
 failed instead of sitting at "importing, 100%" forever, so the condition becomes visible in the app
 rather than looking like the bug this pass fixed.
+
+## 2026-08-29 — the request UI reads Lidarr and nothing else (T071)
+
+> "let's make this a complete shell on the front end that only listens to what the back end has
+> to say" — and, narrowing it: "make vellum 100% accurate on progress reporting at all times".
+
+### THIS IS UNVERIFIED
+
+**No test was run against this code — no device run, no simulator run, no XCUITest — at Ethan's
+explicit instruction ("k then no testing").** It compiles cleanly and the reasoning behind each
+state is set out below, but nothing here has been observed working. Do not read the rest of this
+entry as evidence that it behaves correctly; read it as what the code intends. The first person to
+request something will be the first to find out.
+
+What *was* verified, before that instruction and against his live Lidarr, is the **diagnosis** —
+the API readings quoted below are real.
+
+### Why the #5012 workaround didn't hold
+
+Diagnosed from the live server, not guessed:
+
+- Album 76243 came out of the request `monitored: false`, and its artist row was stamped
+  `added: 21:04:24Z` — **the same second** `RefreshArtist` completed. The old code wrote the
+  monitor flag once, with `try?`, straight into that window. A refresh rewrites album rows from
+  metadata and takes the flag back out.
+- The identical PUT, issued later with no refresh in flight, **stuck first time**. So the write is
+  fine; the timing was not. It is a race, not a broken call.
+- `statistics.trackCount: 0` was a *consequence*, not a separate fault: monitoring 76243 flipped it
+  straight from **0 to 2**. An unmonitored album reports no tracks, so the search had nothing.
+
+Now: wait for any in-flight `RefreshArtist` for that artist, then write-and-**verify** the monitor
+flag in a loop, and throw rather than search into the void if it will not hold.
+
+**One correction to the brief.** It says nothing was ever grabbed. History for album 76243 shows
+`grabbed` at **21:06:06** — during his request — and again at 21:31:43 during my check. What is
+true is that **nothing ever entered the queue**: I read all 133 records across every page and found
+no row for it, and no files exist. His download clients include Soulseek and a YouTube client,
+which take a grab without reporting a queue row. That distinction is why the new state machine
+treats "grabbed but not queued and no files" as its own case rather than as progress.
+
+### Every UI state, and the Lidarr field it comes from
+
+If a state is not in this table it cannot be rendered.
+
+| UI shows | Derived from |
+|---|---|
+| `Complete` | `album.statistics.trackFileCount > 0` |
+| `Downloading` + **% bar** | queue row `size` and `sizeleft` → `1 - sizeleft/size` |
+| `Downloading`, no bar | queue row present, `status == downloading`, but `size` absent |
+| `Queued` | queue row present, status not downloading/completed |
+| `Importing` | queue row `trackedDownloadState ∈ {importPending, importing}` or `status == completed` |
+| `Failed` | queue row `trackedDownloadState ∈ {importFailed, failedPending, failed}`, or `status ∈ {failed, warning}`; message from `errorMessage` |
+| `Failed` (stale grab) | newest `history` `grabbed` older than 2h with no queue row and no files |
+| `Searching` | a `command` named `AlbumSearch` whose `body.albumIds` contains this album, `status ∈ {queued, started, running}` |
+| `Not found` | that command has finished and `history` shows no `grabbed` since its `started`; detail is the command's own `message` |
+| `Nothing happening` | album exists, no queue row, no running search, and either a grab with no queue row, or no search on record at all |
+
+The percentage is the **only** number displayed, and it exists in exactly one branch, computed from
+two fields Lidarr sends.
+
+### Making an invented value unrepresentable, not merely absent
+
+`AcquisitionJob.progress` is now `Double?`. That is the whole mechanism: while it was a plain
+`Double`, every construction site had to supply *something*, and what went in were numbers nobody
+measured — `0.05` on enqueue, a floor of `0.4`, `1.0` the moment a request was accepted, `0.4` for
+a running Lidarr command "so the bar looks busy". Each reached the screen as a percentage.
+
+- **The progress callback is deleted.** `AcquisitionProviding.enqueue` no longer takes one. All
+  three plugins used it identically — to report progress through *placing a request*
+  (0.05 → 0.5 → 1.0), which transfers nothing. There is no longer a channel through which a plugin
+  can push an unmeasured fraction.
+- **`AcquisitionManager.applyProgress` is deleted.** The manager has no setter for a fraction.
+- **No completion constant.** `.completed` carries no `1.0`; "complete" is a status.
+- **No zero fallbacks.** Lidarr with no `size`, and DroppedNeedle with no `progress_percent`, both
+  yield `nil` rather than 0 — "we don't know" and "nothing has transferred" are different facts.
+- **No interpolation or animation.** Nothing animates the bar between values; it renders the
+  current fraction or is absent.
+
+**The honest test — can any path still produce a progress value the backend did not supply?** I
+believe not, and here is the whole remaining set of writers so it can be checked rather than taken
+on trust: `Lidarr.activeJobs` (`size`/`sizeleft`), `Lidarr.requestState` (same, or nil),
+`Downtify.activeJobs` (`job.progress` from its queue endpoint), `DroppedNeedle.activeJobs`
+(`progress_percent`, or nil), and the manager copying an existing value forward unchanged. Every
+other site writes `nil`. The one thing I would flag for a reviewer: `AcquisitionFileProgress`
+still holds a non-optional `Double`, but nothing anywhere constructs one, so no value can reach the
+screen through it.
+
+### The other three defects
+
+- **"Found nothing" now exists** as a terminal state with a **Try Again** action, and terminal
+  unhappy rows are no longer auto-retired after 1.5s the way `.done` is — dropping them would put
+  the row back to a plain "Request" button and tell the user nothing, which is where this started.
+- **Recently Searched** no longer stores request rows, *and* filters out ones already saved on
+  device (`RecentSearchEntity.isUnnavigable`). Those were `primaryId: "acquire:<id>"` with no album
+  id, which built a stub `Track` with `albumId: ""` and rendered a page titled "Album" with
+  "Album not found" and a live Play button.
+- **The artist in a request row is tappable** and routes to the artist page. The second line was
+  one baked string ("Single · Daniel Caesar"); the kind and the artist are now laid out separately,
+  which is what makes a tap target possible.
+
+**Queue paging** is fixed as instructed: all pages are read, not the first 100 of 133.
+
+### Defect 5, confirmed with a caveat
+
+Duplicates on the artist page are handled — but **not by T069**, which only touched Discover's
+`hybridRows`. `ArtistViewModel.applyDiscography` has always matched plugin releases against server
+albums by title key and dropped the collisions. What is still *not* deduplicated there is one
+server album against another with the same title and artist. If duplicates reappear on an artist
+page, that is the case, and it is a different fix from T069's.
+
+**Not addressed, per his explicit deprioritisation:** the YouTube/Tubifarry path failing silently,
+the stuck import backlog and Lidarr's match strictness, metadata profiles, duplicate artist entries.
