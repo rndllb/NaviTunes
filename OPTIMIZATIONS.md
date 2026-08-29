@@ -1002,3 +1002,18 @@ since nothing builds an `AcquisitionFileProgress`; the point is that the first p
 per-file reporting cannot reintroduce the bug by accident.
 
 Still UNVERIFIED, on the same terms as the entry above — this compiles, and has not been run.
+
+### T071 follow-up — nothing polled the backend on a cold launch
+
+`onChange(of: scenePhase)` fires on a *change*, not on the initial value, so after a fresh start
+the acquisition backend was never asked anything until the user placed a request or opened
+Settings → Music Requests. A download that completed while the app was closed went unnoticed until
+one of those happened — against "accurate at all times" for the one moment the user is most likely
+to be checking.
+
+The existing launch `.task` now also calls `refreshOnForeground()`, and a new
+`onChange(of: app.isSignedIn)` covers the case that task misses: at launch `isSignedIn` can still
+be false, and there is no backend to ask until it flips.
+
+No new polling behaviour — this reuses the same time-boxed path as returning to the foreground, so
+the backoff and the 20-minute unattended budget still apply. UNVERIFIED, not run.
