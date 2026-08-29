@@ -31,6 +31,11 @@ final class AcquisitionManager: ObservableObject {
     private static let activeKey = "acquisition.activePlugin"
     private var pollTask: Task<Void, Never>?
     private var finishedNotified: Set<String> = []
+    /// Keys that have actually been seen in the server's queue, so a later disappearance is
+    /// meaningful rather than just "not started yet". See `noteAbsentFromQueue`.
+    private var observedInServerQueue: Set<String> = []
+    private var absentPolls: [String: Int] = [:]
+    private var unattendedPollingStartedAt: ContinuousClock.Instant?
     /// Settings → Downloads (and similar surfaces) hold this > 0 while visible so
     /// server queue progress keeps updating without a manual refresh.
     private var liveRefreshClients = 0
@@ -213,14 +218,18 @@ final class AcquisitionManager: ObservableObject {
             let nativeId = try await provider.enqueue(request) { [weak self] fraction in
                 Task { @MainActor in self?.applyProgress(key: key, fraction: fraction) }
             }
-            if var job = jobs[key] {
+            if let job = jobs[key] {
+                // `.queued`, not `.downloading`, and the progress the plugin actually reported
+                // rather than a floor of 0.4. The request has been placed; for an album-granularity
+                // backend that means the server is only now going looking for a release. Claiming
+                // a transfer that has not started is how the bar ended up parked at 100%.
                 jobs[key] = AcquisitionJob(
                     id: key,
                     title: job.title,
                     artist: job.artist,
                     albumTitle: job.albumTitle,
-                    status: .downloading,
-                    progress: max(job.progress, 0.4),
+                    status: .queued,
+                    progress: job.progress,
                     message: job.message,
                     kind: provider.kind,
                     nativeId: nativeId
@@ -252,7 +261,11 @@ final class AcquisitionManager: ObservableObject {
             title: job.title,
             artist: job.artist,
             albumTitle: job.albumTitle,
-            status: fraction >= 1 ? .downloading : job.status,
+            // The status used to flip to `.downloading` the moment a plugin reported 1.0, which
+            // for an album backend was the *request* completing, not the download. A plugin's
+            // progress callback reports how far along it is, and says nothing about which phase
+            // the job is in — the phase comes from the enqueue result and the server queue.
+            status: job.status,
             progress: min(1, max(job.progress, fraction)),
             message: job.message,
             kind: job.kind,
@@ -292,21 +305,72 @@ final class AcquisitionManager: ObservableObject {
         return appActive || serverActive
     }
 
+    /// How long unattended polling — no progress UI on screen — is allowed to continue.
+    ///
+    /// This is a phone. Before, a request that Lidarr never queued left a non-terminal job in
+    /// `jobs` forever, `hasActiveWork` stayed true forever, and the loop polled every 2.5s for the
+    /// life of the process. The budget ends that: the job is left exactly as it is, and the next
+    /// foreground (``refreshOnForeground()``) picks the thread back up.
+    private static let unattendedPollBudget: Duration = .seconds(20 * 60)
+
+    /// Unattended backoff. A download takes minutes, so there is nothing to learn from asking
+    /// every second when nobody is watching a progress bar.
+    private static let unattendedIntervals: [Duration] = [.seconds(5), .seconds(10), .seconds(20), .seconds(30)]
+
+    private var unattendedPollsSoFar = 0
+
     private var shouldContinuePolling: Bool {
-        hasActiveWork || liveRefreshClients > 0
+        if liveRefreshClients > 0 { return true }
+        guard hasActiveWork else { return false }
+        guard let started = unattendedPollingStartedAt else { return true }
+        return ContinuousClock.now - started < Self.unattendedPollBudget
     }
 
     private var pollInterval: Duration {
-        liveRefreshClients > 0 ? .seconds(1) : .seconds(2.5)
+        guard liveRefreshClients == 0 else { return .seconds(1) }
+        let index = min(unattendedPollsSoFar, Self.unattendedIntervals.count - 1)
+        return Self.unattendedIntervals[index]
     }
 
     private func runPollLoop() async {
-        defer { pollTask = nil }
+        defer {
+            pollTask = nil
+            unattendedPollingStartedAt = nil
+            unattendedPollsSoFar = 0
+        }
         while !Task.isCancelled {
+            // A visible progress UI restarts the budget: someone is watching, and the loop is
+            // wanted for as long as they are.
+            if liveRefreshClients > 0 {
+                unattendedPollingStartedAt = nil
+                unattendedPollsSoFar = 0
+            } else if unattendedPollingStartedAt == nil {
+                unattendedPollingStartedAt = ContinuousClock.now
+            }
             await refreshFromServer()
             guard shouldContinuePolling else { return }
-            try? await Task.sleep(for: pollInterval)
+            let interval = pollInterval
+            if liveRefreshClients == 0 { unattendedPollsSoFar += 1 }
+            try? await Task.sleep(for: interval)
         }
+    }
+
+    /// One refresh when the app comes back to the front, restarting the loop if there is still
+    /// work. This is the cheap half of the deal made by capping ``unattendedPollBudget``: catch up
+    /// when the user is actually here, rather than polling while they are not.
+    func refreshOnForeground() {
+        guard provider.isConfigured else { return }
+        unattendedPollingStartedAt = nil
+        unattendedPollsSoFar = 0
+        Task { [weak self] in
+            await self?.refreshFromServer()
+            await MainActor.run { self?.restartPollingIfWorkRemains() }
+        }
+    }
+
+    private func restartPollingIfWorkRemains() {
+        guard hasActiveWork else { return }
+        startPollingIfNeeded()
     }
 
     /// Pulls the active plugin's server-side queue and reconciles our app jobs against it.
@@ -328,12 +392,20 @@ final class AcquisitionManager: ObservableObject {
 
     private func reconcile(with snapshot: [AcquisitionJob]) {
         for (key, current) in jobs where !current.status.isTerminal {
-            guard let match = bestMatch(for: current, in: snapshot) else { continue }
-            // Plugins with per-file progress — don't let the enqueue callback's
-            // temporary 100% mask the real transfer fraction.
-            let mergedProgress = (match.files?.isEmpty == false)
-                ? match.progress
-                : max(current.progress, match.progress)
+            guard let match = bestMatch(for: current, in: snapshot) else {
+                noteAbsentFromQueue(key: key, job: current)
+                continue
+            }
+            // This job is really in the server's queue now, so a later disappearance means
+            // something — see `noteAbsentFromQueue`.
+            observedInServerQueue.insert(key)
+            absentPolls[key] = nil
+            // The server's fraction is the truth and replaces ours outright. It used to be
+            // `max(current, match)`, which could only ever ratchet upwards — so the 1.0 an
+            // album plugin reported on *request* permanently masked the real transfer, and the
+            // bar sat at 100% from the first second. The guard above it only spared plugins
+            // that report per-file progress, which is exactly the set Lidarr is not in.
+            let mergedProgress = match.progress
             let merged = AcquisitionJob(
                 id: key,
                 title: current.title ?? match.title,
@@ -348,14 +420,73 @@ final class AcquisitionManager: ObservableObject {
             )
             guard merged != current else { continue }
             jobs[key] = merged
-            if merged.status.isTerminal, !finishedNotified.contains(key) {
-                finishedNotified.insert(key)
-                onJobFinished?(merged)
-                Task { [weak self] in
-                    try? await Task.sleep(for: .seconds(1.5))
-                    self?.jobs.removeValue(forKey: key)
-                }
+            if merged.status.isTerminal { finish(key: key, job: merged) }
+        }
+    }
+
+    /// A job we are tracking is not in the server's queue this time round.
+    ///
+    /// This is the case that made a finished request look like it did nothing. A completed Lidarr
+    /// download **leaves the queue** once it imports, so the app's job never saw a terminal status,
+    /// `onJobFinished` never fired, and `AppModel.handleAcquisitionJobFinished` — which does the
+    /// server scan and the catalog re-fetch — never ran. The track only appeared after a relaunch
+    /// reloaded the library by hand.
+    ///
+    /// Absence alone proves nothing: before the server has found a release the job is not in the
+    /// queue *yet*, and a failed grab is removed from it just like a successful one. So this only
+    /// draws a conclusion once the job has actually been seen in the queue, and then asks the
+    /// plugin whether files really landed rather than assuming. Two consecutive absences are
+    /// required, so a row momentarily missing between queue and import is not called finished.
+    private func noteAbsentFromQueue(key: String, job: AcquisitionJob) {
+        guard observedInServerQueue.contains(key) else { return }
+        let absences = (absentPolls[key] ?? 0) + 1
+        absentPolls[key] = absences
+        guard absences >= 2, !finishedNotified.contains(key) else { return }
+
+        let provider = self.provider
+        let nativeId = job.nativeId
+        Task { [weak self] in
+            let satisfied: Bool?
+            if let nativeId {
+                satisfied = await provider.isRequestSatisfied(nativeId: nativeId)
+            } else {
+                satisfied = nil
             }
+            await MainActor.run {
+                guard let self, let current = self.jobs[key], !current.status.isTerminal else { return }
+                // `nil` is "the plugin can't tell". The item did leave the queue after really
+                // being in it, so the optimistic reading is the right default — the catalog
+                // re-fetch downstream is itself a check, and it gives up quietly if nothing
+                // shows up.
+                let done = satisfied ?? true
+                let resolved = AcquisitionJob(
+                    id: current.id,
+                    title: current.title,
+                    artist: current.artist,
+                    albumTitle: current.albumTitle,
+                    status: done ? .done : .failed,
+                    progress: done ? 1 : current.progress,
+                    message: done ? current.message : "The download stopped without completing.",
+                    kind: current.kind,
+                    nativeId: current.nativeId,
+                    files: current.files
+                )
+                self.jobs[key] = resolved
+                self.finish(key: key, job: resolved)
+            }
+        }
+    }
+
+    /// Fires the completion hook exactly once, then retires the row.
+    private func finish(key: String, job: AcquisitionJob) {
+        guard !finishedNotified.contains(key) else { return }
+        finishedNotified.insert(key)
+        observedInServerQueue.remove(key)
+        absentPolls[key] = nil
+        onJobFinished?(job)
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1.5))
+            self?.jobs.removeValue(forKey: key)
         }
     }
 

@@ -9,6 +9,18 @@ import Foundation
 struct LidarrAcquisitionPlugin: AcquisitionProviding {
     let kind: AcquisitionPluginKind = .lidarr
 
+    /// How far a *successfully placed request* counts towards a finished download.
+    ///
+    /// Lidarr has accepted the album and started looking for a release; nothing has been
+    /// transferred. Everything past this comes from Lidarr's own queue, so the bar can only reach
+    /// 100% when the transfer really is at 100%.
+    static let acceptedProgress = 0.1
+
+    /// Prefix for the native id this plugin hands back from ``enqueue(_:progress:)`` — and the
+    /// same one ``activeJobs()`` stamps on a queue row once it knows which album it belongs to.
+    /// Matching the two is what lets the manager follow a request into the download queue.
+    static let nativeIdPrefix = "lidarr:"
+
     private var base: String { AcquisitionConfigStore.value(.lidarr, "baseURL") }
     private var apiKey: String { AcquisitionConfigStore.value(.lidarr, "apiKey") }
 
@@ -45,7 +57,13 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
 
     func enqueue(_ request: AcquisitionRequest, progress: AcquisitionProgress?) async throws -> String {
         guard isConfigured else { throw AcquisitionError("Configure Lidarr in Settings first.") }
-        progress?(0.05)
+        // These fractions describe *placing the request*, which is all this function does — the
+        // catalog lookup, the add, and triggering the indexer search. None of it transfers a byte
+        // of audio. It used to end on `progress?(1.0)`, so the row read 100% the instant Lidarr
+        // accepted the request and then sat there for the entire real download: the "gets to 100%
+        // then does nothing" report. The ceiling is now well short of complete, and everything
+        // above it comes from Lidarr's own queue.
+        progress?(0.02)
         let albumTitle = request.albumTitle ?? request.trackTitle ?? ""
         let term: String
         if !albumTitle.isEmpty {
@@ -54,14 +72,14 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
             term = request.artist
         }
         let candidates = try await albumLookup(term: term)
-        progress?(0.3)
+        progress?(0.05)
         guard let pick = pickBestAlbum(from: candidates, artist: request.artist, albumTitle: albumTitle) else {
             throw AcquisitionError("No matching album found in Lidarr for \"\(term)\".")
         }
-        progress?(0.5)
+        progress?(0.08)
         let foreignId = try await addOrSearchExistingAlbum(lookup: pick)
-        progress?(1.0)
-        return "lidarr:\(foreignId)"
+        progress?(Self.acceptedProgress)
+        return "\(Self.nativeIdPrefix)\(foreignId)"
     }
 
     func activeJobs() async -> [AcquisitionJob] {
@@ -74,15 +92,31 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
             let size = AcquisitionHTTP.double(row["size"]) ?? 0
             let left = AcquisitionHTTP.double(row["sizeleft"]) ?? 0
             let progress = size > 0 ? max(0, min(1, 1 - left / size)) : 0
+            let album = row["album"] as? [String: Any]
+            let artist = row["artist"] as? [String: Any]
+            // A queue row's `title` is the *release* name from the indexer
+            // ("Daniel.Caesar-Japanese.Denim-SINGLE-WEB-2016-ENRiCH"), which matches neither what
+            // the user asked for nor anything the manager can compare against. The album object —
+            // present because the queue is fetched with `includeAlbum` — carries the real title
+            // and, crucially, the same `foreignAlbumId` that `enqueue` returned as its native id.
+            // Stamping it here is what lets a request be followed into the queue and out the other
+            // side; without it the app's job never matches its own download.
+            let foreignAlbumId = AcquisitionHTTP.string(album?["foreignAlbumId"])
+            let albumTitle = AcquisitionHTTP.string(album?["title"])
+            let releaseTitle = AcquisitionHTTP.string(row["title"]) ?? "Download"
             out.append(AcquisitionJob(
                 id: "lidarr-queue:\(qid)",
-                title: AcquisitionHTTP.string(row["title"]) ?? "Download",
-                artist: nil,
-                status: Self.status(fromQueue: AcquisitionHTTP.string(row["status"]) ?? ""),
+                title: albumTitle ?? releaseTitle,
+                artist: AcquisitionHTTP.string(artist?["artistName"]),
+                albumTitle: albumTitle,
+                status: Self.status(
+                    fromQueue: AcquisitionHTTP.string(row["status"]) ?? "",
+                    trackedState: AcquisitionHTTP.string(row["trackedDownloadState"]) ?? "",
+                ),
                 progress: progress,
                 message: AcquisitionHTTP.string(row["errorMessage"]) ?? AcquisitionHTTP.string(row["timeleft"]),
                 kind: .lidarr,
-                nativeId: "lidarr-queue:\(qid)",
+                nativeId: foreignAlbumId.map { "\(Self.nativeIdPrefix)\($0)" } ?? "lidarr-queue:\(qid)",
                 source: .server
             ))
         }
@@ -102,6 +136,22 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
             ))
         }
         return out
+    }
+
+    /// Whether the album behind this request now has files in Lidarr.
+    ///
+    /// Leaving the queue is not the same as succeeding — a failed grab is removed too — so the
+    /// only trustworthy answer is Lidarr's own file count for the album. `nil` when the question
+    /// cannot be answered (not configured, unknown id shape, request failed), so the caller can
+    /// tell "no" apart from "don't know".
+    func isRequestSatisfied(nativeId: String) async -> Bool? {
+        guard isConfigured, nativeId.hasPrefix(Self.nativeIdPrefix) else { return nil }
+        let foreignId = String(nativeId.dropFirst(Self.nativeIdPrefix.count))
+        guard let row = await libraryAlbum(foreignAlbumId: foreignId) else { return nil }
+        guard let stats = row["statistics"] as? [String: Any] else { return false }
+        if let files = AcquisitionHTTP.int(stats["trackFileCount"]) { return files > 0 }
+        if let percent = AcquisitionHTTP.double(stats["percentOfTracks"]) { return percent > 0 }
+        return false
     }
 
     // MARK: - REST
@@ -340,7 +390,14 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
     }
 
     private func downloadQueueRecords() async -> [[String: Any]] {
-        guard let data = try? await send(path: "queue", query: ["page": "1", "pageSize": "100"]) else { return [] }
+        // `includeAlbum` / `includeArtist` are what put the real album title and its
+        // `foreignAlbumId` on each row — see the note in `activeJobs()`.
+        guard let data = try? await send(path: "queue", query: [
+            "page": "1",
+            "pageSize": "100",
+            "includeAlbum": "true",
+            "includeArtist": "true",
+        ]) else { return [] }
         if let page = data as? [String: Any], let records = page["records"] as? [[String: Any]] { return records }
         return data as? [[String: Any]] ?? []
     }
@@ -471,7 +528,20 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
         return albums.first(where: { artistMatches($0) }) ?? albums.first
     }
 
-    private static func status(fromQueue raw: String) -> AcquisitionJobStatus {
+    /// A queue row's `status` alone is not the whole story.
+    ///
+    /// `status` describes the *transfer*, so a download that finished and then failed to import
+    /// reads `completed` — and it **stays in the queue in that state indefinitely**. Mapping that
+    /// to `.importing` left such a row pinned at 100% forever with no way to tell it apart from
+    /// one that is genuinely still importing, which is its own flavour of "gets to 100% and does
+    /// nothing". `trackedDownloadState` is the field that distinguishes them; on the live server
+    /// this was observed on 52 of 133 queued items, so it is not a rare corner.
+    private static func status(fromQueue raw: String, trackedState: String = "") -> AcquisitionJobStatus {
+        switch trackedState.lowercased() {
+        case "importfailed", "failedpending", "failed": return .failed
+        case "importpending", "importing": return .importing
+        default: break
+        }
         switch raw.lowercased() {
         case "queued", "delay", "downloadclientunavailable": return .queued
         case "downloading", "paused": return .downloading
