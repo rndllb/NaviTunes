@@ -190,7 +190,19 @@ private struct MainShellView: View {
             app.scheduleLibraryBootstrap()
             if app.isSignedIn {
                 app.startLibraryMembershipAutoSync()
+                // Cold launch needs its own kick. `onChange(of: scenePhase)` below fires on a
+                // *change*, not on the initial value, so on a fresh start nothing polled the
+                // acquisition backend at all until the user happened to place a request or open
+                // Settings → Music Requests. A download that finished while the app was closed
+                // went unnoticed until then.
+                app.acquisition.refreshOnForeground()
             }
+        }
+        .onChange(of: app.isSignedIn) { _, signedIn in
+            // And again when sign-in completes after launch, which is the case the `task` above
+            // misses: at that point `isSignedIn` was still false and there was no backend to ask.
+            guard signedIn else { return }
+            app.acquisition.refreshOnForeground()
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active, app.isSignedIn else { return }
