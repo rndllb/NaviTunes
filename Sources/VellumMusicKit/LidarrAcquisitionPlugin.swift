@@ -256,6 +256,32 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
         return out
     }
 
+    /// Album search for Discover.
+    ///
+    /// `supportsTrackSearch` stays **false** — Lidarr has no track-search endpoint, so advertising
+    /// one would only fire a request that cannot be answered. This is the album-level route to the
+    /// same goal: `album/lookup` is the MusicBrainz-backed search Lidarr's own "Add New Album" uses,
+    /// and it resolves a bare song title to the single that carries it. Reusing the lookup that
+    /// ``enqueue(_:progress:)`` already resolves requests against is what guarantees a row surfaced
+    /// here is one the enqueue path can actually act on.
+    func searchAlbums(query: String) async -> [AcquisitionRelease] {
+        guard isConfigured else { return [] }
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { return [] }
+        let rows = (try? await albumLookup(term: term)) ?? []
+        var seen = Set<String>()
+        var out: [AcquisitionRelease] = []
+        for row in rows {
+            // An artist-less row cannot be requested (the request is keyed on artist + title) and
+            // cannot be matched against the library to suppress a duplicate. Drop it.
+            guard let release = mapAlbum(row, artistFallback: ""), !release.artist.isEmpty else { continue }
+            guard seen.insert(release.id).inserted else { continue }
+            out.append(release)
+            if out.count >= 8 { break }
+        }
+        return out
+    }
+
     func tracks(forRelease release: AcquisitionRelease) async -> [BrowseAlbumPreviewTrack] {
         guard isConfigured else { return [] }
         var albumId = release.nativeAlbumId.flatMap(Int.init)

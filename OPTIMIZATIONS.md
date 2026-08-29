@@ -576,3 +576,73 @@ showing intermediate entries surviving, and by the same-type repeat being what t
 (playlist → album are both `ServerPlaylistDetailView`, and that push now survives being covered).
 
 **Unproven:** device. Simulator only.
+
+## 2026-08-29 — searching a song title in Discover finds the single (T068)
+
+Ethan searched **japanese denim** in Discover and got three artists and nothing else. The single
+is in Lidarr's catalog; Vellum never asked for it.
+
+**Why a song title could only ever match an artist name**
+
+`runHybridSearch` had exactly two plugin calls: `acquisition.search(query:)` for tracks, gated on
+`supportsTrackSearch`, and `acquisition.searchArtists(query:)`. Lidarr sets `supportsTrackSearch:
+false` — **correctly**, it is album-granularity and has no track-search endpoint — so with Lidarr
+active the first call was skipped entirely and artists were the only thing a query could hit.
+There was no album search anywhere in `AcquisitionProviding` to fall back to.
+
+Flipping `supportsTrackSearch` to true would have been the wrong fix: there is no Lidarr track
+search to call, so it would only fire a request that cannot be answered. **It is still false.**
+
+**The fix — ask the album catalog, because a single is a release**
+
+- `AcquisitionProviding.searchAlbums(query:)`, with a **default empty implementation**. Downtify
+  (track-granularity) and DroppedNeedle inherit the default and return nothing new.
+- `LidarrAcquisitionPlugin.searchAlbums` reuses `albumLookup(term:)` — the same
+  `album/lookup` call `enqueue` already resolves a request against, and the same search Lidarr's
+  own "Add New Album" uses. Reusing it is what guarantees a row surfaced in Discover is one the
+  enqueue path can actually act on. Artist-less rows are dropped (they can neither be requested
+  nor matched against the library), deduped by foreign id, capped at 8.
+- `AcquisitionManager.searchAlbums` gates on `granularity == .album`, mirroring how
+  `search(query:)` gates on `supportsTrackSearch`.
+- `runHybridSearch` calls it alongside `searchArtists` — the two are independent round-trips and
+  now run concurrently, so this adds no sequential network hop to a Discover search.
+- `AcquisitionRelease.asSearchResult` maps a release onto the existing `AcquisitionResult` row, so
+  the new rows flow through `hybridRows` scoring, the Request pill, and the detail view with no
+  new UI. Subtitle leads with the release kind — "Single · Daniel Caesar".
+
+**Suppression, and where it deliberately does not live**
+
+Release rows are filtered in `runHybridSearch`, against typed `AcquisitionRelease`s, *not* in
+`hybridRows`. The generic acquire suppression there compares **track** titles; adding an
+album-title rule to it would start hiding a track-granularity plugin's rows for individual missing
+songs whose album happens to be on the server. Two filters: a release already on the server
+(normalized `title|artist`), and anything scoring 0 against the query — `album/lookup` is fuzzy and
+will return loosely related releases that would otherwise sit at the foot of Top Results as noise.
+The existing per-row rules in `hybridRows` (server track hit, personal library title index) still
+apply on top.
+
+**Verified on the simulator against a stub Lidarr, with a baseline control**
+
+Ethan's Lidarr is not reachable from this session — no URL or API key is stored anywhere I can
+read — so a stub serving Lidarr's *wire format* stood in, pointed at by launch arguments
+(`NSArgumentDomain`, so nothing the user has persisted was touched). Signed in to the public
+Navidrome demo server, as the other passes do.
+
+| | result |
+|---|---|
+| **Baseline, unfixed code** | Only `artist/lookup` is called. **No `Japanese Denim` row.** The reported bug exactly. |
+| **With the fix** | `album/lookup?term=japanese denim` is called; the row appears, labelled **"Single · Daniel Caesar"**, with a Request pill. |
+| **Artist priority** | Searching `Daniel Caesar` returns album rows *and* the artist row, artist first (`minY` compared, not eyeballed). No regression. |
+| **No duplicate** | `Can I Have Your Love Tonight` is a real one-track album on the demo server; the stub returned a Lidarr row for the same title + artist and **no Request row appeared**. |
+| **Enqueue** | Tapping Request produced the full contract: lookup → `POST /api/v1/album` with **`monitored: true`** → re-resolve → `POST /api/v1/command AlbumSearch albumIds=[…]`. |
+
+**What that does and does not prove.** The enqueue line above is verified **at the wire level
+against the stub** — the app sends Lidarr the right calls in the right order with the album
+monitored. It is **not** verified against Ethan's real Lidarr, and "the album appears in Lidarr as
+monitored" has therefore not been observed on a real instance. The same caveat covers the brief's
+claim that `album/lookup` resolves `japanese denim` to the Daniel Caesar single on the live server:
+the brief verified that against `/api/v1/search`, and `album/lookup` is the album half of what that
+endpoint dispatches to, but I could not confirm it on the live instance.
+
+**Unproven:** device behaviour. The device build is clean; the interaction was exercised on the
+simulator only.

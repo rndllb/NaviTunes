@@ -360,6 +360,13 @@ struct DiscoverySearchView: View {
         return score
     }
 
+    /// Normalized `title|artist`, the identity used to decide a plugin release row is already
+    /// covered by an album on the server. Same normalization as every other match in this file,
+    /// so punctuation and diacritics can't split one release into two rows.
+    private static func releaseIdentityKey(title: String, artist: String) -> String {
+        "\(LibraryTrackMatcher.normalize(title))|\(LibraryTrackMatcher.normalize(artist))"
+    }
+
     var body: some View {
         listContent
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -1421,9 +1428,13 @@ struct DiscoverySearchView: View {
         }
 
         let lib = app.activeLibrary
-        let acquireOK = app.acquisitionConfigured
-            && app.acquisitionCapabilities.supportsTrackSearch
-            && !app.effectiveOfflineMode
+        let pluginOK = app.acquisitionConfigured && !app.effectiveOfflineMode
+        let acquireOK = pluginOK && app.acquisitionCapabilities.supportsTrackSearch
+        // An album-granularity plugin (Lidarr) has no track search, so a song-title query used to
+        // reach nothing but `searchArtists` — which is why searching a single by its title returned
+        // three artists and no way to request the song. Ask the plugin's album catalog too: a
+        // single is a release, so the title resolves there.
+        let albumAcquireOK = pluginOK && app.acquisitionCapabilities.granularity == .album
 
         let server: CatalogSearchResults
         if let lib {
@@ -1441,16 +1452,44 @@ struct DiscoverySearchView: View {
             pluginAcquire = []
         }
         let pluginArtists: [AcquisitionArtist]
-        if app.acquisitionConfigured, !app.effectiveOfflineMode {
-            pluginArtists = await acquisition.searchArtists(query: query)
+        let pluginAlbums: [AcquisitionRelease]
+        if pluginOK {
+            // Two independent plugin round-trips — run them together rather than adding another
+            // sequential network hop to every Discover search.
+            async let artists = acquisition.searchArtists(query: query)
+            async let albums = albumAcquireOK ? acquisition.searchAlbums(query: query) : []
+            (pluginArtists, pluginAlbums) = await (artists, albums)
         } else {
             pluginArtists = []
+            pluginAlbums = []
         }
         if Task.isCancelled || trimmedQuery != query { return }
 
         var seenAcquireKeys = Set<String>()
         var mergedAcquire: [AcquisitionResult] = []
         for row in pluginAcquire where seenAcquireKeys.insert(row.request.requestKey).inserted {
+            mergedAcquire.append(row)
+        }
+        // Release rows are suppressed here, against typed `AcquisitionRelease`s, rather than in
+        // `hybridRows`: the generic acquire suppression there compares *track* titles, and adding
+        // an album-title rule to it would start hiding a track-granularity plugin's rows for
+        // individual missing songs whose album happens to be on the server.
+        let normalizedQuery = LibraryTrackMatcher.normalize(query)
+        let serverAlbumKeys = Set(server.albums.map { Self.releaseIdentityKey(title: $0.title, artist: $0.artist) })
+        for release in pluginAlbums {
+            // Already on the server: the user can play it, not request it.
+            let key = Self.releaseIdentityKey(title: release.title, artist: release.artist)
+            guard !serverAlbumKeys.contains(key) else { continue }
+            // `album/lookup` is a fuzzy catalog search and will return loosely related releases.
+            // Anything matching neither the title nor the artist is noise at the foot of Top
+            // Results, so it never becomes a row.
+            guard Self.relevanceScore(
+                title: release.title,
+                artist: release.artist,
+                normalizedQuery: normalizedQuery,
+            ) > 0 else { continue }
+            let row = release.asSearchResult
+            guard seenAcquireKeys.insert(row.request.requestKey).inserted else { continue }
             mergedAcquire.append(row)
         }
         acquireResults = mergedAcquire

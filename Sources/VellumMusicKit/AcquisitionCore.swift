@@ -309,6 +309,39 @@ struct AcquisitionRelease: Identifiable, Hashable, Sendable {
             coverURL: artworkURL
         )
     }
+
+    /// The release-kind word a search row leads its subtitle with.
+    ///
+    /// Deliberately not ``bucket``, which folds singles and EPs into one case for discography
+    /// grouping. A row that says "Single" is the whole point here: it is what tells the user the
+    /// title they searched exists as its own release and can be requested.
+    var releaseKindLabel: String {
+        switch (albumType ?? "").lowercased() {
+        case "single": return "Single"
+        case "ep": return "EP"
+        default: return "Album"
+        }
+    }
+
+    /// This release as a requestable Discover search row.
+    ///
+    /// `albumName` is left empty on purpose: for a release row the album *is* the title, and
+    /// ``AcquireResultDetailView``'s metadata line would otherwise print it again directly under
+    /// itself. The request is ``acquisitionRequest``, so tapping the row enqueues exactly the
+    /// release the row describes.
+    var asSearchResult: AcquisitionResult {
+        AcquisitionResult(
+            id: id,
+            title: title,
+            artists: artist.isEmpty ? [] : [artist],
+            albumName: "",
+            coverURL: artworkURL,
+            year: releaseYear,
+            explicit: false,
+            subtitle: artist.isEmpty ? releaseKindLabel : "\(releaseKindLabel) · \(artist)",
+            request: acquisitionRequest
+        )
+    }
 }
 
 /// Artist metadata the plugin already has (Lidarr overview / images).
@@ -342,6 +375,16 @@ protocol AcquisitionProviding: Sendable {
     /// Track-search plugins only (gated by ``capabilities``). Default: empty.
     func search(query: String) async throws -> [AcquisitionResult]
 
+    /// Release search for Discover. Album-granularity plugins only. Default: empty.
+    ///
+    /// The album-level counterpart to ``search(query:)``, which returns *track* rows and is gated
+    /// on ``AcquisitionCapabilities/supportsTrackSearch``. Lidarr is album-granularity and has no
+    /// track-search endpoint at all, so before this a song-title query could reach nothing but
+    /// ``searchArtists(query:)`` — searching a single by its title returned artists and no way to
+    /// request the single itself. Plugins with no album catalog inherit the empty default and are
+    /// unaffected.
+    func searchAlbums(query: String) async -> [AcquisitionRelease]
+
     /// Kicks off acquisition. Returns the plugin's native id for the new job.
     func enqueue(_ request: AcquisitionRequest, progress: AcquisitionProgress?) async throws -> String
 
@@ -370,6 +413,7 @@ protocol AcquisitionProviding: Sendable {
 
 extension AcquisitionProviding {
     func search(query: String) async throws -> [AcquisitionResult] { [] }
+    func searchAlbums(query: String) async -> [AcquisitionRelease] { [] }
     func activeJobs() async -> [AcquisitionJob] { [] }
     /// Whether the active plugin's catalog (Lidarr → MusicBrainz) knows this artist.
     func canRequestArtist(named name: String) async -> Bool { true }
