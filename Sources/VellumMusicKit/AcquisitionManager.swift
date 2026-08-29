@@ -114,6 +114,16 @@ final class AcquisitionManager: ObservableObject {
         return (try? await provider.search(query: query)) ?? []
     }
 
+    /// Release search for Discover, for plugins that request whole albums.
+    ///
+    /// Gated on granularity for the same reason ``search(query:)`` is gated on
+    /// `supportsTrackSearch`: a track-granularity plugin answers a query through that call, and
+    /// asking it for albums as well would list a release it cannot request as a unit.
+    func searchAlbums(query: String) async -> [AcquisitionRelease] {
+        guard provider.isConfigured, provider.capabilities.granularity == .album else { return [] }
+        return await provider.searchAlbums(query: query)
+    }
+
     func artistReleases(named name: String) async -> [AcquisitionRelease] {
         guard provider.isConfigured else { return [] }
         return await provider.artistReleases(named: name)
