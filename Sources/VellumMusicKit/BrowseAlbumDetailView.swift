@@ -725,68 +725,46 @@ struct BrowseAlbumDetailView: View {
         .id("browse-missing-\(preview.id)")
     }
 
-    /// Same native ``Menu`` / ``ControlGroup`` shape as ``NewTabChartOverflowPanel`` / the request backend search.
+    /// The shared ``StandardSongMenuContent``, so a song on a browse/chart album offers the same
+    /// actions it does everywhere else. Its surface-specific **Play** survives as an optional
+    /// callback on the template rather than as a reason to keep a separate menu.
     @ViewBuilder
     private func browseInLibraryTrackOverflowMenu(track: Track) -> some View {
         let isInLibrary = app.isSongInLibrary(track.id)
         let isOfflineCached = app.offline.downloadedTrackIds.contains(track.id)
+        let artist = track.artist.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        ControlGroup {
-            Button {
-                Task { await play(startingAt: track) }
-            } label: {
-                Label("Play", systemImage: "play.fill")
-            }
-            if isInLibrary, !isOfflineCached {
-                Button {
+        StandardSongMenuContent(
+            track: track,
+            onPlay: { Task { await play(startingAt: track) } },
+            onPlayNext: {
+                Task { @MainActor in
+                    try? await app.player.playTracksNext(library: app.activeLibrary, tracks: [track])
+                }
+            },
+            onAddToQueue: {
+                Task { @MainActor in
+                    guard let lib = app.activeLibrary else { return }
+                    try? await app.player.addToQueue(library: lib, track: track, sourcePlaylistId: nil)
+                }
+            },
+            onFavorite: { app.toggleFavoriteTrack(id: track.id) },
+            onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
+            onDownload: isInLibrary && !isOfflineCached
+                ? {
                     Task {
                         guard let lib = app.activeLibrary else { return }
                         try? await cache(track: track, lib: lib)
                     }
-                } label: {
-                    Label("Download", systemImage: "arrow.down.circle")
                 }
-            }
-            Button {
-                app.toggleFavoriteTrack(id: track.id)
-            } label: {
-                Label("Favorite", systemImage: "star.fill")
-            }
-            ShareLink(item: "\(track.title) — \(track.artist)") {
-                Label("Share", systemImage: "square.and.arrow.up")
-            }
-        }
-        .tint(Color.primary)
-
-        Section {
-            Button {
-                app.presentAddToPlaylist(tracks: [track])
-            } label: {
-                Label("Add to a Playlist", systemImage: "music.note.list")
-            }
-            Button {
-                Task { @MainActor in
-                    try? await app.player.playTracksNext(library: app.activeLibrary, tracks: [track])
-                }
-            } label: { Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward") }
-        }
-        .tint(Color.primary)
-
-        NavidromeShareMenuSection(
-            itemId: track.id,
-            description: "\(track.title) — \(track.artist)"
+                : nil,
+            onRemoveDownload: isOfflineCached
+                ? { try? app.offline.remove(trackId: track.id) }
+                : nil,
+            onGoToArtist: ArtistNavigation.isTappable(artist)
+                ? { navigateArtist = ArtistNameNavigation(id: track.artist) }
+                : nil
         )
-
-        if isInLibrary, isOfflineCached {
-            Section {
-                Button {
-                    try? app.offline.remove(trackId: track.id)
-                } label: {
-                    Label("Remove Download", systemImage: "arrow.down.circle.dotted")
-                }
-            }
-            .tint(Color.primary)
-        }
     }
 
     private var emptySongNote: String {
@@ -800,16 +778,15 @@ struct BrowseAlbumDetailView: View {
 
     private var footerBlock: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let album = matchedLibraryAlbum, let line = album.releaseFooterDisplayString {
+            if let album = matchedLibraryAlbum, let line = TrackListSummary.releasedLine(for: album) {
                 Text(line)
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(backdropPalette.heroChromeSecondary)
             }
 
             if !libraryTracks.isEmpty {
-                let totalMin = max(1, Int(ceil(libraryTracks.reduce(0) { $0 + max($1.duration, 0) } / 60.0)))
-                let n = libraryTracks.count
-                Text(n == 1 ? "1 song, \(totalMin) minutes" : "\(n) songs, \(totalMin) minutes")
+                let totalSeconds = libraryTracks.reduce(0.0) { $0 + max($1.duration, 0) }
+                Text(TrackListSummary.text(songCount: libraryTracks.count, totalSeconds: totalSeconds))
                     .font(.subheadline)
                     .foregroundStyle(backdropPalette.heroChromeSecondary)
             } else if !previewTracks.isEmpty, let line = previewTracksFooterSummary {
@@ -893,13 +870,10 @@ struct BrowseAlbumDetailView: View {
 
     private var previewTracksFooterSummary: String? {
         guard !previewTracks.isEmpty else { return nil }
-        let totalSec = previewTracks.compactMap(\.duration).reduce(0, +)
-        let n = previewTracks.count
-        if totalSec > 1 {
-            let totalMin = max(1, Int(ceil(totalSec / 60.0)))
-            return n == 1 ? "1 song, \(totalMin) minutes" : "\(n) songs, \(totalMin) minutes"
-        }
-        return n == 1 ? "1 song" : "\(n) songs"
+        // Preview tracks often carry no duration at all; `TrackListSummary` drops the duration
+        // clause on its own in that case, which is what this used to do by hand.
+        let totalSeconds = previewTracks.compactMap(\.duration).reduce(0, +)
+        return TrackListSummary.text(songCount: previewTracks.count, totalSeconds: totalSeconds)
     }
 
     private func formattedTrackDuration(_ seconds: TimeInterval?) -> String? {

@@ -625,6 +625,14 @@ struct AlbumArtworkView: View {
     @State private var loadedArtworkID: String?
     @State private var imageVisible = false
 
+    /// Identity of the *image*, not of the request that fetches it.
+    ///
+    /// Subsonic media URLs carry a fresh random salt (`s`) and token (`t`) every time one is
+    /// built, and `AlbumSummary.artworkURL` stores whichever spelling existed when the album was
+    /// parsed. So re-parsing an unchanged album yields a different `url.absoluteString` for the
+    /// same cover. Keying the load on that string re-entered the load path for covers already on
+    /// screen — measured at 108 of 178 artwork task re-fires during three pull-to-refreshes.
+    /// The caches key on this stripped-and-sorted id, so the load should too.
     private var artworkID: String {
         guard let url else { return "none" }
         return DecodedArtworkCache.stableID(for: url, maxPixelSize: maxDecodePixels)
@@ -690,7 +698,7 @@ struct AlbumArtworkView: View {
                     }
                 }
             }
-            .task(id: url.absoluteString) {
+            .task(id: artworkID) {
                 await load(url: url)
             }
         } else if let meshArtworkSeed {
@@ -702,7 +710,9 @@ struct AlbumArtworkView: View {
     }
 
     private func load(url: URL) async {
-        let loadKey = url.absoluteString
+        // The image's identity, matching `.task(id:)` and both caches — not the request URL,
+        // whose auth params change on every build. See ``artworkID``.
+        let loadKey = DecodedArtworkCache.stableID(for: url, maxPixelSize: maxDecodePixels)
         if loadedArtworkID == loadKey, decoded != nil, imageVisible {
             return
         }
@@ -756,15 +766,25 @@ struct MusicToolbarSettingsAvatarLink: View {
     /// Circular artwork diameter (New tab uses 45; compact pills may use less).
     var diameter: CGFloat = 45
 
+    /// Drives the push from a real `Button` action rather than a `NavigationLink`, so the
+    /// Settings push-animation workaround has somewhere to arm from. A gesture layered on a
+    /// `NavigationLink` is not an option — it swallows the link's activation.
+    /// `navigationDestination(isPresented:)` keeps this an ordinary push on the enclosing stack.
+    @State private var showSettings = false
+
     var body: some View {
-        NavigationLink {
-            SettingsView()
+        Button {
+            SettingsPushAnimationFix.armEntry()
+            showSettings = true
         } label: {
             AccountProfileAvatarView(diameter: diameter)
                 .id("vellum-account-profile-avatar")
                 .frame(minWidth: max(44, diameter), minHeight: max(44, diameter))
         }
         .buttonStyle(.plain)
+        .navigationDestination(isPresented: $showSettings) {
+            SettingsView()
+        }
         .accessibilityLabel("Settings")
     }
 }

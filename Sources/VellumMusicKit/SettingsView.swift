@@ -23,9 +23,15 @@ struct SettingsView: View {
         .scrollContentBackground(.hidden)
         .background(MusicDesign.settingsBackground)
         .musicNavigationChrome()
+        // The hub itself: makes every push made *from* this list animate.
+        .tracksSettingsPushAnimation()
+        // Deliberately does NOT refresh server statistics. That call paginates the whole
+        // catalog on Navidrome (`getAlbumList2` 500/page plus `libraryArtists(limit: 20_000)`),
+        // and it used to run merely because Settings was opened — the numbers it feeds are
+        // informational and live one screen deeper. They are now loaded on request; see the
+        // Server Catalog section of `SettingsLibraryDataView`.
         .onAppear {
             app.prefetchAccountAvatar()
-            Task { await app.refreshLibraryStatistics() }
         }
     }
 

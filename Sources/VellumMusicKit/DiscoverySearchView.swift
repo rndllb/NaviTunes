@@ -785,78 +785,52 @@ struct DiscoverySearchView: View {
         }
     }
 
-    /// Apple-Music-style long-press menu for a server-catalog song row. Mirrors
-    /// the actions in ``libraryAlbumContextMenu`` but scoped to a single song
-    /// (Add Song / Add Album / Play / Play Next / Go to Album).
+    /// Long-press menu for a server-catalog song row — the shared
+    /// ``StandardSongMenuContent``, so a song offers the same actions here as it does in a
+    /// playlist, on the artist page, or in the Now Playing queue.
+    ///
+    /// The two actions this surface had that the template did not — **Play** and **Add Album to
+    /// Library** — are now optional callbacks on the template rather than a reason to keep a
+    /// separate menu. Nothing was dropped in the convergence.
     @ViewBuilder
     private func serverSongContextMenu(_ track: Track) -> some View {
-        Section {
-            Button {
+        let artist = track.artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        StandardSongMenuContent(
+            track: track,
+            onPlay: {
                 Task { @MainActor in
                     guard let lib = app.activeLibrary else { return }
                     try? await app.player.playAlbum(library: lib, tracks: [track], startIndex: 0)
                 }
-            } label: {
-                Label("Play", systemImage: "play")
-            }
-            Button {
+            },
+            onPlayNext: {
                 Task { @MainActor in
                     try? await app.player.playTracksNext(library: app.activeLibrary, tracks: [track])
                 }
-            } label: {
-                Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
-            }
-        }
-        .menuSectionPrimaryTint()
-        Section {
-            if !app.isSongInLibrary(track.id) {
-                Button {
-                    Task { await addTrack(track) }
-                } label: {
-                    Label("Add Song to Library", systemImage: "plus")
+            },
+            onAddToQueue: {
+                Task { @MainActor in
+                    guard let lib = app.activeLibrary else { return }
+                    try? await app.player.addToQueue(library: lib, track: track, sourcePlaylistId: nil)
                 }
-            }
-            Button {
-                Task {
-                    let album = app.albumSummary(for: track)
-                    await addAlbum(album)
-                }
-            } label: {
-                Label("Add Album to Library", systemImage: "rectangle.stack.badge.plus")
-            }
-            Button {
-                app.presentAddToPlaylist(tracks: [track])
-            } label: {
-                Label("Add to a Playlist", systemImage: "music.note.list")
-            }
-        }
-        .menuSectionPrimaryTint()
-
-        if app.isSongInLibrary(track.id) {
-            Section {
-                Button(role: .destructive) {
-                    app.toggleFavoriteTrack(id: track.id)
-                } label: {
-                    Label("Remove from Library", systemImage: "minus.circle")
-                }
-            }
-            .menuSectionDestructiveTint()
-        }
-
-        Section {
-            Button {
+            },
+            onAddAlbumToLibrary: {
+                Task { await addAlbum(app.albumSummary(for: track)) }
+            },
+            onFavorite: { app.toggleFavoriteTrack(id: track.id) },
+            onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
+            onAddToLibrary: app.isSongInLibrary(track.id)
+                ? nil
+                : { Task { await addTrack(track) } },
+            onGoToAlbum: {
                 navigationPath.append(SearchNavTarget.album(app.albumSummary(for: track)))
-            } label: {
-                Label("Go to Album", systemImage: "music.note.square")
-            }
-            ShareLink(item: "\(track.title) — \(track.artist)") {
-                Label("Share", systemImage: "square.and.arrow.up")
-            }
-        }
-        .menuSectionPrimaryTint()
-        NavidromeShareMenuSection(
-            itemId: track.id,
-            description: "\(track.title) — \(track.artist)"
+            },
+            onGoToArtist: ArtistNavigation.isTappable(artist)
+                ? { navigationPath.append(SearchNavTarget.namedArtist(track.artist)) }
+                : nil,
+            onRemoveFromLibrary: app.isSongInLibrary(track.id)
+                ? { Task { await app.removeSongFromLibrary(track) } }
+                : nil
         )
     }
 

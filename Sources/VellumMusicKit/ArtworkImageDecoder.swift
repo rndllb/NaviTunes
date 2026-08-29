@@ -78,13 +78,23 @@ enum DecodedArtworkCache {
         "\(normalizedCacheURLString(for: url))|\(Int(maxPixelSize.rounded(.up)))"
     }
 
+    /// Cache key for an artwork URL, independent of how the request happened to be spelled.
+    ///
+    /// **Sorted, not just filtered.** Subsonic URLs are built by iterating a Swift `Dictionary`
+    /// (`NavidromeClient.buildRESTURL`), and dictionary order is unspecified — so the same cover
+    /// is spelled `…&id=X&size=400` on one call and `…&size=400&id=X` on the next, within one
+    /// process run. Filtering alone left those as two different keys for one image, which missed
+    /// in memory *and* on disk and made an on-screen cover reload: `AlbumArtworkView.load` clears
+    /// `decoded` on a miss, so the image was replaced by a shimmer and then faded back in. That
+    /// was the reported album-cover flicker. Sorting makes the key depend on the request's
+    /// content rather than its spelling.
     private static func normalizedCacheURLString(for url: URL) -> String {
         guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let items = comps.queryItems
         else { return url.absoluteString }
-        comps.queryItems = items.filter { item in
-            item.name != "t" && item.name != "s"
-        }
+        comps.queryItems = items
+            .filter { $0.name != "t" && $0.name != "s" }
+            .sorted { ($0.name, $0.value ?? "") < ($1.name, $1.value ?? "") }
         return comps.url?.absoluteString ?? url.absoluteString
     }
 }
