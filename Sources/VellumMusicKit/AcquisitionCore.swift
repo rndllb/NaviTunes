@@ -11,7 +11,7 @@ import Foundation
 
 /// The selectable acquisition backends. Only one is active at a time
 /// (`AcquisitionManager.activePlugin`); every request flows through the active one.
-enum AcquisitionPluginKind: String, CaseIterable, Identifiable, Sendable {
+enum AcquisitionPluginKind: String, CaseIterable, Identifiable, Sendable, Codable {
     case lidarr
     case downtify
     case droppedNeedle
@@ -21,13 +21,15 @@ enum AcquisitionPluginKind: String, CaseIterable, Identifiable, Sendable {
 
 /// Where a displayed job came from: a request this app issued, or the plugin's
 /// own server-side queue (so Settings can surface activity started elsewhere).
-enum AcquisitionJobSource: Sendable {
+/// Raw-valued so it survives a round trip through the persisted job store by name rather than by
+/// declaration order.
+enum AcquisitionJobSource: String, Sendable, Codable {
     case app
     case server
 }
 
 /// Normalized lifecycle for a request across every plugin.
-enum AcquisitionJobStatus: String, Sendable {
+enum AcquisitionJobStatus: String, Sendable, Codable {
     case queued
     case searching
     case downloading
@@ -228,7 +230,7 @@ struct AcquisitionResult: Identifiable, Hashable, Sendable {
 }
 
 /// Per-file progress inside a multi-file acquisition.
-struct AcquisitionFileProgress: Identifiable, Hashable, Sendable {
+struct AcquisitionFileProgress: Identifiable, Hashable, Sendable, Codable {
     var id: String
     let title: String
     let status: AcquisitionJobStatus
@@ -246,7 +248,7 @@ struct AcquisitionFileProgress: Identifiable, Hashable, Sendable {
 }
 
 /// One row in the unified queue/activity surface.
-struct AcquisitionJob: Identifiable, Hashable, Sendable {
+struct AcquisitionJob: Identifiable, Hashable, Sendable, Codable {
     var id: String
     let title: String?
     let artist: String?
