@@ -219,6 +219,14 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// playlist.
     var onTrackCompleted: ((Track, PlaybackSource?) -> Void)?
 
+    /// Fires when playback has genuinely failed and the transport has already been corrected.
+    ///
+    /// The engine had **no error channel at all** before this: `startCurrentItem` threw, and every
+    /// caller on a skip, auto-advance, route-change or EQ path threw the error away. `AppModel`
+    /// wires this to the app's usual transient toast, which is the only reason a mid-queue failure
+    /// can now say anything to the user.
+    var onPlaybackFailure: ((Track?, Error?) -> Void)?
+
     /// Set by `AppModel` during an active Kill Mode session: returns true for tracks
     /// already "listened" (played fully or skipped) that must not be auto-advanced into,
     /// so each song plays once per run. Nil during normal playback (no effect).
@@ -347,7 +355,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
         lastUIMilestoneReconcile = Date.timeIntervalSinceReferenceDate
         if let equalizedPlayer {
             if isPlaying, !equalizedPlayer.isPlaying {
-                equalizedPlayer.play(rate: playbackRate)
+                // This ran on every UI milestone and silently re-failed each time, entrenching the
+                // stuck state. Reporting once clears `isPlaying`, so it stops retrying.
+                startEqualizedPlayback(equalizedPlayer, context: "UI milestone reconcile")
             } else if !isRepeatMilestone {
                 refreshNowPlaying()
             }
@@ -454,7 +464,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             activateAudioSession()
             if let equalizedPlayer {
                 // Restarts the (system-stopped) AVAudioEngine as part of play().
-                equalizedPlayer.play(rate: playbackRate)
+                guard startEqualizedPlayback(equalizedPlayer, context: "interruption resume") else { return }
             } else if let player {
                 beginPlayback(on: player)
                 ensurePlaybackStarted(on: player, epoch: playbackEpoch)
@@ -639,7 +649,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
                 return
             }
             if let player, player.rate < 0.01 { beginPlayback(on: player) }
-            else if let equalizedPlayer { equalizedPlayer.play(rate: playbackRate) }
+            else if let equalizedPlayer,
+                    !startEqualizedPlayback(equalizedPlayer, context: "restore playback") { return }
             isPlaying = true
             markPlayIntent()
         } catch {
@@ -695,7 +706,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
             beginPlayback(on: player)
             ensurePlaybackStarted(on: player, epoch: epoch)
         } else if let equalizedPlayer {
-            equalizedPlayer.play(rate: playbackRate)
+            guard startEqualizedPlayback(equalizedPlayer, context: "play") else {
+                throw PlaybackEngineError.missingTrack
+            }
         }
         isPlaying = true
         scrobbledForCurrentTrack = false
@@ -799,14 +812,70 @@ final class PlaybackEngine: NSObject, ObservableObject {
         userQueuedTrackIds.formIntersection(Set(queue.map(\.id)))
     }
 
-    /// Removes everything in the user-queued section (Now Playing → Queue → "Clear").
-    /// The active track and the source's natural Continue Playing list are preserved.
-    func clearUserQueue() {
-        guard !userQueuedTrackIds.isEmpty else { return }
-        let ids = userQueuedTrackIds
-        removeTracksFromQueue(trackIds: ids)
+    /// Removes specific up-next **rows**, by position.
+    ///
+    /// Queue rows must be addressed positionally, never by `Track.id`. A queue can legitimately
+    /// hold the same id more than once — a playlist with a repeated song (nothing dedupes on that
+    /// path), or Play Next / Add to Queue invoked on the track that is *already playing*, which
+    /// leaves the original at `currentIndex` and inserts a second copy after it. An id therefore
+    /// identifies a *song*, not a *row*.
+    ///
+    /// `offsets` are relative to the start of up-next (`currentIndex + 1`) — the same coordinate
+    /// space ``moveUpNextItem(from:to:)`` uses. Nothing at or before `currentIndex` is addressable,
+    /// so this **cannot remove the playing track**: no teardown, no `scheduleAdvance()`, no
+    /// re-indexing, and the song the user is listening to keeps playing.
+    ///
+    /// ``removeTracksFromQueue(trackIds:)`` is the id-based sibling. It stays as it is, because its
+    /// one remaining caller — deleting a track from the server library — genuinely does want every
+    /// copy gone, including the playing one.
+    func removeUpNextItems(at offsets: IndexSet) {
+        let start = currentIndex + 1
+        guard start <= queue.count else { return }
+        let absolute = offsets.map { start + $0 }.filter { queue.indices.contains($0) }
+        guard !absolute.isEmpty else { return }
+        let removedIds = Set(absolute.map { queue[$0].id })
+        // Descending, so each removal cannot invalidate the indices still to be removed.
+        for index in absolute.sorted(by: >) {
+            queue.remove(at: index)
+        }
+        // Forget an id only once its LAST copy is gone: another row may still be queued, or may be
+        // the one currently playing. Dropping the id on the first removal is what would re-break
+        // the duplicate case from the other direction.
+        let orphanedIds = removedIds.subtracting(Set(queue.map(\.id)))
+        userQueuedTrackIds.subtract(orphanedIds)
+        clearTrackOriginPlaylists(orphanedIds)
+        refreshEnqueuedNextItem()
     }
 
+    /// Removes everything in the user-queued section (Now Playing → Queue → "Clear").
+    /// The active track and the source's natural Continue Playing list are preserved.
+    ///
+    /// Selects **rows after the cursor**, rather than passing `userQueuedTrackIds` to the id-based
+    /// removal. That is what preserves the active track *by construction*: if the playing track
+    /// also sits in the user queue (Play Next on the song already playing), its own row is at
+    /// `currentIndex` and is simply not in the set of offsets this builds. Previously Clear removed
+    /// both copies, lost the cursor, and advanced to a different song.
+    func clearUserQueue() {
+        guard !userQueuedTrackIds.isEmpty else { return }
+        let start = currentIndex + 1
+        guard start < queue.count else { return }
+        let offsets = IndexSet(
+            queue[start...]
+                .enumerated()
+                .filter { userQueuedTrackIds.contains($0.element.id) }
+                .map(\.offset)
+        )
+        guard !offsets.isEmpty else { return }
+        removeUpNextItems(at: offsets)
+    }
+
+    /// Removes **every** copy of the given ids, the playing one included, advancing if the active
+    /// track was among them.
+    ///
+    /// That is correct for its one caller — `AppModel.deleteTrackFromLibrary`, where the file is
+    /// gone from the server and no copy may keep playing — and wrong for anything driven by a queue
+    /// row, which means one row and must not touch the cursor. Queue rows call
+    /// ``removeUpNextItems(at:)`` instead. Do not point a row action back at this.
     func removeTracksFromQueue(trackIds: Set<String>) {
         guard !trackIds.isEmpty, !queue.isEmpty else { return }
         let previousId = activeTrack?.id
@@ -892,14 +961,18 @@ final class PlaybackEngine: NSObject, ObservableObject {
             return
         }
         if let equalizedPlayer {
-            if equalizedPlayer.isPlaying {
+            if equalizedPlayer.isPlaying || (isSeeking && isPlaying) {
                 equalizedPlayer.pause()
                 isPlaying = false
+                seekResumeIntent = false
                 scheduleAudioSessionDeactivation()
             } else {
                 activateAudioSession()
                 markPlayIntent()
-                equalizedPlayer.play(rate: playbackRate)
+                // The play/pause button was completely inert here: a false return was discarded,
+                // `isPlaying` went true anyway, and because the node never started, every later
+                // tap took this same branch — it could not even pause.
+                guard startEqualizedPlayback(equalizedPlayer, context: "play/pause") else { return }
                 isPlaying = true
             }
             playbackHead = equalizedPlayer.currentPlaybackTime()
@@ -910,9 +983,14 @@ final class PlaybackEngine: NSObject, ObservableObject {
             return
         }
         guard let player else { return }
-        if player.rate > 0.01 {
+        // `performSeek` parks the player for the duration of a seek, so `player.rate` reads 0
+        // mid-scrub even though the button is drawn as "pause" and the user is trying to stop.
+        // Branching on rate alone sent that tap into the resume branch and started audio — the
+        // opposite of what was pressed. Inside the seek window, intent decides.
+        if player.rate > 0.01 || (isSeeking && isPlaying) {
             player.pause()
             isPlaying = false
+            seekResumeIntent = false
             scheduleAudioSessionDeactivation()
         } else {
             // Track finished with nothing queued behind it (repeatMode .off, last track) →
@@ -945,7 +1023,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         markPlayIntent()
         if let equalizedPlayer {
             if !equalizedPlayer.isPlaying {
-                equalizedPlayer.play(rate: playbackRate)
+                guard startEqualizedPlayback(equalizedPlayer, context: "remote command resume") else { return }
             }
             isPlaying = true
             playbackHead = equalizedPlayer.currentPlaybackTime()
@@ -985,6 +1063,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
     func pausePlayback() {
         clearPlayIntent()
+        // An in-flight seek must not resume playback the user has just stopped.
+        seekResumeIntent = false
         if let equalizedPlayer {
             if equalizedPlayer.isPlaying {
                 equalizedPlayer.pause()
@@ -1041,6 +1121,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private func performSeek(toSeconds targetSeconds: TimeInterval, completion: (() -> Void)?) async {
         let d = await resolvePlaybackDuration()
         guard d > 0 else {
+            // An offline track whose duration never resolved still has a staged restore position
+            // worth moving. Without this the seek is the same silent no-op, just with no duration
+            // to clamp against.
+            if hasPendingRestore { stagePendingRestore(at: max(0, targetSeconds)) }
             completion?()
             return
         }
@@ -1048,6 +1132,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
         // and advances the queue (same guard skipForward uses).
         let clamped = max(0, min(targetSeconds, max(0, d - 1.0)))
         pbLog("seek target=\(targetSeconds) resolvedDur=\(d) clamped=\(clamped) itemDur=\(player?.currentItem?.duration.seconds ?? -1)")
+        // Whether a seek was ALREADY in flight, read before this one marks itself as one.
+        let seekAlreadyInFlight = isSeeking
 
         if let equalizedPlayer,
            let asset = equalizedPlaybackAsset {
@@ -1058,7 +1144,11 @@ final class PlaybackEngine: NSObject, ObservableObject {
             currentTime = clamped
             lastEmittedUIProgress = clamped
             playbackHead = clamped
-            let wasPlaying = isPlaying && equalizedPlayer.isPlaying
+            // Same burst-intent rule as the AVPlayer branch below, and for a sharper reason here:
+            // `resetForReload` stops the player node as soon as a reload begins, so
+            // `equalizedPlayer.isPlaying` reads false for any seek that overlaps another.
+            let wantsPlayback = seekAlreadyInFlight ? seekResumeIntent : isPlaying
+            seekResumeIntent = wantsPlayback
             do {
                 try await equalizedPlayer.seek(
                     to: clamped,
@@ -1066,16 +1156,34 @@ final class PlaybackEngine: NSObject, ObservableObject {
                     fileURL: equalizedPlaybackURL?.isFileURL == true ? equalizedPlaybackURL : nil,
                     gains: equalizerBandGains,
                     bypass: effectiveEqualizerBypass,
-                    autoPlay: wasPlaying,
+                    autoPlay: wantsPlayback,
                     rate: playbackRate,
                 )
-                if wasPlaying { isPlaying = true }
             } catch {
-                isPlaying = false
-            }
-            guard generation == seekGeneration else {
+                // This used to set `isPlaying = false` and say nothing, leaving the session
+                // attached with nothing scheduled — the state that made the play button inert.
+                // Route it through the one failure path (T063) rather than swallowing it.
+                isSeeking = false
+                reportPlaybackFailure(error, track: currentTrack, context: "seek reload")
                 completion?()
                 return
+            }
+            // A newer seek owns the player now. Return without running `completion` — invoking it
+            // here cleared the scrubber's `isScrubbing` before the real seek had landed, which is
+            // what made the thumb snap back to a mid-seek position. The newest task always matches
+            // the generation and runs it exactly once.
+            guard generation == seekGeneration else { return }
+            // Re-read the intent AFTER the await, not the snapshot. The reload can span an entire
+            // stream load (18s timeout), and a pause issued during it has to win.
+            if seekResumeIntent {
+                isPlaying = true
+            } else {
+                // `pausePlayback()` could not reach the engine mid-reload: the node was already
+                // stopped by `resetForReload`, so its `if equalizedPlayer.isPlaying` guard skipped
+                // the pause entirely. Enforce it now, or the seek's own autoPlay resumes audio the
+                // user just stopped.
+                equalizedPlayer.pause()
+                isPlaying = false
             }
             playbackHead = equalizedPlayer.currentPlaybackTime()
             currentTime = playbackHead
@@ -1083,6 +1191,17 @@ final class PlaybackEngine: NSObject, ObservableObject {
             isSeeking = false
             seekSettleDeadline = ContinuousClock.now + .milliseconds(400)
             refreshNowPlaying()
+            completion?()
+            return
+        }
+
+        // Cold-launch restore: the queue and position are staged but no player exists yet, so every
+        // seek entry point — the scrubber, ±15s, Previous (which routes to seek(toSeconds: 0)),
+        // and the lock-screen scrubber — fell through the `guard let player` below and silently did
+        // nothing until the user pressed Play. Move the staged position instead, which is what
+        // `togglePlayPause` and the remote resume command already do on their own paths.
+        if hasPendingRestore {
+            stagePendingRestore(at: clamped)
             completion?()
             return
         }
@@ -1100,22 +1219,37 @@ final class PlaybackEngine: NSObject, ObservableObject {
         lastEmittedUIProgress = clamped
         playbackHead = clamped
 
-        let wasPlaying = isPlaying && player.rate > 0.01
+        // Overlapping seeks cannot each sample this for themselves. The first one calls
+        // `player.pause()` below, whose KVO clears `isPlaying`, so a second seek arriving a moment
+        // later reads "paused" and leaves the music stopped — measured, not theorised: sampling
+        // `isPlaying` per task silenced playback after every rapid double-scrub. The first seek of
+        // a burst records the intent, later seeks inherit it, and an explicit pause clears it so a
+        // pause issued mid-seek still wins.
+        let wantsPlayback = seekAlreadyInFlight ? seekResumeIntent : (isPlaying || player.rate > 0.01)
+        seekResumeIntent = wantsPlayback
         player.pause()
 
         var ok = await awaitPlayerSeek(player, to: clamped)
+        // AVPlayer resumes a pending seek's continuation with `finished == false` the instant a
+        // newer seek is issued. Retrying here dragged the player back to THIS task's stale target
+        // and interrupted the newer one, so bail *before* the retry rather than two side effects
+        // after it. Returning without `completion` is deliberate: running it from a superseded
+        // task cleared the scrubber's `isScrubbing` before the real seek landed.
+        guard generation == seekGeneration else { return }
         if !ok || !seekPositionMatches(player.currentTime().seconds, target: clamped) {
             ok = await awaitPlayerSeek(player, to: clamped, tolerance: 0.05)
         }
+        guard generation == seekGeneration else { return }
 
-        if wasPlaying {
+        // Re-read the intent after the awaits — not the snapshot taken before them. A pause issued
+        // while the seek was in flight clears `seekResumeIntent`, so it wins. Previously this
+        // resumed unconditionally, which is what silently undid the pause and restarted audio at
+        // the new position.
+        if seekResumeIntent {
             beginPlayback(on: player)
             isPlaying = true
-        }
-
-        guard generation == seekGeneration else {
-            completion?()
-            return
+        } else if player.rate > 0.01 {
+            player.pause()
         }
 
         let actual = player.currentTime().seconds
@@ -1312,9 +1446,59 @@ final class PlaybackEngine: NSObject, ObservableObject {
         sleepTimerEndDate = nil
     }
 
+    /// Keeps the remote controls honest about what they will actually do.
+    ///
+    /// Enablement used to be written once — `updateRemoteCommands()` set next/previous to `true`
+    /// unconditionally and only ever ran on a settings change, and
+    /// `changePlaybackPositionCommand` was enabled once for the life of the process. So the lock
+    /// screen and CarPlay drew a lit Next button on the last track of a queue that did nothing when
+    /// pressed, and offered a scrubber on live radio where the seek is always discarded.
+    ///
+    /// Called from `refreshNowPlaying()`, which already runs on every meaningful transport change,
+    /// and cached so the common case is two comparisons.
+    ///
+    /// `previousTrackCommand` is deliberately left alone: at the start of a queue it seeks to 0,
+    /// which is the standard restart-the-track behaviour and a real, visible response — not a
+    /// silent no-op.
+    private func refreshRemoteCommandAvailability() {
+        guard didConfigureRemoteCommands else { return }
+        let center = MPRemoteCommandCenter.shared()
+
+        let canSkipNext = currentIndex + 1 < queue.count || (repeatMode == .all && !queue.isEmpty)
+        let nextEnabled = remoteControlMode == .skipTrack && canSkipNext
+        if lastRemoteNextEnabled != nextEnabled {
+            lastRemoteNextEnabled = nextEnabled
+            center.nextTrackCommand.isEnabled = nextEnabled
+        }
+
+        // A live stream has no finite duration, so `performSeek`'s `d > 0` guard drops every
+        // position change. The app already knows this — it greys out its own scrubber — but the
+        // flag never reached the command center.
+        let canSeek = activeTrack?.isInternetRadioStream != true
+        if lastRemoteSeekEnabled != canSeek {
+            lastRemoteSeekEnabled = canSeek
+            center.changePlaybackPositionCommand.isEnabled = canSeek
+        }
+    }
+
+    private var lastRemoteNextEnabled: Bool?
+    private var lastRemoteSeekEnabled: Bool?
+
+    /// What playback should be doing once the current burst of seeks settles.
+    ///
+    /// Set by the first seek of a burst and inherited by any that overlap it, because a seek calls
+    /// `player.pause()` and the resulting KVO clears `isPlaying` — so a second seek sampling for
+    /// itself would read "paused" and leave the music stopped. Cleared by every explicit pause, so
+    /// a pause issued while a seek is in flight is honoured rather than undone when it completes.
+    private var seekResumeIntent = false
+
     func updateRemoteCommands() {
         configureRemoteCommandsIfNeeded()
         let center = MPRemoteCommandCenter.shared()
+        // This function writes `isEnabled` directly below, so the cache must not shadow it.
+        lastRemoteNextEnabled = nil
+        lastRemoteSeekEnabled = nil
+        defer { refreshRemoteCommandAvailability() }
 
         if let nextTrackRemoteTarget {
             center.nextTrackCommand.removeTarget(nextTrackRemoteTarget)
@@ -1529,11 +1713,65 @@ final class PlaybackEngine: NSObject, ObservableObject {
         autoplayVerifyTask = nil
     }
 
+    /// The one place a playback failure is handled.
+    ///
+    /// Five separate paths used to discard their failures — the config-change rebuild and
+    /// `scheduleAdvance` (both `try?`), every `play(rate:)` call site that ignored the returned
+    /// `Bool`, and the gapless promote, which never inspected the item's status at all. Each left
+    /// `isPlaying == true` with no audio, which is exactly what the listener saw: a pause glyph
+    /// over silence, a lock screen still reporting rate 1.0, and no way out but a force-quit.
+    ///
+    /// Correcting the transport is the first job; telling the user is the second. `refreshNowPlaying()`
+    /// is what drops the reported rate to 0.
+    ///
+    /// **Deliberately does not retry and does not auto-skip.** Whether a dead track should be
+    /// skipped past — and after how many attempts — is a product decision, not part of fixing a
+    /// swallowed error, so this stops honestly rather than inventing a policy.
+    private func reportPlaybackFailure(_ error: Error?, track: Track?, context: String) {
+        pbLog("playback failed [\(context)]: \(error?.localizedDescription ?? "no underlying error")")
+        isPlaying = false
+        shouldAutoPlayAfterAdvance = false
+        setBuffering(false)
+        refreshNowPlaying()
+        // One real failure can arrive here twice — `play(rate:)` returns false *and* notifies the
+        // session's `onPlaybackFailed`. Correct the transport every time; tell the user once.
+        let now = Date.timeIntervalSinceReferenceDate
+        guard now - lastPlaybackFailureReportedAt > 2 else { return }
+        lastPlaybackFailureReportedAt = now
+        onPlaybackFailure?(track ?? activeTrack, error)
+    }
+
+    private var lastPlaybackFailureReportedAt: TimeInterval = -1_000
+
+    /// Starts the EQ session, and reports a failure instead of pretending it worked.
+    ///
+    /// `play(rate:)` returns false when the session has no scheduled audio — the state a thrown
+    /// reload leaves behind. Nine of its ten call sites discarded that `Bool` and set
+    /// `isPlaying = true` regardless, which is what made the transport inert: the button showed
+    /// "pause" over silence, and every further tap re-entered the same branch because the node
+    /// never actually started.
+    @discardableResult
+    private func startEqualizedPlayback(
+        _ session: EqualizedAudioEnginePlayer,
+        context: String,
+    ) -> Bool {
+        if session.play(rate: playbackRate) { return true }
+        reportPlaybackFailure(nil, track: activeTrack, context: context)
+        return false
+    }
+
     private func scheduleAdvance() {
         advanceWork?.cancel()
         advanceWork = Task { [weak self] in
             guard let self else { return }
-            try? await self.advance()
+            do {
+                try await self.advance()
+            } catch {
+                // A superseded skip cancels this task on purpose — that is not a failure and must
+                // not raise a toast. Only a genuine load failure reaches the user.
+                guard !Task.isCancelled, !(error is CancellationError) else { return }
+                self.reportPlaybackFailure(error, track: self.currentTrack, context: "advance")
+            }
         }
     }
 
@@ -1570,8 +1808,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
             if let player {
                 beginPlayback(on: player)
                 ensurePlaybackStarted(on: player, epoch: epoch)
-            } else if let equalizedPlayer {
-                equalizedPlayer.play(rate: playbackRate)
+            } else if let equalizedPlayer,
+                      !startEqualizedPlayback(equalizedPlayer, context: "advance autoplay") {
+                return
             }
             isPlaying = true
         } else {
@@ -1663,7 +1902,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
     private func applyPlaybackRateToPlayer() {
         if let equalizedPlayer, isPlaying {
-            equalizedPlayer.play(rate: playbackRate)
+            startEqualizedPlayback(equalizedPlayer, context: "playback rate change")
         } else if let player, isPlaying {
             player.rate = playbackRate
         }
@@ -2345,6 +2584,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
                 let resumeAt = self.playbackHead
                 self.detachPlayerKeepingQueueState()
                 self.stagePendingRestore(at: resumeAt)
+                // The recovery above was silent: state was corrected but the listener was left
+                // wondering why the music stopped.
+                self.reportPlaybackFailure(nil, track: self.currentTrack, context: "EQ session")
             }
         }
         session.onConfigurationChange = { [weak self] in
@@ -2385,7 +2627,13 @@ final class PlaybackEngine: NSObject, ObservableObject {
         }
 
         if autoPlay {
-            isPlaying = session.play(rate: playbackRate)
+            // This site always honoured the returned `Bool`, so it never *lied* about the
+            // transport the way the other nine did — but honouring it only got as far as
+            // `isPlaying = false`. The track had loaded, the caller asked for autoplay, and
+            // nothing came out of the speaker with no explanation offered: the same silent
+            // failure this pass exists to remove, just without the false pause glyph. Route it
+            // through the one failure path like every other call site.
+            isPlaying = startEqualizedPlayback(session, context: "EQ session autoplay")
         } else {
             isPlaying = false
         }
@@ -2650,8 +2898,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
                 startSeconds: position,
                 autoPlay: shouldPlay,
             ) {
-                if shouldPlay {
-                    equalizedPlayer?.play(rate: playbackRate)
+                if shouldPlay, let equalizedPlayer {
+                    guard startEqualizedPlayback(equalizedPlayer, context: "EQ handoff") else { return }
                     isPlaying = true
                 }
                 refreshNowPlaying()
@@ -2735,15 +2983,30 @@ final class PlaybackEngine: NSObject, ObservableObject {
             // seek() also resumes when the NODE claims it was playing — after a
             // system stop that state can lie, so force-sync it to our intent.
             if !resume { equalizedPlayer.pause() }
-            try? await equalizedPlayer.seek(
-                to: position,
-                asset: asset,
-                fileURL: self.equalizedPlaybackURL?.isFileURL == true ? self.equalizedPlaybackURL : nil,
-                gains: self.equalizerBandGains,
-                bypass: self.effectiveEqualizerBypass,
-                autoPlay: resume,
-                rate: self.playbackRate,
-            )
+            do {
+                try await equalizedPlayer.seek(
+                    to: position,
+                    asset: asset,
+                    fileURL: self.equalizedPlaybackURL?.isFileURL == true ? self.equalizedPlaybackURL : nil,
+                    gains: self.equalizerBandGains,
+                    bypass: self.effectiveEqualizerBypass,
+                    autoPlay: resume,
+                    rate: self.playbackRate,
+                )
+            } catch {
+                // This was a bare `try?`. A rebuild can genuinely fail — the hardware format
+                // changes under `engine.start()`, or the stream-cache file behind it was evicted —
+                // and swallowing that left `isPlaying` true (captured into `resume` and never
+                // reset) with the node stopped and its time observer already invalidated. Since
+                // that observer is the only thing that syncs `isPlaying` back on the EQ path,
+                // nothing could ever correct it: silence with a pause glyph, permanently.
+                //
+                // Same recovery the session's own `onPlaybackFailed` performs, plus telling the
+                // user, because a route change failing is not something they can otherwise explain.
+                self.detachPlayerKeepingQueueState()
+                self.stagePendingRestore(at: position)
+                self.reportPlaybackFailure(error, track: self.currentTrack, context: "route change rebuild")
+            }
         }
     }
 
@@ -3098,6 +3361,24 @@ final class PlaybackEngine: NSObject, ObservableObject {
         enqueuedNextIndex = nil
         enqueuedNextTrack = nil
 
+        // The OS advanced onto an item that was staged while the previous track played. If its URL
+        // went bad in the meantime (token expired, server restarted, track removed) this used to
+        // adopt it anyway — announcing the title, firing `onTrackStarted`, setting `isPlaying`
+        // true — with no audio behind any of it. Nothing corrected it afterwards: the one KVO that
+        // would is edge-triggered and gets swallowed by the autoplay-verify short-circuit, and the
+        // stall watchdog only fires for `.waitingToPlayAtSpecifiedRate`, which a failed item never
+        // reports. This path deliberately bypasses the candidate-fallback machinery in
+        // `startCurrentItem`, so the status has to be checked right here.
+        if item.status == .failed {
+            // The OS has already moved onto this item, so the cursor has to follow it or the app
+            // reports the previous track as current. Reset the progress readout too, otherwise the
+            // outgoing track's position sits under the new title.
+            currentIndex = index
+            resetUIProgressForTrackHandoff()
+            reportPlaybackFailure(item.error, track: track, context: "gapless advance")
+            return
+        }
+
         // New track is current — invalidate any in-flight load and refresh the
         // epoch the lyrics fetch keys off of.
         let epoch = beginPlaybackSession()
@@ -3266,6 +3547,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     private func refreshNowPlaying() {
+        // Enablement has to track the queue, not just settings changes — this is the only hook that
+        // already runs on every track change, queue edit and transport update.
+        refreshRemoteCommandAvailability()
         guard let track = currentTrack else {
             cancelNowPlayingArtworkLoad()
             updateNowPlaying(nil)

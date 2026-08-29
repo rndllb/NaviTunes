@@ -1180,9 +1180,11 @@ struct FavoritePlaylistView: View {
         .musicLibraryToolbarMonochromeControls()
         .musicNativeSearchable(text: $searchText, prompt: Text("Songs"))
         .toolbar { favoriteDetailToolbar }
+        // No manual clear: `onDisappear` also fires when this destination is covered by a
+        // further push, and clearing the binding there pops the whole subtree. The item binding
+        // is reset by SwiftUI on pop.
         .navigationDestination(item: $navigateAlbum) { album in
             ServerPlaylistDetailView(album: album, librarySource: true)
-                .onDisappear { navigateAlbum = nil }
         }
         .task { await load() }
         .onChange(of: app.libraryCatalogEpoch) { _, _ in

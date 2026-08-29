@@ -271,9 +271,11 @@ struct BrowseAlbumDetailView: View {
                     .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
             }
         }
+        // No manual clear: `onDisappear` also fires when this destination is covered by a
+        // further push, and clearing the binding there pops the whole subtree. The item binding
+        // is reset by SwiftUI on pop.
         .navigationDestination(item: $navigateLibraryAlbum) { album in
             ServerPlaylistDetailView(album: album)
-                .onDisappear { navigateLibraryAlbum = nil }
         }
         .navigationDestination(item: $navigateArtist) { item in
             ArtistPageView(input: .named(item.id))
