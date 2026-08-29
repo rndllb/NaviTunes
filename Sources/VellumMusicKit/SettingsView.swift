@@ -559,8 +559,9 @@ struct AcquisitionPluginSettingsView: View {
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                 }
-                if !file.status.isTerminal {
-                    ProgressView(value: min(1, max(0, file.progress)))
+                // Only when the backend reported a fraction, same rule as the job row above.
+                if !file.status.isTerminal, let fraction = file.progress {
+                    ProgressView(value: min(1, max(0, fraction)))
                 }
             }
             if file.status == .done {
@@ -569,9 +570,13 @@ struct AcquisitionPluginSettingsView: View {
             } else if file.status == .failed {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundStyle(.red)
-            } else {
-                Text("\(Int((min(1, file.progress) * 100).rounded()))%")
+            } else if let fraction = file.progress {
+                Text("\(Int((min(1, max(0, fraction)) * 100).rounded()))%")
                     .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(file.status.displayTitle)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
