@@ -809,15 +809,43 @@ The app tracked the real transfer (34% against Lidarr's 33.5%) instead of sittin
 job reached a terminal state **~30–45s** after the download actually finished — the row reverting
 to "Request" is `finish()` retiring it, which only happens after `onJobFinished` has fired.
 
-**What is still unverified, and why.** The last hop — the track becoming visible **in his
-Navidrome library** without a relaunch — was not observed. The simulator is signed in to the public
-demo server, so the file Lidarr imported to *his* server can never appear there; the completion
-handler runs its search budget and gives up, exactly as designed. The phone has both his servers
-and is the right vehicle, but it is **locked** (`passcodeRequired: true`, and the install below
-reported `FBSOpenApplicationErrorDomain error 7`), and a UI test needs it unlocked throughout. So:
-everything up to and including "the completion callback fires" is observed on live data; the
-`triggerLibraryScan` + `searchCatalog` step it hands off to is unchanged code that previously never
-ran.
+### The device leg ran, and it FAILED
+
+Later the same evening the phone was unlocked and the last hop was driven on it, against his own
+Navidrome and his own Lidarr. **It did not pass.** Recorded plainly because the simulator result
+above, read alone, overstates what this pass achieves on his actual server.
+
+Request placed from Discover on the phone at **17:10:32** for `There Was a Light Here bonus cuts`
+(Demon Hunter), monitored and missing, 0 of 2 files.
+
+| time | app row on the phone | Lidarr itself |
+|---|---|---|
+| 17:10:32 | request tapped | absent from queue, files 0/2 |
+| 17:10:42 | **10%** | — |
+| 17:12:33 | **10%** | **files 2/2 — downloaded and imported** |
+| 17:24:33 | **10%**, unchanged for 14 minutes | 2/2 |
+
+So on his server the row **never tracked the download and never completed**. The 100% lie is gone;
+what replaced it is a **10% lie** — `acceptedProgress`. In user terms that is not a fix: he traded
+a bar stuck at the top for a bar stuck near the bottom, and the track still does not appear.
+
+**Why, and it is a flaw in this pass's design, not a server quirk.** Completion here is inferred
+from a job *leaving* the queue, which by construction requires the app to have **seen it in the
+queue first** (`observedInServerQueue`). If it is never seen, `noteAbsentFromQueue` returns early
+forever and the job can never resolve. Two ways that happens on his setup, and the evidence does
+not separate them:
+
+- **The queue is paginated and the app only reads page 1.** `downloadQueueRecords` asks for
+  `pageSize=100`; his queue holds **133** records. Thirty-three are invisible to the app, and
+  nothing guarantees a new grab lands in the first hundred.
+- **The item may never enter the queue at all** — grabbed and imported inside one poll gap, or
+  never grabbed. The app then has no backend state to reflect and invents none.
+
+Both are the same underlying fault: **the client only resolves a request it happened to observe
+mid-flight, instead of asking the backend what the state actually is.** That is the spine of T071.
+
+The run was also cut short by buildbot's 900s watchdog, so the final library-scope check never
+executed — moot, since the row never completed.
 
 **Also unverified:** the failure branch. No request failed during the run, so
 `isRequestSatisfied` returning false — the "left the queue without producing files" path — was
