@@ -465,6 +465,8 @@ struct LibrarySongRow: View, Equatable {
     /// Drives whether ``onAddToQueue`` is surfaced as the full-swipe leading action.
     var hasActiveQueue: Bool = false
     var onGoToAlbum: (() -> Void)? = nil
+    /// Nil where the surface has no artist to navigate to (or the artist is "Various Artists").
+    var onGoToArtist: (() -> Void)? = nil
     var onAddToPlaylist: (() -> Void)? = nil
     var onRemoveFromPlaylist: (() -> Void)? = nil
     /// User-level remove from Vellum library (drops the song from the magic playlist).
@@ -770,122 +772,121 @@ struct LibrarySongRow: View, Equatable {
             }
 
                 Menu {
-                    ControlGroup {
-                        if !isInLibrary, let onAddToLibrary {
-                            Button(action: onAddToLibrary) {
-                                Label("Add to Library", systemImage: "plus")
-                            }
-                        } else if isInLibrary, !isOfflineCached {
-                            Button(action: onDownload) {
-                                Label("Download", systemImage: "arrow.down")
-                            }
-                        }
-                        Button(action: onFavorite) {
-                            Label(
-                                isFavorite ? "Unfavorite" : "Favorite",
-                                systemImage: isFavorite ? "star.fill" : "star"
-                            )
-                        }
-                        ShareLink(item: "\(track.title) — \(track.artist)") {
-                            Label("Share", systemImage: "square.and.arrow.up")
-                        }
-                    }
-                    .tint(Color.primary)
-
-                    Section {
-                        Button {
-                            if !isPinnedToLibrary {
-                                app.retainTrackForLibraryPin(track)
-                            }
-                            LibraryPinStore.toggle(trackPinRef, storage: &pinnedStorage)
-                        } label: {
-                            Label(
-                                LibraryPinStore.menuLabel(kind: .track, isPinned: isPinnedToLibrary),
-                                systemImage: isPinnedToLibrary ? "pin.slash" : "pin"
-                            )
-                        }
-                        if let onAddToPlaylist {
-                            Button(action: onAddToPlaylist) {
-                                Label("Add to Playlist", systemImage: "rectangle.stack.badge.plus")
-                            }
-                        } else {
-                            Button {} label: { Label("Add to Playlist", systemImage: "rectangle.stack.badge.plus") }
-                        }
-                    }
-                    .tint(Color.primary)
-
-                    Section {
-                        Button(action: onPlayNext) {
-                            Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
-                        }
-                    }
-                    .tint(Color.primary)
-
-                    if let onGoToAlbum {
-                        Section {
-                            Button(action: onGoToAlbum) {
-                                Label("Go to Album", systemImage: "music.note.square")
-                            }
-                        }
-                        .tint(Color.primary)
-                    }
-
-                    NavidromeShareMenuSection(
-                        itemId: track.id,
-                        description: "\(track.title) — \(track.artist)"
-                    )
-
-                    if isOfflineCached {
-                        Section {
-                            // Informational "this song is on device" row — disabled so it
-                            // reads as a status indicator, not an action.
-                            Button {} label: {
-                                Label("Downloaded", systemImage: "checkmark.circle.fill")
-                            }
-                            .disabled(true)
-                            if let onRemoveDownload {
-                                Button(action: onRemoveDownload) {
-                                    Label("Remove Download", systemImage: "arrow.down.circle.dotted")
-                                }
-                            }
-                        }
-                        .tint(Color.primary)
-                    }
-
-                    if onRemoveFromLibrary != nil || canDeleteFromLibrary {
-                        Section {
-                            if let onRemoveFromLibrary {
-                                // User-level (magic playlist) — always available when the
-                                // host view supplied the callback. Album entry is left alone;
-                                // the album stays in library with one fewer track.
-                                Button(role: .destructive, action: onRemoveFromLibrary) {
-                                    Label("Delete from Library", systemImage: "trash")
-                                }
-                            }
-                            // Admin-only: removes the file from the server entirely.
-                            if canDeleteFromLibrary {
-                                Button(role: .destructive, action: onDeleteFromLibrary) {
-                                    Label("Delete File from Server", systemImage: "xmark.bin")
-                                }
-                            }
-                        }
-                        .menuSectionDestructiveTint()
-                    }
+                    songMenuContent
                 } label: {
-                    Image(systemName: "ellipsis")
-                        .font(usesAlbumSwipeChrome ? .caption.weight(.semibold) : .body.weight(.semibold))
-                        .foregroundStyle(rowMenuGlyphColor)
-                        .frame(
-                            width: usesAlbumSwipeChrome ? 22 : 32,
-                            height: usesAlbumSwipeChrome ? 22 : 36
-                        )
-                        .contentShape(Rectangle())
+                    rowMenuGlyph
                 }
                 .buttonStyle(.plain)
             }
             .padding(.horizontal, usesAlbumSwipeChrome ? AlbumTrackRowLayout.horizontalPadding : 20)
             .padding(.vertical, usesAlbumSwipeChrome ? AlbumTrackRowLayout.verticalRowPadding : itemSize.libraryVerticalPadding)
             .background(rowBackgroundFill)
+            // Apple-Music-style long press. Stock `contextMenu(menuItems:preview:)` owns the
+            // lift, the dim/blur behind it and the dismissal — none of that is hand-rolled.
+            // The same `songMenuContent` backs this and the ⋯ button, so one row can never
+            // offer different actions depending on how it was opened. `preview:` is only built
+            // when a menu actually opens, so the card costs nothing for the other rows.
+            .contextMenu {
+                songMenuContent
+            } preview: {
+                SongLongPressPreviewCard(track: track, artworkURL: artworkURL)
+            }
+    }
+
+    private var rowMenuGlyph: some View {
+        Image(systemName: "ellipsis")
+            .font(usesAlbumSwipeChrome ? .caption.weight(.semibold) : .body.weight(.semibold))
+            .foregroundStyle(rowMenuGlyphColor)
+            .frame(
+                width: usesAlbumSwipeChrome ? 22 : 32,
+                height: usesAlbumSwipeChrome ? 22 : 36
+            )
+            .contentShape(Rectangle())
+    }
+
+    /// Backs both the row's ⋯ button and its long-press context menu. Extracted verbatim from
+    /// the ⋯ menu — same options, same order — so adding the long press could not change what
+    /// the ⋯ already offered.
+    @ViewBuilder
+    private var songMenuContent: some View {
+        // Converged onto the shared template instead of keeping a fourth hand-maintained
+        // variant. The Now Playing view's long-press menu is already this same template
+        // (`NowPlayingView.swift:770` → `queueSongMenuContent` → `StandardSongMenuContent`),
+        // which is the layout this row was asked to match — so converging settles the layout
+        // question and the three previously-missing actions (Add to Queue, Go to Artist,
+        // Remove from Playlist) in one move.
+        //
+        // Dropped in the process: an informational, disabled "Downloaded ✓" row. The row itself
+        // already shows a download glyph through `TrackOfflineDownloadIndicator`, so nothing
+        // the user can actually see is lost.
+        StandardSongMenuContent(
+            track: track,
+            onPlayNext: onPlayNext,
+            onAddToQueue: onAddToQueue,
+            onFavorite: onFavorite,
+            onAddToPlaylist: onAddToPlaylist,
+            onAddToLibrary: onAddToLibrary,
+            onDownload: onDownload,
+            onRemoveDownload: onRemoveDownload,
+            onGoToAlbum: onGoToAlbum,
+            onGoToArtist: onGoToArtist,
+            onRemoveFromLibrary: onRemoveFromLibrary,
+            onDeleteFromLibrary: onDeleteFromLibrary,
+            onRemoveFromPlaylist: onRemoveFromPlaylist
+        )
+    }
+}
+
+/// The floating card shown above the menu when a song row is long-pressed.
+///
+/// Mirrors Apple Music's: artwork, then title, artist, and `album · year`. Every value is read
+/// straight off ``Track`` — `albumTitle` and `releaseYear` are already stored on it — so there
+/// is no catalog lookup here and nothing to memoize. Built only when a menu opens, never as
+/// part of a row's normal body pass.
+struct SongLongPressPreviewCard: View {
+    let track: Track
+    let artworkURL: URL?
+
+    private var albumLine: String? {
+        let album = track.albumTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch (album.isEmpty, track.releaseYear) {
+        case (true, nil): return nil
+        case (true, let year?): return "\(year)"
+        case (false, nil): return album
+        case (false, let year?): return "\(album) · \(year)"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            AlbumArtworkView(
+                url: artworkURL,
+                cornerRadius: 6,
+                maxDecodePixels: 192
+            )
+            .frame(width: 56, height: 56)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(track.title)
+                    .font(.body.weight(.semibold))
+                    .lineLimit(1)
+                if !track.artist.isEmpty {
+                    Text(track.artist)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                if let albumLine {
+                    Text(albumLine)
+                        .font(.footnote)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(2)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(width: 300, alignment: .leading)
     }
 }
 

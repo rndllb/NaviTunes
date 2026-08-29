@@ -107,13 +107,16 @@ enum ArtworkURLCache {
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
+    /// Sorted as well as filtered — see the matching note in ``DecodedArtworkCache``. Subsonic
+    /// URLs are assembled from a Swift `Dictionary`, so query order varies between two requests
+    /// for the same cover; without sorting, one image occupied two keys here and on disk.
     private static func normalizedCacheURLString(for url: URL) -> String {
         guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let items = comps.queryItems
         else { return url.absoluteString }
-        comps.queryItems = items.filter { item in
-            item.name != "t" && item.name != "s"
-        }
+        comps.queryItems = items
+            .filter { $0.name != "t" && $0.name != "s" }
+            .sorted { ($0.name, $0.value ?? "") < ($1.name, $1.value ?? "") }
         return comps.url?.absoluteString ?? url.absoluteString
     }
 

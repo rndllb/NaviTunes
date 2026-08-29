@@ -31,6 +31,9 @@ extension View {
             .scrollContentBackground(.hidden)
             .background(MusicDesign.settingsBackground)
             .musicNavigationChrome()
+            // Every Settings subpage goes through here, so this one line is what makes a push
+            // made *from* a subpage animate. See ``SettingsPushAnimationFix``.
+            .tracksSettingsPushAnimation()
     }
 }
 

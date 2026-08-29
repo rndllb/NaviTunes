@@ -15,8 +15,14 @@ struct StandardSongMenuContent: View {
 
     let track: Track
 
+    /// Play this song now. Only some surfaces offer it — on a list row, tapping the row already
+    /// plays it, so it is redundant there and those call sites pass `nil`.
+    var onPlay: (() -> Void)? = nil
     var onPlayNext: (() -> Void)? = nil
     var onAddToQueue: (() -> Void)? = nil
+    /// Album-scoped, not song-scoped: adds the song's whole album. Search offers it because a
+    /// search result is often the way you find an album you do not have yet.
+    var onAddAlbumToLibrary: (() -> Void)? = nil
     var onFavorite: (() -> Void)? = nil
     var onAddToPlaylist: (() -> Void)? = nil
     var onAddToLibrary: (() -> Void)? = nil
@@ -26,6 +32,9 @@ struct StandardSongMenuContent: View {
     var onGoToArtist: (() -> Void)? = nil
     var onRemoveFromLibrary: (() -> Void)? = nil
     var onDeleteFromLibrary: (() -> Void)? = nil
+    /// Only meaningful when the row actually belongs to a user playlist. Album detail and home
+    /// mixes pass `nil`, and the item is then hidden — an album track is not "in" a playlist.
+    var onRemoveFromPlaylist: (() -> Void)? = nil
 
     private var isInLibrary: Bool { app.isSongInLibrary(track.id) }
     private var isOfflineCached: Bool { app.offline.downloadedTrackIds.contains(track.id) }
@@ -74,11 +83,25 @@ struct StandardSongMenuContent: View {
                     Label("Add to Playlist", systemImage: "rectangle.stack.badge.plus")
                 }
             }
+            if let onAddAlbumToLibrary {
+                Button(action: onAddAlbumToLibrary) {
+                    // `plus.square.on.square` is what `LibraryAlbumContextMenuContent` already
+                    // uses for adding an album, and it is a symbol this module verifies at
+                    // runtime. Do not invent a name here — see T063, where `music.note.square`
+                    // did not exist and rendered as blank space with no error.
+                    Label("Add Album to Library", systemImage: "plus.square.on.square")
+                }
+            }
         }
         .tint(Color.primary)
 
-        if onPlayNext != nil || onAddToQueue != nil {
+        if onPlay != nil || onPlayNext != nil || onAddToQueue != nil {
             Section {
+                if let onPlay {
+                    Button(action: onPlay) {
+                        Label("Play", systemImage: "play")
+                    }
+                }
                 if let onPlayNext {
                     Button(action: onPlayNext) {
                         Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
@@ -97,7 +120,10 @@ struct StandardSongMenuContent: View {
             Section {
                 if let onGoToAlbum {
                     Button(action: onGoToAlbum) {
-                        Label("Go to Album", systemImage: "music.note.square")
+                        // `music.note.square` does not exist in SF Symbols — it resolved to nil
+                        // and rendered as blank space with no build error. `square.stack` is the
+                        // glyph this app already uses for Albums in the Library filter.
+                        Label("Go to Album", systemImage: "square.stack")
                     }
                 }
                 if let onGoToArtist {
@@ -121,6 +147,22 @@ struct StandardSongMenuContent: View {
                 }
             }
             .tint(Color.primary)
+        }
+
+        if let onRemoveFromPlaylist {
+            Section {
+                // Deliberately text-only. The icon was `text.badge.minus`, which resolves fine —
+                // this is not a missing-symbol bug — but it is a "lines with a badge" glyph sitting
+                // in the same menu as `text.append` (Add to Queue) and
+                // `text.line.first.and.arrowtriangle.forward` (Play Next). At menu size the three
+                // are near-indistinguishable, so the one destructive item in the menu read as just
+                // another queue action. No icon is clearer than a misleading one; the red
+                // destructive tint already carries the weight.
+                Button(role: .destructive, action: onRemoveFromPlaylist) {
+                    Text("Remove from Playlist")
+                }
+            }
+            .tint(MusicDesign.destructiveAction)
         }
 
         if onRemoveFromLibrary != nil || (canDeleteFromLibrary && onDeleteFromLibrary != nil) {

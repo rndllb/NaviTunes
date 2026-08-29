@@ -171,7 +171,9 @@ struct ArtistNowPlayingMenuButton: View {
             Button {
                 onGoToAlbum()
             } label: {
-                Label("Go to Album", systemImage: "square.stack.fill")
+                // Matches `StandardSongMenuContent` — two menus showing different glyphs for
+                // the same action is the inconsistency this pass exists to remove.
+                Label("Go to Album", systemImage: "square.stack")
             }
             .disabled(goToAlbumDisabled ?? (libraryAlbum == nil))
             if let sourcePlaylist, let onGoToPlaylist {
