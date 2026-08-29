@@ -988,3 +988,17 @@ page, that is the case, and it is a different fix from T069's.
 
 **Not addressed, per his explicit deprioritisation:** the YouTube/Tubifarry path failing silently,
 the stuck import backlog and Lidarr's match strictness, metadata profiles, duplicate artist entries.
+
+### T071 follow-up — the last non-optional fraction
+
+`AcquisitionFileProgress.progress` is now `Double?` as well, closing the one hole named in the
+entry above: the per-file type still held a plain `Double`, so the "no invented progress" guarantee
+held there only because nothing constructs one. That is a guarantee by absence, and Ethan's
+instruction was structural — the interface itself has to make it unrepresentable.
+
+Two render sites in the Settings activity list follow the same rule as the job row: a bar and a
+percentage only when there is a fraction, the phase word otherwise. **No behaviour change today**,
+since nothing builds an `AcquisitionFileProgress`; the point is that the first plugin to adopt
+per-file reporting cannot reintroduce the bug by accident.
+
+Still UNVERIFIED, on the same terms as the entry above — this compiles, and has not been run.

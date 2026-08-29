@@ -232,7 +232,15 @@ struct AcquisitionFileProgress: Identifiable, Hashable, Sendable {
     var id: String
     let title: String
     let status: AcquisitionJobStatus
-    let progress: Double
+    /// Same contract as ``AcquisitionJob/progress``: a fraction the backend reported, or **nil**
+    /// because it reported none.
+    ///
+    /// Nothing constructs one of these today, so this changes no behaviour. It is optional anyway
+    /// because the guarantee is supposed to hold **by type**, not by the absence of callers — a
+    /// non-optional `Double` here would quietly hand the first plugin that adopts per-file
+    /// reporting the same footgun the rest of this file was just cleared of, and it would arrive
+    /// looking reasonable.
+    let progress: Double?
     /// Optional secondary line (bytes, speed, queue position).
     let detail: String?
 }
