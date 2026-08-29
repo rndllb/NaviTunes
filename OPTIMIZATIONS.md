@@ -778,9 +778,9 @@ title strings, so it never overlapped the album title. The nativeIds could not m
   `AcquisitionProviding.isRequestSatisfied(nativeId:)`, which Lidarr answers from the album's
   `statistics.trackFileCount`. Files on disk, not merely gone.
 - `trackedDownloadState` is now read: a download that transferred and then failed to import reads
-  `status: completed` and **stays in the queue in that state indefinitely**. On the live server
-  that was **52 of 133** queued items. Those were previously shown as "importing" at 100% forever —
-  the same complaint wearing a different hat. They now report as failed.
+  `status: completed` and **stays in the queue in that state indefinitely**. Those were previously
+  shown as "importing" at 100% forever — the same complaint wearing a different hat. They now
+  report as failed. See the correction below for what the live server actually looks like.
 
 **Polling lifetime, stated plainly.** Unchanged at 1 Hz while a progress UI is on screen
 (Settings → Music Requests holds `liveRefreshClients`). Otherwise it backs off 5s → 10s → 20s → 30s
@@ -829,3 +829,22 @@ unrelated acts). Distinctive titles are fine. Separate problem from this pass.
 
 **Build:** device build clean via buildbot — `errSec=0 errors=0 installed=yes`. `launched=no` is
 the locked phone refusing the launch, not a build failure.
+
+### Correction to the import-failure figures above
+
+The "52 of 133" in the first write-up of this pass was **wrong**, and wrong in a way worth naming
+so it is not repeated: it counted `trackedDownloadState` over **one page** of `/queue`
+(`pageSize=100`) and then reported that count against the **full** `totalRecords` of 133. A
+partial numerator over a complete denominator is not a statistic.
+
+The real picture, from a full read of the queue:
+
+- **97 completed transfers**, of which **78 `importFailed`** and **19 `importPending`**.
+- **Zero completed transfers have imported.**
+- The dominant errors are **match failures** — unmatched tracks, missing tracks, album match around
+  **47%** against an **80%** threshold. `Not enough free space` is present but secondary.
+
+That is a server-side problem, not an app one, and it is **deliberately not addressed here** — it is
+with Ethan. It does bear on this pass in one way worth recording: T070 makes those rows report as
+failed instead of sitting at "importing, 100%" forever, so the condition becomes visible in the app
+rather than looking like the bug this pass fixed.
