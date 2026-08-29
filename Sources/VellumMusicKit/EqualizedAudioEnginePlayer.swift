@@ -111,7 +111,14 @@ final class EqualizedAudioEnginePlayer {
 
     @discardableResult
     func play(rate: Float) -> Bool {
-        guard isConfigured, didScheduleAudio else { return false }
+        // No scheduled audio means a reload threw and left this session attached but empty. That
+        // returned `false` silently while the `engine.start()` catch below reported properly, so
+        // the caller had no way to tell "not started" from "started fine" — and the recovery wired
+        // to `onPlaybackFailed` (detach + stage a restore) never ran. Report it the same way.
+        guard isConfigured, didScheduleAudio else {
+            notifyPlaybackFailed()
+            return false
+        }
         if !engine.isRunning {
             do {
                 try engine.start()

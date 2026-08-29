@@ -512,8 +512,50 @@ struct NowPlayingView: View {
     /// fed by the scrobble hook (~50% of the song crossed). That means skipping past
     /// songs without listening doesn't pollute the list, and the history survives
     /// queue resets — switching from an album to a single keeps the prior history.
+    /// One row of the up-next list.
+    ///
+    /// Exists because **`Track.id` is not a row identity**. A queue can hold the same id twice — a
+    /// playlist with a repeated song, or Play Next / Add to Queue used on the track already
+    /// playing — and every queue-row operation used to address rows by id. That single mistake
+    /// produced all of it: `ForEach(_, id: \.id)` collapsed the copies, a tap or swipe on the
+    /// second copy hit the first, and reordering trapped in
+    /// `Dictionary(uniqueKeysWithValues:)` with "Fatal error: Duplicate values for key".
+    ///
+    /// `rowId` is the id plus which occurrence it is, so identity survives rows shifting position
+    /// when something above them is removed — an absolute index would change for every row after
+    /// the removal and make SwiftUI animate the wrong one out. `queueIndex` and `upNextOffset`
+    /// carry the *position*, which is what the engine is told to act on.
+    private struct QueueEntry: Identifiable {
+        let rowId: String
+        /// Absolute index into `PlaybackEngine.queue`.
+        let queueIndex: Int
+        /// Offset from the start of up-next — the coordinate space `moveUpNextItem` and
+        /// `removeUpNextItems` both use.
+        let upNextOffset: Int
+        let track: Track
+        var id: String { rowId }
+    }
+
+    /// Pairs each up-next track with its position and a stable per-row identity.
+    private func upNextEntries() -> [QueueEntry] {
+        let start = player.currentIndex + 1
+        guard start < player.queue.count else { return [] }
+        var occurrences: [String: Int] = [:]
+        return player.queue.indices.dropFirst(start).map { index in
+            let track = player.queue[index]
+            let n = occurrences[track.id, default: 0]
+            occurrences[track.id] = n + 1
+            return QueueEntry(
+                rowId: "\(track.id)#\(n)",
+                queueIndex: index,
+                upNextOffset: index - start,
+                track: track,
+            )
+        }
+    }
+
     private func queueScrollContent(track: Track) -> some View {
-        let upNext = Array(player.queue.dropFirst(player.currentIndex + 1))
+        let upNext = upNextEntries()
         // Don't duplicate the currently-playing track in the history list.
         // Storage is newest-first; the queue view reads oldest-at-top so the most
         // recently played track sits right above the Now Playing line.
@@ -533,9 +575,9 @@ struct NowPlayingView: View {
     /// Playing"). Reorderable sections use 3-line drag handles (system-drawn
     /// via active edit mode); the bottom chrome below is untouched by the
     /// scrolling list. Compact artwork + title live in ``sharedHeader``.
-    private func nowPlayingPage(track: Track, upNext: [Track]) -> some View {
-        let userQueueTracks = upNext.filter { player.userQueuedTrackIds.contains($0.id) }
-        let continuePlayingTracks = upNext.filter { !player.userQueuedTrackIds.contains($0.id) }
+    private func nowPlayingPage(track: Track, upNext: [QueueEntry]) -> some View {
+        let userQueueTracks = upNext.filter { player.userQueuedTrackIds.contains($0.track.id) }
+        let continuePlayingTracks = upNext.filter { !player.userQueuedTrackIds.contains($0.track.id) }
         return queueAndContinuePlayingList(
             track: track,
             userQueue: userQueueTracks,
@@ -663,8 +705,8 @@ struct NowPlayingView: View {
     /// shuffle/repeat once the user scrolls the list.
     private func queueAndContinuePlayingList(
         track: Track,
-        userQueue: [Track],
-        continuePlaying: [Track]
+        userQueue: [QueueEntry],
+        continuePlaying: [QueueEntry]
     ) -> some View {
         let hasUserQueue = !userQueue.isEmpty
         let hasContinue = !continuePlaying.isEmpty
@@ -680,11 +722,11 @@ struct NowPlayingView: View {
 
             if hasUserQueue {
                 Section {
-                    ForEach(userQueue, id: \.id) { t in
-                        queueListRow(track: t)
+                    ForEach(userQueue) { entry in
+                        queueListRow(entry: entry)
                     }
                     .onMove { source, destination in
-                        moveWithinSection(tracks: userQueue, source: source, destination: destination)
+                        moveWithinSection(entries: userQueue, source: source, destination: destination)
                     }
                 } header: {
                     queueStickyHeader(
@@ -697,11 +739,11 @@ struct NowPlayingView: View {
 
             if hasContinue {
                 Section {
-                    ForEach(continuePlaying, id: \.id) { t in
-                        queueListRow(track: t)
+                    ForEach(continuePlaying) { entry in
+                        queueListRow(entry: entry)
                     }
                     .onMove { source, destination in
-                        moveWithinSection(tracks: continuePlaying, source: source, destination: destination)
+                        moveWithinSection(entries: continuePlaying, source: source, destination: destination)
                     }
                 } header: {
                     queueStickyHeader(
@@ -747,11 +789,13 @@ struct NowPlayingView: View {
         #endif
     }
 
-    private func queueListRow(track t: Track) -> some View {
-        Button {
-            if let idx = player.queue.firstIndex(where: { $0.id == t.id }) {
-                player.jumpToQueueItem(at: idx)
-            }
+    private func queueListRow(entry: QueueEntry) -> some View {
+        let t = entry.track
+        // Jump to THIS row, not to the first track that happens to share its id. The old
+        // `firstIndex(where: { $0.id == t.id })` sent every copy of a repeated song to the topmost
+        // one, so tapping the second copy played the first.
+        return Button {
+            player.jumpToQueueItem(at: entry.queueIndex)
         } label: {
             queueRow(track: t)
                 .contentShape(Rectangle())
@@ -762,7 +806,10 @@ struct NowPlayingView: View {
         .listRowSeparator(.hidden)
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             Button(role: .destructive) {
-                player.removeTracksFromQueue(trackIds: [t.id])
+                // By position: removes this one row. Passing the bare id removed every copy —
+                // including the one playing, which then tore down the player and started a
+                // different song because the cursor could no longer find itself.
+                player.removeUpNextItems(at: IndexSet(integer: entry.upNextOffset))
             } label: {
                 Label("Remove", systemImage: "trash")
             }
@@ -772,17 +819,25 @@ struct NowPlayingView: View {
 
     /// Translates an `onMove` IndexSet+destination from a section's local coordinates into
     /// the full `Up Next` index space, then forwards to `PlaybackEngine.moveUpNextItem`.
-    private func moveWithinSection(tracks: [Track], source: IndexSet, destination: Int) {
-        let upNext = Array(player.queue.dropFirst(player.currentIndex + 1))
-        let upNextIndexById = Dictionary(uniqueKeysWithValues: upNext.enumerated().map { ($1.id, $0) })
-        let mappedSource = source.compactMap { upNextIndexById[tracks[$0].id] }
+    ///
+    /// Each entry already knows its own `upNextOffset`, so this is a direct lookup. It used to
+    /// build `Dictionary(uniqueKeysWithValues:)` keyed on `Track.id` to recover those offsets,
+    /// which has a documented precondition of unique keys — so with the same song twice in up-next
+    /// it trapped with "Fatal error: Duplicate values for key" and hard-crashed the app. Note it
+    /// fired on the **drop**, not during the drag: the user released the row and the app died. Any
+    /// row could trigger it, not only a duplicated one, because the dictionary was built over the
+    /// whole of up-next.
+    private func moveWithinSection(entries: [QueueEntry], source: IndexSet, destination: Int) {
+        guard !entries.isEmpty else { return }
+        let mappedSource = IndexSet(source.compactMap { entries.indices.contains($0) ? entries[$0].upNextOffset : nil })
+        guard !mappedSource.isEmpty else { return }
         let mappedDestination: Int = {
-            if destination < tracks.count, let idx = upNextIndexById[tracks[destination].id] { return idx }
-            // Append at end of section: place after the last item of the section in full Up Next coords.
-            if let last = tracks.last, let lastIdx = upNextIndexById[last.id] { return lastIdx + 1 }
-            return upNext.count
+            if destination < entries.count { return entries[destination].upNextOffset }
+            // Append at end of section: just past the section's last row, in up-next coords.
+            if let last = entries.last { return last.upNextOffset + 1 }
+            return 0
         }()
-        player.moveUpNextItem(from: IndexSet(mappedSource), to: mappedDestination)
+        player.moveUpNextItem(from: mappedSource, to: mappedDestination)
     }
 
     @ViewBuilder

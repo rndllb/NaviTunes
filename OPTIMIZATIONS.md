@@ -285,3 +285,294 @@ The menu item kept its icon through T063 and T064 and it was never a missing-sym
 - **Scope:** the menu item only. The swipe action keeps its icon, because a swipe action *is* its icon.
 - **Verified on the simulator** by capturing the menu before and after on a real playlist row (`zz-perf-778`), reading the rendered image rather than the source.
 - **Unproven:** device. Simulator only.
+
+## 2026-08-28 — queue rows: a drag that crashed the app, and a delete that stopped the music (T062)
+
+Two reported bugs, one cause: **`Track.id` is not a row identity.** A queue can hold the same id
+twice — a playlist with a repeated song (nothing on that path dedupes), or Play Next / Add to Queue
+used on the track that is *already playing*, which leaves the original where it is and inserts a
+second copy after it. Every queue-row operation addressed rows by id, so all of them hit the wrong
+row, or every row, or trapped.
+
+**What was wrong**
+
+- **Dragging a row crashed the app.** `moveWithinSection` rebuilt `Dictionary(uniqueKeysWithValues:)`
+  keyed on `Track.id` to recover positions. That initialiser requires unique keys and traps
+  otherwise. It fired on the **drop**, not during the drag: you released the row and the app died.
+  Any row triggered it, not only a duplicated one, because the dictionary covered all of up-next.
+- **Deleting a row deleted every copy of that song, including the one playing.**
+  `removeTracksFromQueue` does `queue.removeAll { trackIds.contains($0.id) }`. With the playing
+  track duplicated, both copies went; the cursor could no longer find itself, fell through to
+  `currentIndex = min(...)` and called `scheduleAdvance()`, which tears down the player. Removing an
+  up-next row stopped the song you were listening to.
+- **`ForEach(_, id: \.id)` and the tap lookup** had the same defect: duplicate identities collapsed
+  rows, and `firstIndex(where: { $0.id == t.id })` sent a tap on the second copy to the first.
+
+**The fix — address rows by position, keep the id-based path for the one caller that wants it**
+
+- New `QueueEntry` carries a stable `rowId` (id + which occurrence), plus `queueIndex` and
+  `upNextOffset`. Identity is the occurrence, not the position, deliberately: an absolute index
+  changes for every row below a deletion and would make SwiftUI animate the wrong row out.
+- `moveWithinSection` reads `upNextOffset` directly. **The `Dictionary` is gone entirely.**
+- Tap and swipe act on this row's position.
+- New `PlaybackEngine.removeUpNextItems(at:)` removes rows by offset from `currentIndex + 1`.
+  Nothing at or before the cursor is addressable, so it **cannot** remove the playing track — no
+  teardown, no advance, by construction rather than by a guard.
+- `clearUserQueue` now selects rows after the cursor instead of passing an id set, so the playing
+  track's own row is simply never in the selection.
+- **`removeTracksFromQueue(trackIds:)` is unchanged.** `AppModel.deleteTrackFromLibrary` still needs
+  every copy gone, playing one included, when the file is deleted from the server. It is now
+  documented as the id-based sibling that queue rows must not call.
+
+**Reproduced before fixing, on the simulator, with a fixture built for it** — the demo-server
+playlist `zz-dup-repro`, ordered `[Baxter, game over, Baxter, Isolation, game over]`, so playing
+from track 0 leaves a duplicated id in up-next *and* an up-next copy of the playing track.
+
+- **Drag:** on `52fa64f`, dragging an up-next row by its reorder handle and dropping it **terminated
+  the app** (`XCUIApplication.state == notRunning`). After the fix the same drag reorders correctly:
+  `[game over, Baxter, Isolation, game over]` → `[Baxter, Isolation, game over, game over]`, with
+  the *first* `game over` moving and the second staying put — the right row moved.
+- **Delete:** after the fix, swiping the up-next `Baxter` removes exactly that row (Baxter up-next
+  rows 1 → 0, the `game over` pair untouched) and **`Brock Berrigan` is still in the player header**
+   — the song kept playing.
+- **Control, on unfixed code:** swiping `Isolation`, whose id appears once, removes it correctly.
+  So the gesture works; it is specifically the duplicated id that breaks row addressing.
+
+**Two things I could not show, stated plainly rather than implied**
+
+- On unfixed code, swiping the *duplicated* row produced **no observable change at all** — no crash,
+  no removal, playback unchanged. It did not reproduce the audit's predicted symptom of playback
+  being torn down and jumping. The destructive code path is real and reachable by reading
+  (`removeAll` by id, then the failed `previousId` lookup falling into `scheduleAdvance()`), and the
+  audit's verifier confirmed it, but what the UI actually did was swallow the swipe. Most likely the
+  duplicate `ForEach` identity never delivered the action — which is the same root cause wearing a
+  different face.
+- I could not capture the trap's text ("Fatal error: Duplicate values for key"); no crash report was
+  written to `DiagnosticReports` and the simulator log had nothing. The evidence for the crash is
+  the app being `notRunning` immediately after the drop, on code where that initialiser sits on
+  exactly that path with known-duplicate ids.
+- **"Clear" on the Queue section is not covered by a test.** It needs user-queued tracks, and I could
+  not drive Add to Queue for the playing track through the UI (long-press opened the player; the
+  detail rows exposed no ⋯). The change is the same positional selection as the swipe path.
+- **Unproven:** device. Simulator only.
+
+**Fixture left on the public demo server:** `zz-dup-repro`. Kept deliberately, like `zz-perf-778` —
+it is the only way to reach this state. Delete it if you would rather it were not there.
+
+## 2026-08-28 — playback failures stop lying: one failure path, five entry points (T063)
+
+Five audit findings, one defect: **a playback failure was discarded, `isPlaying` was never reset,
+and the user was never told.** From the listener's seat the result was always identical — a pause
+glyph over silence, a lock screen still reporting rate 1.0, and no way out but a force-quit.
+
+**One failure path, not five patches**
+
+- `PlaybackEngine.reportPlaybackFailure(_:track:context:)` is now the only place a failure is
+  handled. It clears `isPlaying` and the pending auto-play intent, stops the buffering spinner,
+  calls `refreshNowPlaying()` (which is what drops the reported rate to 0), and fires a new
+  `onPlaybackFailure` callback. One real failure can arrive twice — `play(rate:)` returning false
+  *and* the session notifying `onPlaybackFailed` — so the transport is corrected every time but the
+  user is told at most once every two seconds.
+- **The engine had no error channel at all.** `onPlaybackFailure` is the first one. `AppModel` wires
+  it to the app's existing transient toast ("Couldn't play <title>"), matching "Couldn't start mix".
+  Not `errorMessage`, which `RootView` renders as an alert — a mid-queue failure should not
+  interrupt.
+
+**The five entry points, all routed into it**
+
+1. **Config-change rebuild** (route change) — was a bare `try? await equalizedPlayer.seek(...)`. Now
+   catches, performs the same recovery the session's own `onPlaybackFailed` does
+   (`detachPlayerKeepingQueueState` + `stagePendingRestore`), and reports. This one mattered most
+   because the failing rebuild also invalidates the time observer, which is the *only* thing that
+   syncs `isPlaying` back on the EQ path — so nothing could ever correct it.
+2. **`play(rate:)` returning false** — nine of its ten call sites discarded the `Bool` and set
+   `isPlaying = true` regardless. All now go through `startEqualizedPlayback(_:context:)`, which
+   reports instead of pretending. **The tenth needed it too**, which is worth spelling out because
+   it looked correct: the EQ session's autoplay branch already assigned the `Bool`
+   (`isPlaying = session.play(...)`), so it never showed a false pause glyph — but honouring the
+   return only got as far as `isPlaying = false`. The track had loaded, autoplay was asked for,
+   nothing played, and the user was told nothing. Silent in a quieter way, but the same class of
+   failure. Every one of the ten now routes through the single path; the only bare `play(rate:)`
+   left in the engine is the one inside the helper itself. The guard inside `EqualizedAudioEnginePlayer.play(rate:)` now
+   calls `notifyPlaybackFailed()` like the `engine.start()` catch beside it already did, so the
+   recovery wired to `onPlaybackFailed` actually runs. This is what made the play/pause button
+   inert — it could not even pause, because the node never started and every tap re-entered the
+   same branch. The UI-milestone reconcile was silently retrying it forever; it now stops.
+3. **Auto-advance / skip** — `scheduleAdvance` was `try? await self.advance()`. It now catches and
+   reports, while still ignoring the cancellation a superseded skip produces, so a fast double-skip
+   does not raise a toast.
+4. **Gapless advance onto a failed pre-enqueued item** — `promoteToEnqueuedNext` never looked at
+   `item.status`. It now stops on `.failed` instead of announcing the title, firing `onTrackStarted`
+   and setting `isPlaying = true` over silence. The cursor still follows the OS onto that item
+   (otherwise the app reports the wrong track as current) and the progress readout is reset.
+5. **Surfacing** — covered by the callback above; the EQ session's `onPlaybackFailed` closure, which
+   previously recovered silently, now reports too.
+
+**Verified — and be clear about how**
+
+The natural triggers (a 404 next track, an expired token, a failed engine rebuild after a route
+change) cannot be staged on the simulator without manipulating the machine's network, which I was
+not willing to do on Ethan's Mac. Two dead ends worth recording so nobody retries them: Navidrome
+**silently drops unknown song ids** from `createPlaylist`, so a dead track cannot be injected that
+way; and the engine has **no offline gating**, so deleting a downloaded file just falls back to
+streaming and succeeds.
+
+So the failure was **injected** in a throwaway worktree — a debug hook making the next load throw
+exactly where a dead track would — and the same test run against both versions:
+
+| | toast | transport after a failed skip |
+|---|---|---|
+| T062 only (no fix) | **none** | **Pause** — the reported symptom exactly |
+| with T063 | **"Couldn't play game over"** | **Play** |
+
+That verifies the skip / auto-advance path (findings 3 and 5) end to end. **It verifies the fix's
+behaviour, not the original trigger.**
+
+**Not reproduced, stated plainly.** Three of the five are fixed by code and unverified by a run:
+the config-change rebuild (needs a real audio route change — AirPods connect/disconnect — which the
+simulator cannot produce), the `play(rate:)` EQ wedge (needs the EQ path plus a thrown reload from
+an evicted cache file or a truncated transcode), and the gapless promote (needs a pre-staged item to
+go bad mid-track). Each was traced through the source at its file:line, but none was observed
+failing and then observed fixed.
+
+**Behavioural question for Ethan, deliberately not decided here.** This implements an honest failure
+surface and nothing more: on failure playback **stops and says so**. It does *not* retry, and it
+does *not* auto-skip past a dead track. Whether one dead track mid-queue should be skipped so the
+rest of the album keeps playing — and after how many attempts — is a product decision, not part of
+fixing a swallowed error.
+
+**Noticed, not fixed (out of scope this pass):** the internet-radio cluster and the cold-launch
+restore no-ops, per the brief.
+
+**Unproven:** device. Simulator only.
+
+## 2026-08-28 — transport controls that did nothing, or the opposite (T064)
+
+Five audit findings, one complaint: **the user presses a control and either nothing happens or the
+opposite happens, with no feedback.**
+
+**The seek lifecycle lost track of what the user last asked for**
+
+- **A pause during an in-flight seek was silently undone.** `performSeek` snapshotted the play state
+  before its `await` and resumed unconditionally afterwards, so a pause issued during the seek was
+  overwritten when it completed. It now re-reads the intent *after* the await.
+- **A superseded seek re-issued itself to its stale target.** AVPlayer resumes a pending seek's
+  continuation with `finished == false` the instant a newer seek is issued; the old code read that
+  as "my seek failed" and retried to its own old position, then restarted playback there — two side
+  effects *before* the generation guard that exists to stop exactly this. The guard now runs before
+  the retry and again before the resume.
+- **A superseded task no longer runs `completion`.** Invoking it cleared the scrubber's
+  `isScrubbing` before the real seek had landed, which is what made the thumb snap back to a
+  mid-seek position. The newest task always matches the generation and runs it exactly once.
+- **`togglePlayPause` was branching on `player.rate`.** `performSeek` parks the player for the
+  duration of a seek, so mid-scrub the rate reads 0 and a tap on a button *drawn as pause* fell into
+  the resume branch and started audio — the opposite of what was pressed. Inside the seek window it
+  now branches on intent.
+
+**The part that had to be measured, not reasoned about**
+
+The audit's verifier warned that moving the generation guard earlier without fixing the play-state
+sampling would leave playback silently paused after a rapid double-scrub. It was right, and my first
+attempt did exactly that — `isPlaying` sampled per task is not enough, because the first seek's
+`player.pause()` fires KVO that clears `isPlaying` before the second seek samples it. **The test
+caught it: `Pause=false` after a double scrub, i.e. the music had stopped.**
+
+So intent is now tracked per *burst*: `seekResumeIntent` is set by the first seek of a burst,
+inherited by any that overlap it, and cleared by every explicit pause. That satisfies both halves at
+once — a mid-seek pause wins, and a rapid double-scrub keeps playing.
+
+**Remote controls no longer advertise what the app cannot do**
+
+- `nextTrackCommand` was set enabled unconditionally, and `updateRemoteCommands()` only ever ran on
+  a settings change, so enablement could never track queue position: the lock-screen / CarPlay Next
+  button stayed lit on the last track and did nothing. Enablement is now derived from
+  `currentIndex`, `queue.count` and `repeatMode`.
+- `changePlaybackPositionCommand` was enabled once for the life of the process, including on live
+  radio, where the seek is always discarded because the stream has no finite duration. It is now
+  disabled for internet-radio tracks — the app already knew this and greyed out its own scrubber;
+  the flag simply never reached the command center.
+- Both are refreshed from `refreshNowPlaying()`, the one hook that already runs on every track
+  change and transport update, and cached so the common case is two comparisons.
+- **`previousTrackCommand` was deliberately left alone.** At the start of a queue it seeks to 0,
+  which is standard restart-the-track behaviour and a real, visible response — not a silent no-op.
+
+**Cold-launch restore left the transport half-wired**
+
+After a restore the queue and position are staged with no player yet, and every seek entry point
+fell through `guard let player` and did nothing until the first Play — the scrubber, ±15s, Previous
+(which routes to `seek(toSeconds: 0)`), and the lock-screen scrubber. `performSeek` now moves the
+staged position instead, the same thing `togglePlayPause` and the remote resume command already did
+on their own paths. The `duration == 0` variant (an offline track whose duration never resolved,
+which bails even earlier) is handled too.
+
+**What was reproduced, and what was not**
+
+| finding | reproduced? |
+|---|---|
+| Cold-launch restore inert | **Yes.** Scrub after a cold relaunch: baseline `0:00 → 0:00`, fixed `0:00 → 2:15`. |
+| Superseded seek | **Not as a user-visible defect** — the verifier established the seeks converge on the newest target. But the regression it predicted *was* observed and fixed (above). |
+| Pause during in-flight seek | **No.** Scrub-then-immediately-pause passed on the baseline too — the seek completed before the tap landed. Fixed by code, unverified as a defect. |
+| `nextTrackCommand` at end of queue | **No.** `MPRemoteCommandCenter` state lives in another process; XCUITest cannot read it and Control Center is not scriptable. |
+| `changePlaybackPositionCommand` on radio | **No.** Same reason, and no radio station is configured on the demo server. |
+
+**Behavioural questions flagged, not decided.** Whether Previous at the start of a queue should
+restart the track or step back a track is a product choice — the current restart behaviour is left
+as is. Separately, the `changePlaybackPositionCommand` handler returns `.success` before
+`performSeek` has run at all, so any seek dropped by the `d > 0` guard (e.g. a track whose duration
+has not resolved yet) is falsely acknowledged to the system. Disabling the command for radio removes
+the radio case; the general false-acknowledgement remains, and fixing it needs care because the
+handler runs outside the main actor and cannot read engine state synchronously.
+
+**Noticed, not fixed (out of scope):** the rest of the internet-radio cluster and the widget
+findings, per the brief.
+
+**Unproven:** device. Simulator only.
+
+## 2026-08-28 — Back collapsed the whole navigation stack (T066)
+
+Ethan's recording: playlist → album *Famous* → artist *Puddle Of Mudd* → album *Ubiquitous*, then
+one Back landed straight back on the playlist. He guessed it was something small. **He was right —
+the fix is deleting five lines.**
+
+**The cause, and it fires on the way IN, not on the way back**
+
+Each `navigationDestination(item:)` carried `.onDisappear { navigate… = nil }`, meant to reset the
+binding after the user pops. But **`onDisappear` does not mean "the user went back"** — it also
+fires when that destination is *covered by a further push*. So pushing the artist page on top of an
+album detail ran the album destination's `onDisappear`, which cleared the **playlist's**
+`navigateAlbum`, which popped the album *and* the artist sitting above it. The stack fell back to
+the playlist at the moment the artist page appeared.
+
+That is why it looked like "Back destroys the stack": by the time he tapped Back, the intermediate
+entries were already gone.
+
+The clear was redundant as well as harmful — `navigationDestination(item:)` owns its binding and
+writes `nil` back itself on pop. The proof was already in the codebase: `BrowseAlbumDetailView`'s
+*artist* destination never had the manual clear and has always popped correctly.
+
+Removed from all five sites that had it: `ServerPlaylistViews` (album + artist),
+`BrowseAlbumDetailView`, `LibrarySongsView`, `LibraryView`. **No new views, no parallel
+destinations, nothing added** — which is what he asked for. The comment beside
+`detailOnDisappear()` warned about this exact hazard one level up while the destinations below were
+doing it; that comment is now corrected so nobody reinstates the clears.
+
+**Reproduced first, on the simulator, as instructed**
+
+Walk: playlist `zz-perf-778` → row ⋯ → Go to Album → album `Diplomatic Immunity` → tap the artist.
+
+- **Before:** the artist tap landed on **`zz-perf-778`** — the playlist. The stack collapsed on the
+  forward push, exactly as in the recording.
+- **After:** the artist page opens and stays (`The Polish Ambassador`), and its **back button reads
+  `Diplomatic Immunity`** — direct evidence the album is still on the stack beneath it.
+- **Back pops one level at a time:** back #1 → `Diplomatic Immunity`, back #2 → `zz-perf-778`,
+  back #3 → Library. In reverse order, one per tap.
+
+**What I could not automate.** The fourth level — pushing another album from the artist page's
+Albums carousel — never happened in the harness: the card reports hittable, but the synthetic tap
+lands on the mini player and opens Now Playing instead. That is a test-harness limitation, not the
+app: Ethan's own recording shows a human doing that push successfully. So **depth 4 and the
+repeated-destination-type case are verified only indirectly**, by the back-button label chain
+showing intermediate entries surviving, and by the same-type repeat being what the fix restores
+(playlist → album are both `ServerPlaylistDetailView`, and that push now survives being covered).
+
+**Unproven:** device. Simulator only.

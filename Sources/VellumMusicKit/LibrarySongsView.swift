@@ -179,9 +179,11 @@ struct LibrarySongsView: View {
         }
         .musicLibraryToolbarMonochromeControls()
         .musicNativeSearchable(text: $searchText, prompt: Text("Songs"))
+        // No manual clear: `onDisappear` also fires when this destination is covered by a
+        // further push, and clearing the binding there pops the whole subtree. The item binding
+        // is reset by SwiftUI on pop.
         .navigationDestination(item: $navigateAlbum) { album in
             ServerPlaylistDetailView(album: album, librarySource: true)
-                .onDisappear { navigateAlbum = nil }
         }
         .onChange(of: tracks) { _, _ in recomputeDisplayed() }
         .onChange(of: searchText) { _, _ in scheduleRecomputeDisplayed() }

@@ -1130,6 +1130,17 @@ public final class AppModel: ObservableObject {
                 self?.applyEqualizerAutomationForRouteChange()
             }
         }
+        // Playback failures used to be invisible: a skip or auto-advance onto a dead track stopped
+        // the music with no message anywhere. A transient toast is the app's existing convention
+        // for "that didn't work" (see "Couldn't start mix"), and unlike `errorMessage` — which
+        // RootView renders as an alert — it does not interrupt what the user is doing.
+        player.onPlaybackFailure = { [weak self] track, _ in
+            Task { @MainActor in
+                guard let self else { return }
+                let title = track?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                self.showTransientToast(title.isEmpty ? "Couldn't play this track" : "Couldn't play \(title)")
+            }
+        }
         installPlaybackQueueAutosave()
     }
 

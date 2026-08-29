@@ -967,13 +967,23 @@ struct ServerPlaylistDetailView: View {
             .musicNavigationBarTitleDisplayMode(.inline)
             .modifier(DetailNavigationChrome(palette: backdropPalette))
             .musicNavigationBarVisibleWhenPushed()
+            // No `.onDisappear { navigate… = nil }` here, deliberately.
+            //
+            // `onDisappear` does not mean "the user went back" — it also fires when this
+            // destination is COVERED by a further push. Clearing the binding then popped this
+            // destination and everything above it, so walking playlist → album → artist collapsed
+            // straight back to the playlist the moment the artist page appeared. That is the whole
+            // of the reported "Back destroys the stack" bug, and it fired on the forward push
+            // rather than on Back.
+            //
+            // The clear was redundant anyway: `navigationDestination(item:)` owns its binding and
+            // writes `nil` back itself when the destination pops. `BrowseAlbumDetailView`'s artist
+            // destination never had the manual clear and has always popped correctly.
             .navigationDestination(item: $navigateAlbum) { album in
                 ServerPlaylistDetailView(album: album, librarySource: true)
-                    .onDisappear { navigateAlbum = nil }
             }
             .navigationDestination(item: $navigateArtist) { item in
                 ArtistPageView(input: .named(item.id))
-                    .onDisappear { navigateArtist = nil }
             }
             .onAppear(perform: detailOnAppear)
             .modifier(LibraryAlbumDismissObserver(
@@ -1146,8 +1156,11 @@ struct ServerPlaylistDetailView: View {
         scrollHighlightTask?.cancel()
         // Do not clear `navigateAlbum` / `navigateArtist` here — onDisappear also
         // fires when a forward push (related album, artist page) covers this view.
-        // Clearing those bindings pops the child immediately. Each destination
-        // clears its own binding in `.onDisappear` when the user pops back.
+        // Clearing those bindings pops the child immediately. Nothing clears them
+        // manually anywhere: `navigationDestination(item:)` writes `nil` back itself
+        // when the destination pops. (The destinations used to do it in their own
+        // `onDisappear`, which had exactly the bug this comment warns about, one level
+        // further down — see the note beside those destinations.)
         if tracksVisibility {
             switch source {
             case .playlist(let p):
