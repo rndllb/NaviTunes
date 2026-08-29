@@ -10,7 +10,12 @@ import Combine
 @MainActor
 final class AcquisitionManager: ObservableObject {
     /// Active + recently-finished jobs this app issued, keyed by `requestKey`.
-    @Published private(set) var jobs: [String: AcquisitionJob] = [:]
+    /// One hook rather than a `persistJobs()` at every mutation site, so a new call site cannot
+    /// forget it. Writes only happen when the dictionary actually changes: both reconcile paths
+    /// bail early when the rebuilt job equals the current one.
+    @Published private(set) var jobs: [String: AcquisitionJob] = [:] {
+        didSet { persistJobs() }
+    }
     /// Server-side queue snapshot from the active plugin (includes items started elsewhere).
     @Published private(set) var serverJobs: [AcquisitionJob] = []
     /// The currently selected backend; persisted.
@@ -50,6 +55,48 @@ final class AcquisitionManager: ObservableObject {
         } else {
             activePlugin = .lidarr
         }
+        jobs = Self.loadPersistedJobs()
+    }
+
+    // MARK: - Persistence
+
+    /// Requests outlive the process.
+    ///
+    /// `jobs` was in-memory only, so a relaunch forgot everything: a row that had settled on
+    /// "Not found" or "Failed" came back as a plain **Request** button, as though the request had
+    /// never happened. Recently Searched no longer keeps request rows either — correctly, they
+    /// navigated to a dead page — so between the two there was no trace of a failed request left
+    /// anywhere in the app. That combination was a regression introduced by this pass, and this
+    /// restores what it removed.
+    ///
+    /// Same shape as ``ScrobbleStore``: JSON under a `UserDefaults` key, loaded in `init`.
+    ///
+    /// Only app-issued jobs are kept. Server-side activity is re-fetched from the plugin on the
+    /// next poll and would be stale the moment it was written. `.done` is dropped too: it retires
+    /// itself after 1.5s and the track it produced is the real record of it.
+    private static let jobsKey = "vellumAcquisitionJobs"
+    /// Bound on how many outstanding requests are remembered. `AcquisitionJob` carries no
+    /// timestamp, so this trims by sorted key — arbitrary, but deterministic, and only ever
+    /// reached by someone with fifty unresolved requests.
+    private static let persistedJobsCap = 50
+
+    private static func loadPersistedJobs() -> [String: AcquisitionJob] {
+        guard let data = UserDefaults.standard.data(forKey: jobsKey),
+              let decoded = try? JSONDecoder().decode([String: AcquisitionJob].self, from: data)
+        else { return [:] }
+        return decoded
+    }
+
+    /// Writes the current outstanding requests. Cheap and idempotent; called after any mutation.
+    private func persistJobs() {
+        var keep = jobs.filter { $0.value.source == .app && $0.value.status != .done }
+        if keep.count > Self.persistedJobsCap {
+            for key in keep.keys.sorted().dropFirst(Self.persistedJobsCap) {
+                keep.removeValue(forKey: key)
+            }
+        }
+        guard let data = try? JSONEncoder().encode(keep) else { return }
+        UserDefaults.standard.set(data, forKey: Self.jobsKey)
     }
 
     // MARK: - Active provider

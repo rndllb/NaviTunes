@@ -1017,3 +1017,35 @@ be false, and there is no backend to ask until it flips.
 
 No new polling behaviour — this reuses the same time-boxed path as returning to the foreground, so
 the backoff and the 20-minute unattended budget still apply. UNVERIFIED, not run.
+
+### T071 follow-up — requests survive a relaunch
+
+`AcquisitionManager.jobs` was in-memory only, so a relaunch forgot every request. A row that had
+settled on **Not found** or **Failed** came back as a plain **Request** button, as though nothing
+had happened — and because Recently Searched no longer stores request rows (correctly; they
+navigated to a dead page), between the two changes a failed request left **no trace anywhere in the
+app**. That combination was introduced by this pass, so this restores recoverability rather than
+adding a feature.
+
+Persisted the same way as ``ScrobbleStore``: JSON under a `UserDefaults` key, loaded in `init`,
+written from a `didSet` on `jobs` so a future mutation site cannot forget to save. Five types
+gained `Codable`; `AcquisitionJobSource` also gained a `String` raw value so it round-trips by name
+rather than by declaration order.
+
+Deliberate limits:
+
+- **App-issued jobs only.** Server-side activity is re-fetched from the plugin each poll and would
+  be stale the moment it was written.
+- **`.done` is not kept.** It retires itself after 1.5s, and the track it produced is the record.
+- **Capped at 50**, trimmed by sorted key. `AcquisitionJob` carries no timestamp, so that ordering
+  is arbitrary — deterministic, but arbitrary. Giving it a timestamp would have meant threading a
+  field through every construction site and would have changed `Hashable` equality, which the
+  reconcile paths use to decide whether to republish; not worth it for a cap nobody should reach.
+
+Restored jobs are re-resolved rather than trusted: non-terminal ones are picked up by the first
+poll after launch (which now happens — see the cold-launch entry above) and rewritten from
+`requestState`. A restored **terminal** row is left as it is; if the album later does arrive, the
+acquire row is suppressed by the library filters anyway, so a stale "Not found" cannot outlive the
+thing it describes.
+
+UNVERIFIED, on the same terms as the rest of T071 — this compiles and has not been run.
