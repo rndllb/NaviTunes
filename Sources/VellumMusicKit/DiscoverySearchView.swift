@@ -278,36 +278,50 @@ struct DiscoverySearchView: View {
         let serverTracks = serverResults.songs
         let q = LibraryTrackMatcher.normalize(trimmedQuery)
 
-        var scored: [(row: HybridRow, score: Double, kindPriority: Int)] = []
+        var scored: [(row: HybridRow, score: Double, kindPriority: Int, coverage: Double, tieBreak: String)] = []
 
-        // Artists pinned to the top of Top Results. Each artist gets a large
-        // score bump so any matching artist surfaces above albums/songs/the request backend
-        // — Apple Music does the same: tapping search for "Deftones" returns
-        // the artist row first, then their albums, then their songs.
+        // One row per release, across every source that can produce one.
+        //
+        // Server albums, plugin release rows, and the server album list *itself* all feed this
+        // list, and nothing compared them to each other — so the same record could appear twice
+        // (Navidrome will happily return two editions of one album, or one album scanned twice).
+        // Keyed on normalized title + artist and never on id, because two sources agreeing on a
+        // release is precisely the case where the ids differ.
+        var seenReleaseKeys = Set<String>()
+
+        // Artists lead Top Results when the query actually names one — see `artistRowScore` for
+        // why the lift is graded rather than the flat `+1.0` this used to add to every artist.
         for artist in serverResults.artists {
-            let s = Self.relevanceScore(title: artist.name, artist: artist.name, normalizedQuery: q)
-            scored.append((.serverArtist(artist), s + 1.0, -1))
+            let s = Self.artistRowScore(name: artist.name, normalizedQuery: q)
+            scored.append((.serverArtist(artist), s, -1, Self.matchCoverage(of: artist.name, queryLength: q.count), artist.name))
         }
 
-        // Artists not on the server (iTunes matches) get the same artist-row treatment
+        // Artists not on the server (plugin matches) get the same artist-row treatment
         // and priority, so a missing artist surfaces alongside server artists.
         for match in namedArtistMatches {
-            let s = Self.relevanceScore(title: match.name, artist: match.name, normalizedQuery: q)
-            scored.append((.namedArtist(match), s + 1.0, -1))
+            let s = Self.artistRowScore(name: match.name, normalizedQuery: q)
+            scored.append((.namedArtist(match), s, -1, Self.matchCoverage(of: match.name, queryLength: q.count), match.name))
         }
 
-        for album in serverResults.albums where !personalAlbumIds.contains(album.id) {
+        for album in serverResults.albums {
+            // The key is recorded even when the row itself is not emitted: an album already in the
+            // personal library is deliberately absent from this feed, but a plugin row offering to
+            // *acquire* that same album still has to be suppressed.
+            let isFirstOfItsRelease = seenReleaseKeys
+                .insert(Self.releaseIdentityKey(title: album.title, artist: album.artist))
+                .inserted
+            guard isFirstOfItsRelease, !personalAlbumIds.contains(album.id) else { continue }
             let s = Self.relevanceScore(title: album.title, artist: album.artist, normalizedQuery: q)
             // Slight bump for albums so when score ties with a single track,
             // the album surfaces first (matches Apple Music's Top Results bias).
-            scored.append((.serverAlbum(album), s + 0.05, 0))
+            scored.append((.serverAlbum(album), s + 0.05, 0, Self.matchCoverage(of: album.title, queryLength: q.count), album.title))
         }
 
         for song in serverResults.songs
             where !personalSongIds.contains(song.id) && !albumIdsInFeed.contains(song.albumId)
         {
             let s = Self.relevanceScore(title: song.title, artist: song.artist, normalizedQuery: q)
-            scored.append((.serverSong(song), s, 1))
+            scored.append((.serverSong(song), s, 1, Self.matchCoverage(of: song.title, queryLength: q.count), song.title))
         }
 
         for result in acquireResults {
@@ -317,15 +331,26 @@ struct DiscoverySearchView: View {
             if LibraryTrackMatcher.firstLibraryTrack(matching: result, in: serverTracks) != nil { continue }
             if LibraryTrackMatcher.matchesLibrary(result, titleIndex: app.libraryTrackTitleIndex) { continue }
             let artist = result.artistLine
+            guard seenReleaseKeys
+                .insert(Self.releaseIdentityKey(title: result.title, artist: result.artists.first ?? artist))
+                .inserted
+            else { continue }
             let s = Self.relevanceScore(title: result.title, artist: artist, normalizedQuery: q)
-            scored.append((.acquire(result), s, 2))
+            scored.append((.acquire(result), s, 2, Self.matchCoverage(of: result.title, queryLength: q.count), result.title))
         }
 
         return scored
             .sorted { lhs, rhs in
                 if lhs.score != rhs.score { return lhs.score > rhs.score }
                 // Equal score → preserve a stable order (artist > album > song > request backend).
-                return lhs.kindPriority < rhs.kindPriority
+                if lhs.kindPriority != rhs.kindPriority { return lhs.kindPriority < rhs.kindPriority }
+                // Same score and same kind: the tighter match wins — see `matchCoverage`.
+                if lhs.coverage != rhs.coverage { return lhs.coverage > rhs.coverage }
+                // Still tied: `sorted(by:)` is not a stable sort, so without a final key two
+                // equal rows could swap places between passes — and this whole property is
+                // recomputed on every body evaluation. Decorated rather than read off `row.id`,
+                // so the comparator does no work per comparison.
+                return lhs.tieBreak < rhs.tieBreak
             }
             .map(\.row)
     }
@@ -350,19 +375,83 @@ struct DiscoverySearchView: View {
         }
 
         if a == q {
-            score = max(score, 0.6)
+            score = max(score, artistExactScore)
         } else if a.hasPrefix(q) {
-            score = max(score, 0.5)
+            score = max(score, artistPrefixScore)
         } else if a.contains(q) {
-            score = max(score, 0.35)
+            score = max(score, artistContainsScore)
         }
 
         return score
     }
 
-    /// Normalized `title|artist`, the identity used to decide a plugin release row is already
-    /// covered by an album on the server. Same normalization as every other match in this file,
-    /// so punctuation and diacritics can't split one release into two rows.
+    /// Artist-name match tiers, shared by ``relevanceScore(title:artist:normalizedQuery:)``,
+    /// where the artist is a row's *secondary* field, and ``artistRowScore(name:normalizedQuery:)``,
+    /// where it is the row.
+    private static let artistExactScore = 0.6
+    private static let artistPrefixScore = 0.5
+    private static let artistContainsScore = 0.35
+
+    /// How far an artist row is lifted above everything else. See ``artistRowScore``.
+    private static let artistExactBump = 1.0
+    private static let artistPrefixBump = 0.25
+
+    /// Score for an artist row: how well the name matches the query, plus a lift sized by how
+    /// completely the query names that artist.
+    ///
+    /// Two things changed here in T069, and they only work as a pair.
+    ///
+    /// **The name is scored on the artist scale, not the title scale.** This used to call
+    /// `relevanceScore(title: name, artist: name, …)`, which takes the max of both scales — so an
+    /// artist row collected a *title*-tier score (0.85 for a prefix) for what is an artist match,
+    /// and then took the lift on top of that.
+    ///
+    /// **The lift is no longer flat.** It was an unconditional `+1.0`, which put every artist above
+    /// everything else however weak the match. Searching `japanese de` returned the artist
+    /// "DJ.Deplorer" — relevance 0, lifted to 1.0 — above "Japanese Denim", the exact thing being
+    /// searched for, which scored 0.85. Three artists sat above it. Now:
+    ///
+    /// - **exact** name (`deftones` → Deftones): the full lift. This is the Apple Music behaviour
+    ///   the flat bump was reaching for, and it still wins against an album of the same name.
+    /// - **prefix** (`deft` → Deftones): a small lift — enough to hold the artist above their own
+    ///   albums and songs, which reach at most 0.6 (+0.05) from the artist side, and deliberately
+    ///   *not* enough to beat a strong title match elsewhere. That is what finally lets
+    ///   "Japanese Denim" (title prefix, 0.85) outrank "Japanese Deejay" (0.5 + 0.25).
+    /// - **substring, or no match at all**: no lift. A loose name collision is not a reason to lead
+    ///   the results.
+    ///
+    /// The trade-off is deliberate and worth stating: for a *partial* query an eponymous album can
+    /// now edge out its own artist (`deft` → the album "Deftones" at 0.90 over the artist at 0.75).
+    /// Widening the prefix lift to cover that is exactly what would put "Japanese Deejay" back on
+    /// top of "Japanese Denim", so the reported bug wins.
+    private static func artistRowScore(name: String, normalizedQuery q: String) -> Double {
+        guard !q.isEmpty else { return 0 }
+        let n = LibraryTrackMatcher.normalize(name)
+        if n == q { return artistExactScore + artistExactBump }
+        if n.hasPrefix(q) { return artistPrefixScore + artistPrefixBump }
+        if n.contains(q) { return artistContainsScore }
+        return 0
+    }
+
+    /// How much of a candidate's name the query accounts for, 0–1.
+    ///
+    /// Used **only as a tiebreak**, never as part of the score, so it cannot move a row across a
+    /// match tier. For `japanese de` the observed feed had "Japanese Death Machine" and "Japanese
+    /// Denim" both scoring 0.85 — each is exactly a title prefix, and nothing else separated them,
+    /// so the wanted row landed second behind an EP nobody asked for. The query covers 11 of
+    /// "Japanese Denim"'s 14 characters and 11 of "Japanese Death Machine"'s 22: the tighter match
+    /// is the better answer.
+    ///
+    /// Uses raw lengths rather than normalized ones to avoid a second `normalize` per row on a
+    /// path that runs in a body. Punctuation makes it slightly generous, which a tiebreak can afford.
+    private static func matchCoverage(of name: String, queryLength: Int) -> Double {
+        guard queryLength > 0 else { return 0 }
+        return Double(queryLength) / Double(max(queryLength, name.count))
+    }
+
+    /// Normalized `title|artist`, the identity used to collapse the same release arriving from
+    /// more than one source. Same normalization as every other match in this file, so punctuation
+    /// and diacritics can't split one release into two rows.
     private static func releaseIdentityKey(title: String, artist: String) -> String {
         "\(LibraryTrackMatcher.normalize(title))|\(LibraryTrackMatcher.normalize(artist))"
     }
@@ -1470,19 +1559,16 @@ struct DiscoverySearchView: View {
         for row in pluginAcquire where seenAcquireKeys.insert(row.request.requestKey).inserted {
             mergedAcquire.append(row)
         }
-        // Release rows are suppressed here, against typed `AcquisitionRelease`s, rather than in
-        // `hybridRows`: the generic acquire suppression there compares *track* titles, and adding
-        // an album-title rule to it would start hiding a track-granularity plugin's rows for
-        // individual missing songs whose album happens to be on the server.
+        // Releases already on the server used to be dropped here as well. That rule now lives in
+        // `hybridRows` alongside the rest of the per-row suppression (T069), because it has to
+        // cover releases arriving from *any* source, not just the plugin — including the server
+        // album list disagreeing with itself.
+        //
+        // What stays here is the relevance floor, which is about this fetch rather than the feed:
+        // `album/lookup` is a fuzzy catalog search and returns loosely related releases, and
+        // anything matching neither the title nor the artist is noise at the foot of Top Results.
         let normalizedQuery = LibraryTrackMatcher.normalize(query)
-        let serverAlbumKeys = Set(server.albums.map { Self.releaseIdentityKey(title: $0.title, artist: $0.artist) })
         for release in pluginAlbums {
-            // Already on the server: the user can play it, not request it.
-            let key = Self.releaseIdentityKey(title: release.title, artist: release.artist)
-            guard !serverAlbumKeys.contains(key) else { continue }
-            // `album/lookup` is a fuzzy catalog search and will return loosely related releases.
-            // Anything matching neither the title nor the artist is noise at the foot of Top
-            // Results, so it never becomes a row.
             guard Self.relevanceScore(
                 title: release.title,
                 artist: release.artist,

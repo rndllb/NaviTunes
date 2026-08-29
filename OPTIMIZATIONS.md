@@ -646,3 +646,86 @@ endpoint dispatches to, but I could not confirm it on the live instance.
 
 **Unproven:** device behaviour. The device build is clean; the interaction was exercised on the
 simulator only.
+
+## 2026-08-29 — rank the thing he searched for above loose artist-name matches (T069)
+
+T068 made the single findable. Using it on device, Ethan searched `japanese de` and got:
+
+1. Japanese Deejay (Artist) 2. Japanese Death Machine (Artist) 3. DJ.Deplorer (Artist)
+4. **Japanese Denim — Single, Daniel Caesar** 5. Japanese Death Machine (EP)
+6. The Fame Monster (Japanese Del…) 7. The Fame Monster (Japanese Del…) *(duplicate)*
+8. 1999 Japanese denim
+
+"nice but requesting then is a bit finicky" — three irrelevant artists to scroll past.
+
+**Defect 1 — the artist bump was flat, so a weak artist beat a near-exact title**
+
+Every artist row scored `relevanceScore(…) + 1.0`, unconditionally. `DJ.Deplorer` matched the
+query **not at all** — relevance 0 — and the bump alone (1.0) put it above "Japanese Denim" (0.85,
+a title prefix). Two things were wrong and both had to change:
+
+- **An artist row was scored on the *title* scale.** `relevanceScore(title: name, artist: name,…)`
+  takes the max of both scales, so an artist name collected a title-tier score (0.85 for a prefix)
+  for what is an artist match — and then took the bump on top. Artist rows now score on the artist
+  scale (0.6 / 0.5 / 0.35), the same tiers `relevanceScore` uses for a row's artist field. Those
+  tiers are now named constants shared by both, so they cannot drift apart.
+- **The bump is graded, not flat.** Exact name → `+1.0`; prefix → `+0.25`; substring or no match →
+  **nothing**. The Apple-Music intent the flat bump was reaching for is preserved exactly where it
+  belongs: an exact artist name still wins outright, even against an album of the same name.
+
+The trade-off is deliberate and stated in the code: with a *partial* query an eponymous album can
+now edge out its own artist (`deft` → the album "Deftones" at 0.90 over the artist at 0.75).
+Widening the prefix lift to cover that is precisely what would put "Japanese Deejay" back above
+"Japanese Denim", which is the bug being fixed.
+
+**The part the first attempt got wrong.** With only the above, the observed order was
+`Japanese Death Machine (EP)` **then** `Japanese Denim`. Both are exactly a title prefix of
+`japanese de`, both scored 0.85, and nothing else separated them — so the wanted row still came
+second. Added `matchCoverage`, used **only as a tiebreak** so it can never move a row across a
+match tier: the query covers 11 of "Japanese Denim"'s 14 characters and 11 of "Japanese Death
+Machine"'s 22, and the tighter match wins. That is what actually put the row first.
+
+**Also fixed while in the comparator:** `sorted(by:)` is not stable, and `hybridRows` is
+recomputed on **every body evaluation**, so two equally-ranked rows could swap places between
+passes. There is now a final deterministic key (decorated into the tuple, so the comparator does
+no work per comparison).
+
+**Defect 2 — duplicate release rows**
+
+Server albums, plugin release rows, and the server album list *itself* all feed this list and
+nothing compared them across sources — and Navidrome will return two editions of one album, or one
+album scanned twice. `hybridRows` now emits **one row per normalized `title|artist`**, never per
+id, because two sources agreeing on a release is exactly the case where the ids differ. The key is
+recorded even for albums that are *not* emitted (already in the personal library), so a plugin row
+offering to acquire one is still suppressed. T068's server-album suppression in `runHybridSearch`
+is **removed**, since this replaces it and covers more; the relevance floor stays there, because
+that one is about the fuzziness of `album/lookup` rather than about the feed.
+
+**Observed orders — measured on the simulator, not predicted**
+
+Stub Lidarr again (Ethan's is unreachable from this session), loaded with the same candidate set
+his query returned, including `DJ.Deplorer` for its zero-relevance artist row. Signed in to the
+public Navidrome demo server. The harness dumps every visible label sorted by screen position and
+scrolls once for what is below the fold, so these are read off the screen:
+
+- **`japanese de`** → **Japanese Denim (Single · Daniel Caesar)** · Japanese Death Machine (EP) ·
+  Japanese Deejay (Artist) · Japanese Death Machine (Artist) · 1999 Japanese denim ·
+  The Fame Monster (Japanese Deluxe Edition) · DJ.Deplorer (Artist). The wanted row is **first**;
+  DJ.Deplorer went from 3rd to last; nothing appears twice.
+- **`deftones`** → **Deftones (Artist)** · Deftones (Album) · White Pony. Artist first, ahead of
+  the album of the same name.
+- **`dafto`** → Daft Punk (Artist). The partial name still resolves.
+- **`Can I Have Your Love Tonight`** (a real one-track album on the demo server, with the stub
+  offering the same title+artist) → one server row, **no Request row** — T068's rule still holds
+  after being moved into `hybridRows`.
+
+**Not reproduced: Ethan's actual duplicate.** The demo server has 50 albums and no duplicated
+title+artist pair, so a server-vs-server duplicate could not be staged; his own library is what
+produced it. Three mechanisms could give two "The Fame Monster (Japanese Del…)" rows — two server
+albums with the same title+artist (**fixed**), two plugin rows for one release (already collapsed
+by `requestKey` before this pass), or a server row and a plugin row whose titles genuinely differ
+once normalized, e.g. "Deluxe Edition" vs "Deluxe Version" (**not fixed** — by the stated rule
+those are two different releases). If it recurs, the untruncated titles of both rows are what
+distinguish these.
+
+**Unproven:** device. Device build is clean; the interaction was exercised on the simulator only.
