@@ -215,19 +215,47 @@ final class EqualizerAudioTap {
 
     static let ringCapacity = 512
 
-    deinit { dispose() }
+    // No `deinit { dispose() }`.
+    //
+    // That is what produced this, on device:
+    //
+    //     TAP retire item=1 … / TAP retire item=2 …
+    //     TAP prepare ORPHAN item=15785850001729508719
+    //
+    // Retiring a tap dropped the last Swift reference, `deinit` freed the render state, and 120 ms
+    // later AVFoundation called `prepare` on a tap whose storage no longer existed — the garbage
+    // item tag is a read of freed memory. A use-after-free on the audio path.
+    //
+    // The lifetime is not ours to decide. Once the storage has been handed to an
+    // `MTAudioProcessingTap`, only the framework knows when the last callback has been made, and it
+    // says so by calling `finalize`. So the storage is freed **there** and nowhere else, and this
+    // object dying simply stops us tracking the tap — it does not free anything the framework may
+    // still touch.
 
-    private var disposed = false
-
-    func dispose() {
-        guard !disposed else { return }
-        disposed = true
+    /// Frees the render state. **Only** legitimate from the tap's `finalize` callback, or from
+    /// `makeAudioMix` when no tap was ever created and nothing else can reference it.
+    fileprivate func releaseRenderState() {
+        guard !renderStateReleased else { return }
+        renderStateReleased = true
         state.pointee.coefficients?.deallocate()
         state.pointee.filterState?.deallocate()
         state.pointee.ring?.deallocate()
         state.deinitialize(count: 1)
         state.deallocate()
     }
+
+    private var renderStateReleased = false
+
+    /// Frees the render state when creation failed and **no tap ever took ownership**, so nothing
+    /// else can reference it. Refuses once the state has been handed to a tap, because from that
+    /// moment only `finalize` may free it.
+    func disposeBeforeAttachment() {
+        guard !attachedToTap else { return }
+        releaseRenderState()
+    }
+
+    /// True once an `MTAudioProcessingTap` owns the render state.
+    fileprivate var attachedToTap = false
 
     // MARK: Coefficients
 
@@ -299,6 +327,9 @@ final class EqualizerAudioTap {
             return nil
         }
 
+        // From here the tap owns the render state; only `finalize` may free it.
+        attachedToTap = true
+
         let parameters = AVMutableAudioMixInputParameters(track: track)
         parameters.audioTapProcessor = tap
 
@@ -363,7 +394,25 @@ private func tapInit(
     tapStorageOut.pointee = UnsafeMutableRawPointer(object.state)
 }
 
-private func tapFinalize(tap: MTAudioProcessingTap) {}
+/// The only place the render state is freed.
+///
+/// AVFoundation calls this when it is finished with the tap and no further callback can occur, so
+/// it is the one moment freeing the storage is safe. Freeing it earlier — when the Swift wrapper
+/// was released — is what produced a `prepare` on freed memory 120 ms after retirement.
+///
+/// Frees straight from the raw storage rather than going back through the Swift object, because by
+/// now that object may be long gone. It is not needed: the storage owns everything it points to.
+private func tapFinalize(tap: MTAudioProcessingTap) {
+    guard let storage = MTAudioProcessingTapGetStorage(tap) as UnsafeMutableRawPointer? else { return }
+    let state = storage.assumingMemoryBound(to: TapRenderState.self)
+    let itemTag = state.pointee.itemTag
+    state.pointee.coefficients?.deallocate()
+    state.pointee.filterState?.deallocate()
+    state.pointee.ring?.deallocate()
+    state.deinitialize(count: 1)
+    state.deallocate()
+    PlaybackTapLog.tap("finalize item=\(itemTag) renderState=freed")
+}
 
 private func tapPrepare(
     tap: MTAudioProcessingTap,
