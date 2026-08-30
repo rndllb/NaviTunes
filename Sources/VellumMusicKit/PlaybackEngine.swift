@@ -146,15 +146,18 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private var enqueuedNextItem: AVPlayerItem?
     private var enqueuedNextIndex: Int?
     private var enqueuedNextTrack: Track?
-    /// HanSJin-style ``AVAudioUnitEQ`` path — local files only (downloads + stream cache).
-    private var equalizedPlayer: EqualizedAudioEnginePlayer?
-    /// Detached-but-alive EQ session kept for reuse so consecutive tracks don't
-    /// each build a brand-new AVAudioEngine.
-    private var idleEqualizedSession: EqualizedAudioEnginePlayer?
-    private var equalizedPlaybackURL: URL?
-    private var equalizedPlaybackAsset: AVURLAsset?
-    private var equalizedPlaybackHeaders: [String: String] = [:]
-    private var equalizedEndEpoch: UInt = 0
+    // The second transport is gone.
+    //
+    // There used to be an `EqualizedAudioEnginePlayer` here — an `AVAudioEngine` graph used
+    // whenever the equalizer was on and the source was a local file — plus the state needed to
+    // hand a track over from `AVPlayer` to it mid-song once a stream finished caching. That
+    // handoff is the bug: the EQ was simply absent from the first part of every streamed track,
+    // and the swap itself was audible.
+    //
+    // There is now one transport, `AVQueuePlayer`, for everything. The equalizer rides along as an
+    // `MTAudioProcessingTap` attached to each item's `audioMix` before it is inserted — see
+    // `TapPlayerItem` and `EqualizerAudioTap`. Nothing swaps mid-track, because there is nothing
+    // to swap to.
     /// Swaps AVPlayer → EQ engine once a stream finishes caching mid-playback.
     private var eqCacheHandoffTask: Task<Void, Never>?
 
@@ -353,15 +356,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
         let elapsed = Date.timeIntervalSinceReferenceDate - lastUIMilestoneReconcile
         let isRepeatMilestone = elapsed < 0.3
         lastUIMilestoneReconcile = Date.timeIntervalSinceReferenceDate
-        if let equalizedPlayer {
-            if isPlaying, !equalizedPlayer.isPlaying {
-                // This ran on every UI milestone and silently re-failed each time, entrenching the
-                // stuck state. Reporting once clears `isPlaying`, so it stops retrying.
-                startEqualizedPlayback(equalizedPlayer, context: "UI milestone reconcile")
-            } else if !isRepeatMilestone {
-                refreshNowPlaying()
-            }
-            return
+        if !isRepeatMilestone {
+            refreshNowPlaying()
         }
         guard let player else { return }
         player.isMuted = false
@@ -444,14 +440,11 @@ final class PlaybackEngine: NSObject, ObservableObject {
             // taking the audio session). Mirror that into ``isPlaying`` so the
             // transport button stops showing the pause glyph while playback
             // is silently halted.
-            // Capture EQ-playing too; the EQ node still claims to be playing
-            // even though the system stopped the engine mid-interruption.
-            wasPlayingBeforeInterruption = isPlaying || (equalizedPlayer?.isPlaying ?? false)
+            wasPlayingBeforeInterruption = isPlaying
             // The session is no longer ours — a call or Siri has it. Anything that skipped
             // reactivating because it looked active would come back to silence.
             isAudioSessionActive = false
             clearPlayIntent()
-            equalizedPlayer?.pause()
             isPlaying = false
             refreshNowPlaying()
         case .ended:
@@ -462,10 +455,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             guard shouldResume else { return }
             markPlayIntent()
             activateAudioSession()
-            if let equalizedPlayer {
-                // Restarts the (system-stopped) AVAudioEngine as part of play().
-                guard startEqualizedPlayback(equalizedPlayer, context: "interruption resume") else { return }
-            } else if let player {
+            if let player {
                 beginPlayback(on: player)
                 ensurePlaybackStarted(on: player, epoch: playbackEpoch)
             }
@@ -477,18 +467,18 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     private func handleAudioSessionRouteChange(_ notification: Notification) {
-        // Don't auto-resume — when the user unplugs headphones the system
-        // pauses us on purpose (HIG: respect that intent), and the
-        // `timeControlStatus` KVO will sync ``isPlaying`` to match for the
-        // AVPlayer path. The EQ engine gets no such system pause: stop it
-        // explicitly or audio continues (or resumes via the config-change
-        // rebuild) on the loudspeaker.
-        if let raw = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
-           let reason = AVAudioSession.RouteChangeReason(rawValue: raw),
-           reason == .oldDeviceUnavailable, equalizedPlayer != nil {
-            pbLog("route lost (unplug) → pausing EQ playback")
-            pausePlayback()
-        }
+        // Don't auto-resume — when the user unplugs headphones the system pauses us on purpose
+        // (HIG: respect that intent), and the `timeControlStatus` KVO syncs ``isPlaying`` to match.
+        //
+        // Nothing to do by hand any more. The second transport used to need an explicit stop here,
+        // because an `AVAudioEngine` gets no system pause on an unplug and would keep playing out
+        // of the loudspeaker. `AVQueuePlayer` is paused by the system like any other player.
+        //
+        // A route change does still matter to the tap: it can tear the audio machinery down and
+        // rebuild it at a **different sample rate**, which fires `prepare` a second time. The tap
+        // recomputes its coefficients there, from the format it is handed, which is why they are
+        // never computed once at init.
+        PlaybackTapLog.eq("route-change reason=\(notification.userInfo?[AVAudioSessionRouteChangeReasonKey] ?? "?")")
         onAudioRouteChanged?()
     }
     #endif
@@ -630,11 +620,11 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// Returns `true` if there's a queue staged from a restore but no AVPlayer yet — caller should
     /// kick off ``startFromPendingRestore()`` instead of toggling the (nil) player.
     private var hasPendingRestore: Bool {
-        player == nil && equalizedPlayer == nil && queue.indices.contains(currentIndex)
+        player == nil && queue.indices.contains(currentIndex)
     }
 
     private var hasActivePlaybackOutput: Bool {
-        player != nil || equalizedPlayer != nil
+        player != nil
     }
 
     private func startFromPendingRestore() async {
@@ -649,8 +639,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
                 return
             }
             if let player, player.rate < 0.01 { beginPlayback(on: player) }
-            else if let equalizedPlayer,
-                    !startEqualizedPlayback(equalizedPlayer, context: "restore playback") { return }
             isPlaying = true
             markPlayIntent()
         } catch {
@@ -705,10 +693,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
         if let player {
             beginPlayback(on: player)
             ensurePlaybackStarted(on: player, epoch: epoch)
-        } else if let equalizedPlayer {
-            guard startEqualizedPlayback(equalizedPlayer, context: "play") else {
-                throw PlaybackEngineError.missingTrack
-            }
         }
         isPlaying = true
         scrobbledForCurrentTrack = false
@@ -897,29 +881,23 @@ final class PlaybackEngine: NSObject, ObservableObject {
         scheduleAdvance()
     }
 
+    /// Applies new equalizer settings to audio that is already playing.
+    ///
+    /// **Nothing reloads any more.** Every item carries a tap from the moment it is created, so a
+    /// settings change is a coefficient update published to the live taps — the playhead does not
+    /// move, no buffer is re-fetched, and there is no audible seam.
+    ///
+    /// This function used to be the opposite: with the EQ off, turning it on tore the player down
+    /// and rebuilt it at the current position, because the equalizer lived in a second transport
+    /// that the track had to be moved onto. That teardown is why toggling the EQ mid-song was
+    /// audible, and it is gone.
+    ///
+    /// Kept under its old name so callers do not change; it is no longer a reload of anything.
     func reloadForEqualizerSettingsChange() async {
-        guard hasActivePlaybackOutput, queue.indices.contains(currentIndex) else { return }
-        // Already on the EQ engine: apply or bypass the node live. No reload,
-        // so the playhead and progress bar stay put.
-        if let equalizedPlayer {
-            equalizedPlayer.applyGains(equalizerBandGains, bypass: effectiveEqualizerBypass)
-            return
-        }
-        // EQ off and already on AVPlayer — nothing to reload.
-        if !equalizerEnabled { return }
-        let wasPlaying = isPlaying
-        let pos = playbackHead
-        let epoch = beginPlaybackSession()
-        teardownPlayer()
-        do {
-            try await startCurrentItem(epoch: epoch, startSeconds: pos, autoPlay: wasPlaying)
-            syncProgressToActualPlaybackHead()
-            if wasPlaying {
-                isPlaying = true
-            }
-        } catch {
-            stagePendingRestore(at: pos)
-        }
+        EqualizerTapRegistry.shared.updateAllTaps(
+            gains: equalizerBandGains,
+            bypassed: effectiveEqualizerBypass || !equalizerEnabled,
+        )
     }
 
     /// After a same-track reload (EQ on/off), the requested `startSeconds` can
@@ -928,9 +906,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// the old position.
     private func syncProgressToActualPlaybackHead() {
         let actual: TimeInterval
-        if let equalizedPlayer {
-            actual = max(0, equalizedPlayer.currentPlaybackTime())
-        } else if let player {
+        if let player {
             let t = player.currentTime().seconds
             actual = t.isFinite ? max(0, t) : 0
         } else {
@@ -958,28 +934,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
         }
         if hasPendingRestore {
             schedulePendingRestorePlayback()
-            return
-        }
-        if let equalizedPlayer {
-            if equalizedPlayer.isPlaying || (isSeeking && isPlaying) {
-                equalizedPlayer.pause()
-                isPlaying = false
-                seekResumeIntent = false
-                scheduleAudioSessionDeactivation()
-            } else {
-                activateAudioSession()
-                markPlayIntent()
-                // The play/pause button was completely inert here: a false return was discarded,
-                // `isPlaying` went true anyway, and because the node never started, every later
-                // tap took this same branch — it could not even pause.
-                guard startEqualizedPlayback(equalizedPlayer, context: "play/pause") else { return }
-                isPlaying = true
-            }
-            playbackHead = equalizedPlayer.currentPlaybackTime()
-            currentTime = playbackHead
-            lastEmittedUIProgress = playbackHead
-            revealMiniPlayerChrome()
-            refreshNowPlaying()
             return
         }
         guard let player else { return }
@@ -1021,17 +975,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
         }
         activateAudioSession()
         markPlayIntent()
-        if let equalizedPlayer {
-            if !equalizedPlayer.isPlaying {
-                guard startEqualizedPlayback(equalizedPlayer, context: "remote command resume") else { return }
-            }
-            isPlaying = true
-            playbackHead = equalizedPlayer.currentPlaybackTime()
-            currentTime = playbackHead
-            revealMiniPlayerChrome()
-            refreshNowPlaying()
-            return
-        }
         if player == nil {
             guard queue.indices.contains(currentIndex) else { return }
             shouldAutoPlayAfterAdvance = true
@@ -1065,16 +1008,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
         clearPlayIntent()
         // An in-flight seek must not resume playback the user has just stopped.
         seekResumeIntent = false
-        if let equalizedPlayer {
-            if equalizedPlayer.isPlaying {
-                equalizedPlayer.pause()
-            }
-            isPlaying = false
-            playbackHead = equalizedPlayer.currentPlaybackTime()
-            refreshNowPlaying()
-            scheduleAudioSessionDeactivation()
-            return
-        }
         guard let player else {
             isPlaying = false
             refreshNowPlaying()
@@ -1084,6 +1017,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             player.pause()
         }
         isPlaying = false
+        PlaybackCPUSampler.playbackDidStop()
         playbackHead = player.currentTime().seconds
         refreshNowPlaying()
         scheduleAudioSessionDeactivation()
@@ -1135,65 +1069,15 @@ final class PlaybackEngine: NSObject, ObservableObject {
         // Whether a seek was ALREADY in flight, read before this one marks itself as one.
         let seekAlreadyInFlight = isSeeking
 
-        if let equalizedPlayer,
-           let asset = equalizedPlaybackAsset {
-            seekGeneration += 1
-            let generation = seekGeneration
-            isSeeking = true
-            seekSettleDeadline = ContinuousClock.now + .milliseconds(900)
-            currentTime = clamped
-            lastEmittedUIProgress = clamped
-            playbackHead = clamped
-            // Same burst-intent rule as the AVPlayer branch below, and for a sharper reason here:
-            // `resetForReload` stops the player node as soon as a reload begins, so
-            // `equalizedPlayer.isPlaying` reads false for any seek that overlaps another.
-            let wantsPlayback = seekAlreadyInFlight ? seekResumeIntent : isPlaying
-            seekResumeIntent = wantsPlayback
-            do {
-                try await equalizedPlayer.seek(
-                    to: clamped,
-                    asset: asset,
-                    fileURL: equalizedPlaybackURL?.isFileURL == true ? equalizedPlaybackURL : nil,
-                    gains: equalizerBandGains,
-                    bypass: effectiveEqualizerBypass,
-                    autoPlay: wantsPlayback,
-                    rate: playbackRate,
-                )
-            } catch {
-                // This used to set `isPlaying = false` and say nothing, leaving the session
-                // attached with nothing scheduled — the state that made the play button inert.
-                // Route it through the one failure path (T063) rather than swallowing it.
-                isSeeking = false
-                reportPlaybackFailure(error, track: currentTrack, context: "seek reload")
-                completion?()
-                return
-            }
-            // A newer seek owns the player now. Return without running `completion` — invoking it
-            // here cleared the scrubber's `isScrubbing` before the real seek had landed, which is
-            // what made the thumb snap back to a mid-seek position. The newest task always matches
-            // the generation and runs it exactly once.
-            guard generation == seekGeneration else { return }
-            // Re-read the intent AFTER the await, not the snapshot. The reload can span an entire
-            // stream load (18s timeout), and a pause issued during it has to win.
-            if seekResumeIntent {
-                isPlaying = true
-            } else {
-                // `pausePlayback()` could not reach the engine mid-reload: the node was already
-                // stopped by `resetForReload`, so its `if equalizedPlayer.isPlaying` guard skipped
-                // the pause entirely. Enforce it now, or the seek's own autoPlay resumes audio the
-                // user just stopped.
-                equalizedPlayer.pause()
-                isPlaying = false
-            }
-            playbackHead = equalizedPlayer.currentPlaybackTime()
-            currentTime = playbackHead
-            lastEmittedUIProgress = playbackHead
-            isSeeking = false
-            seekSettleDeadline = ContinuousClock.now + .milliseconds(400)
-            refreshNowPlaying()
-            completion?()
-            return
-        }
+        // A whole second seek implementation used to sit here, for the EQ engine, and it worked by
+        // **reloading the audio file at the new position** — an 18-second-timeout stream load in
+        // the worst case, for a scrub. All of the machinery around it (a burst-intent rule for
+        // overlapping seeks, a pause that could not reach a node mid-reload, a generation guard to
+        // stop a superseded reload resuming audio) existed only to manage that reload.
+        //
+        // A tap does not care where the playhead is. Seeking is now just `AVPlayer` seeking,
+        // below, with the tap continuing to filter whatever comes out — so this path is not
+        // simplified, it is deleted.
 
         // Cold-launch restore: the queue and position are staged but no player exists yet, so every
         // seek entry point — the scrubber, ±15s, Previous (which routes to seek(toSeconds: 0)),
@@ -1743,22 +1627,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
     private var lastPlaybackFailureReportedAt: TimeInterval = -1_000
 
-    /// Starts the EQ session, and reports a failure instead of pretending it worked.
-    ///
-    /// `play(rate:)` returns false when the session has no scheduled audio — the state a thrown
-    /// reload leaves behind. Nine of its ten call sites discarded that `Bool` and set
-    /// `isPlaying = true` regardless, which is what made the transport inert: the button showed
-    /// "pause" over silence, and every further tap re-entered the same branch because the node
-    /// never actually started.
-    @discardableResult
-    private func startEqualizedPlayback(
-        _ session: EqualizedAudioEnginePlayer,
-        context: String,
-    ) -> Bool {
-        if session.play(rate: playbackRate) { return true }
-        reportPlaybackFailure(nil, track: activeTrack, context: context)
-        return false
-    }
+    // `startEqualizedPlayback` was the guard that stopped the audio-engine transport lying about
+    // whether it had actually started. With one transport there is nothing to reconcile:
+    // `AVPlayer` reports its own state through `timeControlStatus`, which is observed.
 
     private func scheduleAdvance() {
         advanceWork?.cancel()
@@ -1779,7 +1650,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         // A skip/jump abandons the saved playhead for the previously-active track.
         pendingRestoreSeconds = 0
         // Capture before teardown — new AVPlayer starts `.paused` and KVO must not clear intent.
-        let shouldAutoPlay = shouldAutoPlayAfterAdvance || isPlaying || (player?.rate ?? 0) > 0.01 || (equalizedPlayer?.isPlaying ?? false)
+        let shouldAutoPlay = shouldAutoPlayAfterAdvance || isPlaying || (player?.rate ?? 0) > 0.01
         shouldAutoPlayAfterAdvance = false
         if shouldAutoPlay { setBuffering(true) }
         if let track = currentTrack, refreshTrackBeforePlay != nil {
@@ -1808,9 +1679,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
             if let player {
                 beginPlayback(on: player)
                 ensurePlaybackStarted(on: player, epoch: epoch)
-            } else if let equalizedPlayer,
-                      !startEqualizedPlayback(equalizedPlayer, context: "advance autoplay") {
-                return
             }
             isPlaying = true
         } else {
@@ -1858,6 +1726,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         markPlayIntent()
         activateAudioSession()
         player.playImmediately(atRate: playbackRate)
+        PlaybackCPUSampler.playbackDidStart()
         refreshNowPlaying()
     }
 
@@ -1901,20 +1770,23 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     private func applyPlaybackRateToPlayer() {
-        if let equalizedPlayer, isPlaying {
-            startEqualizedPlayback(equalizedPlayer, context: "playback rate change")
-        } else if let player, isPlaying {
+        if let player, isPlaying {
             player.rate = playbackRate
         }
         refreshNowPlaying()
     }
 
-    /// A live engine session can outlast an EQ-off toggle (kept playing with the
-    /// node bypassed). Every gain application must honor that.
     private var effectiveEqualizerBypass: Bool { equalizerBypass || !equalizerEnabled }
 
+    /// Live gain changes, e.g. dragging a slider in the equalizer UI.
+    ///
+    /// Goes to every live tap — the playing item and any gapless next one — so a curve set now is
+    /// already in place when the next track begins, rather than arriving a track late.
     func applyLiveEqualizerGains() {
-        equalizedPlayer?.applyGains(equalizerBandGains, bypass: effectiveEqualizerBypass)
+        EqualizerTapRegistry.shared.updateAllTaps(
+            gains: equalizerBandGains,
+            bypassed: effectiveEqualizerBypass,
+        )
     }
 
     private func beginPlaybackSession() -> UInt {
@@ -1962,17 +1834,21 @@ final class PlaybackEngine: NSObject, ObservableObject {
         enqueuedNextItem = nil
         enqueuedNextIndex = nil
         enqueuedNextTrack = nil
-        if let equalizedPlayer {
-            equalizedPlayer.stop()
-            idleEqualizedSession = equalizedPlayer
-        }
-        equalizedPlayer = nil
-        equalizedPlaybackURL = nil
-        equalizedPlaybackAsset = nil
-        equalizedPlaybackHeaders = [:]
-        eqCacheHandoffTask?.cancel()
-        eqCacheHandoffTask = nil
+        // Taps are retired with their items, so the render-thread state they own is freed rather
+        // than kept alive for a future reuse. There is no session to park: the tap dies with the
+        // `AVPlayerItem` it was attached to.
+        retireAllTaps()
     }
+
+    /// Releases every tap this engine is holding. Safe to call more than once.
+    private func retireAllTaps() {
+        for tag in liveTapTags { EqualizerTapRegistry.shared.retire(itemTag: tag) }
+        liveTapTags.removeAll()
+        EqualizerTapRegistry.shared.setCurrentItem(tag: 0, title: "")
+    }
+
+    /// Item tags for taps created by this engine, so they can be retired on teardown.
+    private var liveTapTags: [UInt64] = []
 
     /// Pending delayed spinner — see `setBuffering(_:debounced:)`.
     private var bufferingDebounceTask: Task<Void, Never>?
@@ -2380,29 +2256,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
         autoPlay: Bool,
     ) async throws -> Bool {
         guard isPlaybackEpochCurrent(epoch) else { return false }
-        if equalizerEnabled,
-           isEqualizerEligible(for: track),
-           isEqualizerEligibleLocalFile(candidate.url, for: track) {
-            let fileURL = candidate.url
-            let canOpen = await Task.detached(priority: .userInitiated) {
-                (try? AVAudioFile(forReading: fileURL)) != nil
-            }.value
-            if canOpen {
-                do {
-                    if try await loadEqualizedPlayerItem(
-                        epoch: epoch,
-                        candidate: candidate,
-                        track: track,
-                        startSeconds: startSeconds,
-                        autoPlay: autoPlay,
-                    ) {
-                        return true
-                    }
-                } catch {
-                    // EQ decode failed — fall through to AVPlayer without EQ on the same file.
-                }
-            }
-        }
+        // One path. There is no "is this file EQ-eligible, and can the other transport decode it"
+        // fork any more — every item gets a tap and the equalizer is either curved or flat.
         return try await loadAVPlayerItem(
             epoch: epoch,
             candidate: candidate,
@@ -2431,7 +2286,21 @@ final class PlaybackEngine: NSObject, ObservableObject {
         if resolvedDuration <= 0, candidate.url.isFileURL {
             resolvedDuration = await LocalMediaDuration.seconds(at: candidate.url)
         }
-        let item = AVPlayerItem(asset: asset)
+        // The tap is attached here, **before** the item reaches the player. `TapPlayerItem` awaits
+        // the asset's tracks first, because an audio mix built against tracks that have not loaded
+        // is silently ignored — the item plays with no tap and nothing reports an error.
+        let (item, tap) = await TapPlayerItem.make(
+            asset: asset,
+            track: track,
+            gains: equalizerBandGains,
+            bypassed: effectiveEqualizerBypass,
+            eligibleForEqualizer: isEqualizerEligible(for: track),
+        )
+        if let tap {
+            liveTapTags.append(tap.itemTag)
+            EqualizerTapRegistry.shared.setCurrentItem(tag: tap.itemTag, title: track.title)
+            PlaybackCPUSampler.currentItemProvider = { (tag: tap.itemTag, title: track.title) }
+        }
         let p = AVQueuePlayer(playerItem: item)
         // Auto-advance to the enqueued next item at end of track (the OS-managed,
         // background-safe transition). Falls back to pausing when nothing's queued.
@@ -2519,141 +2388,21 @@ final class PlaybackEngine: NSObject, ObservableObject {
         // Stage the next track so the OS can pre-roll and transition to it without
         // any app work at the boundary.
         refreshEnqueuedNextItem()
-        if allowEqualizerHandoff,
-           equalizerEnabled,
-           isEqualizerEligible(for: track),
-           !candidate.url.isFileURL,
-           CachingResourceLoaderDelegate.isCacheable(candidate.url) {
-            scheduleEqualizerHandoffWhenCached(
-                streamURL: candidate.url,
-                headers: candidate.headers,
-                track: track,
-                epoch: epoch,
-            )
-        }
+        // Nothing is scheduled here any more. A streamed track used to kick off a background
+        // download so the equalizer could take over once a local file existed; the tap needs no
+        // local file, so the EQ is in the audio from the first buffer and there is nothing to wait
+        // for.
         return true
     }
 
-    private func loadEqualizedPlayerItem(
-        epoch: UInt,
-        candidate: (url: URL, headers: [String: String]),
-        track: Track,
-        startSeconds: TimeInterval,
-        autoPlay: Bool,
-    ) async throws -> Bool {
-        let asset = makePlaybackAsset(url: candidate.url, headers: candidate.headers)
-        guard let urlAsset = asset as? AVURLAsset else { return false }
-
-        var resolvedDuration = track.duration
-        if resolvedDuration <= 0, candidate.url.isFileURL {
-            resolvedDuration = await LocalMediaDuration.seconds(at: candidate.url)
-        }
-        if resolvedDuration <= 0 {
-            let fromAsset = await LocalMediaDuration.seconds(asset: asset)
-            if fromAsset > 0 { resolvedDuration = fromAsset }
-        }
-
-        if !candidate.url.isFileURL {
-            _ = try await urlAsset.load(.isPlayable)
-        }
-        guard isPlaybackEpochCurrent(epoch) else { return false }
-
-        activateAudioSession()
-        let session = idleEqualizedSession ?? EqualizedAudioEnginePlayer()
-        idleEqualizedSession = nil
-        equalizedEndEpoch = epoch
-        session.onTimeUpdate = { [weak self] elapsed in
-            Task { @MainActor in
-                guard let self, self.equalizedEndEpoch == epoch else { return }
-                self.periodicEqualizedTimeObserverTick(
-                    elapsed: elapsed,
-                    track: track,
-                    epoch: epoch,
-                )
-            }
-        }
-        session.onFinished = { [weak self] in
-            Task { @MainActor in
-                guard let self, self.equalizedEndEpoch == epoch else { return }
-                self.handleEnded()
-            }
-        }
-        session.onPlaybackFailed = { [weak self] in
-            Task { @MainActor in
-                guard let self, self.equalizedEndEpoch == epoch else { return }
-                let resumeAt = self.playbackHead
-                self.detachPlayerKeepingQueueState()
-                self.stagePendingRestore(at: resumeAt)
-                // The recovery above was silent: state was corrected but the listener was left
-                // wondering why the music stopped.
-                self.reportPlaybackFailure(nil, track: self.currentTrack, context: "EQ session")
-            }
-        }
-        session.onConfigurationChange = { [weak self] in
-            guard let self, self.equalizedEndEpoch == epoch else { return }
-            self.rebuildEqualizedSessionAfterConfigChange(epoch: epoch)
-        }
-
-        try await session.load(
-            asset: urlAsset,
-            fileURL: candidate.url.isFileURL ? candidate.url : nil,
-            startSeconds: startSeconds,
-            gains: equalizerBandGains,
-            bypass: effectiveEqualizerBypass,
-        )
-        guard isPlaybackEpochCurrent(epoch) else {
-            session.stop()
-            if idleEqualizedSession == nil { idleEqualizedSession = session }
-            return false
-        }
-
-        equalizedPlayer = session
-        equalizedPlaybackURL = candidate.url
-        equalizedPlaybackAsset = urlAsset
-        equalizedPlaybackHeaders = candidate.headers
-        if isCommittedStreamCacheFile(candidate.url) {
-            StreamingMediaDiskCache.shared.markAccessed(fileURL: candidate.url)
-        }
-        isSeeking = false
-        let live = session.currentPlaybackTime()
-        let head = live.isFinite ? max(0, live) : max(0, startSeconds)
-        playbackHead = head
-        currentTime = head
-        lastEmittedUIProgress = head > 0.05 ? head : -10_000
-        lastNowPlayingInfoRefresh = head > 0.05 ? head : -10_000
-        duration = resolvedDuration > 0 ? resolvedDuration : duration
-        if candidate.url.isFileURL, resolvedDuration > 0 {
-            localFileDuration = resolvedDuration
-        }
-
-        if autoPlay {
-            // This site always honoured the returned `Bool`, so it never *lied* about the
-            // transport the way the other nine did — but honouring it only got as far as
-            // `isPlaying = false`. The track had loaded, the caller asked for autoplay, and
-            // nothing came out of the speaker with no explanation offered: the same silent
-            // failure this pass exists to remove, just without the false pause glyph. Route it
-            // through the one failure path like every other call site.
-            isPlaying = startEqualizedPlayback(session, context: "EQ session autoplay")
-        } else {
-            isPlaying = false
-        }
-        // The EQ engine has no `timeControlStatus` to observe — the AVPlayer
-        // KVO that normally clears the load spinner never fires on this path,
-        // so the play button stays a spinner forever without this.
-        setBuffering(false)
-        refreshNowPlaying()
-
-        if resolvedDuration > 0 {
-            persistOfflineDurationIfNeeded(resolvedDuration)
-            patchActiveQueueTrackDuration(resolvedDuration)
-        }
-        if let label = deliveredFormatLabel(candidateURL: candidate.url, track: track) {
-            nowPlayingFormatLabel = label
-        } else if nowPlayingFormatLabel == nil {
-            probeDeliveredFormat(asset: urlAsset, epoch: epoch)
-        }
-        return true
-    }
+    // `loadEqualizedPlayerItem` used to sit here: a parallel item-loading path that built an
+    // `AVAudioEngine` session, wired up its own time observer, end-of-track callback, failure
+    // callback and configuration-change rebuild, and then became the transport for that track.
+    // Every one of those callbacks existed because the second transport had none of the machinery
+    // `AVPlayer` already provides.
+    //
+    // Deleted with the transport. There is one loading path now — `loadAVPlayerItem` — and the
+    // equalizer is a tap on the item it produces.
 
     // MARK: - Delivered format badge
 
@@ -2829,228 +2578,28 @@ final class PlaybackEngine: NSObject, ObservableObject {
         refreshNowPlaying()
     }
 
-    private func scheduleEqualizerHandoffWhenCached(
-        streamURL: URL,
-        headers: [String: String],
-        track: Track,
-        epoch: UInt,
-    ) {
-        guard equalizerEnabled, isEqualizerEligible(for: track) else { return }
-        let trackId = track.id
-        eqCacheHandoffTask?.cancel()
-        eqCacheHandoffTask = Task {
-            let cached: URL?
-            let key = StreamingMediaDiskCache.key(for: streamURL)
-            if let hit = StreamingMediaDiskCache.shared.peekCachedFileURL(forKey: key) {
-                cached = hit
-            } else {
-                cached = try? await StreamingMediaDiskCache.shared.ensureCached(
-                    url: streamURL,
-                    headers: headers,
-                )
-            }
-            guard !Task.isCancelled, let cached else { return }
-            await swapActiveItemToEqualizerIfNeeded(
-                cachedURL: cached,
-                streamURL: streamURL,
-                headers: headers,
-                track: track,
-                trackId: trackId,
-                epoch: epoch,
-            )
-        }
-    }
+    // MARK: - The mid-track EQ handoff, and why it is gone
+    //
+    // Four functions used to live here and they were the bug:
+    //
+    //   `scheduleEqualizerHandoffWhenCached` — start a background download of the stream so the
+    //   equalizer could eventually have a local file to work from.
+    //   `swapActiveItemToEqualizerIfNeeded` — once it arrived, tear `AVPlayer` down mid-song and
+    //   rebuild the track on the audio-engine transport at the same position.
+    //   `restorePlaybackAfterFailedEqualizerHandoff` — put the user back on `AVPlayer` when that
+    //   failed, because the swap had already detached the thing making sound.
+    //   `rebuildEqualizedSessionAfterConfigChange` — redo the whole thing after a route change.
+    //
+    // The consequence was that on a streamed track the equalizer was **not in the audio at all**
+    // until the download completed and the swap landed, and the swap itself was audible. None of
+    // it is needed once the equalizer is a tap on the item: the tap is attached before the item is
+    // inserted, so it is in the audio from the first buffer, and there is nothing to hand over to.
+    //
+    // Deliberately not replaced with anything. The absence is the fix.
 
-    private func swapActiveItemToEqualizerIfNeeded(
-        cachedURL: URL,
-        streamURL: URL,
-        headers: [String: String],
-        track: Track,
-        trackId: String,
-        epoch: UInt,
-    ) async {
-        guard isPlaybackEpochCurrent(epoch),
-              currentTrack?.id == trackId,
-              equalizerEnabled,
-              equalizedPlayer == nil,
-              player != nil,
-              isEqualizerEligibleLocalFile(cachedURL, for: track)
-        else { return }
-
-        // Don't tear down AVPlayer for a file the EQ engine cannot decode.
-        let fileURL = cachedURL
-        let canOpen = await Task.detached(priority: .userInitiated) {
-            (try? AVAudioFile(forReading: fileURL)) != nil
-        }.value
-        guard canOpen else { return }
-
-        let position = playbackHead
-        let shouldPlay = isPlaying
-        eqCacheHandoffTask = nil
-        detachPlayerKeepingQueueState()
-        guard isPlaybackEpochCurrent(epoch), currentTrack?.id == trackId else { return }
-
-        do {
-            if try await loadEqualizedPlayerItem(
-                epoch: epoch,
-                candidate: (cachedURL, [:]),
-                track: track,
-                startSeconds: position,
-                autoPlay: shouldPlay,
-            ) {
-                if shouldPlay, let equalizedPlayer {
-                    guard startEqualizedPlayback(equalizedPlayer, context: "EQ handoff") else { return }
-                    isPlaying = true
-                }
-                refreshNowPlaying()
-                return
-            }
-        } catch {
-            // Fall through to AVPlayer restore — do not leave the user on silence.
-        }
-
-        await restorePlaybackAfterFailedEqualizerHandoff(
-            cachedURL: cachedURL,
-            streamURL: streamURL,
-            headers: headers,
-            track: track,
-            trackId: trackId,
-            epoch: epoch,
-            position: position,
-            shouldPlay: shouldPlay,
-        )
-    }
-
-    /// EQ handoff already detached AVPlayer. Put audio back on AVPlayer so lock-screen
-    /// transport and the playhead stay live instead of sitting on a silent "playing" state.
-    private func restorePlaybackAfterFailedEqualizerHandoff(
-        cachedURL: URL,
-        streamURL: URL,
-        headers: [String: String],
-        track: Track,
-        trackId: String,
-        epoch: UInt,
-        position: TimeInterval,
-        shouldPlay: Bool,
-    ) async {
-        guard isPlaybackEpochCurrent(epoch), currentTrack?.id == trackId else { return }
-
-        let fallbacks: [(url: URL, headers: [String: String])] = [
-            (cachedURL, [:]),
-            (streamURL, headers),
-        ]
-        for candidate in fallbacks {
-            guard isPlaybackEpochCurrent(epoch), currentTrack?.id == trackId else { return }
-            do {
-                if try await loadAVPlayerItem(
-                    epoch: epoch,
-                    candidate: candidate,
-                    track: track,
-                    startSeconds: position,
-                    autoPlay: shouldPlay,
-                    allowEqualizerHandoff: false,
-                ) {
-                    if shouldPlay { isPlaying = true }
-                    refreshNowPlaying()
-                    return
-                }
-            } catch {
-                if isUnreadableStreamCacheError(error) {
-                    evictFailedStreamCacheCandidate(candidate.url)
-                }
-            }
-        }
-
-        guard isPlaybackEpochCurrent(epoch), currentTrack?.id == trackId else { return }
-        stagePendingRestore(at: position)
-    }
-
-    /// The system tore the EQ engine's render graph down (route/hardware
-    /// format change). Reload the same audio at the current position. Briefly
-    /// deferred so a simultaneous route-loss pause (unplugged headphones) can
-    /// land first — then the rebuild comes back up paused instead of blaring
-    /// from the loudspeaker.
-    private func rebuildEqualizedSessionAfterConfigChange(epoch: UInt) {
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(120))
-            guard let self, self.isPlaybackEpochCurrent(epoch),
-                  let equalizedPlayer = self.equalizedPlayer,
-                  let asset = self.equalizedPlaybackAsset
-            else { return }
-            let position = equalizedPlayer.currentPlaybackTime()
-            let resume = self.isPlaying
-            self.pbLog("EQ config change → rebuilding at \(position) resume=\(resume)")
-            // seek() also resumes when the NODE claims it was playing — after a
-            // system stop that state can lie, so force-sync it to our intent.
-            if !resume { equalizedPlayer.pause() }
-            do {
-                try await equalizedPlayer.seek(
-                    to: position,
-                    asset: asset,
-                    fileURL: self.equalizedPlaybackURL?.isFileURL == true ? self.equalizedPlaybackURL : nil,
-                    gains: self.equalizerBandGains,
-                    bypass: self.effectiveEqualizerBypass,
-                    autoPlay: resume,
-                    rate: self.playbackRate,
-                )
-            } catch {
-                // This was a bare `try?`. A rebuild can genuinely fail — the hardware format
-                // changes under `engine.start()`, or the stream-cache file behind it was evicted —
-                // and swallowing that left `isPlaying` true (captured into `resume` and never
-                // reset) with the node stopped and its time observer already invalidated. Since
-                // that observer is the only thing that syncs `isPlaying` back on the EQ path,
-                // nothing could ever correct it: silence with a pause glyph, permanently.
-                //
-                // Same recovery the session's own `onPlaybackFailed` performs, plus telling the
-                // user, because a route change failing is not something they can otherwise explain.
-                self.detachPlayerKeepingQueueState()
-                self.stagePendingRestore(at: position)
-                self.reportPlaybackFailure(error, track: self.currentTrack, context: "route change rebuild")
-            }
-        }
-    }
-
-    private func periodicEqualizedTimeObserverTick(
-        elapsed: TimeInterval,
-        track: Track,
-        epoch: UInt,
-    ) {
-        guard equalizedEndEpoch == epoch else { return }
-        playbackHead = elapsed
-
-        let playing = equalizedPlayer?.isPlaying ?? false
-        let playStateChanged = playing != isPlaying
-        if playStateChanged { isPlaying = playing }
-
-        maybeScrobble(track: track, position: elapsed)
-        // Background: the system extrapolates the lock-screen playhead from the
-        // rate + last timestamp, so only refresh Now-Playing on a real
-        // play/pause change. Foreground: keep the smooth cadence for the scrubber.
-        if playStateChanged
-            || (!isAppBackgrounded
-                && (elapsed - lastNowPlayingInfoRefresh >= 0.55
-                    || abs(elapsed - lastNowPlayingInfoRefresh) > 1.25))
-        {
-            lastNowPlayingInfoRefresh = elapsed
-            refreshNowPlaying()
-        }
-
-        // Nothing on screen in the background — skip the published-progress
-        // writes (and seek-settle bookkeeping) that only drive the UI scrubber.
-        // playbackHead stays current above; the foreground observer resyncs
-        // currentTime on return.
-        if isAppBackgrounded { return }
-
-        guard !isSeeking else { return }
-        if let deadline = seekSettleDeadline, ContinuousClock.now < deadline { return }
-        seekSettleDeadline = nil
-        if elapsed + 1.5 < currentTime { return }
-        if currentTime > 3, elapsed < 1 { return }
-        if elapsed - lastEmittedUIProgress >= 0.55 || abs(elapsed - currentTime) > 1.25 {
-            lastEmittedUIProgress = elapsed
-            currentTime = elapsed
-        }
-    }
+    // `periodicEqualizedTimeObserverTick` was here too — a hand-rolled duplicate of the
+    // `AVPlayer` periodic time observer, needed only because the audio-engine transport had no
+    // `timeControlStatus` and no time observer of its own. One transport, one observer.
 
     private func attachPlayer(
         _ p: AVPlayer,
@@ -3379,6 +2928,14 @@ final class PlaybackEngine: NSObject, ObservableObject {
             return
         }
 
+        // The OS has moved onto the staged item, so the tap that has been sitting on it since it
+        // was staged is now the one in the audio. Tell the registry, so the EQ-activity stream
+        // reports the right item from the boundary onwards rather than a track late.
+        if let tag = EqualizerTapRegistry.shared.itemTag(forTrackId: track.id) {
+            EqualizerTapRegistry.shared.setCurrentItem(tag: tag, title: track.title)
+            PlaybackCPUSampler.currentItemProvider = { (tag: tag, title: track.title) }
+        }
+
         // New track is current — invalidate any in-flight load and refresh the
         // epoch the lyrics fetch keys off of.
         let epoch = beginPlaybackSession()
@@ -3461,24 +3018,62 @@ final class PlaybackEngine: NSObject, ObservableObject {
         let track = queue[nextIndex]
         if track.isInternetRadioStream { return }
 
-        let item: AVPlayerItem
+        let asset: AVURLAsset
         if let saved = offline?.localFile(for: track.id) {
-            item = AVPlayerItem(asset: AVURLAsset(url: saved, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true]))
+            asset = AVURLAsset(url: saved, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
         } else if let candidate = primaryRemoteCandidate(for: track) {
-            let asset: AVURLAsset = candidate.headers.isEmpty
+            asset = candidate.headers.isEmpty
                 ? AVURLAsset(url: candidate.url)
                 : AVURLAsset(url: candidate.url, options: ["AVURLAssetHTTPHeaderFieldsKey": candidate.headers])
-            item = AVPlayerItem(asset: asset)
         } else {
             return
         }
 
-        guard qp.canInsert(item, after: nil) else { return }
-        qp.insert(item, after: nil)
-        enqueuedNextItem = item
-        enqueuedNextIndex = nextIndex
-        enqueuedNextTrack = track
+        // Attaching the tap needs the asset's tracks loaded, which is asynchronous, and this
+        // function has ten synchronous callers. So the staging finishes on a task, guarded by a
+        // generation counter: if anything re-stages in the meantime — a skip, a queue edit — the
+        // superseded task discards its item instead of inserting a second one.
+        //
+        // Being asynchronous is not a compromise here. Staging deliberately happens *early*, long
+        // before the boundary, which is the whole reason the next item's tap can be prepared in
+        // time. Tests 2 and 3 measure exactly that: the next tap's `prepare` must appear in the log
+        // before the current item's last `process`.
+        stagingGeneration &+= 1
+        let generation = stagingGeneration
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let (item, tap) = await TapPlayerItem.make(
+                asset: asset,
+                track: track,
+                gains: self.equalizerBandGains,
+                bypassed: self.effectiveEqualizerBypass,
+                eligibleForEqualizer: self.isEqualizerEligible(for: track),
+            )
+            guard self.stagingGeneration == generation,
+                  let qp = self.queuePlayer,
+                  self.queue.indices.contains(nextIndex),
+                  self.queue[nextIndex].id == track.id,
+                  qp.canInsert(item, after: nil)
+            else {
+                if let tap { EqualizerTapRegistry.shared.retire(itemTag: tap.itemTag) }
+                return
+            }
+            if let tap {
+                self.liveTapTags.append(tap.itemTag)
+                PlaybackTapLog.tap(
+                    "staged-next item=\(tap.itemTag) track=\(track.id) title=\"\(track.title)\" "
+                        + "queueIndex=\(nextIndex)"
+                )
+            }
+            qp.insert(item, after: nil)
+            self.enqueuedNextItem = item
+            self.enqueuedNextIndex = nextIndex
+            self.enqueuedNextTrack = track
+        }
     }
+
+    /// Bumped every time the next item is re-staged, so a superseded staging task does not insert.
+    private var stagingGeneration: UInt64 = 0
 
     private var currentTrack: Track? {
         guard queue.indices.contains(currentIndex) else { return nil }
