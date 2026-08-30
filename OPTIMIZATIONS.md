@@ -1176,3 +1176,28 @@ The alternative — a real defect in the tap setup — is not excluded. What sep
 on hardware.
 
 **Nothing here is a device measurement.** The simulator CPU figures are a plumbing smoke test only.
+
+### T073 follow-up — use-after-free on the audio path
+
+Device logs showed, 120 ms apart:
+
+    TAP retire item=1 … / TAP retire item=2 …
+    TAP prepare ORPHAN item=15785850001729508719
+
+That item tag is a read of freed memory. Retiring a tap dropped the last Swift reference, `deinit`
+freed the render state, and AVFoundation then called `prepare` on a tap whose storage no longer
+existed. It did not crash in that session and the orphan branch caught it, but it is a
+use-after-free on the render path and only luck separates the two.
+
+The mistake was assuming the wrapper owned the storage. It does not: once the state has been handed
+to an `MTAudioProcessingTap`, only the framework knows when the last callback has been made, and it
+says so by calling **`finalize`**. So `deinit` no longer frees anything, `finalize` is now the only
+place the render state is released, and it frees straight from the raw storage because by then the
+Swift object may be long gone. `disposeBeforeAttachment()` covers the one other case — tap creation
+failed, nothing ever took ownership — and refuses once a tap exists.
+
+The related symptom is in the same logs: **zero `unprepare` callbacks across 1455 lines**. Taps were
+only ever torn down by our own retirement, never by AVFoundation finishing with them, which is the
+same mistake seen from the other side.
+
+UNVERIFIED: builds clean, not yet re-run on device.

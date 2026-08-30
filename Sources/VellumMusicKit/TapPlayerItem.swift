@@ -73,7 +73,9 @@ enum TapPlayerItem {
             bypassed: bypassed,
         )
         guard let mix = tap.makeAudioMix(for: audioTrack) else {
-            tap.dispose()
+            // Mix creation failed, so no tap took ownership and freeing here is safe. Once a tap
+            // exists this call refuses — see `disposeBeforeAttachment`.
+            tap.disposeBeforeAttachment()
             return (item, nil)
         }
         item.audioMix = mix
