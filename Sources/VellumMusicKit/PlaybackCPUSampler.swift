@@ -35,6 +35,21 @@ enum PlaybackCPUSampler {
     private static var lastSampleAt: CFAbsoluteTime = 0
     private static var lastCallbackCount: UInt64 = 0
 
+    /// CPU consumed **only while audio was playing**, accumulated across pauses.
+    ///
+    /// This is the number the A/B is decided on, and it exists because the cumulative one cannot
+    /// carry that weight. `cpuSecondsTotal` is whole-process since launch: it counts app start-up,
+    /// artwork decoding, scrolling and every other thing the user did. Measured on device, the tap
+    /// branch read ~0.9–1.4 CPU-s per minute of audio during quiet playback and 10–13 while the
+    /// app was being used — a sixfold spread that says nothing about the audio path.
+    ///
+    /// Accumulating only over playing stretches removes most of it. It is not perfect — UI work
+    /// during playback still lands inside the window — but it is the difference between comparing
+    /// two audio architectures and comparing two browsing sessions.
+    private static var audioWindowCPUAccumulated: Double = 0
+    /// CPU total at the moment playback last started, or nil while paused.
+    private static var cpuAtPlaybackStart: Double?
+
     /// Supplies the total tap process-callback count. Set by the tap branch; left nil on dev, where
     /// there are no callbacks to count and the field is logged as `-1`.
     nonisolated(unsafe) static var callbackCountProvider: (() -> UInt64)?
@@ -46,6 +61,7 @@ enum PlaybackCPUSampler {
         queue.async {
             guard runningSince == nil else { return }
             runningSince = CFAbsoluteTimeGetCurrent()
+            cpuAtPlaybackStart = cpuSeconds()
             if timer == nil {
                 lastCPUSeconds = cpuSeconds()
                 lastSampleAt = CFAbsoluteTimeGetCurrent()
@@ -67,6 +83,10 @@ enum PlaybackCPUSampler {
                 audioSecondsAccumulated += CFAbsoluteTimeGetCurrent() - since
                 runningSince = nil
             }
+            if let startCPU = cpuAtPlaybackStart {
+                audioWindowCPUAccumulated += max(0, cpuSeconds() - startCPU)
+                cpuAtPlaybackStart = nil
+            }
             sample(reason: "stop")
         }
     }
@@ -79,6 +99,8 @@ enum PlaybackCPUSampler {
             timer = nil
             runningSince = nil
             audioSecondsAccumulated = 0
+            audioWindowCPUAccumulated = 0
+            cpuAtPlaybackStart = nil
             lastCPUSeconds = cpuSeconds()
             lastCallbackCount = callbackCountProvider?() ?? 0
         }
@@ -97,15 +119,26 @@ enum PlaybackCPUSampler {
         let callbackDelta: Int64 = callbacks.map { Int64($0) - Int64(lastCallbackCount) } ?? -1
 
         let item = currentItemProvider?() ?? (tag: 0, title: "")
-        // CPU seconds per minute of audio. The headline number, and the only one comparable
-        // between two runs of different lengths.
+
+        // TWO different numbers, never to be quoted for each other's purpose.
+        //
+        // `cpuPerMinAudio` — whole-process CPU over audio time. A note on what the **app** costs
+        // while music plays. Includes launch, UI, artwork. NOT a comparison between architectures.
+        //
+        // `audioCpuPerMinAudio` — CPU accrued only while audio was actually playing. This is the
+        // one the tap-versus-two-layer comparison is decided on.
         let perMinute = audioSeconds > 0 ? cpu / (audioSeconds / 60) : 0
+        var audioWindowCPU = audioWindowCPUAccumulated
+        if let startCPU = cpuAtPlaybackStart { audioWindowCPU += max(0, cpu - startCPU) }
+        let audioPerMinute = audioSeconds > 0 ? audioWindowCPU / (audioSeconds / 60) : 0
 
         PlaybackTapLog.eq(
             "cpu item=\(item.tag) title=\"\(item.title)\" reason=\(reason) "
                 + "cpuSecondsTotal=\(String(format: "%.3f", cpu)) "
                 + "cpuSecondsDelta=\(String(format: "%.3f", deltaCPU)) "
                 + "audioSeconds=\(String(format: "%.1f", audioSeconds)) "
+                + "audioCpuSeconds=\(String(format: "%.3f", audioWindowCPU)) "
+                + "audioCpuPerMinAudio=\(String(format: "%.3f", audioPerMinute)) "
                 + "cpuPerMinAudio=\(String(format: "%.3f", perMinute)) "
                 + "tapCallbacks=\(callbacks.map(String.init) ?? "n/a") "
                 + "tapCallbacksDelta=\(callbackDelta) "
