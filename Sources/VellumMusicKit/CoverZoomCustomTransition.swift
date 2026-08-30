@@ -2674,6 +2674,24 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
             + "nav=\(UInt(bitPattern: ObjectIdentifier(navigationController).hashValue) & 0xffff) "
             + "depth=\(navigationController.viewControllers.count)")
 #endif
+        // Recompute which recognizer owns the swipe, on **every** navigation change.
+        //
+        // `syncGestures()` turns UIKit's pop recognizers off while our zoomed detail is on top,
+        // because a custom animator cannot be driven by them — `installEdgePan` takes over for
+        // that screen. That is correct, but it used to be recomputed only from the zoom detail's
+        // own `viewWillAppear` / `viewDidAppear` / `viewDidDisappear`. An **ordinary** push landing
+        // on top of a zoom detail — "Go to Album" or "Go to Artist" from a song menu inside a
+        // playlist — fires none of those, so the state was left exactly as the detail underneath
+        // had set it: UIKit's recognizers still disabled, while our own edge pan declined the
+        // touch because `edgePanMayBegin` requires our detail to be the top view controller. With
+        // both sides declining, an edge swipe on those screens did nothing at all. The back button
+        // was unaffected throughout, because a programmatic pop never consults a gesture.
+        //
+        // `didShow` is the hook that fires for every push and pop, which is the invariant the
+        // enable/disable rule assumed all along. It is cheap and idempotent: the observer and
+        // edge-pan installs are both guarded, and the enabled flags are only written when they
+        // differ.
+        syncGestures()
         if let original,
            original.responds(to: #selector(UINavigationControllerDelegate.navigationController(_:didShow:animated:))) {
             original.navigationController?(navigationController, didShow: viewController, animated: animated)

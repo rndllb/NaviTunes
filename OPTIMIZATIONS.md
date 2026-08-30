@@ -1049,3 +1049,55 @@ acquire row is suppressed by the library filters anyway, so a stale "Not found" 
 thing it describes.
 
 UNVERIFIED, on the same terms as the rest of T071 — this compiles and has not been run.
+
+## 2026-08-29 — swipe-back on artist/album reached via Go to Artist / Go to Album (T072)
+
+Ethan: "artist/album view when tapping go to artist/album cannot be swipe dismissed like playlist
+views."
+
+**The cause, found before changing anything.** Neither of the usual suspects: nothing is presented
+as a sheet (all of these are pushes on the same `NavigationStack`), and there is no
+`navigationBarBackButtonHidden` anywhere in the codebase. It is the cover-zoom transition's gesture
+bookkeeping.
+
+`CoverZoomNavigationDelegate.syncGestures()` switches UIKit's pop recognizers **off** while a zoomed
+detail is on top. That is deliberate and correct — a custom animator cannot be driven by the
+built-in recognizer, so `installEdgePan` supplies our own for that screen. The defect is *when* it
+was recomputed: only from the zoom detail's own `viewWillAppear` / `viewDidAppear` /
+`viewDidDisappear`, via `install(on:activeID:)` and `clearActiveID(on:id:)`.
+
+An **ordinary** push landing on top of a zoom detail fires none of those. "Go to Album" / "Go to
+Artist" from a song menu inside a playlist is exactly that: a plain SwiftUI push, no
+`pendingPushID`, so `animationControllerFor` declines and it is an ordinary slide. The gesture state
+was therefore left as the detail underneath had set it:
+
+- UIKit's pop recognizers still `isEnabled = false`, from when the zoom detail was on top.
+- Our own `edgePan` declining, because `edgePanMayBegin` requires
+  `topViewController === customDetailController`, which is no longer true.
+
+Both sides decline, so an edge swipe on those screens did nothing whatsoever. The back button was
+never affected, because a programmatic pop goes through `popViewController` and never consults a
+gesture — which is why it looked like a gesture bug rather than a navigation one.
+
+Playlist views swipe correctly because the playlist detail *is* the zoom detail: our edge pan is
+armed and driving on that screen.
+
+Also worth noting for anyone reading the lifecycle: `viewDidDisappear` only calls `clearActiveID`
+when `isMovingFromParent`, so being **covered** by a further push deliberately leaves the zoom
+detail's state armed. That is right for the detail itself and is precisely why the screen on top
+inherited a gesture configuration meant for something else.
+
+**The fix** is one call: `syncGestures()` from
+`navigationController(_:didShow:animated:)`, the hook that fires on every push and pop. That is the
+invariant the enable/disable rule assumed all along — the state is now recomputed whenever the top
+view controller changes, instead of only when a zoom detail appears or is popped. It is cheap and
+idempotent: the touch-observer and edge-pan installs are both guarded, and the enabled flags are
+only written when they differ.
+
+No behaviour change for a zoom detail (`didShow` with it on top computes the same "off" state the
+detail's own appear callbacks already set), and none for the back button or for ordinary pushes
+elsewhere, which were already in the enabled state this now recomputes.
+
+**UNVERIFIED:** not run. This is a UIKit gesture interaction, so it needs a real swipe on device to
+confirm — the reasoning is traced through the source above but no swipe has been performed against
+this build.
