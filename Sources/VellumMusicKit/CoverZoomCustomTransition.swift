@@ -2062,7 +2062,86 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
             recognizer.isEnabled = !customOnTop
         }
         installEdgePan(on: navigationController)
+
+        // **The T072 fix, and it is subtractive.**
+        //
+        // Our edge pan is installed once, on the navigation controller's *view*, so it sits in
+        // the responder chain on every screen in the stack. On a screen it does not serve it was
+        // still taking the edge touch and then declining in `gestureRecognizerShouldBegin`, and
+        // UIKit's pop recognizer never saw that touch at all. Device log, T068, at the moment of
+        // the decline on a deep-linked album detail:
+        //
+        //   edgePan shouldBegin=false sysEnabled=true
+        //     sys=[_UIParallaxTransitionPanGestureRecognizer/en=true/st=0/n=0]
+        //     ours=[UIScreenEdgePanGestureRecognizer/en=true/st=0/n=1]
+        //
+        // UIKit's recognizers enabled and holding **no** touches; ours holding **one**, then
+        // refusing it. Both owners decline, nobody handles it, and the swipe does nothing.
+        //
+        // A *disabled* recognizer is not offered touches at all, so switching ours off on those
+        // screens hands the edge touch back to UIKit — which is precisely what
+        // `CoverZoomRegistry.style(for:)` already documents as the intended fallback for an id
+        // nobody registered ("lands the detail on UIKit's ordinary slide — with its ordinary
+        // edge-swipe pop"). That fallback was correct in the delegate and defeated in the
+        // responder chain.
+        //
+        // Note what this does *not* do: it does not widen `edgePanMayBegin` to more screens,
+        // which would hand them a non-interactive instant pop instead of a swipe-to-dismiss.
+        //
+        // Guarded against a live gesture, because setting `isEnabled = false` on a recognizer
+        // mid-recognition cancels it outright — which would abort an interactive pop that our
+        // own pan is in the middle of driving.
+        if let pan = edgePan,
+           !edgePanPopInFlight,
+           pan.state != .began, pan.state != .changed {
+            let serves = edgePanServesTopScreen
+            if pan.isEnabled != serves { pan.isEnabled = serves }
+        }
+
+        // **T073 defect 2 — the real one.**
+        //
+        // On a screen our pan serves, `shouldBeRequiredToFailBy` conscripts the scroll view's
+        // pan into failing, which is why the swipe works there. Device log, control case:
+        //
+        //   active=[... UIScrollViewPanGestureRecognizer/en=true/st=5/n=1 ...,
+        //           UIScreenEdgePanGestureRecognizer/en=true/st=2/n=1]
+        //
+        // On a screen our pan has stepped aside from, nothing performs that role, and the
+        // scroll view simply takes the edge touch and scrolls with it:
+        //
+        //   active=[UIScrollViewDelayedTouchesBeganGestureRecognizer/en=true/st=0/n=1,
+        //           UIScrollViewPanGestureRecognizer/en=true/st=2/n=1, ...]
+        //
+        // UIKit's pop recognizer does not conscript the scroll view on its own, so we do it
+        // for it. It is capable of driving the pop once it gets the touch — earlier device
+        // logs show it reaching `.began` while holding one (`st=1/n=1`).
+        //
+        // **The bound, which matters more than the fix.** `require(toFail:)` is permanent and
+        // has no removal counterpart, so the scoping cannot come from adding and removing it
+        // per touch. It comes from the recognizer being waited on:
+        // `interactivePopGestureRecognizer` is a *screen-edge* recognizer, so for any touch
+        // that does not start at the left edge it fails almost immediately and the scroll view
+        // proceeds untouched. Only a drag begun within the edge margin is delayed at all.
+        //
+        // That is the same cost the working screens already pay through
+        // `shouldBeRequiredToFailBy`, and scrolling there is fine today — so this extends a
+        // bound already observed to be acceptable rather than introducing a new one.
+        if let systemPan = navigationController.interactivePopGestureRecognizer {
+            conscriptScrollViews(under: navigationController.topViewController?.view, toFailFor: systemPan)
+        }
 #if DEBUG
+        // T068 diagnostic. Emitted *after* the enable/disable loop and after `installEdgePan`, so
+        // it reports the settled state rather than the state on the way in. This line exists to
+        // separate the only two remaining candidates for the dead swipe on button-pushed screens:
+        //
+        //   systemPanEnabled=false  -> something is still switching UIKit's recognizers off
+        //                              stack-wide, and the touch has no other owner.
+        //   systemPanEnabled=true   -> UIKit's recognizer is live and is losing the touch to
+        //                              ours, i.e. our edge pan's scope is the problem.
+        //
+        // Read it next to the `edgePan declined` line, which prints the same snapshot at the
+        // instant our pan refuses the touch.
+        DebugUIRemote.log("COVERZOOM gestureState at=syncGestures " + gestureStateSnapshot())
         // Off by default. With the spy in front of UIKit's delegate, device logs showed the pop
         // recognizers refusing every edge touch *without consulting the delegate protocol at all*
         // — no `shouldReceiveTouch`, no `shouldBegin`, `n=0` for 420ms. That is the signature of
@@ -2075,6 +2154,73 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
 #endif
         observedPan = systemPan
     }
+
+    /// Scroll-view pans already required to fail for UIKit's pop recognizer.
+    ///
+    /// `require(toFail:)` is additive and UIKit offers no way to undo it, so each pair must be
+    /// established exactly once. Weak, so a scroll view that goes away is not kept alive and a
+    /// recycled one is re-conscripted.
+    private let conscriptedScrollPans = NSHashTable<UIGestureRecognizer>.weakObjects()
+
+    /// Makes every scroll view on the current screen wait for UIKit's edge pop recognizer.
+    ///
+    /// See the call site in `syncGestures` for why this is bounded to the screen edge in
+    /// practice. The walk is capped: a runaway hierarchy must not turn a navigation callback
+    /// into a visible stall.
+    private func conscriptScrollViews(under root: UIView?, toFailFor systemPan: UIGestureRecognizer) {
+        guard let root else { return }
+        var stack: [UIView] = [root]
+        var visited = 0
+        while let view = stack.popLast() {
+            visited += 1
+            if visited > 400 { break }
+            if let scroll = view as? UIScrollView {
+                let pan = scroll.panGestureRecognizer
+                if !conscriptedScrollPans.contains(pan) {
+                    pan.require(toFail: systemPan)
+                    conscriptedScrollPans.add(pan)
+                }
+            }
+            stack.append(contentsOf: view.subviews)
+        }
+    }
+
+#if DEBUG
+    /// One line describing who owns the left-edge touch right now: every pop recognizer UIKit
+    /// installed, our own edge pan, and the per-screen predicates that decide whether ours will
+    /// serve this screen.
+    ///
+    /// Printed from two places — `syncGestures` (settled state after every push) and the point
+    /// where our edge pan declines — so the two can be read against each other. `sysEnabled` is
+    /// the answer the whole diagnostic exists for; `mayBegin` and the three `why…` fields say
+    /// which predicate is the one that is false when it is false.
+    private func gestureStateSnapshot() -> String {
+        guard let navigationController else { return "nav=nil" }
+        func describe(_ recognizer: UIGestureRecognizer) -> String {
+            "\(String(describing: type(of: recognizer)))/en=\(recognizer.isEnabled)"
+                + "/st=\(recognizer.state.rawValue)/n=\(recognizer.numberOfTouches)"
+        }
+        let systemPan = navigationController.interactivePopGestureRecognizer
+        // Every parallax recognizer on the view, not only the one `interactivePopGestureRecognizer`
+        // vends — the other one is what actually drives the built-in pop on some screens.
+        let parallax = (navigationController.view.gestureRecognizers ?? [])
+            .filter { String(describing: type(of: $0)).contains("Parallax") }
+        let detail = customDetailController
+        let id = activeCustomID ?? lastPushedCustomID
+        return "sysEnabled=\(systemPan?.isEnabled.description ?? "nil-recognizer") "
+            + "sys=[\(systemPan.map(describe) ?? "nil")] "
+            + "parallax=[\(parallax.map(describe).joined(separator: ", "))] "
+            + "ours=[\(edgePan.map(describe) ?? "not-installed")] "
+            + "mayBegin=\(edgePanMayBegin) "
+            + "whyDetail=\(detail == nil ? "no-detail" : (navigationController.topViewController === detail ? "detail-on-top" : "detail-not-top")) "
+            + "whyDepth=\(navigationController.viewControllers.count) "
+            + "whyCoordinator=\(navigationController.transitionCoordinator != nil) "
+            + "whyStyle=\(id.map { "\($0)=\(CoverZoomRegistry.shared.style(for: $0))" } ?? "no-id") "
+            + "whyCell=\(id.map { CoverZoomRegistry.shared.hasCellTarget(for: $0) ? "has-cell" : "no-cell" } ?? "no-id") "
+            + "conscripted=\(conscriptedScrollPans.count) "
+            + "top=\(navigationController.topViewController.map { String(describing: type(of: $0)) } ?? "nil")"
+    }
+#endif
 
     /// Watches touch-down without consuming it, so the cover a push belongs to can be resolved
     /// from what is actually under the finger.
@@ -2122,12 +2268,48 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
     /// True only when a swipe-back would be ours to animate: our detail is on top, with
     /// something under it, and nothing else is mid-transition.
     private var edgePanMayBegin: Bool {
+        guard let navigationController else { return false }
+        return edgePanServesTopScreen && navigationController.transitionCoordinator == nil
+    }
+
+    /// Whether the screen currently on top is one our edge pan will **ever** drive.
+    ///
+    /// The same per-screen predicates as ``edgePanMayBegin`` minus the transient "nothing is
+    /// mid-transition" test, because this decides whether the recognizer should be *installed
+    /// and enabled at all*, not whether one particular touch may start a pop. A live transition
+    /// makes a touch untimely; it does not make the screen someone else's.
+    ///
+    /// `customDetailController` is the authoritative signal, and deliberately so: it is set
+    /// only in `animationControllerFor(.push)`, i.e. only for a screen we actually pushed with
+    /// our own zoom animator. `activeCustomID` is *not* sufficient on its own — the pushed
+    /// detail's installer sets it on every custom-styled screen including deep-linked ones,
+    /// which is exactly how a screen we never animated came to look like ours.
+    private var edgePanServesTopScreen: Bool {
         guard let navigationController, let detail = customDetailController else { return false }
         guard navigationController.viewControllers.count > 1,
-              navigationController.topViewController === detail,
-              navigationController.transitionCoordinator == nil else { return false }
+              navigationController.topViewController === detail else { return false }
         guard let id = activeCustomID ?? lastPushedCustomID,
               CoverZoomRegistry.shared.style(for: id) == .custom else { return false }
+        // **T073 defect 1.** The last condition of the delegate's pop branch, repeated here so
+        // acceptance agrees with what the delegate will actually do.
+        //
+        // Without it our pan could accept on a deep-linked screen — `customDetailController`
+        // still happening to point at the top VC — call `popViewController(animated: true)`,
+        // and only then have the delegate decline for want of a cell to fly home to. The pop
+        // was already issued, so it ran as a plain animated slide with no interaction
+        // controller behind it: a dismissal that fires on touch and ignores the finger.
+        // Device log, T072 run, the first edge touch:
+        //
+        //   edgePan shouldBegin=true mayBegin=true whyDetail=detail-on-top
+        //   ask op=2 ... fromIsDetail=true
+        //   decline op=2 active=qgCfizRpk4EHhLBddZVrwz ...
+        //   edgePan popped but no interaction controller was vended
+        //   installer willDisappear ... interactive=false
+        //
+        // Declining earlier means UIKit's ordinary interactive slide handles that screen,
+        // which is the documented fallback. Note this makes the predicate *stricter*; it does
+        // not widen `edgePanMayBegin` to any screen it did not already cover.
+        guard CoverZoomRegistry.shared.hasCellTarget(for: id) else { return false }
         return true
     }
 
@@ -2155,7 +2337,8 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
 #if DEBUG
                 DebugUIRemote.log("COVERZOOM edgePan began but may not pop — depth=\(navigationController.viewControllers.count) "
                     + "topIsDetail=\(navigationController.topViewController === customDetailController) "
-                    + "coordinator=\(navigationController.transitionCoordinator != nil)")
+                    + "coordinator=\(navigationController.transitionCoordinator != nil) "
+                    + gestureStateSnapshot())
 #endif
                 return
             }
@@ -2338,10 +2521,17 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
             // window — rather than the two views we happened to guess at. A recognizer deeper in
             // the SwiftUI content that claims the touch would only ever show up here.
             var lines: [String] = []
+            // Kept so the same recognizers can be re-read a few frames later. At touch-down
+            // every one of them is necessarily `.possible` with no touches, so this census
+            // alone can only say who was *present*, never who *won*. `edgeSample` below reads
+            // this same list over time, which is the half that names the owner.
+            var chain: [UIGestureRecognizer] = []
             var node: UIView? = navigationController.view.hitTest(point, with: nil)
             while let current = node {
-                let owned = (current.gestureRecognizers ?? []).map {
-                    "\(type(of: $0))/en=\($0.isEnabled)/st=\($0.state.rawValue)"
+                let recognizers = current.gestureRecognizers ?? []
+                chain.append(contentsOf: recognizers)
+                let owned = recognizers.map {
+                    "\(type(of: $0))/en=\($0.isEnabled)/st=\($0.state.rawValue)/n=\($0.numberOfTouches)"
                 }
                 if !owned.isEmpty {
                     lines.append("\(type(of: current)){\(owned.joined(separator: "|"))}")
@@ -2375,13 +2565,58 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
             // targets, so silence from `handleSystemPan` cannot distinguish "vetoed" from "never
             // saw the touch". Sampling the states a few frames into the swipe can.
             let observed = observedPans
+            // Ours is sampled alongside them, because the T072 acceptance test is a statement
+            // about *both* owners at the same instant: on a screen we do not serve, ours must
+            // read `en=false/n=0` while one of UIKit's picks the touch up (`n=1`, and a state
+            // that leaves `.possible`). Sampling only UIKit's cannot show the handover.
+            let ours = edgePan
+            // T072 follow-up. Sampling only the pop recognizers answered "did UIKit take it?"
+            // (no) but could not answer "then who did?", because a recognizer anywhere else in
+            // the chain — SwiftUI's collection view, a swipe-action pan, a window-level system
+            // gate — is invisible to that list. `active=` re-reads the whole touch-down chain
+            // and reports only the recognizers that actually did something: left `.possible`,
+            // or are holding a touch. On a dead swipe it is expected to be empty, and an empty
+            // `active=` is itself the finding — it means nothing in the chain claimed the touch.
+            let watched = chain
             Task { @MainActor in
                 for delay in [120, 260, 420] {
                     try? await Task.sleep(for: .milliseconds(delay == 120 ? 120 : 140))
-                    let states = observed.map { "\(type(of: $0))/st=\($0.state.rawValue)/n=\($0.numberOfTouches)" }
-                    DebugUIRemote.log("COVERZOOM edgeSample +\(delay)ms [\(states.joined(separator: ", "))]")
+                    var states = observed.map { "\(type(of: $0))/st=\($0.state.rawValue)/n=\($0.numberOfTouches)" }
+                    if let ours {
+                        states.append("OURS/en=\(ours.isEnabled)/st=\(ours.state.rawValue)/n=\(ours.numberOfTouches)")
+                    }
+                    let active = watched
+                        .filter { $0.state != .possible || $0.numberOfTouches > 0 }
+                        .map { "\(type(of: $0))/en=\($0.isEnabled)/st=\($0.state.rawValue)/n=\($0.numberOfTouches)" }
+                    DebugUIRemote.log("COVERZOOM edgeSample +\(delay)ms [\(states.joined(separator: ", "))] "
+                        + "chain=\(watched.count) active=[\(active.joined(separator: ", "))]")
                 }
             }
+        } else {
+            // T073 regression check, and the reason it was missing: everything above is gated on
+            // `point.x < 40`, so a mid-screen drag — an ordinary scroll — is invisible to it. The
+            // conscription's cost falls precisely there, which meant the acceptance criterion
+            // "ordinary scrolling still commits" could not be answered from any log we had.
+            //
+            // Sample only the scroll pans we actually conscripted, and log only when one of them
+            // does something. A reading of `st=2` is the proof that scrolling still commits
+            // normally; silence means the drag never became a scroll, which is the regression.
+            // Deliberately not `guard ... else { return }`: this sits before the delegate
+            // re-assertion below, and an early return would skip it on every non-edge touch.
+            let pans = conscriptedScrollPans.allObjects
+            let startX = point.x
+            if !pans.isEmpty { Task { @MainActor in
+                for delay in [120, 260, 420] {
+                    try? await Task.sleep(for: .milliseconds(delay == 120 ? 120 : 140))
+                    let moved = pans
+                        .filter { $0.state != .possible || $0.numberOfTouches > 0 }
+                        .map { "\(type(of: $0))/en=\($0.isEnabled)/st=\($0.state.rawValue)/n=\($0.numberOfTouches)" }
+                    if !moved.isEmpty {
+                        DebugUIRemote.log("COVERZOOM scrollSample +\(delay)ms "
+                            + "x=\(String(format: "%.0f", startX)) [\(moved.joined(separator: ", "))]")
+                    }
+                }
+            } }
         }
 #endif
 
@@ -2525,7 +2760,9 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
             if gestureRecognizer === edgePan {
                 let allowed = edgePanMayBegin
 #if DEBUG
-                DebugUIRemote.log("COVERZOOM edgePan shouldBegin=\(allowed)")
+                // The decline moment. Same snapshot as `syncGestures` prints, so a failing swipe
+                // can be read as "UIKit's recognizer was off" vs "it was on and we took the touch".
+                DebugUIRemote.log("COVERZOOM edgePan shouldBegin=\(allowed) " + gestureStateSnapshot())
 #endif
                 return allowed
             }
@@ -2547,12 +2784,30 @@ final class CoverZoomNavigationDelegate: NSObject, UINavigationControllerDelegat
     /// for the same touch. Make every other recognizer wait for the edge pan to fail — which it
     /// does immediately for any touch that did not start at the edge, so scrolling is not
     /// delayed anywhere else.
+    ///
+    /// **Gated on `edgePanMayBegin`**, and that gate is the whole fix.
+    ///
+    /// This answer used to be unconditional: one global `true` for our edge pan against every
+    /// other recognizer, on every screen in the stack. The permission it gates is not global —
+    /// `edgePanMayBegin` is three per-screen predicates, and is false on any screen that is not
+    /// our zoom detail. So on an artist or album page reached by a button, UIKit's pop recognizer
+    /// was required to wait for an edge pan that would then decline the touch, and our pan
+    /// declined it too. Both owners decline, nobody handles it, and the swipe does nothing.
+    ///
+    /// The observation that proves the shape of it: a playlist opened by tapping its cover sits
+    /// **directly on top of** an artist page reached by a button, on one stack, and the playlist
+    /// swipes while the artist page does not. Only a per-touch, per-screen answer can differ
+    /// between two adjacent screens like that — which is exactly what this now is.
+    ///
+    /// Note this is subtractive. It does not widen `edgePanMayBegin` to more screens: that would
+    /// hand those screens a non-interactive instant pop rather than a swipe-to-dismiss. It only
+    /// stops our pan conscripting other recognizers on screens where it will never drive the pop.
     nonisolated func gestureRecognizer(
         _ gestureRecognizer: UIGestureRecognizer,
         shouldBeRequiredToFailBy other: UIGestureRecognizer
     ) -> Bool {
         MainActor.assumeIsolated {
-            gestureRecognizer === edgePan && other !== touchObserver
+            edgePanMayBegin && gestureRecognizer === edgePan && other !== touchObserver
         }
     }
 
