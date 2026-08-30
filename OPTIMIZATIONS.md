@@ -1101,3 +1101,291 @@ elsewhere, which were already in the enabled state this now recomputes.
 **UNVERIFIED:** not run. This is a UIKit gesture interaction, so it needs a real swipe on device to
 confirm — the reasoning is traced through the source above but no swipe has been performed against
 this build.
+
+## 2026-08-30 — swipe-back on button-pushed screens, and the two-layer CPU baseline (T19)
+
+Branch `t19-swipe-fix`, off **dev** at `1eaf0dc`, in its own worktree. Two things deliberately
+together: the swipe fix, and the missing baseline that this dev-based build is the only way to get.
+
+### The swipe fix, and why it is one line
+
+`gestureRecognizer(_:shouldBeRequiredToFailBy:)` answered **`true` unconditionally** for our edge
+pan against every other recognizer — one global constant. The permission it gates,
+`edgePanMayBegin`, is **three per-screen predicates**, false on any screen that is not our zoom
+detail.
+
+So on an artist or album page reached by a button, UIKit's pop recognizer was required to wait for
+an edge pan that would then decline the touch, and our pan declined it too. **Both owners decline,
+nobody handles it**, and the swipe does nothing. The back button was never affected, because a
+programmatic pop consults no gesture at all.
+
+The evidence that fixes the shape of it beyond argument: a playlist opened by tapping its cover
+sits **directly on top of** an artist page reached by a button, on one navigation stack, and *the
+playlist swipes while the artist page does not*. Only a per-touch, per-screen answer can differ
+between two adjacent screens. That rules out every stack-global explanation, including the
+non-animated-push theory — a `willShow animated=` census on device read 852 true / 38 false, and it
+is moot either way.
+
+The fix is **subtractive**: gate that answer on `edgePanMayBegin`, so our pan only conscripts other
+recognizers on screens where it will actually drive the pop. It deliberately does **not** widen
+`edgePanMayBegin` to more screens, which would hand them a non-interactive instant pop rather than
+a swipe-to-dismiss.
+
+The stale comment at `ArtistPageView.swift` is corrected in the same change. It claimed the
+installer is a no-op for programmatic pushes; only the *animation* is. The installer still puts the
+delegate proxy and the shared edge pan on the navigation controller however the page was pushed,
+which is exactly how a button-pushed page came under a gesture arbitration meant for another
+screen — and that wording is what made an earlier attempt look correct on paper.
+
+### The baseline half
+
+`PlaybackCPUSampler.swift` and `PlaybackTapLog.swift` are backported here **byte-identical** to the
+tap branch's copies (verified by diff). An A/B is worth nothing unless both sides are measured by
+the same instrument. Only the wiring differs, because it must: there is no tap on this branch, so
+`callbackCountProvider` stays nil and the callback columns log `n/a` — the correct reading for a
+build with no taps, rather than a zero pretending to be a measurement.
+
+This build is therefore the **only** source of a device CPU figure for the old two-layer
+AVPlayer + AVAudioEngine architecture. Until it runs on the phone, the tap branch's
+~0.9–1.4 CPU-s/min has nothing to be compared against, and no claim of an improvement is supportable
+in either direction.
+
+**Known limitation of the metric, on both branches:** the sampler measures whole-process CPU, so it
+includes launch, UI and artwork work. The figure inflates to 10–13 CPU-s/min while the app is being
+interacted with. A fair comparison needs a quiet foreground run on both sides, or a sampler scoped
+to the audio-active window.
+
+**UNVERIFIED:** builds clean; the swipe fix has not been tested on device, and no baseline numbers
+have been captured yet.
+
+## T068 — a diagnostic line to say *why* the edge swipe never becomes a pop
+
+This change adds logging only. It fixes nothing, and it is not meant to.
+
+Two hypotheses for the dead swipe on button-pushed screens have already been built and tested on
+device, and both were wrong. A third — that our shared edge pan sits on the navigation
+controller's view on every screen in the stack and takes the edge touch on screens it will never
+serve — is inferred from the shape of the last device log, not measured. Rather than build a fourth
+guess, this adds one snapshot that separates the only two remaining candidates:
+
+- `sysEnabled=false` — something is still switching UIKit's pop recognizers off stack-wide, and the
+  touch simply has no other owner once ours declines.
+- `sysEnabled=true` — UIKit's recognizer is live and is losing the touch to ours, which makes our
+  edge pan's *scope* the problem.
+
+`gestureStateSnapshot()` prints every pop recognizer on the navigation controller's view (both
+parallax recognizers, not just the one `interactivePopGestureRecognizer` vends) with its enabled
+flag, state and touch count; our own edge pan the same way; and `edgePanMayBegin` broken out into
+the individual predicate that is false when it is false. It is emitted from two places so they can
+be read against each other: `syncGestures`, positioned deliberately *after* the enable/disable loop
+and after `installEdgePan` so it reports settled state rather than state on the way in, and the
+instant our edge pan declines a touch (`shouldBegin=false`, and the `.began`-guard path).
+
+Everything is `#if DEBUG`, inside the existing `DebugUIRemote` log, alongside the lines the last
+device session was read from.
+
+**STATUS: MEASURED 2026-08-30 02:11 on device (build 01:19:21).** The answer is
+`sysEnabled=true`: UIKit's pop recognizers are **enabled** on the failing screen and are **losing
+the touch to ours**. Raw decline line:
+
+    edgePan shouldBegin=false sysEnabled=true
+      sys=[_UIParallaxTransitionPanGestureRecognizer/en=true/st=0/n=0]
+      parallax=[.../en=true/st=0/n=0, .../en=true/st=0/n=0]
+      ours=[UIScreenEdgePanGestureRecognizer/en=true/st=0/n=1]
+      mayBegin=false whyDetail=detail-not-top whyDepth=2 whyCoordinator=false
+
+The decisive field is not `en=` but `n=`. All three of UIKit's recognizers are enabled and hold
+**zero** touches; ours holds **one**, then declines. Nothing was switched off stack-wide — our pan
+simply takes the edge touch first on a screen it will never serve, and no one else ever sees it.
+The "scope" hypothesis is confirmed, and the fix is subtractive as expected.
+
+The working swipe is the exact inverse and validates the instrument: `sysEnabled=false`
+(deliberately, because our zoom detail is on top), `ours=.../n=1`, `mayBegin=true`.
+
+Second, narrower finding, **measured but not yet acted on**: the predicate that is false on the
+failing screen is `whyDetail=detail-not-top` — `customDetailController` is non-nil but is not the
+top view controller. The failing screen was pushed with `willShow animated=false` and **no
+`ask op=1` at all**, so the delegate never saw that push and the detail pointer was left pointing at
+the previous screen. That is the mechanism behind the stale scope, and it is where the fix belongs.
+
+
+## T072 — stop our edge pan owning touches on screens it will never serve
+
+### What the failing screen turned out to be
+
+`1Af6e6mVOiolKW6gdYFrvc` resolves, from the log itself, to an **album detail page** — "Better
+Weather" by With Confidence — opened by a **deep link from the Now Playing player** ("Go to Album"):
+
+    NP-NAV enter route=album(AlbumSummary(id: "1Af6e6mVOiolKW6gdYFrvc",
+      title: "Better Weather", artist: "With Confidence", ...)) isPresented=true
+
+So the capture is **not** the artist page. It is the sibling case of the same bug, reached the same
+way ("Go to Album" rather than "Go to Artist"), which makes the defect a property of *how the screen
+was pushed*, not of which screen it is.
+
+### Why that push behaves differently
+
+`pendingPushID` is set only by the touch observer, from a touch that lands on a registered cover
+cell. A deep link has no such touch, so `pendingPushID` is nil, `CoverZoomPushAnimationFix` does not
+force the push animated, and UIKit skips `animationControllerFor` entirely for a non-animated push.
+That callback is the **only** place `customDetailController` is assigned — so it stays pointing at
+the previous screen. Meanwhile the pushed detail's own installer still sets `activeCustomID`. The
+two disagree, which is exactly what `whyDetail=detail-not-top` reported.
+
+The log shows both halves of the contrast in one run: the two artist-page pushes each logged
+`COVERZOOM forced animated push`, got their `ask op=1`, and swiped correctly; the deep-linked album
+logged no forced-animated line, got no ask, and did not.
+
+### The fix, and why this one and not the other
+
+`CoverZoomRegistry.style(for:)` already documents the intended behaviour for an id nobody
+registered: the delegate declines the push and the pop, and the screen "lands on UIKit's ordinary
+slide — with its ordinary edge-swipe pop". That contract was correct in the delegate and defeated in
+the responder chain, because our edge pan is installed once on the navigation controller's *view*
+and therefore sits on every screen in the stack. It took the edge touch, declined it, and UIKit's
+recognizer never saw the touch at all.
+
+So the fix is to **scope the recognizer**, not to repair the stale pointer. `syncGestures` now sets
+`edgePan.isEnabled` from a new `edgePanServesTopScreen` — the same per-screen predicates as
+`edgePanMayBegin` minus the transient "nothing is mid-transition" test, since that decides whether a
+*touch* is timely, not whose *screen* it is. A disabled recognizer is offered no touches, so UIKit's
+pop recognizer receives them.
+
+Repairing `customDetailController` instead was rejected deliberately. It points our pan **at** those
+screens, which is additive rather than subtractive, and it would not even work: a deep-linked screen
+has no registered cell, so `hasCellTarget` is false and the pop branch declines regardless — landing
+back in "our pan owns the touch and then refuses it", which is the bug.
+
+`edgePanMayBegin` is **not** widened; it is now expressed in terms of the new predicate and keeps the
+coordinator test. The `shouldBeRequiredToFailBy` gate is untouched.
+
+The enable/disable is guarded on `edgePanPopInFlight` and the pan's state, because setting
+`isEnabled = false` mid-recognition cancels the gesture outright, which would abort an interactive
+pop our own pan is driving.
+
+### Verification instrumentation
+
+`COVERZOOM edgeSample` sampled only UIKit's recognizers, which cannot show a handover. It now samples
+ours too, tagged `OURS`, so one line carries both halves of the acceptance test: on a screen we do
+not serve, `OURS/en=false/.../n=0` while a parallax recognizer picks the touch up.
+
+**STATUS: compiles clean for iOS Simulator; NOT yet verified on device.** Acceptance is a device log
+showing `OURS` at `n=0` on a previously-failing screen with UIKit's recognizer taking the touch, plus
+a playlist opened by tapping its cover still zooming and still swiping out. A visual impression is
+not acceptance.
+
+### T072 follow-up — instrumentation only, the fix is untouched
+
+**Correction to my own earlier claim:** the `edgeTouch` recognizer census was never truncated. It
+walks the full hit-test chain to the window and logs 2461–3602 bytes per line; a `cut -c1-400` in
+my own reading truncated it. No widening was needed and none was done.
+
+Reading the complete census showed the real gap. It is taken **at touch-down**, where every
+recognizer is `.possible` with no touches by definition — so it can say who was *present* but never
+who *won*. `edgeSample` then re-read only the pop recognizers plus ours, which answered "did UIKit
+take it?" (no) and could not answer "then who did?".
+
+Two changes, both diagnostic:
+
+- the touch-down census now carries `n=` (touch count) alongside `en=`/`st=`;
+- `edgeSample` keeps the touch-down chain and re-reads **all** of it at +120/+260/+420 ms, printing
+  `chain=<count> active=[…]` — only the recognizers that left `.possible` or hold a touch.
+
+A recognizer anywhere else in the chain (SwiftUI's collection view, a swipe-action pan, a
+window-level system gate) is invisible to the old sample and would show up in `active=`.
+
+**An empty `active=` is itself a result**, and worth stating in advance so it is not mistaken for a
+broken probe: it would mean nothing in the chain claimed the touch, and the swipe is being lost
+before gesture recognition rather than to a competing recognizer.
+
+The `CellHostingView` recognizer remains a **lead only**. It is deliberately not being fixed against
+until the census names an actual owner — it has the same standing as the three hypotheses that were
+built and disproven.
+
+**STATUS: compiles clean; not yet on device.** Still open and treated as a real risk: the cover-tap
+zoom control has never been exercised under T072. Our pan is disabled whenever
+`customDetailController` is nil, so that path could be broken by the fix and nothing in the runs so
+far would have revealed it.
+
+## T073 — the two defects the census named
+
+### Defect 1 — our pan accepted where the delegate would decline
+
+`edgePanServesTopScreen` now also requires `CoverZoomRegistry.hasCellTarget(for:)`, which is the
+last condition of the delegate's pop branch. Acceptance and the delegate now agree.
+
+Before, on a deep-linked screen where `customDetailController` still happened to point at the top
+view controller, our pan accepted, called `popViewController(animated: true)`, and only then had the
+delegate decline for want of a cover cell to fly home to. The pop was already issued, so it ran as a
+plain animated slide with no interaction controller behind it — a dismissal that fires on touch and
+ignores the finger. From the device log, the first edge touch of the T072 run:
+
+    edgePan shouldBegin=true mayBegin=true whyDetail=detail-on-top
+    ask op=2 ... fromIsDetail=true
+    decline op=2 active=qgCfizRpk4EHhLBddZVrwz
+    edgePan popped but no interaction controller was vended
+    installer willDisappear ... interactive=false
+
+This predates T072. The predicate is now **stricter**, not wider — `edgePanMayBegin` covers no
+screen it did not already cover.
+
+### Defect 2 — nothing conscripted the scroll view
+
+On a screen our pan serves, `shouldBeRequiredToFailBy` forces the scroll view's pan to fail, and
+that is *why* the working case works — the gate kept in the tree all night is the mechanism, not
+merely a defensible extra. On a screen our pan has stepped aside from, nothing plays that role and
+SwiftUI's list scroll view takes the edge touch and scrolls with it.
+
+`syncGestures` now requires every scroll view on the current screen to fail for
+`interactivePopGestureRecognizer`. UIKit does not do this for itself, and it is capable of driving
+the pop once it receives the touch — earlier device logs show it reaching `.began` holding a touch
+(`st=1/n=1`).
+
+**The bound, which matters more than the fix.** `require(toFail:)` is permanent and UIKit offers no
+removal, so the scoping cannot come from adding and removing it per touch. It comes from the
+recognizer being waited on: `interactivePopGestureRecognizer` is a **screen-edge** recognizer, so a
+touch that does not begin at the left edge fails it almost immediately and the scroll view proceeds
+untouched. Only a drag begun inside the edge margin is delayed at all — and that is the same cost
+the working screens already pay via `shouldBeRequiredToFailBy`, where scrolling is fine today. This
+extends a bound already observed to be acceptable rather than inventing a new one. The hierarchy
+walk is capped at 400 views so a navigation callback cannot become a stall.
+
+Constraints held: `edgePanMayBegin` not widened, `shouldBeRequiredToFailBy` untouched, T072's
+scoping unchanged.
+
+### Incidental, not fixed
+
+`syncGestures` ran ~12 times in 5 ms during a single pop. Harmless, but it is redundant work in a
+hot path and worth revisiting if that callback ever shows up in a profile.
+
+**STATUS: compiles clean; not verified on device.** Acceptance is unchanged and all three halves are
+required: the cover-tap playlist still zooms and swipes interactively; every Go-to screen swipes and
+**tracks the finger** (an instant non-interactive pop is a FAIL) with the scroll view at `st=5` and a
+pop recognizer holding the touch; and ordinary vertical scrolling still works on those same screens.
+
+### Verification actually achieved — and the one gap in it
+
+Device log, build `2026-08-30T02:58:42`:
+
+- **Go-to screens pop and track the finger — verified.** `PLX/st=2/n=1` (13 observations) and
+  `st=1/n=1` (3): UIKit's pop recognizer holding the touch and driving the transition, between a
+  `willShow depth=1` and its `didShow`. The conscription shows as
+  `UIScrollViewPanGestureRecognizer/st=5/n=1` (23). Ours correctly absent at `en=false`.
+- **Cover-tap path still zooms and swipes interactively — verified.** 8 accepts, 8
+  `ask op=2 fromIsDetail=true`, **0** `decline op=2`, **0** "no interaction controller was vended"
+  (both were the defect-1 signature), and `OURS/en=true/st=2` six times.
+- **Ordinary scrolling still commits — NOT verified in the log. It rests on Ethan's observation
+  ("yup we're good"), not on measurement.** This is recorded as a known gap, not as a pass. The
+  reason it could not be measured: the whole sampler sits behind `if point.x < 40`, so a mid-screen
+  drag — an ordinary scroll — never reaches it, and the conscription's cost falls precisely there.
+  Indirect signals in that run were too weak to substitute (one distinct cell id, no scroll pan
+  reaching `.changed`), which suggests lists may not have been scrolled much while logging.
+
+A `COVERZOOM scrollSample` branch has been added to close that gap on the next round: it samples
+only the pans we conscripted, on non-edge touches, and logs only when one leaves `.possible`. A
+reading of `st=2` is the proof that scrolling still commits; silence is the regression. It is
+committed unmeasured — the first run that exercises scrolling will settle it.
+
+Note for whoever adds to that block: the scroll sampler must not `return` early. It sits above the
+delegate re-assertion that reclaims `UINavigationController.delegate` from SwiftUI on touch-down,
+and an early return would skip that on nearly every touch in the app.

@@ -82,9 +82,19 @@ struct ArtistPageView: View {
             ))
         }
         .ignoresSafeArea(edges: .top)
-        // A no-op unless the tile or row that opened this page marked itself `.custom`, so the
-        // dozen programmatic pushes of this view (Now Playing, "Go to Artist", deep links,
-        // Following) keep the ordinary slide.
+        // The *animation* is a no-op unless the tile or row that opened this page marked itself
+        // `.custom` — the dozen programmatic pushes of this view (Now Playing, "Go to Artist",
+        // deep links, Following) keep the ordinary slide.
+        //
+        // **The installer is not a no-op**, and the old wording here claiming otherwise is what
+        // made an earlier attempt at the swipe bug look correct on paper. It installs the
+        // navigation-delegate proxy and the shared edge pan on the navigation controller
+        // regardless of how this page was pushed, so a page reached by a button is still subject
+        // to whatever gesture arbitration that proxy answers. That is precisely how a
+        // button-pushed artist page ended up unable to swipe: not because anything here ran
+        // differently, but because a *global* `shouldBeRequiredToFailBy` answer applied to it
+        // while the per-screen permission behind it did not. See
+        // `CoverZoomNavigationDelegate.gestureRecognizer(_:shouldBeRequiredToFailBy:)`.
         .coverZoomCustomTransition(id: coverZoomPageId)
         .navigationTitle("")
         .musicNavigationBarTitleDisplayMode(.inline)
