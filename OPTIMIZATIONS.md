@@ -1389,3 +1389,103 @@ committed unmeasured — the first run that exercises scrolling will settle it.
 Note for whoever adds to that block: the scroll sampler must not `return` early. It sits above the
 delegate re-assertion that reclaims `UINavigationController.delegate` from SwiftUI on touch-down,
 and an early return would skip that on nearly every touch in the app.
+
+## 2026-08-29 — tap-based playback branch (T073), and the test that stopped it
+
+Branch `t073-tap-playback`, off dev at `1eaf0dc`. **dev is untouched** — this was built in a git
+worktree so the main checkout stayed on dev for the reader agents.
+
+### What was built
+
+One transport. `AVQueuePlayer` for everything, with the equalizer applied by an
+`MTAudioProcessingTap` attached to each `AVPlayerItem` via `AVMutableAudioMix` before the item is
+inserted. `EqualizedAudioEnginePlayer` is deleted, and with it:
+
+- the dual-player branching through `PlaybackEngine` (76 sites),
+- the mid-track EQ handoff — `scheduleEqualizerHandoffWhenCached`,
+  `swapActiveItemToEqualizerIfNeeded`, `restorePlaybackAfterFailedEqualizerHandoff`,
+  `rebuildEqualizedSessionAfterConfigChange` — which is the bug this branch exists to remove: the
+  equalizer was **absent from the first part of every streamed track** until a background download
+  completed and an audible swap landed,
+- a second, file-reloading seek implementation,
+- a hand-rolled periodic time observer that existed only because the second transport had none.
+
+`reloadForEqualizerSettingsChange` no longer reloads anything: a settings change publishes new
+coefficients to the live taps, so the playhead does not move and there is no seam.
+
+Design points that came from the investigation and are load-bearing:
+
+- Coefficients are computed **in `prepare`, from the format it supplies**, never once at init —
+  `prepare` can fire again at a new sample rate after a route change.
+- A tap is attached to **every** item; bypass is identity coefficients, never detaching.
+- Each tap owns its filter state. Two are live at once at a gapless boundary, by design.
+- The render callback allocates nothing, locks nothing and logs nothing. It writes fixed-size
+  records into a preallocated per-tap ring, drained by a 500 ms timer.
+
+### Logging
+
+`PlaybackTapLog` writes both streams to `Documents/vellum-tap.log`, **deliberately not under
+`#if DEBUG`** — the whole of `DebugUIRemote.swift` is, which is exactly why the existing log records
+nothing in the configuration where the bug reproduces. Every record carries item identity.
+`PlaybackCPUSampler` samples `mach_task_basic_info` user+system time against elapsed playback
+seconds, plus tap callback count and thermal state. Raw compute only — no battery API, no energy
+estimate.
+
+### The tests did NOT pass, and the reason is not the ordering they were meant to measure
+
+**Tests 1, 2 and 3: FAIL on this build.** Not by a narrow margin — no audio reaches the tap at all.
+
+Measured on the iOS 26.3 simulator, EQ on with a non-flat curve:
+
+| observation | evidence |
+|---|---|
+| Mix attaches, with identity | `TAP mix-attached item=1 track=… title="sad robot" trackID=1 audibleCurve=true` |
+| `prepare` fires with a real format | `TAP prepare item=1 … sampleRate=44100.0 channels=2 maxFrames=4096 prepareCount=1` — 7 prepares across the run |
+| **`process` is never entered, once** | zero `TAP process` lines; the drain logs on *entry-count* growth as well as ring growth, so silence here means the callback was never called |
+| Playback stalls and retries | `unprepare … processCount=0` roughly every 15 s, then a fresh item |
+
+**Control run isolates it to the tap.** With `vellumTapEnabled=NO` — a kill switch added for exactly
+this — the same build plays continuously: `audioSeconds` climbs 30 → 40 → 50 → 60 with no teardown,
+`cpuPerMinAudio` ≈ 2.0–3.7. So the transport rewrite is fine; attaching the tap is what stops audio.
+
+### Leading hypothesis, stated as a hypothesis
+
+`prepare` firing with a correct format means the mix **is** being honoured — a misconfigured mix is
+normally ignored silently and `prepare` never runs at all. What does not happen is the render chain
+ever pulling through the tap. The strongest candidate is that **`MTAudioProcessingTap` is not
+serviced by the iOS Simulator's audio stack**, which would produce precisely this: prepared, never
+processed, no audio, stall.
+
+If that is right it is a methodology problem, not only a code one: **tests 1/2/3 cannot be run
+headless on a simulator at all**, and every one of the six tests needs the device. That is a
+decision for Ethan, not something to work around quietly.
+
+The alternative — a real defect in the tap setup — is not excluded. What separates them is one run
+on hardware.
+
+**Nothing here is a device measurement.** The simulator CPU figures are a plumbing smoke test only.
+
+### T073 follow-up — use-after-free on the audio path
+
+Device logs showed, 120 ms apart:
+
+    TAP retire item=1 … / TAP retire item=2 …
+    TAP prepare ORPHAN item=15785850001729508719
+
+That item tag is a read of freed memory. Retiring a tap dropped the last Swift reference, `deinit`
+freed the render state, and AVFoundation then called `prepare` on a tap whose storage no longer
+existed. It did not crash in that session and the orphan branch caught it, but it is a
+use-after-free on the render path and only luck separates the two.
+
+The mistake was assuming the wrapper owned the storage. It does not: once the state has been handed
+to an `MTAudioProcessingTap`, only the framework knows when the last callback has been made, and it
+says so by calling **`finalize`**. So `deinit` no longer frees anything, `finalize` is now the only
+place the render state is released, and it frees straight from the raw storage because by then the
+Swift object may be long gone. `disposeBeforeAttachment()` covers the one other case — tap creation
+failed, nothing ever took ownership — and refuses once a tap exists.
+
+The related symptom is in the same logs: **zero `unprepare` callbacks across 1455 lines**. Taps were
+only ever torn down by our own retirement, never by AVFoundation finishing with them, which is the
+same mistake seen from the other side.
+
+UNVERIFIED: builds clean, not yet re-run on device.
