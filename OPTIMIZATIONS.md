@@ -1543,3 +1543,54 @@ sites, with no runtime switch. That is a considered decision by the branch, and 
 standing "no debug logging left in the tree" rule. Merged as written — flagging it as Ethan's call,
 not resolved here. Separately, the one `print("[VELLUM-PB]", …)` at `PlaybackEngine.swift:2780`
 predates this merge; it is not something t073 added.
+
+## 2026-08-30 — PlaybackTapLog is now DEBUG-only, and the [VELLUM-PB] console logger is gone
+
+Ethan's decision, made after the tradeoff was put to him: a Release build of his daily install
+should not be writing a log file from ~20 playback call sites.
+
+### What changed
+
+`PlaybackTapLog` keeps its API and loses its body in Release. The implementation — the file handle,
+the serial queue, the formatting — now sits inside `#if DEBUG`, with an `#else` branch that declares
+the same three entry points (`eq`, `tap`, `launchMarker`) doing nothing. Nothing at the ~20 call
+sites changed, and not one `#if DEBUG` was added to them; that was the point of the shape.
+
+The parameters became `@autoclosure () -> String`, so in Release the string interpolation at each
+call site is never evaluated either. The cost that disappears is the whole line, not just the write.
+
+Separately, `PlaybackEngine.pbLog` and its 12 call sites are deleted. It was a `print("[VELLUM-PB]", …)`
+already inside `#if DEBUG`, so nothing shipped — but the no-debug-logging rule is aimed exactly at
+this, and removing the `print` while leaving twelve calls to an empty function would have missed the
+point. No behaviour change: it only ever wrote to the Xcode console in Debug.
+
+### What this costs, stated plainly
+
+`PlaybackTapLog`'s own header argued it should NOT be gated, because the playback bug it exists to
+diagnose reproduces in Release, and a diagnostic that switches itself off in the configuration being
+diagnosed is not a diagnostic. That argument was not wrong, and it is now the price of the gate:
+**this log can no longer observe a Release-only playback bug.** The header records that so the next
+reader does not have to rediscover it.
+
+If that capability is wanted back, the shape to reach for is a runtime switch that is **off by
+default in Release** — one `UserDefaults` flag read once into a `static let`, guarding the same
+`write`, so a Release build stays silent for everyone who does not deliberately turn it on. That was
+offered as an option and NOT built; it needs Ethan's word first.
+
+### Verification
+
+Both configurations built for iOS Simulator from a throwaway worktree at `ed2df20`:
+
+- **Debug: BUILD SUCCEEDED, 0 errors, 0 warnings.**
+- **Release: BUILD SUCCEEDED, 0 errors, 1 warning** — `not stripping binary because it is signed`,
+  in `VellumWidgets`, a simulator code-signing artefact in a target this change does not touch.
+
+Proof the code is gone rather than merely unreachable: the Release binary (74 MB, and it does
+contain `PlaybackEngine` and `EqualizerAudioTap` symbols) has **zero** occurrences of the string
+`vellum-tap.log`, as does the widget extension that also links `VellumMusicKit`. The Debug binary
+still has it. `VELLUM-PB` appears in neither.
+
+**No on-device confirmation was possible: Ethan has asked us off his phone, so this was verified by
+building only.** What is unverified by that: that Debug behaviour on the device is unchanged in
+practice. The code path there is byte-identical to before apart from the `@autoclosure`, but it has
+not been run on hardware.
