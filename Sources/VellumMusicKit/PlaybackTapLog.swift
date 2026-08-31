@@ -2,12 +2,21 @@ import Foundation
 
 /// Device-retrievable diagnostics for the tap playback path.
 ///
-/// **Deliberately not wrapped in `#if DEBUG`.** The whole of `DebugUIRemote.swift` is, which is
-/// why the existing `vellum-hangwatch.log` records nothing in a Release build on a device — the
-/// only configuration in which the playback bug this branch exists to fix actually reproduces.
-/// A diagnostic that switches itself off in the situation being diagnosed is not a diagnostic.
+/// **DEBUG only, by Ethan's decision on 2026-08-30.** This was originally written *un*-gated, and
+/// the argument for that is still on the record: the playback bug it exists to diagnose reproduces
+/// in Release, and a diagnostic that switches itself off in the configuration being diagnosed is
+/// not a diagnostic. He was shown that tradeoff and chose the gate anyway — a Release build of his
+/// daily install should not be writing a log file from ~20 playback call sites. So the
+/// file-writing code below is compiled out of Release entirely.
 ///
-/// Both streams the brief asks for go into **one file**, distinguished by prefix:
+/// **The consequence is real and deliberate: this log can no longer observe a Release-only
+/// playback bug.** If that need returns, the answer is a runtime switch that is off by default,
+/// not the removal of this gate. See the OPTIMIZATIONS.md entry for this change.
+///
+/// The call sites do not change shape: the `#else` branch below is API-compatible and does
+/// nothing, so no `#if DEBUG` is smeared across the ~20 places that log.
+///
+/// Both streams go into **one file**, distinguished by prefix:
 ///
 /// - `EQ ` — is the equalizer in the audio being heard right now.
 /// - `TAP` — tap lifecycle: prepare, unprepare, first/last process.
@@ -23,6 +32,7 @@ import Foundation
 ///
 /// The file is append-only across installs, so start reading at the last `===== LAUNCH` marker.
 enum PlaybackTapLog {
+#if DEBUG
     static let fileName = "vellum-tap.log"
 
     /// Serial, off the caller's thread. Never call this from an audio render callback — see
@@ -36,19 +46,19 @@ enum PlaybackTapLog {
     }
 
     /// Equalizer-activity stream: what is true of the audio currently being produced.
-    static func eq(_ message: String) {
-        write(prefix: "EQ ", message)
+    static func eq(_ message: @autoclosure () -> String) {
+        write(prefix: "EQ ", message())
     }
 
     /// Tap-lifecycle stream: prepare / unprepare / process boundaries, always with item identity.
-    static func tap(_ message: String) {
-        write(prefix: "TAP", message)
+    static func tap(_ message: @autoclosure () -> String) {
+        write(prefix: "TAP", message())
     }
 
     /// Marks a run boundary. The log survives reinstalls, so without this a reader cannot tell
     /// which lines belong to the build they are reasoning about.
-    static func launchMarker(_ detail: String) {
-        write(prefix: "===", "== LAUNCH \(detail)")
+    static func launchMarker(_ detail: @autoclosure () -> String) {
+        write(prefix: "===", "== LAUNCH \(detail())")
     }
 
     private static func write(prefix: String, _ message: String) {
@@ -67,4 +77,12 @@ enum PlaybackTapLog {
             try? handle.write(contentsOf: Data(line.utf8))
         }
     }
+#else
+    // Release: no file, no queue, no formatting, and nothing reachable that could write one.
+    // The parameters are `@autoclosure` so the string interpolation at each call site is never
+    // evaluated either — the arguments cost nothing, not merely the writes.
+    @inline(__always) static func eq(_ message: @autoclosure () -> String) {}
+    @inline(__always) static func tap(_ message: @autoclosure () -> String) {}
+    @inline(__always) static func launchMarker(_ detail: @autoclosure () -> String) {}
+#endif
 }

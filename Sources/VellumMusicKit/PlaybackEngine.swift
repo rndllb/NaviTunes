@@ -1065,7 +1065,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
         // Never land on the exact end — that fires AVPlayerItemDidPlayToEndTime
         // and advances the queue (same guard skipForward uses).
         let clamped = max(0, min(targetSeconds, max(0, d - 1.0)))
-        pbLog("seek target=\(targetSeconds) resolvedDur=\(d) clamped=\(clamped) itemDur=\(player?.currentItem?.duration.seconds ?? -1)")
         // Whether a seek was ALREADY in flight, read before this one marks itself as one.
         let seekAlreadyInFlight = isSeeking
 
@@ -1217,7 +1216,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     func skipNext() {
-        pbLog("skipNext from idx=\(currentIndex)")
         // Shuffle is a queue-reordering action — advance sequentially regardless of mode.
         guard currentIndex + 1 < queue.count else {
             guard repeatMode == .all, !queue.isEmpty else { return }
@@ -1238,7 +1236,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     func skipPrevious() {
-        pbLog("skipPrevious from idx=\(currentIndex) currentTime=\(currentTime)")
         if currentTime > 3 {
             seek(toSeconds: 0)
             return
@@ -1585,7 +1582,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
         // Format badge is per-track: clear on handoff, NOT in teardownPlayer —
         // teardown also runs for same-track reloads (stall recovery, EQ
         // handoff) and nil-ing there made the badge flicker out mid-song.
-        if nowPlayingFormatLabel != nil { pbLog("format label cleared (track handoff)") }
         nowPlayingFormatLabel = nil
         spuriousEndRecoveryAttempted = false
     }
@@ -1612,7 +1608,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// skipped past — and after how many attempts — is a product decision, not part of fixing a
     /// swallowed error, so this stops honestly rather than inventing a policy.
     private func reportPlaybackFailure(_ error: Error?, track: Track?, context: String) {
-        pbLog("playback failed [\(context)]: \(error?.localizedDescription ?? "no underlying error")")
         isPlaying = false
         shouldAutoPlayAfterAdvance = false
         setBuffering(false)
@@ -1909,7 +1904,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
         guard let track = currentTrack, !track.isInternetRadioStream else { return }
         let playerTime = player.currentTime().seconds
         let resumeAt = max(playbackHead, playerTime.isFinite ? playerTime : 0)
-        pbLog("stall recovery firing → reload idx=\(currentIndex) at \(resumeAt)")
         let epoch = beginPlaybackSession()
         cancelPendingAdvanceWork()
         advanceWork = Task { [weak self] in
@@ -2428,7 +2422,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
         if label == nil {
             label = formatLabel(codec: track.audioCodec, transcodeKbps: nil, track: track)
         }
-        pbLog("format label derive: url=\(candidateURL.isFileURL ? "file:.\(candidateURL.pathExtension)" : candidateURL.lastPathComponent) trackCodec=\(track.audioCodec ?? "nil") → \(label ?? "nil")")
         return label
     }
 
@@ -2478,7 +2471,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
                 guard let self, self.isPlaybackEpochCurrent(epoch),
                       self.nowPlayingFormatLabel == nil else { return }
                 self.nowPlayingFormatLabel = Self.formatLabel(audioSubtype: subtype, kbps: kbps)
-                self.pbLog("format label probe: subtype=\(subtype) kbps=\(kbps ?? -1) → \(self.nowPlayingFormatLabel ?? "nil")")
             }
         }
     }
@@ -2773,14 +2765,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
         }
     }
 
-    /// Console diagnostics for playback-flow debugging — grep the Xcode
-    /// console for "[VELLUM-PB]". DEBUG builds only.
-    private func pbLog(_ message: @autoclosure () -> String) {
-#if DEBUG
-        print("[VELLUM-PB]", message())
-#endif
-    }
-
     /// One-shot guard so a track with bad duration metadata can't loop forever
     /// through spurious-end recovery. Reset on every track handoff.
     private var spuriousEndRecoveryAttempted = false
@@ -2788,7 +2772,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private func handleEnded(endedItem: AVPlayerItem? = nil) {
         let endedAtLog = endedItem?.currentTime().seconds ?? -1
         let itemDurLog = endedItem?.duration.seconds ?? -1
-        pbLog("handleEnded endedItem=\(endedItem == nil ? "nil" : "set") endedAt=\(endedAtLog) itemDur=\(itemDurLog) engineDur=\(duration) idx=\(currentIndex) recoveryTried=\(spuriousEndRecoveryAttempted)")
         // Spurious end: chunked/transcoded streams can't seek past the data
         // AVFoundation has buffered — a scrub into an unloaded region plays out
         // the loaded tail and fires DidPlayToEndTime mid-song, which used to
@@ -2804,7 +2787,6 @@ final class PlaybackEngine: NSObject, ObservableObject {
                 spuriousEndRecoveryAttempted = true
                 shouldAutoPlayAfterAdvance = isPlaying
                 let resumeAt = min(max(0, endedAt), max(0, knownDuration - 2))
-                pbLog("SPURIOUS end → reloading same track at \(resumeAt)")
                 cancelPendingAdvanceWork()
                 advanceWork = Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -2839,11 +2821,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
            nextIndex == upcomingQueueIndices(limit: 1).first,
            queue.indices.contains(nextIndex),
            enqueuedNextTrack?.id == queue[nextIndex].id {
-            pbLog("gapless promote → idx=\(nextIndex)")
             promoteToEnqueuedNext(item: nextItem, index: nextIndex, track: queue[nextIndex])
             return
         }
-        pbLog("slow-path advance repeatMode=\(repeatMode)")
 
         // Slow path: nothing usable pre-enqueued (repeat-one, end of queue, queue
         // edited, or enqueue failed) — rebuild as before.
