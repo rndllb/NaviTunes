@@ -1076,7 +1076,12 @@ struct ServerPlaylistDetailView: View {
     }
 
     private var detailBackdropTaskID: String {
-        "\(resolvedDetailArtworkURL?.absoluteString ?? "")-\(app.playlistBackdropEnabled)-\(colorScheme)"
+        // NOT `absoluteString`: a Subsonic cover URL carries a fresh random salt on every build,
+        // so that spelling made this id differ on every body pass and restarted the task each
+        // time — the task then writes `backdropPalette` (@State, not Equatable) on the main
+        // actor, which invalidates the body again. `AlbumArtworkView` was fixed the same way
+        // (see the artwork-churn entry in OPTIMIZATIONS.md); this view never got it.
+        "\(ArtworkDynamicGradient.stableID(for: resolvedDetailArtworkURL))-\(app.playlistBackdropEnabled)-\(colorScheme)"
     }
 
     private func refreshDetailBackdropPalette() async {
