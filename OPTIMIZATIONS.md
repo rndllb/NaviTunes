@@ -1489,3 +1489,57 @@ only ever torn down by our own retirement, never by AVFoundation finishing with 
 same mistake seen from the other side.
 
 UNVERIFIED: builds clean, not yet re-run on device.
+
+## 2026-08-30 — merged t19-swipe-fix and t073-tap-playback into dev
+
+Both feature branches are now on `dev`. Nothing was pushed: `dev` is local, `origin/dev` is still
+`52fa64f`.
+
+### What was merged, and how
+
+`t19-swipe-fix` (`6883ff9`, one commit) went in first as a **fast-forward** — off `1eaf0dc` it is
+one, and taking it first is what makes the second merge a real one.
+
+`t073-tap-playback` (`5d2d4a2`, `b6b5613`, `c9f45d8`) then went in as a **`--no-ff` merge commit**
+(`625c8f4`) rather than a rebase. Three reasons: the three commits that were written and reviewed
+against the audio path keep their identity and their trees, so what runs on the phone is what was
+reviewed; both source branches are checked out in worktrees, which makes an in-place rebase of
+either impossible without disturbing them; and a merge is revertible as one object if the playback
+rewrite turns out to misbehave. The cost is one extra commit and a non-linear stretch of history.
+
+### The one conflict was in this file, not in code
+
+The branches were expected to be disjoint — transition/UI versus playback engine — and in code they
+are. But both of them also **appended a new entry to the end of `OPTIMIZATIONS.md`**, at the same
+line, which is the one conflict the merge produced (t19 +288 lines, t073 +100, zero deletions on
+either side). Resolved by keeping **both** blocks whole, t19's first, then t073's: 1103 base lines +
+288 + 100 = 1491, verified line-for-line against all three inputs. No code file conflicted, and
+`git diff 6883ff9 HEAD` is exactly t073's own +1412/-1066 across its 8 files — the merge introduced
+nothing of its own.
+
+### It builds, and the audio path runs on the phone
+
+- **Build:** buildbot `vmerge1`, scheme `VellumMusicHost`, GUI session (`==> session: Aqua`).
+  `errors=0 errSec=0`, **zero warnings in the whole build**, signed product installed on the phone.
+  The `launched=no` on that result is the documented locked-phone case, not a build failure.
+- **Audio, on device:** the previous entry closed with *"UNVERIFIED: builds clean, not yet re-run on
+  device."* It has now been run. A throwaway worktree at `625c8f4` drove playback through the repo's
+  own `com.vellum.debug.playQueue` hook on Ethan's own library, and `Documents/vellum-tap.log` shows
+  the tap doing real work: `mix-attached` → `prepare` at 44100 Hz / 2 ch / 4096 max frames →
+  **613 render callbacks over a 56.8 s stream span, `lostFromRing=0`, `lastSourceStatus=0`**, with
+  the next item (`Cliche'`) staged behind the needle. 613 × 4096 / 44100 = 56.9 s of audio produced
+  in 56.8 s of wall clock, i.e. real-time rendering with no dropouts. Cost, from the sampler that
+  `c9f45d8` split out: `audioCpuPerMinAudio=1.065` s against `cpuPerMinAudio=2.967` s, thermal
+  nominal. Zero `no-tap`, `FAILED` or orphan lines in the run.
+  What this does NOT prove is sound leaving the speaker — nobody was listening to the phone. It
+  proves the engine rendered audio frames continuously through the EQ tap.
+
+### One thing to decide, not a defect
+
+`PlaybackTapLog` is deliberately **not** `#if DEBUG` (its own header says why: the bug it exists to
+diagnose only reproduces in Release, and a diagnostic that switches itself off there is useless), so
+a Release build now writes `Documents/vellum-tap.log` on every playback lifecycle event, from 20 call
+sites, with no runtime switch. That is a considered decision by the branch, and it collides with the
+standing "no debug logging left in the tree" rule. Merged as written — flagging it as Ethan's call,
+not resolved here. Separately, the one `print("[VELLUM-PB]", …)` at `PlaybackEngine.swift:2780`
+predates this merge; it is not something t073 added.
