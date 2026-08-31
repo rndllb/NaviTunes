@@ -1594,3 +1594,72 @@ still has it. `VELLUM-PB` appears in neither.
 building only.** What is unverified by that: that Debug behaviour on the device is unchanged in
 practice. The code path there is byte-identical to before apart from the `@autoclosure`, but it has
 not been run on hardware.
+
+## 2026-08-30 — the album-detail backdrop task no longer restarts on a salted URL
+
+A 30-agent static review of the album-scroll lag found one surviving candidate: the detail view's
+backdrop `.task(id:)` was keyed on a Subsonic cover-art URL, and `NavidromeClient.buildRESTURL`
+mints a fresh random salt on every call. So the id differed on every body pass, SwiftUI restarted
+the task, the task wrote `backdropPalette` (`@State`, not Equatable) on the main actor, that
+invalidated the body, and round it went. This is the same hazard the repo already fixed on
+`AlbumArtworkView` ("108 of 178 artwork task re-fires were salt-only"); the detail view never got
+the fix.
+
+### Measured, and this is the part that matters
+
+Simulator, demo Navidrome server, artist page → album (The Polish Ambassador, 22-track album) →
+sit idle 15 s → 8 fast swipe pairs. Counted backdrop task fires and detail-view body passes:
+
+| | task fires | of which salt-only | body passes |
+|---|---|---|---|
+| before | **19** over the run (4 during 40 s of scrolling) | 15 (79%) | 29 |
+| after | **1** over the run (0 during scrolling, 0 while idle) | 0 | 3 |
+
+**The loop is real, but it was never spinning.** It fired about 0.1 times per second while
+scrolling, not once per frame — the body only re-evaluated 4 times across 40 s of dragging. That
+settles the open question in the analysis, which could not tell from source whether this was a free
+spin or one extra pass per frame: it is neither, it is a slow trickle. Removing it is right — 15 of
+19 restarts were pure churn — but nobody should expect it to be felt.
+
+**And the album screen shows almost no jank in the simulator to begin with:** 3 stalls >16 ms
+totalling 212 ms across 40.3 s of scrolling, versus ~17 stalls / 854 ms per 15 s on the long
+playlist. So this fix is a correctness and churn fix, not a demonstrated cure for what Ethan sees.
+
+### What changed
+
+- `ArtworkDynamicGradient.stableID(for:style:)` — new, exposes the palette cache's own identity
+  (path + `id`/`coverart`/`size`/`tag`), the same idea as `DecodedArtworkCache.stableID`.
+- `ServerPlaylistViews.detailBackdropTaskID` and `BrowseAlbumDetailView`'s backdrop task now key on
+  it instead of `url.absoluteString`.
+- `AlbumHeroBackdrop`'s `.id(...)` likewise — it was throwing the view's identity away every pass.
+- **`ArtworkDynamicGradient.cacheKey` now sorts its identity params.** Found while measuring: the
+  first fix only got fires from 19 to 13, because `buildRESTURL` iterates a Swift **Dictionary**, so
+  the same request comes back with its query items in a different ORDER. The key therefore still
+  differed for identical artwork. The decoded-artwork caches already sort for this exact reason.
+  This also means the palette cache itself was missing on order changes before today.
+- `LibrarySongRow.==` compares artwork **identity** rather than URL spelling, so `.equatable()` can
+  finally skip a row whose cover has not changed.
+
+### One instruction I did not follow literally, and why
+
+The brief said to stop computing `artworkURL` for album rows because they pass `showsArtwork:
+false`. That premise is wrong: `SongLongPressPreviewCard` (the T061 long-press preview) takes the
+same URL and has **no** fallback to `track.artworkURL`, so passing nil there would silently
+un-illustrate the preview card on every album row. Fixing the equality instead removes the same
+churn with no behaviour change, and it fixes library song lists too.
+
+### Verification
+
+- Debug **BUILD SUCCEEDED, 0 warnings**. Release **BUILD SUCCEEDED, 0 errors, 1 warning** — the
+  pre-existing `not stripping binary because it is signed` on `VellumWidgets`, untouched by this.
+- **No visual change:** the same album captured on the unfixed and fixed builds is pixel-comparable
+  — same backdrop colour, same layout, same rows. The palette still loads.
+- **No device confirmation was possible: Ethan asked us off his phone.** Everything here is
+  simulator-only, against the demo Navidrome server, on a 22-track album.
+
+### The caveat that must ride with this
+
+**This does not explain his framing and does not close his bug.** He said artist page → album →
+scroll. The same view renders playlists, so the loop should have shown there too; and at 0.1 fires
+per second it is too slow to be what he feels. Also backend-dependent: it needs Subsonic, and it
+disappears for a downloaded album whose artwork is a stable `file://` URL.

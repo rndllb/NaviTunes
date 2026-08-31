@@ -305,7 +305,8 @@ struct BrowseAlbumDetailView: View {
             recomputeBrowseQueuedRows()
         }
         .onAppear(perform: seedCachedBrowseBackdropIfNeeded)
-        .task(id: "\(displayArtworkURL?.absoluteString ?? "")-\(app.albumBackdropEnabled)-\(colorScheme)") {
+        // Stable artwork identity, not the salted URL — see `ArtworkDynamicGradient.stableID`.
+        .task(id: "\(ArtworkDynamicGradient.stableID(for: displayArtworkURL))-\(app.albumBackdropEnabled)-\(colorScheme)") {
             guard app.albumBackdropEnabled else {
                 backdropPalette = .listSurface(colorScheme: colorScheme)
                 return

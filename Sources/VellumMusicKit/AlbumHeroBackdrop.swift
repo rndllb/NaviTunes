@@ -166,7 +166,9 @@ struct AlbumHeroBackdropView: View {
             Rectangle()
                 .fill(palette.heroSolidBackdropColor)
                 .frame(width: w, height: h)
-                .id(artworkURL?.absoluteString ?? "")
+                // Stable artwork identity: the salted URL changed on every pass, which threw
+                // this view's identity away and rebuilt it for no reason.
+                .id(ArtworkDynamicGradient.stableID(for: artworkURL))
         }
         .ignoresSafeArea()
     }

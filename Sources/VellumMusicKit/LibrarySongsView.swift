@@ -515,10 +515,25 @@ struct LibrarySongRow: View, Equatable {
 
     private static let rowArtworkDecodePixels: CGFloat = 192
 
+    /// Identity of an artwork URL rather than its spelling.
+    ///
+    /// Subsonic mints a fresh salt per URL build, so `lhs.artworkURL == rhs.artworkURL` was
+    /// **never** true for the same cover and `.equatable()` on this row could never skip a
+    /// re-render. Comparing the decode cache's own stable id fixes that without changing what is
+    /// displayed: a genuinely different cover still differs, only auth churn is ignored.
+    ///
+    /// Note this is why the row is NOT simply handed a `nil` artwork URL when `showsArtwork` is
+    /// false: the long-press preview card (`SongLongPressPreviewCard`) uses the same URL and has
+    /// no fallback, so dropping it would silently un-illustrate every album row's preview.
+    private static func artworkIdentity(_ url: URL?) -> String {
+        guard let url else { return "" }
+        return DecodedArtworkCache.stableID(for: url, maxPixelSize: rowArtworkDecodePixels)
+    }
+
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.track.id == rhs.track.id
-            && lhs.artworkURL == rhs.artworkURL
-            && lhs.track.artworkURL == rhs.track.artworkURL
+            && artworkIdentity(lhs.artworkURL) == artworkIdentity(rhs.artworkURL)
+            && artworkIdentity(lhs.track.artworkURL) == artworkIdentity(rhs.track.artworkURL)
             && lhs.itemSize == rhs.itemSize
             && lhs.isFavorite == rhs.isFavorite
             && lhs.isOfflineCached == rhs.isOfflineCached

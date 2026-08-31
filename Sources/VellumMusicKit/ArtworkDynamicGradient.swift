@@ -47,11 +47,30 @@ enum ArtworkDynamicGradient {
         var parts = [url.path]
         if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false), let items = comps.queryItems {
             let identityNames: Set<String> = ["id", "coverart", "size", "tag"]
-            for item in items where identityNames.contains(item.name.lowercased()) {
-                parts.append("\(item.name.lowercased())=\(item.value ?? "")")
-            }
+            // SORTED. `NavidromeClient.buildRESTURL` iterates a Swift Dictionary, so the same
+            // request comes back with its query items in a different ORDER between calls — which
+            // made this key differ for identical artwork, costing cache hits here and (once this
+            // key started backing `.task(id:)`) task restarts. The decoded-artwork caches already
+            // sort for exactly this reason.
+            parts.append(contentsOf: items
+                .filter { identityNames.contains($0.name.lowercased()) }
+                .map { "\($0.name.lowercased())=\($0.value ?? "")" }
+                .sorted())
         }
         return "\(parts.joined(separator: "&"))|\(style)" as NSString
+    }
+
+    /// Stable identity for a piece of artwork, for callers that need a **key** rather than a
+    /// lookup — chiefly `.task(id:)`.
+    ///
+    /// A Subsonic artwork URL is rebuilt with a fresh random salt on every call, so keying a task
+    /// on `url.absoluteString` restarts it on every body pass even though the artwork is
+    /// unchanged. This is the same identity ``cacheKey`` uses, so a task keyed on it re-runs
+    /// exactly when the cache would miss — and not otherwise. `DecodedArtworkCache.stableID`
+    /// exists for the same reason, and this is deliberately the same shape.
+    static func stableID(for artworkURL: URL?, style: BackdropAnalysisStyle = .detail) -> String {
+        guard let artworkURL else { return "" }
+        return cacheKey(artworkURL, style) as String
     }
 
     /// Synchronous cache lookup so a view can seed its backdrop with no async hop / no pop-in
