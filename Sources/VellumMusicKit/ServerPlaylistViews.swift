@@ -996,6 +996,17 @@ struct ServerPlaylistDetailView: View {
             .task(id: detailBackdropTaskID) {
                 await refreshDetailBackdropPalette()
             }
+            // Eager shelves: kick the fetch and derivation off when the album opens rather than
+            // when the shelf row materialises at the bottom of the scroll. See
+            // `warmAlbumDetailShelves` for why this runs on the main actor and why it waits.
+            .task(id: eagerShelfWarmKey) {
+                guard case .album(let album, _) = source else { return }
+                await app.warmAlbumDetailShelves(
+                    artist: album.artist,
+                    title: album.title,
+                    excludingAlbumId: album.id,
+                )
+            }
             .detailDismissTracker(isBeingDismissed: $isBeingDismissed)
             .onChange(of: app.libraryCatalogEpoch) { _, _ in
                 Task { await load() }
@@ -1073,6 +1084,13 @@ struct ServerPlaylistDetailView: View {
             .onChange(of: app.libraryCatalogEpoch) { _, _ in recomputeDisplayedRows() }
             .onChange(of: app.librarySongIds) { _, _ in recomputeDisplayedRows() }
             .onChange(of: previewTracks.map(\.id)) { _, _ in recomputeDisplayedRows() }
+    }
+
+    /// Albums only — playlists and home mixes have no related shelves to warm. Empty string means
+    /// "nothing to do", and keying on it keeps the task from running on those screens.
+    private var eagerShelfWarmKey: String {
+        guard case .album(let album, _) = source else { return "" }
+        return "\(album.id)|\(album.artist)|\(app.libraryCatalogEpoch)"
     }
 
     private var detailBackdropTaskID: String {

@@ -4783,12 +4783,55 @@ public final class AppModel: ObservableObject {
         return artists.first(where: { matches($0.name) })?.id
     }
 
+    private struct AlbumDetailShelfMemoEntry {
+        let otherVersions: [AlbumSummary]
+        let moreByArtist: [AlbumSummary]
+        let youMightAlsoLike: [AlbumSummary]
+    }
+
+    /// Memoized shelf derivations, keyed the same way ``AlbumDetailArtistCatalogCache`` is —
+    /// one layer up, over the *derivation* rather than the fetch.
+    ///
+    /// The rows redo this work on every scroll-into-view, and the derivation (not artwork,
+    /// which never runs on this thread) is what stalls the main actor. The key carries
+    /// ``albumDetailCacheSessionKey``, so a catalog change bumps `libraryCatalogEpoch` and every
+    /// entry is dropped rather than going stale.
+    private var albumDetailShelfMemo: [String: AlbumDetailShelfMemoEntry] = [:]
+    private var albumDetailYouMightAlsoLikeMemo: [String: [AlbumSummary]] = [:]
+    /// The session these memos were built for; a change clears both.
+    private var albumDetailShelfMemoSessionKey = ""
+
+    /// Drops both memos when the backend or catalog epoch moves on, so entries cannot outlive
+    /// the catalog they were derived from and the dictionaries cannot grow across epochs.
+    private func invalidateAlbumDetailShelfMemosIfNeeded(_ sessionKey: String) {
+        guard albumDetailShelfMemoSessionKey != sessionKey else { return }
+        albumDetailShelfMemoSessionKey = sessionKey
+        albumDetailShelfMemo.removeAll()
+        albumDetailYouMightAlsoLikeMemo.removeAll()
+    }
+
     /// Instant album-detail shelves from the in-memory catalog page (no network).
     func albumDetailShelvesFromMemory(
         artist: String,
         title: String,
         excludingAlbumId: String?,
     ) -> (otherVersions: [AlbumSummary], moreByArtist: [AlbumSummary], youMightAlsoLike: [AlbumSummary]) {
+        let sessionKey = albumDetailCacheSessionKey()
+        var memoKey = ""
+        if !sessionKey.isEmpty {
+            invalidateAlbumDetailShelfMemosIfNeeded(sessionKey)
+            memoKey = "\(sessionKey)|\(artist)|\(title)|\(excludingAlbumId ?? "")"
+            if let hit = albumDetailShelfMemo[memoKey] {
+#if DEBUG
+                DebugUIRemote.log("SHELF memo=hit kind=shelves artist=\(artist)")
+#endif
+                return (hit.otherVersions, hit.moreByArtist, hit.youMightAlsoLike)
+            }
+        }
+#if DEBUG
+        DebugUIRemote.log("SHELF memo=miss kind=shelves artist=\(artist) "
+            + "keyed=\(memoKey.isEmpty ? "no" : "yes") catalog=\(libraryAlbums.count)")
+#endif
         let catalog = libraryAlbums.filter { albumDetailArtistMatches($0.artist, referenceArtist: artist) }
         let versions = albumDetailOtherVersions(
             in: catalog,
@@ -4808,7 +4851,61 @@ public final class AppModel: ObservableObject {
             excludingAlbumId: excludingAlbumId,
             excludingVersionIDs: versionIDs,
         )
+        // Only memoize a derivation that had real inputs AND produced something. Storing an empty
+        // result computed before `libraryAlbums` had loaded is what made the shelf vanish for good
+        // on an album: the empty went into the memo under this key, and every later visit was a hit
+        // returning it. A genuinely empty shelf is recomputed each visit instead — cheap, and
+        // correctness beats saving that work.
+        let derivedFromLoadedCatalog = !libraryAlbums.isEmpty
+        let producedSomething = !versions.isEmpty || !more.isEmpty || !ymal.isEmpty
+        if !memoKey.isEmpty, derivedFromLoadedCatalog, producedSomething {
+            albumDetailShelfMemo[memoKey] = AlbumDetailShelfMemoEntry(
+                otherVersions: versions,
+                moreByArtist: more,
+                youMightAlsoLike: ymal,
+            )
+        }
         return (versions, more, ymal)
+    }
+
+    /// Start the album-detail shelves as soon as the album view opens, instead of when the shelf
+    /// row scrolls into sight. Ethan: *"It should load the second the user opens the view."*
+    ///
+    /// **Executor: the main actor, on purpose, and no new thread.** The derivation reads
+    /// `libraryAlbums` and the personalization context, both `@Published` state on this
+    /// `@MainActor` model, so running it anywhere else would mean snapshotting that state into a
+    /// `Sendable` copy — a real refactor with real data-race risk, to buy nothing here. Audio is
+    /// unaffected either way: playback renders on `MTAudioProcessingTap`'s real-time thread, which
+    /// takes no locks and never touches this actor, so main-actor work cannot stall it.
+    ///
+    /// **It must not slow the album open**, which is currently fine on device. Two things ensure
+    /// that: the wait below lets the push transition finish before any CPU work starts, and the
+    /// catalog fetch suspends on the network, so the main thread is free while it is in flight.
+    /// The derivation lands in the memo, so the shelf's own pass is a hit.
+    func warmAlbumDetailShelves(artist: String, title: String, excludingAlbumId: String?) async {
+        // The fetch goes FIRST and with no delay. Waiting 550ms before even starting it lost the
+        // race against a fast scroll — Ethan still saw the shelf pop in at the bottom. The fetch is
+        // network-bound and suspends immediately, so starting it early costs the opening screen
+        // nothing, and it is the part that must be finished before the shelf can render at all.
+        let started = CFAbsoluteTimeGetCurrent()
+        _ = await fetchAlbumDetailArtistCatalog(artist: artist)
+        guard !Task.isCancelled else { return }
+
+        // Only the CPU-bound derivation waits, and only for however much of the settle window the
+        // fetch did not already use. A cached fetch returns instantly and this still holds the work
+        // off the main actor until the push has done its heavy frames; a slow fetch has already
+        // covered the window and the derivation runs straight away.
+        let settle = 0.35
+        let elapsed = CFAbsoluteTimeGetCurrent() - started
+        if elapsed < settle {
+            try? await Task.sleep(for: .milliseconds(Int((settle - elapsed) * 1000)))
+        }
+        guard !Task.isCancelled else { return }
+        _ = albumDetailShelvesFromMemory(
+            artist: artist,
+            title: title,
+            excludingAlbumId: excludingAlbumId,
+        )
     }
 
     /// Full server discography for album-detail carousels — not limited to the cached ``libraryAlbums`` page.
@@ -4921,16 +5018,41 @@ public final class AppModel: ObservableObject {
         excludingVersionIDs: Set<String> = [],
         limit: Int = 15,
     ) -> [AlbumSummary] {
+        // Memoized separately from the shelf tuple because `refreshShelvesFromServer` calls this
+        // again on its own after awaiting the catalog. It reads `libraryAlbums` and its inputs are
+        // only artist / exclusions / limit — it does *not* depend on the catalog just awaited — so
+        // the session key plus those inputs fully determines the result.
+        let sessionKey = albumDetailCacheSessionKey()
+        var memoKey = ""
+        if !sessionKey.isEmpty {
+            invalidateAlbumDetailShelfMemosIfNeeded(sessionKey)
+            memoKey = "\(sessionKey)|\(artist)|\(excludingAlbumId ?? "")|\(limit)|"
+                + excludingVersionIDs.sorted().joined(separator: ",")
+            if let hit = albumDetailYouMightAlsoLikeMemo[memoKey] {
+#if DEBUG
+                DebugUIRemote.log("SHELF memo=hit kind=ymal artist=\(artist)")
+#endif
+                return hit
+            }
+        }
+#if DEBUG
+        DebugUIRemote.log("SHELF memo=miss kind=ymal artist=\(artist) catalog=\(libraryAlbums.count)")
+#endif
         let excludeIDs = Set([excludingAlbumId].compactMap { $0 }).union(excludingVersionIDs)
         let candidates = libraryAlbums.filter { album in
             !excludeIDs.contains(album.id)
                 && !albumDetailArtistMatches(album.artist, referenceArtist: artist)
         }
-        return NewTabPersonalizationEngine.tasteRankedAlbumSummaries(
+        let ranked = NewTabPersonalizationEngine.tasteRankedAlbumSummaries(
             candidates,
             context: newTabPersonalizationContext(),
             limit: limit,
         )
+        // Same rule as the shelves memo above: no catalog or no result means no memo entry.
+        if !memoKey.isEmpty, !libraryAlbums.isEmpty, !ranked.isEmpty {
+            albumDetailYouMightAlsoLikeMemo[memoKey] = ranked
+        }
+        return ranked
     }
 
     private func dedupeAlbumSummariesById(_ albums: [AlbumSummary]) -> [AlbumSummary] {
