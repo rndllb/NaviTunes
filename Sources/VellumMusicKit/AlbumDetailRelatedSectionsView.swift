@@ -34,16 +34,43 @@ struct AlbumDetailRelatedSectionsView: View {
             }
             if !youMightAlsoLike.isEmpty {
                 carouselShelf(title: "You Might Also Like", albums: youMightAlsoLike)
+            } else if isLoadingShelves {
+                // ONLY while genuinely loading. `isLoadingShelves` is true from the moment the
+                // shelf task starts until `refreshShelvesFromServer` has returned, so once the
+                // answer is known and it is "nothing similar", this disappears and the section
+                // renders nothing — a legitimately empty shelf never shows a permanent shimmer.
+                // Reuses the app's own skeleton, the same one the artist page uses for its shelves.
+                MusicHorizontalShelfSkeleton(
+                    title: "You Might Also Like",
+                    style: .album,
+                    count: 4,
+                    horizontalInset: inset,
+                )
+                .padding(.top, 28)
+                .padding(.bottom, 8)
             }
         }
-        .onAppear(perform: applyMemoryShelves)
+        // No `.onAppear(perform: applyMemoryShelves)` here on purpose. `reloadToken` already
+        // carries `libraryCatalogEpoch`, so `.task(id:)` re-runs whenever the answer could have
+        // changed — and it runs `applyMemoryShelves` itself. The extra `onAppear` only added a
+        // second full derivation on every scroll-into-view.
         .task(id: reloadToken) {
+            isLoadingShelves = true
             applyMemoryShelves()
             await refreshShelvesFromServer()
+            isLoadingShelves = false
         }
     }
 
+    /// True from the moment the shelf work starts until the server refresh has returned. It is the
+    /// only thing that separates "still loading" from "there is genuinely nothing similar" — before
+    /// this, both rendered nothing at all and the user could not tell them apart.
+    @State private var isLoadingShelves = false
+
     private func applyMemoryShelves() {
+#if DEBUG
+        let start = CFAbsoluteTimeGetCurrent()
+#endif
         let shelves = app.albumDetailShelvesFromMemory(
             artist: artist,
             title: title,
@@ -52,10 +79,28 @@ struct AlbumDetailRelatedSectionsView: View {
         otherVersions = shelves.otherVersions
         moreByArtist = shelves.moreByArtist
         youMightAlsoLike = shelves.youMightAlsoLike
+#if DEBUG
+        // Deliberately unthresholded. The acceptance test is that this drops to ~0 ms on every
+        // appearance after the first, and a threshold would hide exactly the readings that prove
+        // it — a span that stops logging is indistinguishable from one that stopped running.
+        DebugUIRemote.log(String(
+            format: "SHELF applyMemoryShelves=%.1fms artist=%@",
+            (CFAbsoluteTimeGetCurrent() - start) * 1000, artist))
+#endif
     }
 
     @MainActor
     private func refreshShelvesFromServer() async {
+#if DEBUG
+        // `defer` so the span still records when the early `Task.isCancelled` return fires —
+        // a scroll-away mid-fetch is a normal outcome and its cost still counts.
+        let start = CFAbsoluteTimeGetCurrent()
+        defer {
+            DebugUIRemote.log(String(
+                format: "SHELF refreshShelvesFromServer=%.1fms artist=%@",
+                (CFAbsoluteTimeGetCurrent() - start) * 1000, artist))
+        }
+#endif
         let catalog = await app.fetchAlbumDetailArtistCatalog(artist: artist)
         guard !Task.isCancelled else { return }
 
@@ -78,11 +123,15 @@ struct AlbumDetailRelatedSectionsView: View {
             moreByArtist = more
         }
 
-        youMightAlsoLike = app.albumDetailYouMightAlsoLike(
+        let refreshed = app.albumDetailYouMightAlsoLike(
             artist: artist,
             excludingAlbumId: excludingAlbumId,
             excludingVersionIDs: versionIDs,
         )
+        // Same guard the two shelves above already have: never replace a shelf that is on screen
+        // with an empty one. This assignment being unguarded is why the shelf could appear and then
+        // disappear seconds later without the user doing anything.
+        if !refreshed.isEmpty { youMightAlsoLike = refreshed }
     }
 
     @ViewBuilder
