@@ -503,6 +503,8 @@ enum MusicDesign {
 
     static let albumCorner: CGFloat = 10
     static let gridAlbumCorner: CGFloat = 10
+    /// Radio tab pinned station grid — rounder squircle than library album pins.
+    static let radioPinnedStationCorner: CGFloat = 20
     /// Library hub / Recently Added / Recently Downloaded — keeps row mates aligned when titles wrap.
     static let libraryHubGridLabelBlockMinHeight: CGFloat = 56
     static let libraryHubGridLabelSpacing: CGFloat = 8
@@ -674,7 +676,14 @@ struct AlbumArtworkView: View {
                 ZStack {
                     if !visible {
                         if loadFailed {
-                            placeholder
+                            // Radio directory favicons are often dead links, so a seed
+                            // supplied alongside a URL is the failure fallback too.
+                            if let meshArtworkSeed {
+                                RadioStationMeshArtworkView(seedKey: meshArtworkSeed, cornerRadius: cornerRadius)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            } else {
+                                placeholder
+                            }
                         } else {
                             MusicShimmerSurface(cornerRadius: cornerRadius)
                         }
@@ -1907,6 +1916,16 @@ extension View {
     /// Renders the app-wide transient toast above this view (used at the root).
     func musicTransientToastChrome() -> some View {
         modifier(MusicTransientToastChrome())
+    }
+
+    /// Native ``Menu`` / context menu icons inherit ``MusicDesign/accent`` from the app root unless overridden.
+    func menuSectionPrimaryTint() -> some View {
+        tint(Color.primary)
+    }
+
+    /// Destructive menu sections — system red icons/labels, never accent.
+    func menuSectionDestructiveTint() -> some View {
+        tint(MusicDesign.destructiveAction)
     }
 
     /// Presents the "starting this song clears your queue" confirmation (used at the root).

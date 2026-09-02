@@ -367,9 +367,20 @@ enum ServerFailoverMode: String, CaseIterable, Identifiable, Codable {
 
     var title: String {
         switch self {
-        case .disabled: return "Primary only"
-        case .automatic: return "Automatic failover"
-        case .manual: return "Manual switch"
+        case .disabled: return "Off"
+        case .automatic: return "Automatic"
+        case .manual: return "Manual"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .disabled:
+            return "Only the primary address is used. The fallback is ignored."
+        case .automatic:
+            return "When the primary address can't be reached, Vellum switches to the fallback on its own."
+        case .manual:
+            return "You pick which address to use. Vellum never switches on its own."
         }
     }
 }

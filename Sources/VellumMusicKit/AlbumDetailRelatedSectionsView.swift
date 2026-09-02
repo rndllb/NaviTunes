@@ -177,6 +177,7 @@ private struct AlbumDetailRelatedShelfCard: View {
             AlbumArtworkView(
                 url: app.resolvedArtworkURL(for: album),
                 cornerRadius: MusicDesign.heroCorner,
+                maxDecodePixels: MusicDesign.shelfArtworkDecodePixels,
             )
             .frame(width: MusicDesign.shelfCardWidth, height: MusicDesign.shelfCardHeight)
 

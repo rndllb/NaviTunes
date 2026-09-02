@@ -3,11 +3,10 @@ import NetworkExtension
 
 enum AutoOfflineHelper {
     static func fetchCurrentSSID() async -> String? {
-        await withCheckedContinuation { continuation in
-            NEHotspotNetwork.fetchCurrent { network in
-                continuation.resume(returning: network?.ssid)
-            }
+        if case .ssid(let ssid) = await HomePresenceHelper.fetchCurrentHomeSSID() {
+            return ssid
         }
+        return nil
     }
 }
 #else

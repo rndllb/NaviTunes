@@ -55,14 +55,15 @@ Rule of thumb: anything that means "things the *user* owns / has added" must rea
 All "request missing music" flows funnel through one swappable abstraction so backends are interchangeable. **Only one plugin is active at a time** (`AcquisitionManager.activePlugin`, persisted in `UserDefaults`).
 
 - **Core** (`AcquisitionCore.swift`): `AcquisitionPluginKind` (`lidarr`, `downtify`, `droppedNeedle`), the unified `AcquisitionRequest` (artist/track/album + optional MBIDs + `requestKey`), `AcquisitionJob`(+`AcquisitionJobStatus`), `AcquisitionResult` (a concrete searchable item carrying its own request), `AcquisitionRelease` / `AcquisitionArtist` catalog rows, `AcquisitionCapabilities` (granularity track/album, `supportsTrackSearch`, `supportsReleaseCatalog`, `configFields`), and the `AcquisitionProviding` protocol (`artistReleases`, `upcomingAndWanted`, `searchArtists`, `tracks(forRelease:)`). `AcquisitionConfigStore` persists per-plugin credentials under distinct keys (`acquisition.<kind>.<field>`). `AcquisitionHTTP` is the shared REST helper for the network plugins.
-- **Manager** (`AcquisitionManager.swift`, `@MainActor`): `enqueue(_:)` is the single entry point; jobs keyed by `requestKey`; a shared poll loop reconciles against `provider.activeJobs()`; `onJobFinished` fires once per terminal job. `AppModel.acquisition` owns it and forwards `objectWillChange`. Default plugin is **Lidarr**. The picker in `SettingsView` lists `AcquisitionPluginKind.allCases`, so every registered kind is user-selectable.
+- **Manager** (`AcquisitionManager.swift`, `@MainActor`): `enqueue(_:)` is the single entry point; jobs keyed by `requestKey`; a shared poll loop reconciles against `provider.activeJobs()`; `onJobFinished` fires once per terminal job. `AppModel.acquisition` owns it and forwards `objectWillChange`. Default plugin is **Lidarr**. The source list in `SettingsView` renders `AcquisitionPluginKind.allCases`, so every registered kind is user-selectable.
 - **Plugins** (conform to `AcquisitionProviding`): **Lidarr** (`LidarrAcquisitionPlugin`) — album-level; MusicBrainz lookup → add + monitor → `AlbumSearch` (#5012 monitor-race fix); polls `/queue` + `/command`; catalog reads `GET /artist`, `/album?artistId=`, `/calendar`, `/wanted/missing` (`supportsReleaseCatalog`). **DroppedNeedle** (`DroppedNeedleAcquisitionPlugin`) — album-level (optional per-track when `trackTitle` is set); native `/api/v1/*` auth via session tokens from one of: `POST /api/v1/auth/login` (local account), `POST /api/v1/auth/jellyfin/login` (imported Jellyfin user), or Plex pin (`POST /api/v1/auth/plex/pin` → browser → `GET /api/v1/auth/plex/poll`); Connect Apps app passwords are **not** valid for the native API; requests via `POST /api/v1/requests/new`; polls `/api/v1/downloads`; artist discography via `/search` (no calendar). **Downtify** (`DowntifyAcquisitionPlugin`) — the only **track**-granularity plugin (`supportsTrackSearch`, no release catalog); single `baseURL` config field.
 - **Call sites**: UI never touches a concrete plugin. Build an `AcquisitionRequest` and call `AppModel.requestAcquisition(_:)` (`DiscoverySearchView`, `BrowseAlbumDetailView`, `ServerPlaylistViews`, `MusicNewTabView`). Gate affordances on `app.acquisitionCapabilities` (`supportsTrackSearch`, `granularity`). Album-level plugins request the whole release for missing-track rows.
-- **Settings**: `SettingsView` → Plugins → **Music Requests** (renamed from "Downloads") opens `AcquisitionPluginSettingsView` — active-plugin picker, capability-driven config fields, Test Connection (`provider.validate()`), and a unified Activity list (`acquisition.displayJobs`, includes server-side items started outside Vellum). (The offline-media "Downloads" section under Settings is a separate thing.)
+- **Settings**: `SettingsView` → Plugins → **Music Requests** (renamed from "Downloads") opens `AcquisitionPluginSettingsView` — a Request Source list (all kinds, each showing granularity + whether credentials are stored), capability-driven config fields, Test Connection (`provider.validate()`), and a unified Activity list (`acquisition.displayJobs`, includes server-side items started outside Vellum). (The offline-media "Downloads" section under Settings is a separate thing.)
+- **Setup copy is part of the capability declaration, not the view.** `AcquisitionCapabilities.requirementsSummary` states what credentials the plugin needs (it's the answer to "does this want an API key?") and renders under its fields. `AcquisitionConfigField.helpText` says where a value comes from (e.g. "Lidarr → Settings → General → Security"); `placeholder` stays a format example, never an instruction. Fields render with a persistent label, a Required marker until filled, and a reveal toggle for `.apiKey` / `.password`. A new plugin that leaves these blank ships an unexplained form.
 - **Completion**: `AppModel.handleAcquisitionJobFinished` (backend-agnostic) triggers a server scan and retries `searchCatalog` until the new file surfaces, then adds it to the personal library.
 - **Request an artist not in your library**: Discover search surfaces plugin artist matches (`AcquisitionManager.searchArtists`) when Lidarr or DroppedNeedle is configured. Settings → Following has an "Add artist" entry. Both open `ArtistPageView(input: .named(...))`, which blends the server catalog with the plugin discography.
 
-To add a backend: add a `case` to `AcquisitionPluginKind`, write one `*AcquisitionPlugin.swift`, and register it in `AcquisitionManager.makeProvider`. No feature-code changes.
+To add a backend: add a `case` to `AcquisitionPluginKind`, write one `*AcquisitionPlugin.swift` (including `requirementsSummary` and per-field `helpText`), and register it in `AcquisitionManager.makeProvider`. No feature-code changes.
 
 ## Follow-artist completeness (subscriptions)
 
@@ -139,6 +140,24 @@ Implementation: `AlbumDetailRelatedSectionsView` (horizontal carousels, backdrop
 ## Genres
 
 `GenreCanonicalizer` rolls server subgenres into ~20 main genres. **Lo-Fi** is its own bucket (includes boom bap / chillhop keywords); boom bap was removed from Hip-Hop.
+
+## Radio
+
+The Radio tab shows three independent collections. Don't conflate them:
+
+- **Your Stations** — local, user-owned (`CustomRadioStationStore`, JSON in `Application Support/VellumMusic/custom-radio`). Stations saved from the directory land here too, keyed by `directoryStationUUID`.
+- **Radio Browser directory** — `RadioBrowserClient.swift`, a third-party community dataset (~57k stations, 7.8k US, 238 countries). Public: needs a network but **no server sign-in**, gated only on `AppModel.effectiveOfflineMode`.
+- **Server stations** — Subsonic `getInternetRadioStations`, Navidrome only, whatever the user configured on their own server.
+
+Directory rules that are easy to get wrong:
+
+- **Never hardcode a mirror.** Mirror names change. `RadioBrowserClient` reads `/json/servers` from the round-robin host `all.api.radio-browser.info`, caches it a day, shuffles, and rotates hosts on failure; the round-robin host is the fallback and also serves queries itself.
+- **Identity is `stationuuid`.** The API's numeric `id` fields are not stable across mirrors — never persist or compare them.
+- Always send `hidebroken=true` (~5.5k directory stations are known-dead) and a real `User-Agent`.
+- **Popularity is `clickcount`**, and it only works because clients report plays back. `playInternetRadioStation` fires `registerPlay` for any station carrying a `directoryStationUUID` — fire-and-forget, never in the playback path.
+- **The tag vocabulary is user-supplied and multilingual** (global top tags include "entretenimiento" and "moi merino"). `RadioDirectoryCatalog` is the curated front end: 25 browse genres, each mapping to several tag spellings ("hip hop" *and* "hiphop" are separate tags holding different stations), merged concurrently and deduped by uuid. A station's first tag is often not a genre ("1930", "78", "california"), so `genreLabel(forTags:)` prefers the first tag that maps to a curated genre.
+- Favicons are frequently dead links, so directory art passes **both** a URL and a mesh seed to `AlbumArtworkView`, which falls back to the mesh tile on load failure.
+- Genre pages merge tags and can't paginate (offset would be per-tag); country and search pages are single queries and page by offset. `RadioDirectoryFeed` handles both — `loadMoreIfNeeded` deliberately does not touch the `generation` token `start` owns.
 
 ## Lyrics
 

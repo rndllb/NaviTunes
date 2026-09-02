@@ -10,8 +10,12 @@ private struct PlaylistVisibilityFields: View {
     @Binding var isPublic: Bool
 
     var body: some View {
-        Toggle("Visible to all", isOn: $isPublic)
-        Text("When off, only you can see this playlist. When on, other users on the server can see it.")
+        Toggle("Public", isOn: $isPublic)
+        Text(
+            isPublic
+                ? "Anyone with access to this server can see and play this playlist."
+                : "Only you can see this playlist. Turn on Public to share it with everyone on the server."
+        )
             .font(.caption)
             .foregroundStyle(MusicDesign.secondaryLabel)
     }
@@ -1177,13 +1181,11 @@ struct ServerPlaylistDetailView: View {
 
     private func detailOnDisappear() {
         scrollHighlightTask?.cancel()
-        // Do not clear `navigateAlbum` / `navigateArtist` here — onDisappear also
-        // fires when a forward push (related album, artist page) covers this view.
-        // Clearing those bindings pops the child immediately. Nothing clears them
-        // manually anywhere: `navigationDestination(item:)` writes `nil` back itself
-        // when the destination pops. (The destinations used to do it in their own
-        // `onDisappear`, which had exactly the bug this comment warns about, one level
-        // further down — see the note beside those destinations.)
+        // Do not clear `navigateAlbum` / `navigateArtist` here, and do not clear them
+        // from the destinations' own `onDisappear` either: onDisappear fires when a
+        // forward push (related album, artist page) covers a view, so clearing tears
+        // down the whole pushed branch. `navigationDestination(item:)` nils the binding
+        // itself on pop; `pushAlbumDetailNavigation` handles re-tapping the same album.
         if tracksVisibility {
             switch source {
             case .playlist(let p):
@@ -1794,6 +1796,7 @@ struct ServerPlaylistDetailView: View {
                 showDeleteConfirm = true
             }
         }
+        .menuSectionDestructiveTint()
     }
 
     private var heroBlock: some View {
@@ -2554,6 +2557,7 @@ struct ServerPlaylistDetailView: View {
                         Label("Delete Album from Library", systemImage: "trash")
                     }
                 }
+                .menuSectionDestructiveTint()
             }
 
             NavidromeShareMenuSection(
@@ -2740,9 +2744,19 @@ private struct LibraryAlbumDismissObserver: ViewModifier {
     let albumId: String?
     let dismiss: () -> Void
 
+    /// Only an in-library → removed transition may dismiss. Related/catalog albums
+    /// (You Might Also Like, More By, discovery shelves) are pushed with
+    /// `librarySource: true` while never being in the library, so dismissing on
+    /// "not in library" would close them on the next membership publish.
+    ///
+    /// The transition is read from the old/new entry lists rather than
+    /// ``AppModel/isAlbumInLibrary(_:)``, which rebuilds the membership index.
     func body(content: Content) -> some View {
-        content.onChange(of: app.libraryAlbumEntries) { _, _ in
-            guard isAlbum, librarySource, let albumId, !app.isAlbumInLibrary(albumId) else { return }
+        content.onChange(of: app.libraryAlbumEntries) { previous, current in
+            guard isAlbum, librarySource, let albumId else { return }
+            guard previous.contains(where: { $0.id == albumId }),
+                  !current.contains(where: { $0.id == albumId })
+            else { return }
             dismiss()
         }
     }

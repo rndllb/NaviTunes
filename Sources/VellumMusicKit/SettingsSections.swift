@@ -96,23 +96,10 @@ struct SettingsOfflineSectionView: View {
                         }
                     }
                     .tint(MusicDesign.accent)
-                    if app.autoOfflineMode == .homeWifi {
-                        if app.homeWifiSSIDs.isEmpty {
-                            Text("Add your home Wi‑Fi network name (SSID) below. Location permission may be required on device.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        ForEach(app.homeWifiSSIDs, id: \.self) { ssid in
-                            HStack {
-                                Text(ssid)
-                                Spacer()
-                                Button("Remove", role: .destructive) {
-                                    app.removeHomeWifiSSID(ssid)
-                                }
-                                .font(.caption)
-                            }
-                        }
-                        HomeWifiSSIDField(onAdd: { app.addHomeWifiSSID($0) })
+                    if app.autoOfflineMode == .homeWifi, app.homeWifiSSIDs.isEmpty {
+                        Text("Add your home Wi‑Fi network in Account (Home Wi‑Fi, under Fallback).")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
                 if app.effectiveOfflineMode {

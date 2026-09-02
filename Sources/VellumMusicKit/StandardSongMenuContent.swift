@@ -178,7 +178,7 @@ struct StandardSongMenuContent: View {
                     }
                 }
             }
-            .tint(MusicDesign.destructiveAction)
+            .menuSectionDestructiveTint()
         }
     }
 }

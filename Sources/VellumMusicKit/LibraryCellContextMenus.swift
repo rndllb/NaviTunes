@@ -52,6 +52,7 @@ struct LibraryAlbumContextMenuContent: View {
                 Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
             }
         }
+        .menuSectionPrimaryTint()
 
         Section {
             if !app.isAlbumInLibrary(album.id) {
@@ -76,6 +77,7 @@ struct LibraryAlbumContextMenuContent: View {
                 Label("Add to Playlist", systemImage: "rectangle.stack.badge.plus")
             }
         }
+        .menuSectionPrimaryTint()
 
         if app.isAlbumInLibrary(album.id) {
             Section {
@@ -85,7 +87,7 @@ struct LibraryAlbumContextMenuContent: View {
                     Label("Delete from Library", systemImage: "trash")
                 }
             }
-            .tint(MusicDesign.destructiveAction)
+            .menuSectionDestructiveTint()
         }
 
         Section {
@@ -93,6 +95,7 @@ struct LibraryAlbumContextMenuContent: View {
                 Label("Share Album", systemImage: "square.and.arrow.up")
             }
         }
+        .menuSectionPrimaryTint()
 
         NavidromeShareMenuSection(
             itemId: album.id,
@@ -190,6 +193,7 @@ struct LibraryPlaylistContextMenuContent: View {
                 Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
             }
         }
+        .menuSectionPrimaryTint()
 
         Section {
             if !app.isPlaylistInLibrary(playlist.id) {
@@ -213,6 +217,7 @@ struct LibraryPlaylistContextMenuContent: View {
                 Label("Add to Playlist", systemImage: "rectangle.stack.badge.plus")
             }
         }
+        .menuSectionPrimaryTint()
 
         if app.isPlaylistInLibrary(playlist.id) {
             Section {
@@ -222,7 +227,7 @@ struct LibraryPlaylistContextMenuContent: View {
                     Label("Delete from Library", systemImage: "trash")
                 }
             }
-            .tint(MusicDesign.destructiveAction)
+            .menuSectionDestructiveTint()
         }
 
         Section {
@@ -230,6 +235,7 @@ struct LibraryPlaylistContextMenuContent: View {
                 Label("Share Playlist", systemImage: "square.and.arrow.up")
             }
         }
+        .menuSectionPrimaryTint()
 
         NavidromeShareMenuSection(itemId: playlist.id, description: playlist.name)
     }
