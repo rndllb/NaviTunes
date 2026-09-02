@@ -2,7 +2,7 @@ import Foundation
 
 /// Device-retrievable diagnostics for the tap playback path.
 ///
-/// **DEBUG only, by Ethan's decision on 2026-08-30.** This was originally written *un*-gated, and
+/// **DEBUG only, by decision on 2026-08-30.** This was originally written *un*-gated, and
 /// the argument for that is still on the record: the playback bug it exists to diagnose reproduces
 /// in Release, and a diagnostic that switches itself off in the configuration being diagnosed is
 /// not a diagnostic. He was shown that tradeoff and chose the gate anyway — a Release build of his
