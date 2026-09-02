@@ -3668,6 +3668,34 @@ public final class AppModel: ObservableObject {
     /// choice, listened or not) from the hero Play/Shuffle actions (start on the
     /// first unheard song). Returns an empty track list when every song has been
     /// listened — callers surface a toast instead of starting playback.
+    /// True when Kill Mode's playback filter should stand down for this playlist, because every
+    /// song the user is KEEPING has been listened to.
+    ///
+    /// - **Unlock only at 100%, never at 99.** This compares two `Int` counts with `==`. There is no
+    ///   `Double`, no percentage and no rounding anywhere on this path, deliberately: 199 of 200 is
+    ///   99.5%, which `Int((… * 100).rounded())` renders as "100%" — a displayed value that must
+    ///   never reach a gate. Counting integers cannot round up.
+    /// - **Only songs NOT scheduled for deletion count.** The pending-removal set is excluded from
+    ///   both sides of the comparison, so marking a song for removal shrinks the denominator rather
+    ///   than leaving an unreachable target.
+    ///
+    /// When EVERY song is scheduled for deletion the denominator is zero. That returns `false`, not
+    /// `true`: an empty set satisfies "all listened" vacuously, but there is nothing being kept and
+    /// therefore nothing to unlock. Playback of the removal queue keeps its existing behaviour.
+    func killModeUnlockedForFullPlayback(playlistId: String, tracks: [Track]) -> Bool {
+        guard killModeEnabledPlaylistIds.contains(playlistId) else { return false }
+        let pending = killModePendingTrackIds(playlistId: playlistId)
+        let passed = killModePassedTrackIds(playlistId: playlistId)
+        var keptCount = 0
+        var listenedKeptCount = 0
+        for track in tracks where !pending.contains(track.id) {
+            keptCount += 1
+            if passed.contains(track.id) { listenedKeptCount += 1 }
+        }
+        guard keptCount > 0 else { return false }
+        return listenedKeptCount == keptCount
+    }
+
     func killModeFilteredPlayback(
         tracks: [Track],
         startIndex: Int,
@@ -3676,6 +3704,16 @@ public final class AppModel: ObservableObject {
     ) -> (tracks: [Track], startIndex: Int) {
         guard case let .playlist(p)? = source,
               killModeEnabledPlaylistIds.contains(p.id) else { return (tracks, startIndex) }
+        // Unlocked at 100%: every kept song has been listened to, so the filter stands down and the
+        // playlist plays again instead of returning nothing. Songs queued for removal stay out —
+        // the user has already decided on those, and they leave when the removal is confirmed.
+        if killModeUnlockedForFullPlayback(playlistId: p.id, tracks: tracks) {
+            let pending = killModePendingTrackIds(playlistId: p.id)
+            let kept = tracks.filter { !pending.contains($0.id) }
+            let startId = tracks.indices.contains(startIndex) ? tracks[startIndex].id : nil
+            let unlockedStart = startId.flatMap { id in kept.firstIndex { $0.id == id } } ?? 0
+            return (kept, unlockedStart)
+        }
         let listened = killModeListenedTrackIds(playlistId: p.id)
         guard !listened.isEmpty else { return (tracks, startIndex) }
         let startId = tracks.indices.contains(startIndex) ? tracks[startIndex].id : nil
@@ -4869,7 +4907,7 @@ public final class AppModel: ObservableObject {
     }
 
     /// Start the album-detail shelves as soon as the album view opens, instead of when the shelf
-    /// row scrolls into sight. Ethan: *"It should load the second the user opens the view."*
+    /// row scrolls into sight.
     ///
     /// **Executor: the main actor, on purpose, and no new thread.** The derivation reads
     /// `libraryAlbums` and the personalization context, both `@Published` state on this
@@ -4884,7 +4922,7 @@ public final class AppModel: ObservableObject {
     /// The derivation lands in the memo, so the shelf's own pass is a hit.
     func warmAlbumDetailShelves(artist: String, title: String, excludingAlbumId: String?) async {
         // The fetch goes FIRST and with no delay. Waiting 550ms before even starting it lost the
-        // race against a fast scroll — Ethan still saw the shelf pop in at the bottom. The fetch is
+        // race against a fast scroll — still saw the shelf pop in at the bottom. The fetch is
         // network-bound and suspends immediately, so starting it early costs the opening screen
         // nothing, and it is the part that must be finished before the shelf can render at all.
         let started = CFAbsoluteTimeGetCurrent()

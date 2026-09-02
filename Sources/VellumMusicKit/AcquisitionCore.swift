@@ -41,10 +41,6 @@ enum AcquisitionJobStatus: String, Sendable, Codable {
     /// stop waiting, so a search that found nothing looked identical to one still running — the
     /// request sat at "searching" for ever.
     case notFound
-    /// The backend has the request but reports **nothing happening**: not queued, not searching,
-    /// no files. Ethan's "Back to Strangers" case — Lidarr grabbed twice and the job never entered
-    /// the download queue.
-    ///
     /// Not terminal, because it can still start moving on its own, but never shown as a spinner or
     /// a percentage: silence dressed up as progress is the exact defect this pass exists to remove.
     case stalled

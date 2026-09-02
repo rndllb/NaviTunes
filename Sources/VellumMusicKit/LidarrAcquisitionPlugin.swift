@@ -158,7 +158,7 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
     /// 3. **The search command** — still running means still searching.
     /// 4. **History** — a completed search that grabbed nothing is `notFound`; a grab with no queue
     ///    row means the download client took it without reporting one (Soulseek and the YouTube
-    ///    client both do this on Ethan's server), so it is downloading with no fraction to show.
+    ///    client both do this on server), so it is downloading with no fraction to show.
     ///
     /// Nothing here is invented: when Lidarr reports no fraction, `progress` is nil and the UI
     /// shows indeterminate rather than a made-up number.
@@ -244,7 +244,7 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
 
     /// The queue row for an album, across **every** page.
     ///
-    /// Paging matters: Ethan's queue holds 133 records and a single `pageSize=100` read misses 33
+    /// Paging matters: 133 records and a single `pageSize=100` read misses 33
     /// of them, which is one of the ways a request could be downloading in plain sight and still
     /// look stalled to the app.
     private func queueRecord(forAlbumId albumId: Int) async -> [String: Any]? {
@@ -532,7 +532,7 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
 
     /// Every queue record, following `totalRecords` across pages.
     ///
-    /// A single `pageSize=100` read used to be the whole of it. Ethan's queue holds 133, so 33
+    /// A single `pageSize=100` read used to be the whole of it. queue holds 133, so 33
     /// records were invisible to the app — and a request sitting in that tail looked, to the UI,
     /// exactly like one that had vanished. Bounded at five pages so a pathological queue cannot
     /// turn one poll into an unbounded crawl.

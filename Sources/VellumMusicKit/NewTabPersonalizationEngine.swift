@@ -431,13 +431,15 @@ enum NewTabPersonalizationEngine {
         let scored: [(album: AlbumSummary, score: Double)] = albums.map { album in
             var score = affinityScore(for: album.artist, taste: taste)
 
-            for (idx, genre) in topGenres.prefix(10).enumerated() {
-                let weight = max(0.35, 1.0 - Double(idx) / 10.0)
-                for raw in album.genres {
-                    if GenreCanonicalizer.canonical(for: raw).lowercased() == genre {
-                        score += weight * 2.2
-                        break
-                    }
+            // Canonicalize this album's genres ONCE, not once per top-genre. The previous shape
+            // ran `GenreCanonicalizer.canonical(for:).lowercased()` inside the top-genre loop, so a
+            // 734-album catalog with 10 top genres canonicalized the same handful of strings up to
+            // ~14,000 times per derivation. Same scoring: each top genre still contributes at most
+            // once, in the same order, with the same weight.
+            let albumGenres = Set(album.genres.map { GenreCanonicalizer.canonical(for: $0).lowercased() })
+            if !albumGenres.isEmpty {
+                for (idx, genre) in topGenres.prefix(10).enumerated() where albumGenres.contains(genre) {
+                    score += max(0.35, 1.0 - Double(idx) / 10.0) * 2.2
                 }
             }
 
