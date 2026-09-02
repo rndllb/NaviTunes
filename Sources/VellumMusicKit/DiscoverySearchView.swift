@@ -945,9 +945,6 @@ struct DiscoverySearchView: View {
             onGoToArtist: ArtistNavigation.isTappable(artist)
                 ? { navigationPath.append(SearchNavTarget.namedArtist(track.artist)) }
                 : nil,
-            // The old menu labelled this "Remove from Library" but actually called
-            // `toggleFavoriteTrack`, so it unfavourited instead of removing. The template's
-            // callback does what the label says.
             onRemoveFromLibrary: app.isSongInLibrary(track.id)
                 ? { Task { await app.removeSongFromLibrary(track) } }
                 : nil

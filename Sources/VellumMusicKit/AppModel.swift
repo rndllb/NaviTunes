@@ -303,6 +303,8 @@ public final class AppModel: ObservableObject {
 
     private var libraryPlaylistsById: [String: PlaylistSummary] = [:]
     private var libraryBootstrapTask: Task<Void, Never>?
+    /// Cold-launch disk snapshot restore; awaited before network bootstrap.
+    private var libraryDiskRestoreTask: Task<Void, Never>?
     /// Polls the server magic playlist so personal-library changes from other devices land here.
     private var libraryMembershipSyncTask: Task<Void, Never>?
     private var lastLibraryMembershipRefresh = Date.distantPast
@@ -1413,6 +1415,10 @@ public final class AppModel: ObservableObject {
                FileManager.default.fileExists(atPath: file.path) {
                 return file
             }
+            // Directory favicons and custom `remoteArtworkURL` — not on the music server.
+            if let remote = track.artworkURL, !remote.isFileURL {
+                return remote
+            }
             return nil
         }
         if let local = offline.localArtworkURL(forTrackId: track.id) { return local }
@@ -1598,18 +1604,26 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    /// Kicks the disk-snapshot restore off the main thread. The JSON decode for a
-    /// multi-MB library would otherwise block sign-in / cold launch; the small
-    /// window of "empty state" before the snapshot lands is much better than a hang.
+    /// Fire-and-forget restore for error / offline fallbacks.
     private func restoreLibraryFromDisk() {
         Task { [weak self] in
-            guard let self else { return }
-            let snap = await LibrarySnapshotStore.loadAsync()
-            self.applyRestoredSnapshot(snap)
-            let rowsCache = await PlaylistRowsCacheStore.loadAsync()
-            self.applyRestoredPlaylistRowsCache(rowsCache)
-            self.playlistRowsDiskRestoreCompleted = true
-            self.warmPlaylistRowsCache()
+            await self?.restoreLibraryFromDiskAsync()
+        }
+    }
+
+    /// Loads the on-disk library snapshot and paints UI before network bootstrap.
+    /// Returns after albums / membership are on screen; track indices continue in the
+    /// background so a 50k-track catalog doesn't delay auth probe + bootstrap.
+    private func restoreLibraryFromDiskAsync() async {
+        let snap = await LibrarySnapshotStore.loadAsync()
+        applyRestoredSnapshotLight(snap)
+        let rowsCache = await PlaylistRowsCacheStore.loadAsync()
+        applyRestoredPlaylistRowsCache(rowsCache)
+        playlistRowsDiskRestoreCompleted = true
+        warmPlaylistRowsCache()
+        // Heavy track-index work continues without blocking cold-launch bootstrap.
+        Task { [weak self] in
+            await self?.applyRestoredSnapshotTracks(snap)
         }
     }
 
@@ -1627,46 +1641,92 @@ public final class AppModel: ObservableObject {
         PlaylistRowsCacheStore.saveAsync(playlistRowsCache)
     }
 
-    private func applyRestoredSnapshot(_ snap: LibrarySnapshot?) {
-        PerfLog.measure("applyRestoredSnapshot", details: snap.map { "albums=\($0.albums.count) tracks=\($0.tracks.count) playlists=\($0.playlists.count) songIds=\($0.librarySongIds.count)" } ?? "nil") {
-            applyRestoredSnapshotBody(snap)
+    /// Phase 1 — albums / playlists / membership so Library + Home paint immediately.
+    private func applyRestoredSnapshotLight(_ snap: LibrarySnapshot?) {
+        let details = snap.map {
+            "albums=\($0.albums.count) playlists=\($0.playlists.count) songIds=\($0.librarySongIds.count)"
+        } ?? "nil"
+        PerfLog.measure("applyRestoredSnapshot.light", details: details) {
+            withCoalescedLibraryIndexRebuild {
+                if let snap {
+                    if !snap.albums.isEmpty { libraryAlbums = snap.albums }
+                    if !snap.playlists.isEmpty { libraryPlaylists = snap.playlists }
+                    if !snap.favoriteTrackIds.isEmpty {
+                        favoriteTrackIds = Set(snap.favoriteTrackIds)
+                    }
+                    if let id = snap.libraryMagicPlaylistId, !id.isEmpty {
+                        libraryMagicPlaylistId = id
+                    }
+                    if !snap.librarySongIds.isEmpty {
+                        librarySongIds = Set(snap.librarySongIds)
+                    }
+                    if !snap.libraryAlbumEntries.isEmpty {
+                        libraryAlbumEntries = snap.libraryAlbumEntries
+                    }
+                    if !snap.libraryPlaylistEntries.isEmpty {
+                        libraryPlaylistEntries = snap.libraryPlaylistEntries
+                    }
+                }
+            }
+            rebuildHomeRecentlyPlayed()
+            rebuildHomeDiscoveryShelves()
         }
     }
 
-    private func applyRestoredSnapshotBody(_ snap: LibrarySnapshot?) {
-        // Coalesce the whole synchronous restore (album + track assignments and the inline
-        // offline merge) into a single index rebuild instead of one per assignment.
-        withCoalescedLibraryIndexRebuild {
-            if let snap {
-                if !snap.albums.isEmpty { libraryAlbums = snap.albums }
-                if !snap.tracks.isEmpty {
-                    discoveryLibraryTracks = snap.tracks
-                }
-                if !snap.playlists.isEmpty { libraryPlaylists = snap.playlists }
-                if !snap.favoriteTrackIds.isEmpty {
-                    favoriteTrackIds = Set(snap.favoriteTrackIds)
-                }
-                // Restore library-membership state so Library → Songs/Albums/Recently Added
-                // render the user's curated set on cold launch without waiting for the
-                // server round-trip in ``refreshLibraryMembership``.
-                if let id = snap.libraryMagicPlaylistId, !id.isEmpty {
-                    libraryMagicPlaylistId = id
-                }
-                if !snap.librarySongIds.isEmpty {
-                    librarySongIds = Set(snap.librarySongIds)
-                }
-                if !snap.libraryAlbumEntries.isEmpty {
-                    libraryAlbumEntries = snap.libraryAlbumEntries
-                }
-                if !snap.libraryPlaylistEntries.isEmpty {
-                    libraryPlaylistEntries = snap.libraryPlaylistEntries
-                }
-                offline.backfillRecordsIfMissing(knownTracks: snap.tracks)
-            } else {
-                offline.backfillRecordsIfMissing(knownTracks: [])
-            }
+    /// Phase 2 — discovery tracks + indices (off-main build, main-actor assign).
+    private func applyRestoredSnapshotTracks(_ snap: LibrarySnapshot?) async {
+        let tracks = snap?.tracks ?? []
+        guard !tracks.isEmpty else {
+            offline.backfillRecordsIfMissing(knownTracks: [])
             mergeOfflineCatalog()
+            return
         }
+        // Don't clobber a fresher in-session index (bootstrap / New-tab refresh won the race).
+        if !discoveryLibraryTracks.isEmpty,
+           discoveryLibraryTracks.count >= tracks.count,
+           !libraryTrackTitleIndex.isEmpty {
+            offline.backfillRecordsIfMissing(knownTracks: discoveryLibraryTracks)
+            mergeOfflineCatalog()
+            return
+        }
+
+        let computed = await PerfLog.measureAsync(
+            "applyRestoredSnapshot.buildTrackIndices",
+            context: .background,
+            details: "tracks=\(tracks.count)"
+        ) {
+            await Task.detached(priority: .userInitiated) {
+                () -> (byId: [String: Track], titles: [String: Set<String>], chart: LibraryChartTrackIndex) in
+                let byId = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                let titles = LibraryTrackMatcher.titleIndex(from: tracks)
+                let chart = LibraryChartTrackIndex(tracks: tracks)
+                return (byId, titles, chart)
+            }.value
+        }
+        // Re-check after the off-main build — a live refresh may have landed meanwhile.
+        if !libraryTrackTitleIndex.isEmpty,
+           discoveryLibraryTracks.count > tracks.count {
+            offline.backfillRecordsIfMissing(knownTracks: discoveryLibraryTracks)
+            mergeOfflineCatalog()
+            return
+        }
+        PerfLog.measure("applyRestoredSnapshot.assignTracks", details: "tracks=\(tracks.count)") {
+            skipDiscoveryIndexRebuild = true
+            discoveryLibraryTracks = tracks
+            skipDiscoveryIndexRebuild = false
+            discoveryTrackById = computed.byId
+            libraryTrackTitleIndex = computed.titles
+            libraryChartTrackIndex = computed.chart
+            libraryAlbumsById = Dictionary(
+                libraryAlbums.map { ($0.id, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            libraryAlbumReleaseIndex = LibraryAlbumReleaseIndex(albums: libraryAlbums)
+            invalidateMembershipLookups()
+        }
+        offline.backfillRecordsIfMissing(knownTracks: tracks)
+        rebuildHomeMixes()
+        mergeOfflineCatalog()
         Task {
             await offline.enrichCachedDurationsIfNeeded()
             mergeOfflineCatalog()
@@ -1680,21 +1740,34 @@ public final class AppModel: ObservableObject {
     private func mergeOfflineCatalog() {
         PerfLog.measure("mergeOfflineCatalog", details: "lib=\(libraryAlbums.count)/\(discoveryLibraryTracks.count)") {
             let offlineTracks = offline.cachedTracks()
-            guard !offlineTracks.isEmpty else { return }
+            let offlineAlbums = offline.cachedAlbums()
+            guard !offlineTracks.isEmpty || !offlineAlbums.isEmpty else { return }
+
+            // Skip the full rebuild when every download is already indexed — common on
+            // cold launch after the snapshot restore already included those tracks.
+            let missingTrackIds = offlineTracks.filter { discoveryTrackById[$0.id] == nil }
+            let missingAlbums = offlineAlbums.filter { libraryAlbumsById[$0.id] == nil }
+            if missingTrackIds.isEmpty && missingAlbums.isEmpty {
+                return
+            }
 
             withCoalescedLibraryIndexRebuild {
-                var trackById = Dictionary(uniqueKeysWithValues: discoveryLibraryTracks.map { ($0.id, $0) })
-                for t in offlineTracks {
-                    trackById[t.id] = t
+                if !offlineTracks.isEmpty {
+                    var trackById = Dictionary(uniqueKeysWithValues: discoveryLibraryTracks.map { ($0.id, $0) })
+                    for t in offlineTracks {
+                        trackById[t.id] = t
+                    }
+                    discoveryLibraryTracks = Array(trackById.values)
                 }
-                discoveryLibraryTracks = Array(trackById.values)
 
-                var albumById = Dictionary(uniqueKeysWithValues: libraryAlbums.map { ($0.id, $0) })
-                for album in offline.cachedAlbums() {
-                    albumById[album.id] = album
-                }
-                libraryAlbums = albumById.values.sorted {
-                    $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+                if !offlineAlbums.isEmpty {
+                    var albumById = Dictionary(uniqueKeysWithValues: libraryAlbums.map { ($0.id, $0) })
+                    for album in offlineAlbums {
+                        albumById[album.id] = album
+                    }
+                    libraryAlbums = albumById.values.sorted {
+                        $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+                    }
                 }
             }
             libraryCatalogEpoch &+= 1
@@ -1879,6 +1952,11 @@ public final class AppModel: ObservableObject {
 
     private func runLibraryBootstrap() async {
         await PerfLog.measureAsync("runLibraryBootstrap", context: .network) {
+            // Paint Home from the restored catalog immediately so cold launch isn't
+            // a skeleton wall while `refreshLibraryAlbums` / genre fetches round-trip.
+            if homeTopPickAlbums.isEmpty, !libraryAlbums.isEmpty {
+                rebuildHomeDiscoveryShelves()
+            }
             await refreshLibraryAlbums()
             recordSuccessfulLibrarySync()
             // Only the surfaces visible at launch (Home shelves + personal-library
@@ -2809,17 +2887,17 @@ public final class AppModel: ObservableObject {
                 if let album = results.albums.first(where: { $0.matchesNewTabRelease(artist: artist, albumTitle: variant) }) {
                     ensureAlbumInCatalog(album)
                     if let tracks = try? await lib.tracks(forAlbumId: album.id) {
-                        for track in tracks { retainTrackForLibraryPin(track) }
+                        retainTracksForLibraryPin(tracks)
                     }
                     libraryCatalogEpoch &+= 1
                     return
                 }
             }
 
-            for track in results.songs where Self.serverTrackMatchesBrowseRelease(track, artist: artist, albumTitle: albumTitle, kind: kind) {
-                retainTrackForLibraryPin(track)
-                ensureAlbumInCatalog(albumIdOrFallback: track.albumId, derivedFrom: track)
+            let matched = results.songs.filter {
+                Self.serverTrackMatchesBrowseRelease($0, artist: artist, albumTitle: albumTitle, kind: kind)
             }
+            retainTracksForLibraryPin(matched)
 
             if newTabChartRowState(for: chart).isOnServer {
                 libraryCatalogEpoch &+= 1
@@ -2865,6 +2943,11 @@ public final class AppModel: ObservableObject {
         let charts = newTabTopTracks.filter { !newTabChartRowState(for: $0).isOnServer }
         guard !charts.isEmpty else { return }
 
+        // Collect pins across all chart probes, then apply once. Per-track retain used to
+        // rebuild the full discovery index on main (~3s × N) and freeze the New tab.
+        var pendingPins: [Track] = []
+        pendingPins.reserveCapacity(64)
+
         for chart in charts {
             if Task.isCancelled { return }
             for title in AlbumSummary.browseReleaseTitleLookupVariants(chart.name) {
@@ -2879,24 +2962,29 @@ public final class AppModel: ObservableObject {
                             ensureAlbumInCatalog(album)
                         }
                     }
-                    for track in results.songs where Self.serverTrackMatchesBrowseRelease(
-                        track,
-                        artist: chart.artistName,
-                        albumTitle: chart.name,
-                        kind: chart.browseKind
-                    ) {
-                        retainTrackForLibraryPin(track)
-                        ensureAlbumInCatalog(albumIdOrFallback: track.albumId, derivedFrom: track)
-                    }
+                    pendingPins.append(contentsOf: results.songs.filter {
+                        Self.serverTrackMatchesBrowseRelease(
+                            $0,
+                            artist: chart.artistName,
+                            albumTitle: chart.name,
+                            kind: chart.browseKind
+                        )
+                    })
                 } else {
-                    for track in results.songs where LibraryTrackMatcher.trackMatchesChart(track, chart: chart) {
-                        retainTrackForLibraryPin(track)
-                    }
+                    pendingPins.append(contentsOf: results.songs.filter {
+                        LibraryTrackMatcher.trackMatchesChart($0, chart: chart)
+                    })
                 }
 
+                // Cheap presence check against already-collected pins + live indices.
+                retainTracksForLibraryPin(pendingPins)
+                pendingPins.removeAll(keepingCapacity: true)
                 if newTabChartRowState(for: chart).isOnServer { break }
             }
             if newTabChartRowState(for: chart).isOnServer { continue }
+        }
+        if !pendingPins.isEmpty {
+            retainTracksForLibraryPin(pendingPins)
         }
         libraryCatalogEpoch &+= 1
     }
@@ -2964,9 +3052,7 @@ public final class AppModel: ObservableObject {
     private func finalizeAcquisitionCatalogAlbum(_ album: AlbumSummary, library: MusicLibraryProviding) async {
         ensureAlbumInCatalog(album)
         let tracks = (try? await library.tracks(forAlbumId: album.id)) ?? []
-        for track in tracks {
-            retainTrackForLibraryPin(track)
-        }
+        retainTracksForLibraryPin(tracks)
         await addAlbumToLibrary(album, tracks: tracks.isEmpty ? nil : tracks)
         await reconcileNewTabChartServerPresence()
         showTransientToast("Added “\(album.title)”")
@@ -3018,6 +3104,13 @@ public final class AppModel: ObservableObject {
         appendCatalogAlbumIncrementally(album)
     }
 
+    /// Batch form used by New-tab reconcile / pin restore — one skip-flag wrap for many albums.
+    private func ensureAlbumsInCatalog(_ albums: [AlbumSummary]) {
+        for album in albums {
+            ensureAlbumInCatalog(album)
+        }
+    }
+
     /// Appends to ``libraryAlbums`` with the `didSet` rebuild suppressed, then folds the
     /// album into the derived indices by hand. Equivalent to what a full rebuild would
     /// produce, because both indices key off the same arrays this appends to.
@@ -3041,35 +3134,51 @@ public final class AppModel: ObservableObject {
     /// Same rule as ``ensureAlbumInCatalog(_:)`` — one appended track updates the four
     /// derived indices in place instead of rebuilding all of them over the whole library.
     func retainTrackForLibraryPin(_ track: Track) {
-        if discoveryTrackById[track.id] != nil { return }
-        let resolved = trackWithResolvedArtwork(track)
+        retainTracksForLibraryPin([track])
+    }
+
+    /// Batch form of ``retainTrackForLibraryPin``. New-tab reconcile used to call the
+    /// single-track path in a loop, which rebuilt the 50k-track title/chart indices on
+    /// the main actor once per song and froze the UI. One pass, one index patch.
+    func retainTracksForLibraryPin(_ tracks: [Track]) {
+        var missing: [Track] = []
+        missing.reserveCapacity(tracks.count)
+        for track in tracks.map(trackWithResolvedArtwork) {
+            if discoveryTrackById[track.id] == nil {
+                missing.append(track)
+            }
+        }
+        guard !missing.isEmpty else { return }
 
         let previousSkip = skipDiscoveryIndexRebuild
         skipDiscoveryIndexRebuild = true
-        discoveryLibraryTracks.append(resolved)   // `didSet` still invalidates membership lookups
+        discoveryLibraryTracks.append(contentsOf: missing)
         skipDiscoveryIndexRebuild = previousSkip
 
-        discoveryTrackById[resolved.id] = resolved
-        LibraryTrackMatcher.insert(resolved, into: &libraryTrackTitleIndex)
-        libraryChartTrackIndex.insert(resolved)
-        // Mirrors the track-derived album merge in ``rebuildLibraryAlbumIndex``.
-        if !resolved.albumId.isEmpty,
-           !resolved.albumTitle.isEmpty,
-           libraryAlbumsById[resolved.albumId] == nil {
-            let derived = AlbumSummary(
-                id: resolved.albumId,
-                title: resolved.albumTitle,
-                artist: resolved.artist,
-                artworkURL: resolved.artworkURL,
-                coverArtId: navidromeCoverArtId(for: resolved),
-                trackCount: nil,
-                libraryAddedDate: resolved.libraryAddedDate,
-                genres: resolved.genres,
-                releaseYear: resolved.releaseYear,
-            )
-            libraryAlbumsById[derived.id] = derived
-            libraryAlbumReleaseIndex.insert(derived)
+        for resolved in missing {
+            discoveryTrackById[resolved.id] = resolved
+            LibraryTrackMatcher.insert(resolved, into: &libraryTrackTitleIndex)
+            libraryChartTrackIndex.insert(resolved)
+            // Mirrors the track-derived album merge in ``rebuildLibraryAlbumIndex``.
+            if !resolved.albumId.isEmpty,
+               !resolved.albumTitle.isEmpty,
+               libraryAlbumsById[resolved.albumId] == nil {
+                let derived = AlbumSummary(
+                    id: resolved.albumId,
+                    title: resolved.albumTitle,
+                    artist: resolved.artist,
+                    artworkURL: resolved.artworkURL,
+                    coverArtId: navidromeCoverArtId(for: resolved),
+                    trackCount: nil,
+                    libraryAddedDate: resolved.libraryAddedDate,
+                    genres: resolved.genres,
+                    releaseYear: resolved.releaseYear,
+                )
+                libraryAlbumsById[derived.id] = derived
+                libraryAlbumReleaseIndex.insert(derived)
+            }
         }
+        invalidateMembershipLookups()
     }
 
     /// Synthesizes a minimal AlbumSummary from a track and inserts it when the album
@@ -3208,7 +3317,12 @@ public final class AppModel: ObservableObject {
     }
 
     private func rebuildLibraryAlbumIndex() {
-        guard !skipAlbumIndexRebuild else { return }
+        if skipAlbumIndexRebuild {
+            if isCoalescingLibraryIndexRebuild {
+                pendingAlbumIndexRebuild = true
+            }
+            return
+        }
         PerfLog.measure("rebuildLibraryAlbumIndex", details: "albums=\(libraryAlbums.count) tracks=\(discoveryLibraryTracks.count)") {
             var merged = libraryAlbums
             var seenIds = Set(libraryAlbums.map(\.id))
@@ -3246,13 +3360,16 @@ public final class AppModel: ObservableObject {
     /// True while inside ``withCoalescedLibraryIndexRebuild`` so nested calls defer the
     /// single settle-time rebuild to the outermost scope.
     private var isCoalescingLibraryIndexRebuild = false
+    /// Dirty flags for the coalesced rebuild — album-only mutations must not pay for a
+    /// full 50k-track title/chart rebuild (that was freezing cold-launch bootstrap).
+    private var pendingDiscoveryIndexRebuild = false
+    private var pendingAlbumIndexRebuild = false
 
     /// Runs `mutate` with the ``libraryAlbums`` / ``discoveryLibraryTracks`` `didSet`
-    /// index rebuilds suppressed, then rebuilds both indices exactly once. Bootstrap and
-    /// refresh reassign these arrays several times in a row (snapshot restore → offline
-    /// merges → server refresh); without this each assignment ran a full O(n) main-thread
-    /// rebuild, so a cold launch fired ~18 of them in bursts. Nested calls (e.g. a wrapped
-    /// ``mergeOfflineCatalog`` inside a wrapped restore) defer to the outermost scope.
+    /// index rebuilds suppressed, then rebuilds only the indices that were touched.
+    /// Bootstrap and refresh reassign these arrays several times in a row (snapshot
+    /// restore → offline merges → server refresh); without this each assignment ran a
+    /// full O(n) main-thread rebuild. Nested calls defer to the outermost scope.
     private func withCoalescedLibraryIndexRebuild(_ mutate: () -> Void) {
         let wasCoalescing = isCoalescingLibraryIndexRebuild
         let prevSkipDiscovery = skipDiscoveryIndexRebuild
@@ -3260,14 +3377,32 @@ public final class AppModel: ObservableObject {
         isCoalescingLibraryIndexRebuild = true
         skipDiscoveryIndexRebuild = true
         skipAlbumIndexRebuild = true
+        if !wasCoalescing {
+            pendingDiscoveryIndexRebuild = false
+            pendingAlbumIndexRebuild = false
+        }
         mutate()
         isCoalescingLibraryIndexRebuild = wasCoalescing
         skipDiscoveryIndexRebuild = prevSkipDiscovery
         skipAlbumIndexRebuild = prevSkipAlbum
-        // Only the outermost scope performs the settle-time rebuild; rebuilding the
-        // discovery indices also rebuilds the album index (see rebuildDiscoveryTrackIndices).
         guard !wasCoalescing else { return }
-        rebuildDiscoveryTrackIndices()
+        if pendingDiscoveryIndexRebuild {
+            rebuildDiscoveryTrackIndices()
+        } else if pendingAlbumIndexRebuild {
+            // Album-only mutations (bootstrap `refreshLibraryAlbums`) must not scan
+            // every discovery track — that was ~100ms+ of wasted main-thread work and
+            // used to pair with a full discovery rebuild before dirty flags existed.
+            PerfLog.measure("rebuildLibraryAlbumIndex.albumsOnly", details: "albums=\(libraryAlbums.count)") {
+                libraryAlbumsById = Dictionary(
+                    libraryAlbums.map { ($0.id, $0) },
+                    uniquingKeysWith: { first, _ in first }
+                )
+                libraryAlbumReleaseIndex = LibraryAlbumReleaseIndex(albums: libraryAlbums)
+                invalidateMembershipLookups()
+            }
+        }
+        pendingDiscoveryIndexRebuild = false
+        pendingAlbumIndexRebuild = false
     }
 
     /// Rebuild both the title-index (used by the request backend match-Bool checks) and the
@@ -3275,7 +3410,12 @@ public final class AppModel: ObservableObject {
     /// snapshot is reassigned. Centralized so no caller can update one and forget
     /// the other.
     private func rebuildDiscoveryTrackIndices() {
-        guard !skipDiscoveryIndexRebuild else { return }
+        if skipDiscoveryIndexRebuild {
+            if isCoalescingLibraryIndexRebuild {
+                pendingDiscoveryIndexRebuild = true
+            }
+            return
+        }
         PerfLog.measure("rebuildDiscoveryTrackIndices", details: "tracks=\(discoveryLibraryTracks.count)") {
             discoveryTrackById = Dictionary(discoveryLibraryTracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             libraryTrackTitleIndex = LibraryTrackMatcher.titleIndex(from: discoveryLibraryTracks)
@@ -3329,26 +3469,25 @@ public final class AppModel: ObservableObject {
 
     func dismissPlaylistPicker() {
         #if canImport(UIKit)
-        if isNowPlayingCoverPresented {
-            // UIKit sheet over the player — do not clear ``playlistPickerPayload``
-            // or call SwiftUI `dismiss()`; that can pop the full-screen cover too.
-            OverPlayerSheetPresenter.shared.dismiss()
-            return
-        }
-        #endif
+        // Matches ``presentAddToPlaylist`` — the picker is always the UIKit presenter's sheet
+        // on iOS, so dismiss it there and never clear a SwiftUI binding that could pop the cover.
+        OverPlayerSheetPresenter.shared.dismiss()
+        #else
         playlistPickerPayload = nil
+        #endif
     }
 
     func presentAddToPlaylist(tracks: [Track]) {
         guard !tracks.isEmpty, isSignedIn else { return }
         let payload = PlaylistPickerPayload(tracks: tracks)
         #if canImport(UIKit)
-        if isNowPlayingCoverPresented {
-            OverPlayerSheetPresenter.shared.present(payload: payload, app: self)
-            return
-        }
-        #endif
+        // Always present via the UIKit presenter so no SwiftUI `.sheet` ever coexists with the
+        // Now Playing full-screen cover on the root host (the iOS 26.6 `_dismissViewController…`
+        // abort). Visually identical (`.pageSheet`); the presenter targets whatever is topmost.
+        OverPlayerSheetPresenter.shared.present(payload: payload, app: self)
+        #else
         playlistPickerPayload = payload
+        #endif
     }
 
     /// Shows a brief bottom toast (~1.8s) and fires a soft impact haptic. Replaces any
@@ -5147,39 +5286,167 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    // MARK: - Radio (Navidrome)
+    // MARK: - Radio (Navidrome + Radio Browser directory)
 
     @Published private(set) var customRadioStations: [CustomRadioStation] = []
+    /// O(1) "is this directory station already saved?" for browse rows.
+    @Published private(set) var savedDirectoryStationUUIDs: Set<String> = []
 
     func reloadCustomRadioStations() {
-        customRadioStations = CustomRadioStationStore.load()
+        applyCustomRadioStations(CustomRadioStationStore.load())
+    }
+
+    /// In-memory Your Stations list — one publish for rows + O(1) directory lookups.
+    private func applyCustomRadioStations(_ stations: [CustomRadioStation]) {
+        customRadioStations = stations
+        savedDirectoryStationUUIDs = Set(stations.compactMap(\.directoryStationUUID))
+    }
+
+    private func sortedCustomRadioStations(_ stations: [CustomRadioStation]) -> [CustomRadioStation] {
+        stations.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
+    func isDirectoryStationSaved(_ uuid: String) -> Bool {
+        savedDirectoryStationUUIDs.contains(uuid)
+    }
+
+    func toggleSavedDirectoryStation(_ station: RadioDirectoryStation) {
+        if savedDirectoryStationUUIDs.contains(station.stationUUID) {
+            applyCustomRadioStations(
+                customRadioStations.filter { $0.directoryStationUUID != station.stationUUID }
+            )
+            Task { @MainActor in
+                CustomRadioStationStore.removeDirectoryStation(uuid: station.stationUUID)
+            }
+            Task { @MainActor in
+                showTransientToast("Removed from Your Stations")
+            }
+        } else {
+            let custom = station.asCustomRadioStation()
+            let snapshot = customRadioStations
+            applyCustomRadioStations(sortedCustomRadioStations(customRadioStations + [custom]))
+            Task { @MainActor in
+                do {
+                    _ = try CustomRadioStationStore.add(custom)
+                } catch {
+                    applyCustomRadioStations(snapshot)
+                    errorMessage = error.localizedDescription
+                }
+            }
+            Task { @MainActor in
+                showTransientToast(
+                    TransientToastContent(
+                        title: "Saved to Your Stations",
+                        subtitle: station.name,
+                        artworkURL: station.faviconURL,
+                    )
+                )
+            }
+        }
     }
 
     func addCustomRadioStation(name: String, streamURL: URL, artworkData: Data?) throws {
-        _ = try CustomRadioStationStore.add(
+        let station = try CustomRadioStationStore.add(
             name: name,
             streamURL: streamURL,
             artworkData: artworkData,
         )
-        reloadCustomRadioStations()
-        showTransientToast("Station added")
+        applyCustomRadioStations(sortedCustomRadioStations(customRadioStations + [station]))
+        Task { @MainActor in
+            showTransientToast("Station added")
+        }
     }
 
-    func removeCustomRadioStation(id: String) {
-        let trackId = Self.customRadioTrackId(stationId: id)
-        if nowPlayingTrackId == trackId {
-            player.reset()
+    func removeCustomRadioStation(id: String, notify: Bool = true) {
+        guard customRadioStations.contains(where: { $0.id == id }) else { return }
+        applyCustomRadioStations(customRadioStations.filter { $0.id != id })
+        Task { @MainActor in
+            CustomRadioStationStore.remove(id: id)
         }
-        CustomRadioStationStore.remove(id: id)
-        reloadCustomRadioStations()
-        showTransientToast("Station removed")
+        if notify {
+            Task { @MainActor in
+                showTransientToast("Station removed")
+            }
+        }
+    }
+
+    /// Whether the active radio stream is already saved under **Your Stations**.
+    func isRadioTrackInYourStations(_ track: Track) -> Bool {
+        savedCustomRadioStation(matching: track) != nil
+    }
+
+    /// Adds or removes the playing radio stream from **Your Stations**.
+    /// Mirrors ``toggleFavoriteTrack(id:)``: flip in-memory state immediately, persist async, no playback side effects.
+    func toggleRadioTrackInYourStations(_ track: Track) {
+        guard track.isInternetRadioStream, track.streamOverrideURL != nil else { return }
+        if let existing = savedCustomRadioStation(matching: track) {
+            removeCustomRadioStation(id: existing.id, notify: false)
+            return
+        }
+        guard let streamURL = track.streamOverrideURL else { return }
+        let remoteArtwork = track.artworkURL.flatMap { url in
+            url.isFileURL ? nil : url
+        }
+        let station = CustomRadioStation(
+            name: track.title,
+            streamURL: streamURL,
+            remoteArtworkURL: remoteArtwork,
+            directoryStationUUID: Self.directoryStationUUID(fromPlayingTrackId: track.id),
+            detailLine: "Live stream",
+        )
+        let snapshot = customRadioStations
+        applyCustomRadioStations(sortedCustomRadioStations(customRadioStations + [station]))
+        Task { @MainActor in
+            do {
+                _ = try CustomRadioStationStore.add(station)
+            } catch {
+                applyCustomRadioStations(snapshot)
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func savedCustomRadioStation(matching track: Track) -> CustomRadioStation? {
+        if let stationId = Self.customRadioStationId(fromPlayingTrackId: track.id),
+           let match = customRadioStations.first(where: { $0.id == stationId }) {
+            return match
+        }
+        if let uuid = Self.directoryStationUUID(fromPlayingTrackId: track.id),
+           let match = customRadioStations.first(where: { $0.directoryStationUUID == uuid }) {
+            return match
+        }
+        guard let streamURL = track.streamOverrideURL else { return nil }
+        return customRadioStations.first { $0.streamURL == streamURL }
+    }
+
+    private static func customRadioStationId(fromPlayingTrackId trackId: String) -> String? {
+        let prefix = "vellum-radio-custom-"
+        guard trackId.hasPrefix(prefix) else { return nil }
+        let id = String(trackId.dropFirst(prefix.count))
+        return id.isEmpty ? nil : id
+    }
+
+    /// Radio Browser directory plays use `internet-radio-<stationuuid>` track ids.
+    private static func directoryStationUUID(fromPlayingTrackId trackId: String) -> String? {
+        let prefix = "internet-radio-"
+        guard trackId.hasPrefix(prefix) else { return nil }
+        let suffix = String(trackId.dropFirst(prefix.count))
+        guard isRadioBrowserStationUUID(suffix) else { return nil }
+        return suffix
+    }
+
+    private static func isRadioBrowserStationUUID(_ value: String) -> Bool {
+        value.count == 36 && value.filter { $0 == "-" }.count == 4
     }
 
     private static func customRadioTrackId(stationId: String) -> String {
         "vellum-radio-custom-\(stationId)"
     }
 
-    /// Plays a live stream from the server's internet radio list or a user-added station.
+    /// Plays a live stream from the server's internet radio list, the Radio Browser
+    /// directory, or a user-added station.
     func playInternetRadioStation(_ station: InternetRadioStation) async {
         let track = Track(
             id: station.isUserAdded ? "vellum-radio-\(station.id)" : "internet-radio-\(station.id)",
@@ -5194,6 +5461,12 @@ public final class AppModel: ObservableObject {
             streamOverrideURL: station.streamURL,
         )
         player.shuffleMode = .off
+        // Directory popularity only works if clients report plays. Fire-and-forget.
+        if let uuid = station.directoryStationUUID, !effectiveOfflineMode {
+            Task.detached(priority: .background) {
+                await RadioBrowserClient.shared.registerPlay(stationUUID: uuid)
+            }
+        }
         do {
             try await player.playAlbum(library: activeLibrary, tracks: [track], startIndex: 0)
         } catch {
@@ -5693,10 +5966,13 @@ public final class AppModel: ObservableObject {
                 autoOfflineActive = true
             } else if homeWifiSSIDs.isEmpty {
                 autoOfflineActive = false
-            } else if let ssid = await AutoOfflineHelper.fetchCurrentSSID() {
-                autoOfflineActive = !homeWifiSSIDs.contains(ssid)
             } else {
-                autoOfflineActive = false
+                await HomePresenceHelper.ensureLocationAccessForHomeDetection()
+                if let ssid = await AutoOfflineHelper.fetchCurrentSSID() {
+                    autoOfflineActive = !homeWifiSSIDs.contains(ssid)
+                } else {
+                    autoOfflineActive = false
+                }
             }
         }
         applyEffectiveOfflinePresentation()
@@ -5732,6 +6008,7 @@ public final class AppModel: ObservableObject {
                 }
                 self.offline.kickQueueWorker()
                 await self.evaluateAutoOfflineMode()
+                await self.reconcileLocalNetworkFallbackIfNeeded()
                 if online {
                     self.scrobbleService.onNetworkRestored()
                 }
@@ -6062,6 +6339,28 @@ public final class AppModel: ObservableObject {
         return URL(string: trimmed)
     }
 
+    /// True when the configured fallback address is a private LAN URL.
+    var secondaryURLIsLocalNetwork: Bool {
+        HomePresenceHelper.isLocalNetworkServerURL(normalizedServerURL(from: secondaryURLString))
+    }
+
+    /// Local-IP fallback is only usable on a configured home Wi‑Fi network.
+    func canUseLocalNetworkFallback() async -> Bool {
+        guard secondaryURLIsLocalNetwork else { return true }
+        return await HomePresenceHelper.isAtHome(homeSSIDs: homeWifiSSIDs)
+    }
+
+    /// Drops back to the primary address when the user leaves home while on a LAN fallback.
+    func reconcileLocalNetworkFallbackIfNeeded() async {
+        guard isSignedIn,
+              activeServerURLRole == .secondary,
+              secondaryURLIsLocalNetwork
+        else { return }
+        if await canUseLocalNetworkFallback() { return }
+        await switchActiveServerURL(to: .primary)
+        showTransientToast("Left home — using primary address")
+    }
+
     var activeServerURLString: String {
         switch activeServerURLRole {
         case .primary:
@@ -6083,6 +6382,13 @@ public final class AppModel: ObservableObject {
         guard let url = role == .secondary ? normalizedServerURL(from: secondaryURLString) : normalizedServerURL(from: baseURLString) else {
             return
         }
+        if role == .secondary, HomePresenceHelper.isLocalNetworkServerURL(url) {
+            await HomePresenceHelper.ensureLocationAccessForHomeDetection()
+            guard await HomePresenceHelper.isAtHome(homeSSIDs: homeWifiSSIDs) else {
+                showTransientToast("Fallback address is only available on your home Wi‑Fi")
+                return
+            }
+        }
         switch backendKind {
         case .jellyfin:
             jellyfin?.updateBaseURL(url)
@@ -6094,7 +6400,7 @@ public final class AppModel: ObservableObject {
         }
         activeServerURLRole = role
         await refreshServerConnectionHealth()
-        showTransientToast(role == .secondary ? "Using secondary server" : "Using primary server")
+        showTransientToast(role == .secondary ? "Using fallback address" : "Using primary address")
     }
 
     func attemptAutomaticFailoverIfNeeded() async -> Bool {
@@ -6103,6 +6409,12 @@ public final class AppModel: ObservableObject {
               normalizedServerURL(from: secondaryURLString) != nil,
               serverConnectionHealth != .connected
         else { return false }
+        if secondaryURLIsLocalNetwork {
+            await HomePresenceHelper.ensureLocationAccessForHomeDetection()
+            guard await HomePresenceHelper.isAtHome(homeSSIDs: homeWifiSSIDs) else {
+                return false
+            }
+        }
         await switchActiveServerURL(to: .secondary)
         return serverConnectionHealth == .connected
     }
@@ -6413,7 +6725,9 @@ public final class AppModel: ObservableObject {
                 updateDeleteCapability()
                 prefetchAccountAvatar()
                 pushQualitySettingsToClients()
-                restoreLibraryFromDisk()
+                libraryDiskRestoreTask = Task { [weak self] in
+                    await self?.restoreLibraryFromDiskAsync()
+                }
                 restorePlaybackQueueFromDisk()
                 serverConnectionHealth = .unknown
                 Task { await Self.registerMediaAuthHeaders(host: j.base.host, headers: client.httpHeadersForMediaRequests()) }
@@ -6438,7 +6752,9 @@ public final class AppModel: ObservableObject {
                 updateDeleteCapability()
                 restoreMagicPlaylistAvatarURL()
                 prefetchAccountAvatar()
-                restoreLibraryFromDisk()
+                libraryDiskRestoreTask = Task { [weak self] in
+                    await self?.restoreLibraryFromDiskAsync()
+                }
                 restorePlaybackQueueFromDisk()
                 serverConnectionHealth = .unknown
                 Task { [weak self, weak client] in
@@ -6467,9 +6783,18 @@ public final class AppModel: ObservableObject {
     /// On healthy or merely-unreachable probes we do NOT re-POST credentials — preserving the
     /// password's privacy across cold launches on hostile networks.
     private func reconcileRestoredSession(hasRestoredToken: Bool) async {
-                await refreshServerConnectionHealth()
+        // Finish disk restore before any network bootstrap so Library / Home paint from
+        // cache instead of racing an empty catalog against `refreshLibraryAlbums`.
+        if let restore = libraryDiskRestoreTask {
+            await restore.value
+            libraryDiskRestoreTask = nil
+        } else if isSignedIn {
+            await restoreLibraryFromDiskAsync()
+        }
+
+        await refreshServerConnectionHealth()
         guard hasRestoredToken else {
-                await signIn()
+            await signIn()
             return
         }
         let probe: ServerReachabilityProbe

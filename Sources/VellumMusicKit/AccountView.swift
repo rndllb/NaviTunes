@@ -20,6 +20,8 @@ struct AccountView: View {
     /// Presents the photo picker directly when there is no current picture to edit.
     @State private var showProfilePicker = false
     @State private var showProfilePhotoOptions = false
+    @State private var isReadingCurrentWifi = false
+    @State private var homeWifiReadMessage: String?
 
     var body: some View {
         Form {
@@ -339,47 +341,30 @@ struct AccountView: View {
             }
 
             Section {
-                TextField("Server URL", text: $serverDraft.baseURL, prompt: Text(serverURLPlaceholder))
-                    .textContentType(.URL)
-                    .musicTextInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    #if os(iOS)
-                    .keyboardType(.URL)
-                    #endif
-
-                TextField("Secondary URL (optional)", text: $serverDraft.secondaryURL, prompt: Text(serverURLPlaceholder))
-                    .textContentType(.URL)
-                    .musicTextInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    #if os(iOS)
-                    .keyboardType(.URL)
-                    #endif
-
-                Picker("Failover", selection: $app.serverFailoverMode) {
-                    ForEach(ServerFailoverMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
+                LabeledContent {
+                    TextField("Primary address", text: $serverDraft.baseURL, prompt: Text(serverURLPlaceholder))
+                        .textContentType(.URL)
+                        .musicTextInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .multilineTextAlignment(.trailing)
+                        #if os(iOS)
+                        .keyboardType(.URL)
+                        #endif
+                } label: {
+                    Label("Primary", systemImage: "globe")
                 }
-                .tint(MusicDesign.accent)
 
-                if app.isSignedIn,
-                   app.serverFailoverMode == .manual,
-                   !serverDraft.secondaryURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Picker("Active server", selection: $app.activeServerURLRole) {
-                        Text("Primary").tag(ActiveServerURLRole.primary)
-                        Text("Secondary").tag(ActiveServerURLRole.secondary)
-                    }
-                    .pickerStyle(.segmented)
-                    .onChange(of: app.activeServerURLRole) { oldValue, newValue in
-                        guard oldValue != newValue else { return }
-                        Task { await app.switchActiveServerURL(to: newValue) }
-                    }
-                } else if app.isSignedIn,
-                          !serverDraft.secondaryURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    LabeledContent("Active server") {
-                        Text(app.activeServerURLRole == .primary ? "Primary" : "Secondary")
-                            .foregroundStyle(.secondary)
-                    }
+                LabeledContent {
+                    TextField("Local IP address", text: $serverDraft.secondaryURL, prompt: Text(localServerURLPlaceholder))
+                        .textContentType(.URL)
+                        .musicTextInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .multilineTextAlignment(.trailing)
+                        #if os(iOS)
+                        .keyboardType(.URL)
+                        #endif
+                } label: {
+                    Label("Fallback", systemImage: "wifi.router")
                 }
 
                 Button {
@@ -387,7 +372,80 @@ struct AccountView: View {
                 } label: {
                     Label("Trust server certificate", systemImage: "lock.shield")
                 }
+            } header: {
+                Text("Server addresses")
+            } footer: {
+                Text(localFallbackFooter)
+            }
 
+            Section {
+                Picker("Use fallback", selection: $app.serverFailoverMode) {
+                    ForEach(ServerFailoverMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .tint(MusicDesign.accent)
+
+                if app.isSignedIn, hasFallbackURL, app.serverFailoverMode != .disabled {
+                    Picker("Connected to", selection: $app.activeServerURLRole) {
+                        Text("Primary").tag(ActiveServerURLRole.primary)
+                        Text("Fallback").tag(ActiveServerURLRole.secondary)
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: app.activeServerURLRole) { oldValue, newValue in
+                        guard oldValue != newValue else { return }
+                        Task { await app.switchActiveServerURL(to: newValue) }
+                    }
+                }
+            } header: {
+                Text("Fallback")
+            } footer: {
+                Text(failoverFooter)
+            }
+
+            if showsHomeWifiSection {
+                Section {
+                    if app.homeWifiSSIDs.isEmpty {
+                        Text("Add the Wi‑Fi name you use at home. Vellum checks it before switching to a local fallback address.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(app.homeWifiSSIDs, id: \.self) { ssid in
+                        HStack {
+                            Text(ssid)
+                            Spacer()
+                            Button("Remove", role: .destructive) {
+                                app.removeHomeWifiSSID(ssid)
+                            }
+                            .font(.caption)
+                        }
+                    }
+                    HomeWifiSSIDField(onAdd: { app.addHomeWifiSSID($0) })
+                    if let homeWifiReadMessage {
+                        Text(homeWifiReadMessage)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                    Button {
+                        Task { await addCurrentWifiAsHome() }
+                    } label: {
+                        HStack {
+                            Label("Use current Wi‑Fi", systemImage: "wifi")
+                            if isReadingCurrentWifi {
+                                Spacer()
+                                ProgressView()
+                            }
+                        }
+                    }
+                    .disabled(isReadingCurrentWifi)
+                } header: {
+                    Text("Home Wi‑Fi")
+                } footer: {
+                    Text("Location access (including Precise Location when prompted) is required so Vellum can read your network name and confirm you're home before using a local fallback address.")
+                }
+            }
+
+            Section {
                 TextField("Username", text: $serverDraft.username)
                     .textContentType(.username)
                     .musicTextInputAutocapitalization(.never)
@@ -418,7 +476,7 @@ struct AccountView: View {
                         || serverDraft.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                 )
             } header: {
-                Text("Connection")
+                Text("Account")
             } footer: {
                 if let footer = serverSectionFooter {
                     Text(footer)
@@ -436,8 +494,96 @@ struct AccountView: View {
         }
     }
 
-    private var serverURLPlaceholder: String {
-        app.backendKind == .jellyfin ? "http://192.168.1.x:8096" : "http://192.168.1.x:4533"
+    private var serverURLPlaceholder: String { "https://music.example.com" }
+
+    /// Deliberately a LAN address so the field reads as "put your home IP here".
+    private var localServerURLPlaceholder: String {
+        app.backendKind == .jellyfin ? "http://192.168.1.10:8096" : "http://192.168.1.10:4533"
+    }
+
+    private var hasFallbackURL: Bool {
+        !serverDraft.secondaryURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var failoverFooter: String {
+        var lines = [app.serverFailoverMode.detail]
+        if app.serverFailoverMode != .disabled, !hasFallbackURL {
+            lines.append("Add a fallback address above to use this.")
+        } else if app.isSignedIn, hasFallbackURL, let host = activeServerDisplayHost {
+            lines.append("Connected to \(host).")
+        }
+        if hasLocalNetworkFallback {
+            lines.append("Local fallback addresses only work on your home Wi‑Fi. Add your network name in Home Wi‑Fi below, and allow location access when prompted.")
+        }
+        return lines.joined(separator: "\n\n")
+    }
+
+    private var hasLocalNetworkFallback: Bool {
+        HomePresenceHelper.isLocalNetworkServerURL(app.normalizedServerURL(from: serverDraft.secondaryURL))
+            || app.secondaryURLIsLocalNetwork
+    }
+
+    /// Home Wi‑Fi names are only relevant when a LAN fallback is configured (or already saved).
+    private var showsHomeWifiSection: Bool {
+        hasLocalNetworkFallback || !app.homeWifiSSIDs.isEmpty
+    }
+
+    private var localFallbackFooter: String {
+        if hasLocalNetworkFallback {
+            return "Vellum normally connects to the primary address. The local fallback is only used on your home Wi‑Fi — add your network name below and allow location access so Vellum can verify you're home."
+        }
+        return "Vellum normally connects to the primary address. Add your server's local IP as the fallback so it keeps working on your home Wi‑Fi when the primary address is down or unreachable."
+    }
+
+    private func addCurrentWifiAsHome() async {
+        guard !isReadingCurrentWifi else { return }
+        isReadingCurrentWifi = true
+        homeWifiReadMessage = nil
+        defer { isReadingCurrentWifi = false }
+
+        switch await HomePresenceHelper.fetchCurrentHomeSSID() {
+        case .ssid(let ssid):
+            app.addHomeWifiSSID(ssid)
+            homeWifiReadMessage = nil
+            app.showTransientToast("Added “\(ssid)”")
+        case .locationDenied:
+            let message = "Allow Location access in Settings → Privacy → Location Services, then try again — or type your Wi‑Fi name above."
+            homeWifiReadMessage = message
+            app.showTransientToast("Location access is required to read your Wi‑Fi name")
+            #if canImport(UIKit)
+            if let url = URL(string: UIApplication.openSettingsURLString) {
+                await UIApplication.shared.open(url)
+            }
+            #endif
+        case .locationRestricted:
+            let message = "Location access is restricted on this device. Type your home Wi‑Fi name above."
+            homeWifiReadMessage = message
+            app.showTransientToast(message)
+        case .preciseLocationRequired:
+            let message = "Turn on Precise Location for Vellum in Settings → Privacy → Location Services, then try again — or type your Wi‑Fi name above."
+            homeWifiReadMessage = message
+            app.showTransientToast("Precise Location is required to read your Wi‑Fi name")
+        case .wifiInfoUnavailable:
+            let message = "Couldn't read your Wi‑Fi name. Connect to Wi‑Fi (not cellular), confirm Location is allowed, then try again — or type the name from Settings → Wi‑Fi above."
+            homeWifiReadMessage = message
+            app.showTransientToast("Couldn't read Wi‑Fi name — enter it manually")
+        case .unavailable:
+            #if targetEnvironment(simulator)
+            let message = "Wi‑Fi name isn't available in the Simulator. Type your network name above."
+            #else
+            let message = "Couldn't read your Wi‑Fi name right now. Type it from Settings → Wi‑Fi above."
+            #endif
+            homeWifiReadMessage = message
+            app.showTransientToast(message)
+        }
+    }
+
+    private var activeServerDisplayHost: String? {
+        let raw = app.activeServerURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return nil }
+        guard let components = URLComponents(string: raw), let host = components.host else { return raw }
+        guard let port = components.port else { return host }
+        return "\(host):\(port)"
     }
 
     private var serverKindName: String {
@@ -469,6 +615,9 @@ struct AccountView: View {
 
     private func checkConnection() async {
         SettingsFormDrafts.pushServer(serverDraft, to: app)
+        if HomePresenceHelper.isLocalNetworkServerURL(app.normalizedServerURL(from: app.secondaryURLString)) {
+            await HomePresenceHelper.ensureLocationAccessForHomeDetection()
+        }
         isCheckingConnection = true
         connectionSuccess = false
         defer { isCheckingConnection = false }

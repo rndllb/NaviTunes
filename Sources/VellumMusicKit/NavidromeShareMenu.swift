@@ -15,6 +15,7 @@ struct NavidromeShareMenuSection: View {
                     Label("Create Share Link", systemImage: "link")
                 }
             }
+            .menuSectionPrimaryTint()
         }
     }
 }

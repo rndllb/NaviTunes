@@ -28,12 +28,25 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
             displayName: "Lidarr",
             iconName: "square.stack.3d.up",
             blurb: "A music collection manager. Vellum sends album requests to Lidarr, which adds them to your collection and keeps them monitored and complete.",
+            requirementsSummary: "Lidarr needs its server address and an API key.",
             granularity: .album,
             supportsTrackSearch: false,
             supportsReleaseCatalog: true,
             configFields: [
-                AcquisitionConfigField(id: "baseURL", kind: .url, label: "Server URL", placeholder: "http://192.168.1.x:8686"),
-                AcquisitionConfigField(id: "apiKey", kind: .apiKey, label: "API Key", placeholder: "Settings -> General in Lidarr"),
+                AcquisitionConfigField(
+                    id: "baseURL",
+                    kind: .url,
+                    label: "Server Address",
+                    placeholder: "http://192.168.1.10:8686",
+                    helpText: "The same address you use to open Lidarr in a browser, including the port."
+                ),
+                AcquisitionConfigField(
+                    id: "apiKey",
+                    kind: .apiKey,
+                    label: "API Key",
+                    placeholder: "32-character key",
+                    helpText: "In Lidarr, go to Settings → General → Security and copy the API Key."
+                ),
             ]
         )
     }

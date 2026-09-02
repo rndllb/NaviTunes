@@ -1,6 +1,9 @@
 import Foundation
 
 /// User-added internet radio station persisted locally in Vellum (not on the server).
+///
+/// Stations saved from the Radio Browser directory live here too. The added fields are
+/// all optional so manifests written before the directory existed still decode.
 struct CustomRadioStation: Codable, Identifiable, Hashable, Sendable {
     let id: String
     var name: String
@@ -8,6 +11,12 @@ struct CustomRadioStation: Codable, Identifiable, Hashable, Sendable {
     var homepageURL: URL?
     /// Relative path under the custom-radio folder, e.g. `artwork/<id>.jpg`.
     var artworkRelativePath: String?
+    /// Station logo for directory saves — referenced, not downloaded.
+    var remoteArtworkURL: URL?
+    /// Radio Browser `stationuuid` when this came from the directory.
+    var directoryStationUUID: String?
+    /// "Jazz · 320 kbps" for directory stations.
+    var detailLine: String?
     var dateAdded: Date
 
     init(
@@ -16,6 +25,9 @@ struct CustomRadioStation: Codable, Identifiable, Hashable, Sendable {
         streamURL: URL,
         homepageURL: URL? = nil,
         artworkRelativePath: String? = nil,
+        remoteArtworkURL: URL? = nil,
+        directoryStationUUID: String? = nil,
+        detailLine: String? = nil,
         dateAdded: Date = Date(),
     ) {
         self.id = id
@@ -23,6 +35,9 @@ struct CustomRadioStation: Codable, Identifiable, Hashable, Sendable {
         self.streamURL = streamURL
         self.homepageURL = homepageURL
         self.artworkRelativePath = artworkRelativePath
+        self.remoteArtworkURL = remoteArtworkURL
+        self.directoryStationUUID = directoryStationUUID
+        self.detailLine = detailLine
         self.dateAdded = dateAdded
     }
 
@@ -37,8 +52,10 @@ struct CustomRadioStation: Codable, Identifiable, Hashable, Sendable {
             name: name,
             streamURL: streamURL,
             homepageURL: homepageURL,
-            artworkURL: artworkFileURL(),
+            artworkURL: artworkFileURL() ?? remoteArtworkURL,
             isUserAdded: true,
+            directoryStationUUID: directoryStationUUID,
+            detailLine: detailLine,
         )
     }
 }
@@ -96,6 +113,27 @@ enum CustomRadioStationStore {
         items.append(station)
         try save(items)
         return station
+    }
+
+    /// Saves a station from the Radio Browser directory. Re-saving the same
+    /// `stationuuid` is a no-op rather than a duplicate row.
+    @discardableResult
+    static func add(_ station: CustomRadioStation) throws -> CustomRadioStation {
+        var items = load()
+        if let uuid = station.directoryStationUUID,
+           let existing = items.first(where: { $0.directoryStationUUID == uuid }) {
+            return existing
+        }
+        items.append(station)
+        try save(items)
+        return station
+    }
+
+    static func removeDirectoryStation(uuid: String) {
+        let items = load()
+        for station in items where station.directoryStationUUID == uuid {
+            remove(id: station.id)
+        }
     }
 
     static func remove(id: String) {

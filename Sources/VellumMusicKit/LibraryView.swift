@@ -379,17 +379,18 @@ struct LibraryView: View {
         .contentShape(Rectangle())
     }
 
-    /// Three-way state for the Recently Added grid: still resolving membership → spinner,
-    /// resolved but the user hasn't added anything → empty CTA, populated → grid.
+    /// Three-way state for the Recently Added grid: still resolving membership →
+    /// in-place skeleton grid, resolved but the user hasn't added anything → empty CTA,
+    /// populated → grid. The skeleton mirrors the real grid's layout so the shelf
+    /// doesn't shift when the items land.
     @ViewBuilder
     private var recentlyAddedSectionBody: some View {
         let items = recentItems
         if items.isEmpty {
-            if app.isResolvingLibraryMembership || app.libraryMagicPlaylistId == nil {
-                ProgressView()
-                    .tint(MusicDesign.accent)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 24)
+            if app.isResolvingLibraryMembership
+                && app.libraryAlbumEntries.isEmpty
+                && app.libraryPlaylistEntries.isEmpty {
+                MusicLibraryHubGridSkeleton(columns: 2, rows: 3)
             } else {
                 recentlyAddedEmptyState
             }
