@@ -25,7 +25,10 @@ public struct RootView: View {
 
 enum NowPlayingDeepLink: Hashable {
     case album(AlbumSummary, scrollToTrackId: String? = nil, librarySource: Bool = true)
-    case artist(String)
+    /// Carries the artist's id alongside the name where the source had one, so the most-used
+    /// route to an artist page identifies the artist rather than describing them. A bare name
+    /// lands on whichever artist of that name a lookup returns, and same-named acts are common.
+    case artist(ArtistNameNavigation)
     case playlist(PlaylistSummary, scrollToTrackId: String? = nil)
 }
 
@@ -41,8 +44,8 @@ struct DeepLinkDestinationContent: View {
         switch link {
         case .album(let album, let scrollToTrackId, let librarySource):
             ServerPlaylistDetailView(album: album, librarySource: librarySource, scrollToTrackId: scrollToTrackId)
-        case .artist(let name):
-            ArtistPageView(input: .named(name))
+        case .artist(let nav):
+            ArtistPageView(input: nav.artistPageInput)
         case .playlist(let playlist, let scrollToTrackId):
             ServerPlaylistDetailView(
                 playlist: playlist,

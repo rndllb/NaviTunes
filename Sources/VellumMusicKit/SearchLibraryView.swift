@@ -79,6 +79,10 @@ struct SearchLibraryView: View {
             ArtistPageView(input: .libraryArtist(artist))
         case .namedArtist(let name):
             ArtistPageView(input: .named(name))
+        case .musicBrainzArtist(let artist):
+            ArtistPageView(input: .musicBrainzArtist(artist))
+        case .musicBrainzArtistId(let id, let name):
+            ArtistPageView(input: .musicBrainzArtistId(id: id, name: name))
         case .genre(let genre):
             LibraryGenreAlbumsView(genre: genre)
         case .acquire(let result):

@@ -62,7 +62,12 @@ extension AlbumSummary {
         var t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return "" }
 
-        let suffixPattern = #"(?i)\s*[-–—]\s*(single|ep|album|deluxe edition|deluxe|expanded edition|remaster(ed)?(\s+\d{4})?)$"#
+        // The separator is optional: a bare space counts as well as a dash, so "Tidal Wave EP"
+        // collapses onto "Tidal Wave" the same way "Tidal Wave - EP" already did. Without this a
+        // library title carrying a suffix the catalogue lacks renders twice — once as owned, once
+        // as requestable. The cost is that two releases genuinely distinguished only by a bare
+        // suffix word merge into one; measured at one such pair per ~4,000 catalogue titles.
+        let suffixPattern = #"(?i)(?:\s*[-–—]\s*|\s+)(single|ep|album|deluxe edition|deluxe|expanded edition|remaster(ed)?(\s+\d{4})?)$"#
         while let range = t.range(of: suffixPattern, options: .regularExpression) {
             t = String(t[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
         }

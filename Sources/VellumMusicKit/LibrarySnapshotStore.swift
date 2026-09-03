@@ -18,6 +18,9 @@ struct LibrarySnapshot: Codable {
     /// Playlist-level library membership (mirror of `comment.playlists`).
     var libraryPlaylistEntries: [LibraryMembershipPayload.Entry] = []
     var savedAt: Date = .distantPast
+    /// Schema stamp — see ``PersistedModelSchema``. Defaults to `0` so a snapshot written before
+    /// this existed decodes cleanly and is then rejected as too old, rather than failing to decode.
+    var schemaVersion: Int = 0
 }
 
 enum LibrarySnapshotStore {
@@ -43,6 +46,9 @@ enum LibrarySnapshotStore {
               let data = try? Data(contentsOf: url),
               let snap = try? JSONDecoder().decode(LibrarySnapshot.self, from: data)
         else { return nil }
+        // A snapshot written by an older schema decodes fine and is quietly wrong — it carries
+        // `nil` for fields added since. Treated as a miss so it refills from the server.
+        guard snap.schemaVersion >= PersistedModelSchema.current else { return nil }
         return snap
     }
 
@@ -59,6 +65,7 @@ enum LibrarySnapshotStore {
         guard let url = try? fileURL() else { return }
         var snap = snapshot
         snap.savedAt = Date()
+        snap.schemaVersion = PersistedModelSchema.current
         guard let data = try? JSONEncoder().encode(snap) else { return }
         writeLock.lock()
         let stillCurrent = generation == writeGeneration

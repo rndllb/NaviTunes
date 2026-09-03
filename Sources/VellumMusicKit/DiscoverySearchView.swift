@@ -13,9 +13,19 @@ enum SearchNavTarget: Hashable {
     case album(AlbumSummary)
     case playlist(PlaylistSummary)
     case artist(LibraryArtistSummary)
-    /// An artist by name only (not in the server library) — resolved via iTunes on
-    /// the artist page so the user can browse and request their discography.
+    /// An artist by name only (not in the server library). The artist page resolves the name
+    /// against MusicBrainz on arrival, which costs one search request.
     case namedArtist(String)
+    /// An artist opened from a MusicBrainz search hit, carrying the hit itself.
+    ///
+    /// Distinct from ``namedArtist`` because the payload is the point: the search response
+    /// already holds the header facts, so a page opened this way renders them without a
+    /// request. Passing a bare name here instead would throw that away and make the artist
+    /// page search again for a row we are already holding.
+    case musicBrainzArtist(MusicBrainzArtist)
+    /// An artist known only by MBID and name — the shape a request-candidate row can offer,
+    /// since it carries the id but not the artist's own metadata.
+    case musicBrainzArtistId(id: String, name: String)
     case genre(LibraryGenreSummary)
     case acquire(AcquisitionResult)
 }
@@ -99,6 +109,16 @@ private struct RecentSearchEntity: Codable, Identifiable, Equatable {
     var title: String
     var subtitle: String?
     var artworkURL: URL?
+    /// MusicBrainz artist id, for an artist row that came from MusicBrainz rather than the
+    /// server.
+    ///
+    /// Kept because the id is the expensive part. Without it, re-opening a niche artist from
+    /// Recently Searched had to resolve the name against MusicBrainz again — one rate-limited
+    /// request to rediscover an answer the app was already holding when the row was written —
+    /// and could resolve to a *different* artist of the same name than the one the user tapped.
+    ///
+    /// Optional so entries already on disk decode unchanged.
+    var musicBrainzId: String?
 
     var id: String { "\(kind.rawValue):\(primaryId)" }
 
@@ -106,6 +126,31 @@ private struct RecentSearchEntity: Codable, Identifiable, Equatable {
 
     /// Prefix once used for request rows stored into Recently Searched.
     static let acquireIdPrefix = "acquire:"
+
+    /// Prefix once used for off-server artist rows, from when they came from iTunes.
+    ///
+    /// Those rows stored `"itunes:<id>"` in ``primaryId`` and were then navigated to as though
+    /// the string were a *server* artist id, which no server has ever issued. Entries already on
+    /// disk are still routed — by MBID where the prefix hides one, by name otherwise — rather
+    /// than being hidden, since the row itself is fine and only the id was wrong.
+    static let legacyOffServerArtistPrefix = "itunes:"
+
+    /// The MusicBrainz id a legacy `itunes:`-prefixed artist entry is carrying, if any.
+    ///
+    /// After the iTunes path was removed these ids were MBIDs stored under the old prefix, so
+    /// the value is usually recoverable. Validated by shape — an MBID is a 36-character UUID —
+    /// so an actual iTunes numeric id from an older install is not mistaken for one.
+    var recoveredMusicBrainzId: String? {
+        if let musicBrainzId, !musicBrainzId.isEmpty { return musicBrainzId }
+        guard kind == .artist, primaryId.hasPrefix(Self.legacyOffServerArtistPrefix) else { return nil }
+        let candidate = String(primaryId.dropFirst(Self.legacyOffServerArtistPrefix.count))
+        return UUID(uuidString: candidate) == nil ? nil : candidate
+    }
+
+    /// True when this artist row cannot be trusted as a server artist id.
+    var isOffServerArtist: Bool {
+        kind == .artist && (musicBrainzId != nil || primaryId.hasPrefix(Self.legacyOffServerArtistPrefix))
+    }
 
     /// An entry that cannot be navigated to, because it never described a library entity.
     ///
@@ -168,12 +213,25 @@ private enum RecentSearchEntityStore {
     }
 }
 
-/// An artist found via iTunes that isn't in the server library — surfaced as a
-/// normal artist result row so missing artists flow into the artist page like server ones.
+/// An artist not in the server library — surfaced as a normal artist result row so missing
+/// artists flow into the artist page like server ones.
+///
+/// `musicBrainz` is the search payload the row came from, when it came from MusicBrainz. It
+/// travels with the row so that opening it costs nothing: the artist page renders its header
+/// straight from this. Rows sourced from the acquisition plugin leave it nil and the page
+/// resolves the name itself.
 private struct NamedArtistMatch: Identifiable, Hashable {
     let id: String
     let name: String
     let artworkURL: URL?
+    var disambiguation: String?
+    var musicBrainz: MusicBrainzArtist?
+
+    /// Where tapping this row should land.
+    var navTarget: SearchNavTarget {
+        if let musicBrainz { return .musicBrainzArtist(musicBrainz) }
+        return .namedArtist(name)
+    }
 }
 
 /// One row in the hybrid Discover feed — either a server-catalog hit, an iTunes artist,
@@ -185,14 +243,20 @@ private enum HybridRow: Identifiable {
     case namedArtist(NamedArtistMatch)
     case serverSong(Track)
     case serverAlbum(AlbumSummary)
+    /// An album MusicBrainz knows about that the connected server does not.
+    case musicBrainzAlbum(MusicBrainzReleaseGroup)
+    /// A song MusicBrainz knows about that the connected server does not.
+    case musicBrainzSong(MusicBrainzSongRow)
     case acquire(AcquisitionResult)
 
     var id: String {
         switch self {
         case .serverArtist(let a): return "srv-artist-\(a.id)"
-        case .namedArtist(let a): return "itunes-artist-\(a.id)"
+        case .namedArtist(let a): return "mb-artist-\(a.id)"
         case .serverSong(let t): return "srv-song-\(t.id)"
         case .serverAlbum(let a): return "srv-album-\(a.id)"
+        case .musicBrainzAlbum(let g): return "mb-album-\(g.id)"
+        case .musicBrainzSong(let s): return "mb-song-\(s.id)"
         case .acquire(let r): return "acq-\(r.id)"
         }
     }
@@ -223,10 +287,56 @@ struct DiscoverySearchView: View {
     // Hybrid Discover-tab state.
     @State private var serverResults: CatalogSearchResults = .empty
     @State private var acquireResults: [AcquisitionResult] = []
-    @State private var namedArtistMatches: [NamedArtistMatch] = []
     @State private var isFetching = false
     @State private var searchError: String?
     @State private var hybridSearchTask: Task<Void, Never>?
+
+    /// The MusicBrainz side of Discover: artists, albums and songs, each independently
+    /// paginated. Replaces the old three-artist-row lookup entirely.
+    @StateObject private var musicBrainz = MusicBrainzSearchFeed()
+    /// Which entity tab is showing. `All` merges MusicBrainz with the server catalog and does
+    /// not paginate; the other three are single-entity infinite-scrolling lists.
+    @State private var entity: MusicBrainzSearchEntity = .all
+    /// Separate from ``hybridSearchTask`` so the MusicBrainz fan-out can run on its own longer
+    /// debounce without holding up the server-catalog results.
+    @State private var musicBrainzTask: Task<Void, Never>?
+
+    /// MusicBrainz artist rows as the feed's artist hits, minus anything the server already
+    /// answered for (those belong to the server rows, which are playable).
+    ///
+    /// Ranked by MusicBrainz's own relevance rather than re-sorted locally. That ordering is the
+    /// entire reason for querying MusicBrainz: it is what surfaces a hit found through an alias
+    /// or a corrected misspelling, neither of which a local name comparison can see.
+    private var namedArtistMatches: [NamedArtistMatch] {
+        // Suppressed by MBID, never by name.
+        //
+        // Artist names are not identities and are not even close to unique: MusicBrainz holds 17
+        // distinct artists named exactly "Rocket" in the first page of results alone — a Russian
+        // rapper, a UK grime artist, an LA indie band, an 80s electro-funk act. Dropping every
+        // MusicBrainz artist whose name matches a server artist therefore does not remove a
+        // duplicate, it removes sixteen different musicians because the user happens to own a
+        // record by the seventeenth.
+        //
+        // An MBID does identify an artist, so a server artist that reports one suppresses exactly
+        // its own row and nothing else. A server artist without an MBID suppresses nothing: the
+        // cost of that is one repeated row, against the cost of silently hiding everyone who
+        // shares a name.
+        let serverArtistMBIDs = Set(serverResults.artists.compactMap(\.musicBrainzArtistId))
+        var seen = Set<String>()
+        return musicBrainz.artists.compactMap { artist -> NamedArtistMatch? in
+            guard !artist.name.isEmpty else { return nil }
+            guard !serverArtistMBIDs.contains(artist.id), seen.insert(artist.id).inserted else {
+                return nil
+            }
+            return NamedArtistMatch(
+                id: artist.id,
+                name: artist.name,
+                artworkURL: nil,
+                disambiguation: artist.searchRowDescriptor,
+                musicBrainz: artist
+            )
+        }
+    }
 
     // Idle-state genre tiles (Discover tab).
     @State private var serverGenres: [LibraryGenreSummary] = []
@@ -317,10 +427,14 @@ struct DiscoverySearchView: View {
             scored.append((.serverArtist(artist), s, -1, Self.matchCoverage(of: artist.name, queryLength: q.count), artist.name))
         }
 
-        // Artists not on the server (plugin matches) get the same artist-row treatment
+        // Artists not on the server (MusicBrainz matches) get the same artist-row treatment
         // and priority, so a missing artist surfaces alongside server artists.
         for match in namedArtistMatches {
-            let s = Self.artistRowScore(name: match.name, normalizedQuery: q)
+            let s = Self.musicBrainzArtistRowScore(
+                name: match.name,
+                musicBrainzScore: match.musicBrainz?.score,
+                normalizedQuery: q
+            )
             scored.append((.namedArtist(match), s, -1, Self.matchCoverage(of: match.name, queryLength: q.count), match.name))
         }
 
@@ -343,6 +457,50 @@ struct DiscoverySearchView: View {
         {
             let s = Self.relevanceScore(title: song.title, artist: song.artist, normalizedQuery: q)
             scored.append((.serverSong(song), s, 1, Self.matchCoverage(of: song.title, queryLength: q.count), song.title))
+        }
+
+        // MusicBrainz albums, for the `All` tab. Suppressed when the same release already
+        // arrived from the server, since the server row is playable and this one is only
+        // requestable — `seenReleaseKeys` is the same gate the plugin rows go through.
+        for group in musicBrainz.albums.prefix(Self.allTabMusicBrainzLimit) {
+            let artist = group.searchRowArtist
+            guard seenReleaseKeys
+                .insert(Self.releaseIdentityKey(title: group.title, artist: artist))
+                .inserted
+            else { continue }
+            let s = Self.musicBrainzRowScore(
+                title: group.title,
+                artist: artist,
+                musicBrainzScore: group.score,
+                normalizedQuery: q
+            )
+            scored.append((
+                .musicBrainzAlbum(group), s + 0.05, 0,
+                Self.matchCoverage(of: group.title, queryLength: q.count), group.title
+            ))
+        }
+
+        // MusicBrainz songs, for the `All` tab. Checked against the server's own track hits by
+        // title + artist so a song you already have does not appear twice, once playable and
+        // once as a request.
+        let serverSongKeys = Set(serverTracks.map { Self.releaseIdentityKey(title: $0.title, artist: $0.artist) })
+        for song in musicBrainz.songs.prefix(Self.allTabMusicBrainzLimit) {
+            let key = Self.releaseIdentityKey(title: song.title, artist: song.artist)
+            guard !serverSongKeys.contains(key) else { continue }
+            guard !LibraryTrackMatcher.matchesLibrary(
+                song.asAcquisitionResult,
+                titleIndex: app.libraryTrackTitleIndex
+            ) else { continue }
+            let s = Self.musicBrainzRowScore(
+                title: song.title,
+                artist: song.artist,
+                musicBrainzScore: song.recording.score,
+                normalizedQuery: q
+            )
+            scored.append((
+                .musicBrainzSong(song), s, 1,
+                Self.matchCoverage(of: song.title, queryLength: q.count), song.title
+            ))
         }
 
         for result in acquireResults {
@@ -454,6 +612,58 @@ struct DiscoverySearchView: View {
         return 0
     }
 
+    /// How many MusicBrainz rows of each kind the merged `All` tab draws from.
+    ///
+    /// `All` is a "best answer" view, not a catalogue — the dedicated tabs are where a full
+    /// result set is browsed, and those paginate. Taking the whole hundred-row page here would
+    /// bury the server's own playable results under request candidates.
+    private static let allTabMusicBrainzLimit = 12
+
+    /// MusicBrainz's own relevance, mapped into this feed's score scale.
+    ///
+    /// MusicBrainz returns 0–100 and it is the only signal that can see *why* a row matched.
+    /// A hit found through an alias or a corrected misspelling — `crosses` → `†††`, `yeezy` →
+    /// `Ye`, `blak sabath` → `Black Sabbath` — has a name that does not contain the query at
+    /// all, so every local comparison scores it zero and sinks it below every other row. That
+    /// is the exact class of result this app queries MusicBrainz to obtain, and discarding the
+    /// score threw all of it away.
+    ///
+    /// Mapped to a maximum of ``artistPrefixScore`` rather than higher: a perfect MusicBrainz
+    /// match should reach the band where it is plainly visible, but must not outrank a row whose
+    /// name the user literally typed.
+    private static func musicBrainzScoreTier(_ score: Int?) -> Double {
+        guard let score, score > 0 else { return 0 }
+        return artistPrefixScore * min(Double(score), 100) / 100
+    }
+
+    /// Score for a MusicBrainz artist row: the better of the local name match and MusicBrainz's
+    /// own relevance.
+    ///
+    /// `max`, not a replacement. The local scale still has to win where it applies, because an
+    /// exact typed name earns ``artistExactBump`` and MusicBrainz has no equivalent notion of
+    /// "this is the row you meant" beyond a 100 it also hands to several near-misses.
+    private static func musicBrainzArtistRowScore(
+        name: String,
+        musicBrainzScore: Int?,
+        normalizedQuery q: String
+    ) -> Double {
+        max(artistRowScore(name: name, normalizedQuery: q), musicBrainzScoreTier(musicBrainzScore))
+    }
+
+    /// Score for a MusicBrainz album or song row: the better of the local title/artist match and
+    /// MusicBrainz's own relevance. Same reasoning as ``musicBrainzArtistRowScore``.
+    private static func musicBrainzRowScore(
+        title: String,
+        artist: String,
+        musicBrainzScore: Int?,
+        normalizedQuery q: String
+    ) -> Double {
+        max(
+            relevanceScore(title: title, artist: artist, normalizedQuery: q),
+            musicBrainzScoreTier(musicBrainzScore)
+        )
+    }
+
     /// How much of a candidate's name the query accounts for, 0–1.
     ///
     /// Used **only as a tiebreak**, never as part of the score, so it cannot move a row across a
@@ -484,17 +694,27 @@ struct DiscoverySearchView: View {
             .onChange(of: scope) { _, newScope in
             if newScope == .discover {
                 scheduleHybridSearch()
+                scheduleMusicBrainzSearch()
             } else {
                 hybridSearchTask?.cancel()
+                musicBrainzTask?.cancel()
                 scheduleLibrarySearch()
             }
         }
         .onChange(of: searchText) { _, _ in
             if scope == .discover {
                 scheduleHybridSearch()
+                scheduleMusicBrainzSearch()
             } else {
                 scheduleLibrarySearch()
             }
+        }
+        // Switching tabs never re-runs the query. The feed keeps a cursor per entity, so a tab
+        // whose first page is already in hand renders instantly and costs no request — which
+        // matters at one request per second.
+        .onChange(of: entity) { _, _ in
+            guard scope == .discover else { return }
+            loadMusicBrainzTab()
         }
         .overlay(alignment: .bottom) {
             if let toast {
@@ -639,34 +859,35 @@ struct DiscoverySearchView: View {
         .musicDiscoverySearchListStyle()
     }
 
+    /// The Discover results area: entity tabs above one list.
+    ///
+    /// The tabs exist so the three MusicBrainz entities can each paginate. `All` is the merged,
+    /// locally-ranked view and does not paginate — see ``MusicBrainzSearchEntity``.
     private var hybridResultsList: some View {
+        VStack(spacing: 0) {
+            MusicGlassSegmentPillBar(
+                options: Array(MusicBrainzSearchEntity.allCases),
+                selection: $entity,
+                title: { $0.title }
+            )
+            .padding(.horizontal, 16)
+            .padding(.bottom, 6)
+
+            switch entity {
+            case .all: allResultsList
+            case .artists: artistsResultsList
+            case .albums: albumsResultsList
+            case .songs: songsResultsList
+            }
+        }
+    }
+
+    /// Merged view: server catalog, MusicBrainz and plugin candidates, ranked together.
+    private var allResultsList: some View {
         let rows = hybridRows
         return List {
-            if isFetching && rows.isEmpty {
-                Section {
-                    HStack {
-                        ProgressView().tint(MusicDesign.accent)
-                        Text("Searching…")
-                            .font(.subheadline)
-                            .foregroundStyle(MusicDesign.secondaryLabel)
-                            .padding(.leading, 8)
-                    }
-                    .listRowBackground(Color.clear)
-                }
-            } else if let err = searchError, rows.isEmpty {
-                Section {
-                    Text(err)
-                        .font(.subheadline)
-                        .foregroundStyle(MusicDesign.secondaryLabel)
-                        .listRowBackground(Color.clear)
-                }
-            } else if rows.isEmpty {
-                Section {
-                    Text("No results for \"\(trimmedQuery)\".")
-                        .font(.subheadline)
-                        .foregroundStyle(MusicDesign.secondaryLabel)
-                        .listRowBackground(Color.clear)
-                }
+            if rows.isEmpty {
+                Section { musicBrainzStatusRow(hasRows: false) }
             } else {
                 Section("Top Results") {
                     ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
@@ -674,9 +895,127 @@ struct DiscoverySearchView: View {
                             .musicChevronRowDivider(searchArtworkDividerKind, shows: index < rows.count - 1)
                     }
                 }
+                // A MusicBrainz failure has to be visible even when server rows filled the list,
+                // because the missing half is exactly the half that finds music you don't have.
+                if musicBrainz.errorMessage != nil || musicBrainz.isLoading {
+                    Section { musicBrainzStatusRow(hasRows: true) }
+                }
             }
         }
         .musicDiscoverySearchListStyle()
+    }
+
+    private var artistsResultsList: some View {
+        musicBrainzPaginatedList(namedArtistMatches) { match in
+            namedArtistRow(match)
+        }
+    }
+
+    private var albumsResultsList: some View {
+        musicBrainzPaginatedList(musicBrainz.albums) { group in
+            musicBrainzAlbumRow(group)
+        }
+    }
+
+    private var songsResultsList: some View {
+        musicBrainzPaginatedList(musicBrainz.songs) { song in
+            musicBrainzSongRow(song)
+        }
+    }
+
+    /// One paginated single-entity list.
+    ///
+    /// The trailing-row `onAppear` is the paging trigger. It fires a few rows early rather than
+    /// exactly at the last row so the next page is usually in hand before the user reaches the
+    /// bottom — at one request per second, triggering on the final row guarantees a visible stall.
+    /// ``MusicBrainzSearchFeed/loadMore(entity:)`` is itself re-entrancy-guarded, so a fast
+    /// scroll firing this repeatedly cannot stack requests.
+    private func musicBrainzPaginatedList<Row: Identifiable, Content: View>(
+        _ rows: [Row],
+        @ViewBuilder row content: @escaping (Row) -> Content
+    ) -> some View {
+        List {
+            if rows.isEmpty {
+                Section { musicBrainzStatusRow(hasRows: false) }
+            } else {
+                Section(entity.title) {
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, item in
+                        content(item)
+                            .musicChevronRowDivider(searchArtworkDividerKind, shows: index < rows.count - 1)
+                            .onAppear {
+                                guard index >= rows.count - Self.pagingTriggerLookahead else { return }
+                                Task { await musicBrainz.loadMore(entity: entity) }
+                            }
+                    }
+                }
+                if musicBrainz.isLoadingMore {
+                    Section {
+                        HStack {
+                            ProgressView().tint(MusicDesign.accent)
+                            Text("Loading more…")
+                                .font(.subheadline)
+                                .foregroundStyle(MusicDesign.secondaryLabel)
+                                .padding(.leading, 8)
+                        }
+                        .listRowBackground(Color.clear)
+                    }
+                } else if musicBrainz.errorMessage != nil {
+                    Section { musicBrainzStatusRow(hasRows: true) }
+                }
+            }
+        }
+        .musicDiscoverySearchListStyle()
+    }
+
+    /// How many rows from the bottom the next page starts loading.
+    private static let pagingTriggerLookahead = 5
+
+    /// The one place Discover explains why it has nothing, or nothing more, to show.
+    ///
+    /// Four outcomes that used to be one. Before this, a rate-limit refusal, a transport failure
+    /// and a genuine no-such-artist all rendered as the same "No results" — so the app told users
+    /// an artist did not exist whenever MusicBrainz happened to be busy, which it often is.
+    @ViewBuilder
+    private func musicBrainzStatusRow(hasRows: Bool) -> some View {
+        if musicBrainz.isLoading || (isFetching && !hasRows) {
+            HStack {
+                ProgressView().tint(MusicDesign.accent)
+                Text("Searching…")
+                    .font(.subheadline)
+                    .foregroundStyle(MusicDesign.secondaryLabel)
+                    .padding(.leading, 8)
+            }
+            .listRowBackground(Color.clear)
+        } else if musicBrainz.isRateLimited {
+            Button {
+                Task { await musicBrainz.retry(entity: entity) }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.clockwise")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("MusicBrainz is busy right now.")
+                            .font(.subheadline.weight(.medium))
+                        Text("Tap to try again.")
+                            .font(.caption)
+                            .foregroundStyle(MusicDesign.secondaryLabel)
+                    }
+                }
+                .foregroundStyle(.primary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .listRowBackground(Color.clear)
+        } else if let message = musicBrainz.errorMessage ?? searchError {
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(MusicDesign.secondaryLabel)
+                .listRowBackground(Color.clear)
+        } else if !hasRows {
+            Text("No results for \"\(trimmedQuery)\".")
+                .font(.subheadline)
+                .foregroundStyle(MusicDesign.secondaryLabel)
+                .listRowBackground(Color.clear)
+        }
     }
 
     private func loadServerGenresIfNeeded() async {
@@ -727,6 +1066,10 @@ struct DiscoverySearchView: View {
             serverAlbumRow(album)
         case .serverSong(let track):
             serverSongRow(track)
+        case .musicBrainzAlbum(let group):
+            musicBrainzAlbumRow(group)
+        case .musicBrainzSong(let song):
+            musicBrainzSongRow(song)
         case .acquire(let result):
             acquireRow(result)
         }
@@ -781,11 +1124,12 @@ struct DiscoverySearchView: View {
         Button {
             recordRecent(.init(
                 kind: .artist,
-                primaryId: "itunes:\(match.id)",
+                primaryId: match.id,
                 title: match.name,
                 artworkURL: match.artworkURL,
+                musicBrainzId: match.id,
             ))
-            navigationPath.append(SearchNavTarget.namedArtist(match.name))
+            navigationPath.append(match.navTarget)
         } label: {
             HStack(spacing: 12) {
                 AlbumArtworkView(url: match.artworkURL, cornerRadius: rowArtworkSide / 2)
@@ -796,9 +1140,13 @@ struct DiscoverySearchView: View {
                         .font(entityTitleFont)
                         .foregroundStyle(.primary)
                         .lineLimit(1)
-                    Text("Artist")
+                    // MusicBrainz's disambiguation is what separates same-named artists
+                    // ("Michigan/Ohio emo band"), which is exactly the ambiguity an artist
+                    // row has to resolve for the user before they tap it.
+                    Text(match.disambiguation.map { "Artist · \($0)" } ?? "Artist")
                         .font(entitySubtitleFont)
                         .foregroundStyle(MusicDesign.secondaryLabel)
+                        .lineLimit(1)
                 }
                 Spacer(minLength: 8)
                 MusicNavigationChevron()
@@ -980,6 +1328,67 @@ struct DiscoverySearchView: View {
         .padding(.vertical, songVerticalPadding)
         .listRowBackground(discoverRowBackground)
         .discoverySearchListRowChrome()
+    }
+
+    // MARK: - Hybrid: MusicBrainz album / song rows
+
+    /// A MusicBrainz album row.
+    ///
+    /// Renders as a **server** album row when the connected server turns out to have the
+    /// release, and as a request row otherwise. That substitution is the point: in the dedicated
+    /// Albums tab every row comes from MusicBrainz, so without it an album already sitting on
+    /// the user's own server would be offered as something to go and download.
+    ///
+    /// The request form reuses ``acquireRow`` rather than reimplementing it, by mapping the
+    /// release group onto the same ``AcquisitionResult`` a plugin row carries. An album found by
+    /// searching MusicBrainz is not a different kind of thing from an album found by searching
+    /// the plugin — it needs the same Request pill, the same job state and the same detail view.
+    @ViewBuilder
+    private func musicBrainzAlbumRow(_ group: MusicBrainzReleaseGroup) -> some View {
+        if let owned = serverAlbumsByReleaseKey[
+            Self.releaseIdentityKey(title: group.title, artist: group.searchRowArtist)
+        ] {
+            serverAlbumRow(owned)
+        } else {
+            acquireRow(group.asSearchAcquisitionRelease.asSearchResult)
+        }
+    }
+
+    /// A MusicBrainz song row, with the same server-substitution rule as
+    /// ``musicBrainzAlbumRow(_:)``.
+    @ViewBuilder
+    private func musicBrainzSongRow(_ song: MusicBrainzSongRow) -> some View {
+        if let owned = serverSongsByReleaseKey[
+            Self.releaseIdentityKey(title: song.title, artist: song.artist)
+        ] {
+            serverSongRow(owned)
+        } else {
+            acquireRow(song.asAcquisitionResult)
+        }
+    }
+
+    /// Server album hits indexed by release identity, so a MusicBrainz row can tell in O(1)
+    /// whether the user already has the release.
+    ///
+    /// Built from ``serverResults`` — this search's own server hits — and never from
+    /// `app.libraryAlbums`, which is the entire server catalogue and must not be scanned from a
+    /// body (`Rules/swiftui-body-cost.md`). That is also the correct source: if the release is on
+    /// the server, the server search found it.
+    private var serverAlbumsByReleaseKey: [String: AlbumSummary] {
+        var map: [String: AlbumSummary] = [:]
+        for album in serverResults.albums {
+            map[Self.releaseIdentityKey(title: album.title, artist: album.artist)] = album
+        }
+        return map
+    }
+
+    /// Server track hits indexed by title + artist, for the same substitution.
+    private var serverSongsByReleaseKey: [String: Track] {
+        var map: [String: Track] = [:]
+        for song in serverResults.songs {
+            map[Self.releaseIdentityKey(title: song.title, artist: song.artist)] = song
+        }
+        return map
     }
 
     /// The trailing control on a request row: what the backend says, or the way to ask.
@@ -1548,11 +1957,20 @@ struct DiscoverySearchView: View {
                 artworkURL: entity.artworkURL,
             )))
         case .artist:
-            navigationPath.append(SearchNavTarget.artist(LibraryArtistSummary(
-                id: entity.primaryId,
-                name: entity.title,
-                artworkURL: entity.artworkURL,
-            )))
+            // An off-server artist must never be routed as a server artist id. Doing that is
+            // what turned a saved MusicBrainz row into a page that queried the server for an id
+            // it had never issued, and threw away the MBID the row was holding.
+            if let mbid = entity.recoveredMusicBrainzId {
+                navigationPath.append(SearchNavTarget.musicBrainzArtistId(id: mbid, name: entity.title))
+            } else if entity.isOffServerArtist {
+                navigationPath.append(SearchNavTarget.namedArtist(entity.title))
+            } else {
+                navigationPath.append(SearchNavTarget.artist(LibraryArtistSummary(
+                    id: entity.primaryId,
+                    name: entity.title,
+                    artworkURL: entity.artworkURL,
+                )))
+            }
         }
     }
 
@@ -1561,6 +1979,9 @@ struct DiscoverySearchView: View {
         guard !q.isEmpty else { return }
         if scope == .discover {
             scheduleHybridSearch(debounce: false)
+            // An explicit submit is the user saying they are done typing, so the debounce has
+            // nothing left to protect against. The one-second floor still applies in the queue.
+            scheduleMusicBrainzSearch(debounce: false)
         } else {
             scheduleLibrarySearch(debounce: false)
         }
@@ -1578,14 +1999,16 @@ struct DiscoverySearchView: View {
         }
     }
 
-    /// Debounced fan-out to server-catalog search + iTunes + optional acquisition plugin.
+    /// Debounced fan-out to server-catalog search plus the optional acquisition plugin.
+    ///
+    /// The MusicBrainz side runs separately (``scheduleMusicBrainzSearch``) on a longer debounce,
+    /// because it is rate-limited to one request per second and must not gate the server results.
     private func scheduleHybridSearch(debounce: Bool = true) {
         hybridSearchTask?.cancel()
         let q = trimmedQuery
         guard !q.isEmpty else {
             serverResults = .empty
             acquireResults = []
-            namedArtistMatches = []
             searchError = nil
             isFetching = false
             return
@@ -1607,7 +2030,6 @@ struct DiscoverySearchView: View {
             if Task.isCancelled || trimmedQuery != query { return }
             serverResults = offline
             acquireResults = []
-            namedArtistMatches = []
             isFetching = false
             return
         }
@@ -1636,18 +2058,15 @@ struct DiscoverySearchView: View {
         } else {
             pluginAcquire = []
         }
-        let pluginArtists: [AcquisitionArtist]
-        let pluginAlbums: [AcquisitionRelease]
-        if pluginOK {
-            // Two independent plugin round-trips — run them together rather than adding another
-            // sequential network hop to every Discover search.
-            async let artists = acquisition.searchArtists(query: query)
-            async let albums = albumAcquireOK ? acquisition.searchAlbums(query: query) : []
-            (pluginArtists, pluginAlbums) = await (artists, albums)
-        } else {
-            pluginArtists = []
-            pluginAlbums = []
-        }
+        // Artist rows no longer come from the plugin. A plugin answers from its own library or
+        // its own fuzzy catalog lookup, which is a narrower and less reliable index of who
+        // exists than MusicBrainz — and it has no notion of disambiguation, so two artists
+        // sharing a name arrive indistinguishable. That search runs on its own longer debounce
+        // (``scheduleMusicBrainzSearch``) because MusicBrainz is rate limited to one
+        // request per second and must not be asked on every keystroke.
+        let pluginAlbums: [AcquisitionRelease] = albumAcquireOK
+            ? await acquisition.searchAlbums(query: query)
+            : []
         if Task.isCancelled || trimmedQuery != query { return }
 
         var seenAcquireKeys = Set<String>()
@@ -1675,17 +2094,48 @@ struct DiscoverySearchView: View {
             mergedAcquire.append(row)
         }
         acquireResults = mergedAcquire
-
-        let serverArtistNames = Set(server.artists.map { LibraryTrackMatcher.normalize($0.name) })
-        var seenNames = Set<String>()
-        let matches = pluginArtists.compactMap { artist -> NamedArtistMatch? in
-            let norm = LibraryTrackMatcher.normalize(artist.name)
-            guard !serverArtistNames.contains(norm), seenNames.insert(norm).inserted else { return nil }
-            return NamedArtistMatch(id: artist.id, name: artist.name, artworkURL: artist.artworkURL)
-        }
         if Task.isCancelled || trimmedQuery != query { return }
-        namedArtistMatches = Array(matches.prefix(3))
         isFetching = false
+    }
+
+    /// MusicBrainz artist search, on a deliberately long debounce.
+    ///
+    /// One second of no typing, matching the one-request-per-second budget: a shorter delay
+    /// would queue a request per keystroke and every one of them would have to wait its turn
+    /// behind the last, so the answer would arrive later, not sooner. The server-catalog search
+    /// keeps its own 300 ms debounce and is unaffected — only this row set waits.
+    private func scheduleMusicBrainzSearch(debounce: Bool = true) {
+        musicBrainzTask?.cancel()
+        let q = trimmedQuery
+        guard !q.isEmpty, !app.effectiveOfflineMode else {
+            musicBrainz.clear()
+            return
+        }
+        musicBrainzTask = Task { @MainActor in
+            if debounce {
+                try? await Task.sleep(nanoseconds: UInt64(Self.musicBrainzDebounceSeconds * 1_000_000_000))
+                if Task.isCancelled { return }
+            }
+            await musicBrainz.start(query: q, entity: entity)
+        }
+    }
+
+    /// Debounce before a MusicBrainz fan-out.
+    ///
+    /// Shorter than the second this used to wait, because cancelling a search now actually
+    /// cancels the request (see ``MusicBrainzRequestQueue/perform(path:query:policy:)``). While
+    /// abandoned requests still went out, a short debounce spent the whole one-per-second budget
+    /// on prefixes nobody would see and the real answer arrived *later*. With cancellation
+    /// honoured, an abandoned keystroke costs nothing and the wait only has to cover typing.
+    private static let musicBrainzDebounceSeconds: Double = 0.6
+
+    /// Loads the entity tab the user just switched to, if its first page is not already held.
+    private func loadMusicBrainzTab() {
+        musicBrainzTask?.cancel()
+        guard !trimmedQuery.isEmpty, !app.effectiveOfflineMode else { return }
+        musicBrainzTask = Task { @MainActor in
+            await musicBrainz.ensureLoaded(entity: entity)
+        }
     }
 
     private func scheduleLibrarySearch(debounce: Bool = true) {
@@ -1804,8 +2254,31 @@ struct AcquireResultDetailView: View {
     let result: AcquisitionResult
 
     @State private var statusMessage: String?
+    @State private var artistTarget: SearchNavTarget?
 
     private var artistsLine: String { result.artistLine }
+
+    /// Where tapping the artist name should go.
+    ///
+    /// The MBID is preferred whenever the row carries one: it names exactly one artist, whereas
+    /// a name has to be looked up and can land on a different act sharing it. The name is the
+    /// fallback for rows that have no id at all.
+    ///
+    /// `nil` means the name is not navigable — an empty credit, or a compilation credited to
+    /// "Various Artists", where a single artist page is not a meaningful destination. Those keep
+    /// rendering as plain text, which is what the tappability gate has always been protecting.
+    private var artistNavTarget: SearchNavTarget? {
+        // Only navigate on a single credited artist. A multi-artist release has no one page to
+        // land on, and picking the first would be a guess presented as a fact.
+        guard result.artists.count == 1, let name = result.artists.first,
+              ArtistNavigation.isTappable(name)
+        else { return nil }
+        if let mbid = result.request.artistMBID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !mbid.isEmpty {
+            return .musicBrainzArtistId(id: mbid, name: name)
+        }
+        return .namedArtist(name)
+    }
 
     private var alreadyInLibrary: Bool {
         LibraryTrackMatcher.matchesLibrary(result, titleIndex: app.libraryTrackTitleIndex)
@@ -1830,10 +2303,26 @@ struct AcquireResultDetailView: View {
                                 .foregroundStyle(MusicDesign.secondaryLabel)
                         }
                     }
-                    Text(artistsLine)
-                        .font(.headline)
-                        .foregroundStyle(MusicDesign.secondaryLabel)
-                        .multilineTextAlignment(.center)
+                    // Reaching an album from search and finding no way through to its artist is
+                    // exactly the moment the link is most wanted, since search is where you land
+                    // when the artist did not come up on their own.
+                    if let artistTargetValue = artistNavTarget {
+                        Button {
+                            artistTarget = artistTargetValue
+                        } label: {
+                            Text(artistsLine)
+                                .font(.headline)
+                                .foregroundStyle(MusicDesign.accent)
+                                .multilineTextAlignment(.center)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Opens the artist page")
+                    } else {
+                        Text(artistsLine)
+                            .font(.headline)
+                            .foregroundStyle(MusicDesign.secondaryLabel)
+                            .multilineTextAlignment(.center)
+                    }
                     if !metadataLine.isEmpty {
                         Text(metadataLine)
                             .font(.subheadline)
@@ -1860,6 +2349,18 @@ struct AcquireResultDetailView: View {
         .background(MusicDesign.background)
         .navigationTitle(result.title)
         .musicNavigationBarTitleDisplayMode(.inline)
+        // Programmatic push rather than a NavigationLink around the label — the same pattern the
+        // other detail screens use, and the one that does not fight the enclosing scroll view.
+        .navigationDestination(item: $artistTarget) { target in
+            switch target {
+            case .musicBrainzArtistId(let id, let name):
+                ArtistPageView(input: .musicBrainzArtistId(id: id, name: name))
+            case .namedArtist(let name):
+                ArtistPageView(input: .named(name))
+            default:
+                EmptyView()
+            }
+        }
     }
 
     private var metadataLine: String {

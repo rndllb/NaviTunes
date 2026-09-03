@@ -199,6 +199,10 @@ final class NavidromeClient: MusicLibraryProviding {
             genres: genres,
             releaseYear: releaseYear,
             releaseDate: releaseDate,
+            // Subsonic exposes exactly one MusicBrainz id on an album and it is the *release*
+            // id, not the release group. Stored as such rather than as a release group id,
+            // because mislabelling it would silently compare it against ids it can never equal.
+            musicBrainzReleaseId: navidromeCoerceString(dict["musicBrainzId"])?.mbTrimmedNonEmpty,
         )
     }
 
@@ -430,7 +434,12 @@ final class NavidromeClient: MusicLibraryProviding {
             } else {
                 art = nil
             }
-            out.append(LibraryArtistSummary(id: id, name: name, artworkURL: art))
+            out.append(LibraryArtistSummary(
+                id: id,
+                name: name,
+                artworkURL: art,
+                musicBrainzArtistId: navidromeCoerceString(dict["musicBrainzId"])?.mbTrimmedNonEmpty
+            ))
         }
     }
 
@@ -1002,6 +1011,9 @@ final class NavidromeClient: MusicLibraryProviding {
             audioCodec: audioCodec,
             audioBitDepth: nil,
             audioBitRateKbps: bitRate,
+            // Subsonic sends the artist's own id alongside the name on every song row; keeping it
+            // is what lets "Go to Artist" name an artist rather than describe one.
+            artistId: navidromeCoerceString(dict["artistId"]),
         )
     }
 

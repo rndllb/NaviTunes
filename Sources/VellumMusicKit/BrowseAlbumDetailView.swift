@@ -12,6 +12,16 @@ struct BrowseAlbumDetailView: View {
     @Environment(\.colorScheme) private var colorScheme
     let source: BrowseAlbumDetailSource
 
+    /// The full credited line for this release ("jayo & Citizen"), when the row that opened this
+    /// page had one.
+    ///
+    /// Separate from ``BrowseAlbumDetailSource/chartBrowse``'s `artistName`, which this view uses
+    /// as a *matching* key — ``matchArtist`` finds the album on the user's server and asks the
+    /// request backend whether the artist is known to it. A two-artist credit matches neither, so
+    /// the label and the key cannot be the same string. Defaulted, so the callers that genuinely
+    /// have only one name pass nothing and read exactly as before.
+    var artistCredit: String? = nil
+
     @State private var libraryTracks: [Track] = []
     @State private var previewTracks: [BrowseAlbumPreviewTrack] = []
     @State private var browseQueuedRows: [BrowseQueuedRow] = []
@@ -96,10 +106,34 @@ struct BrowseAlbumDetailView: View {
     }
 
     private var displayTitle: String { matchedLibraryAlbum?.title ?? matchAlbumTitle }
+
+    /// The artist line under the title.
+    ///
+    /// Order matters and each step is a different question. An album the user owns shows the
+    /// server's own credit, because that is the copy in front of them and its tagging is the
+    /// truth about it. Otherwise the full catalogue credit, which is the only line that names
+    /// everyone on the record — ``matchArtist`` holds one artist by construction, so a release
+    /// credited to two rendered as whichever one the reader happened to arrive through.
     private var displayArtist: String {
         if let a = matchedLibraryAlbum { return a.artist }
+        if let credit = artistCredit?.trimmingCharacters(in: .whitespacesAndNewlines), !credit.isEmpty {
+            return credit
+        }
         let n = matchArtist
         return n.isEmpty ? "Unknown Artist" : n
+    }
+
+    /// The single artist the hero's artist line navigates to.
+    ///
+    /// Never the credit line: that is a rendering of several artists joined by punctuation and is
+    /// not a name any lookup can resolve. An owned album uses the server's credit (which is what
+    /// its own track rows carry, so the id probe below can match it); otherwise the one artist
+    /// this page was opened through.
+    private var navigationArtist: String {
+        if let a = matchedLibraryAlbum { return a.artist }
+        // Falls back to the label rather than to an empty string: a credit line is a poor thing
+        // to navigate by, but it is a name, and navigating nowhere is worse than navigating badly.
+        return matchArtist.isEmpty ? displayArtist : matchArtist
     }
 
     private var displayArtworkURL: URL? {
@@ -281,7 +315,18 @@ struct BrowseAlbumDetailView: View {
             .contentMargins(.vertical, 0, for: .scrollContent)
             .scrollContentBackground(.hidden)
             .environment(\.defaultMinListRowHeight, 0)
-            .padding(.bottom, 36)
+            // No bottom padding. There used to be `.padding(.bottom, 36)` here, and padding the
+            // List's *frame* is the wrong instrument for "keep the last row clear of the mini
+            // player": it stops the List bleeding into the bottom safe area, so the inset became
+            // 36pt of padding **plus** the 83pt of tab bar and home indicator the List could no
+            // longer extend under. Measured from device screenshots at 119pt — a dead band across
+            // the full width where no content can ever appear, with the backdrop showing through
+            // it and whatever row straddled the boundary guillotined mid-artwork.
+            //
+            // The library album page (`ServerPlaylistViews.swift:1261`) has never had this and is
+            // the reference: its List stays flush, content scrolls under the floating chrome, and
+            // the safe area supplies the inset that lets the last row clear. This page now
+            // behaves the same way. See `docs/verification/t141-bottom-band-measurements.log`.
         }
     }
 
@@ -313,7 +358,7 @@ struct BrowseAlbumDetailView: View {
             ServerPlaylistDetailView(album: album)
         }
         .navigationDestination(item: $navigateArtist) { item in
-            ArtistPageView(input: .named(item.id))
+            ArtistPageView(input: item.artistPageInput)
         }
         .task(id: matchArtist) {
             guard app.acquisitionConfigured, app.acquisitionCapabilities.granularity == .album else {
@@ -449,7 +494,23 @@ struct BrowseAlbumDetailView: View {
                     lineLimit: nil,
                     multilineTextAlignment: .center,
                 ) {
-                    navigateArtist = ArtistNameNavigation(id: displayArtist)
+                    navigateArtist = ArtistNameNavigation(
+                        // The label and the destination are deliberately different strings when
+                        // a release is credited to more than one artist. "jayo & Citizen" reads
+                        // correctly and is not the name of anybody — navigating by it would run a
+                        // name search that can only fail. ``navigationArtist`` is one real artist,
+                        // so the whole credit line stays one tap target that lands somewhere, the
+                        // way it does on an Apple Music album page.
+                        id: navigationArtist,
+                        // Same rule as the library album hero: an id only from a track actually
+                        // credited to this artist, so a compilation cannot send the reader to
+                        // whoever happens to be first in the list.
+                        serverArtistId: libraryTracks.first {
+                            LibraryTrackMatcher.normalize($0.artist)
+                                == LibraryTrackMatcher.normalize(navigationArtist)
+                                && $0.artistId != nil
+                        }?.artistId
+                    )
                 }
                 .padding(.horizontal, 20)
 
@@ -767,7 +828,7 @@ struct BrowseAlbumDetailView: View {
                 ? { try? app.offline.remove(trackId: track.id) }
                 : nil,
             onGoToArtist: ArtistNavigation.isTappable(artist)
-                ? { navigateArtist = ArtistNameNavigation(id: track.artist) }
+                ? { navigateArtist = ArtistNameNavigation(id: track.artist, serverArtistId: track.artistId) }
                 : nil
         )
     }
@@ -800,7 +861,22 @@ struct BrowseAlbumDetailView: View {
                     .foregroundStyle(backdropPalette.heroChromeSecondary)
             }
             if !previewTracks.isEmpty {
-                Text("Track list from Apple Music where available \u{00B7} \(app.acquisitionCapabilities.displayName) for downloads.")
+                // Names the source the track list actually came from. It said "Apple Music" long
+                // after the iTunes path was deleted, and a footer that misnames its own source is
+                // not a cosmetic defect: it is read as evidence, and it cost an afternoon of
+                // looking for a disagreement between two sources where only one was ever involved.
+                //
+                // "MusicBrainz" is accurate on **both** paths, which is why this is one word and
+                // not a conditional. `AcquisitionManager.tracks` asks the active request backend
+                // first and falls back to `AcquisitionTrackListMusicBrainzSource` — but Lidarr's
+                // catalog is itself MusicBrainz (its `foreignArtistId` / `foreignAlbumId` are
+                // MBIDs and its metadata proxy resolves them against MusicBrainz), so whichever
+                // branch answered, the data originated there. The fallback is also the usual
+                // branch: a backend's catalog knows which pressings exist but not what is on them.
+                //
+                // The old "where available" hedge is gone because this line only renders when
+                // `previewTracks` is non-empty — a track list is, by then, demonstrably available.
+                Text("Track list from MusicBrainz \u{00B7} \(app.acquisitionCapabilities.displayName) for downloads.")
                     .font(.caption)
                     .foregroundStyle(backdropPalette.heroChromeTertiary)
             }
@@ -933,9 +1009,22 @@ struct BrowseAlbumDetailView: View {
     /// album; track-granularity plugins request just this track.
     private func acquisitionRequest(forPreview preview: BrowseAlbumPreviewTrack) -> AcquisitionRequest {
         if app.acquisitionCapabilities.granularity == .album {
-            return AcquisitionRequest(artist: matchArtist, albumTitle: matchAlbumTitle, coverURL: displayArtworkURL)
+            return AcquisitionRequest(
+                artist: matchArtist,
+                albumTitle: matchAlbumTitle,
+                releaseGroupMBID: source.releaseGroupMBID,
+                coverURL: displayArtworkURL
+            )
         }
-        return AcquisitionRequest(artist: matchArtist, trackTitle: preview.title, albumTitle: matchAlbumTitle, coverURL: displayArtworkURL)
+        // Track-granularity plugins request the track, but the album id still identifies which
+        // release it belongs to.
+        return AcquisitionRequest(
+            artist: matchArtist,
+            trackTitle: preview.title,
+            albumTitle: matchAlbumTitle,
+            releaseGroupMBID: source.releaseGroupMBID,
+            coverURL: displayArtworkURL
+        )
     }
 
     /// The manager job for a preview row, matched by normalized title (previews have no URL).
@@ -1040,7 +1129,15 @@ struct BrowseAlbumDetailView: View {
         }
         isDownloading = true
         defer { isDownloading = false }
-        let request = AcquisitionRequest(artist: matchArtist, albumTitle: matchAlbumTitle, coverURL: displayArtworkURL)
+        // Carry the release-group id through. Where the row has one the plugin can ask its
+        // backend an exact question instead of a text search, which is what the title path
+        // amounts to and what fails for some releases.
+        let request = AcquisitionRequest(
+            artist: matchArtist,
+            albumTitle: matchAlbumTitle,
+            releaseGroupMBID: source.releaseGroupMBID,
+            coverURL: displayArtworkURL
+        )
         await app.requestAcquisition(request)
     }
 

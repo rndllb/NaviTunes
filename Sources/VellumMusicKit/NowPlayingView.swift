@@ -93,7 +93,10 @@ struct TransportPressButtonStyle: ButtonStyle {
 
 private enum NowPlayingLibraryRoute: Hashable {
     case album(AlbumSummary)
-    case artist(String)
+    /// Carries the tapped row's own artist id, not just the name. The row that was tapped is not
+    /// always the active track — a queue row has its own artist — so the id has to travel with
+    /// the route rather than be read off the player at the far end.
+    case artist(ArtistNameNavigation)
     case playlist
 }
 
@@ -1011,7 +1014,7 @@ struct NowPlayingView: View {
                             }
                         },
                         onGoToArtist: {
-                            dismissAndNavigate(to: .artist(track.artist))
+                            dismissAndNavigate(to: .artist(ArtistNameNavigation(id: track.artist, serverArtistId: track.artistId)))
                         },
                         onGoToPlaylist: {
                             dismissAndNavigate(to: .playlist)
@@ -1173,7 +1176,7 @@ struct NowPlayingView: View {
                     }
                 },
                 onGoToArtist: {
-                    dismissAndNavigate(to: .artist(track.artist))
+                    dismissAndNavigate(to: .artist(ArtistNameNavigation(id: track.artist, serverArtistId: track.artistId)))
                 },
                 onGoToPlaylist: {
                     dismissAndNavigate(to: .playlist)
@@ -1538,7 +1541,7 @@ struct NowPlayingView: View {
                             }
                         },
                         onGoToArtist: {
-                            dismissAndNavigate(to: .artist(track.artist))
+                            dismissAndNavigate(to: .artist(ArtistNameNavigation(id: track.artist, serverArtistId: track.artistId)))
                         },
                         onGoToPlaylist: {
                             dismissAndNavigate(to: .playlist)
@@ -1610,7 +1613,7 @@ struct NowPlayingView: View {
                 : nil,
             onGoToAlbum: album.map { album in { dismissAndNavigate(to: .album(album)) } },
             onGoToArtist: ArtistNavigation.isTappable(artist)
-                ? { dismissAndNavigate(to: .artist(track.artist)) }
+                ? { dismissAndNavigate(to: .artist(ArtistNameNavigation(id: track.artist, serverArtistId: track.artistId))) }
                 : nil,
             onRemoveFromLibrary: app.isSongInLibrary(track.id)
                 ? { Task { await app.removeSongFromLibrary(track) } }
@@ -1680,8 +1683,8 @@ struct NowPlayingView: View {
         case .album(let album):
             let useLibrarySource = activeTrackId.map { app.isSongInLibrary($0) } ?? true
             nav = .album(album, scrollToTrackId: activeTrackId, librarySource: useLibrarySource)
-        case .artist(let name):
-            nav = .artist(name)
+        case .artist(let artistNav):
+            nav = .artist(artistNav)
         case .playlist:
             if let track = player.activeTrack,
                let p = sourcePlaylistForActiveTrack(track) {

@@ -241,7 +241,22 @@ final class AcquisitionManager: ObservableObject {
         )
         let fromId = await provider.tracks(forRelease: release)
         if !fromId.isEmpty { return fromId }
-        return await provider.tracks(artist: artist, albumTitle: title)
+        let fromTitle = await provider.tracks(artist: artist, albumTitle: title)
+        if !fromTitle.isEmpty { return fromTitle }
+
+        // Last resort, and for an album the user does not own it is usually the only one that can
+        // answer. A request backend's catalog knows which pressings exist but not what is on them —
+        // measured against a live Lidarr, whose catalog rows carry media and counts and no tracks
+        // at all. That is structural: an album nobody has added has no id there to fetch tracks
+        // against. MusicBrainz has the track list, so an empty result here is a real absence rather
+        // than the wrong question having been asked.
+        //
+        // Placed at the manager rather than inside one plugin because it depends on nothing the
+        // plugin provides except the release-group id, so every backend gets it.
+        if let mbid {
+            return await AcquisitionTrackListMusicBrainzSource.tracks(releaseGroupMBID: mbid)
+        }
+        return []
     }
 
     // MARK: - Enqueue

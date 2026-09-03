@@ -1663,3 +1663,1115 @@ churn with no behaviour change, and it fixes library song lists too.
 scroll. The same view renders playlists, so the loop should have shown there too; and at 0.1 fires
 per second it is too slow to be what he feels. Also backend-dependent: it needs Subsonic, and it
 disappears for a downloaded album whose artwork is a stable `file://` URL.
+
+## 2026-09-01 — the suggested-shelf derivation, roughly halved (APPLIED, UNCOMMITTED, awaiting device confirmation)
+
+**Status: in the working tree only.** One file, `NewTabPersonalizationEngine.swift`, not committed and
+not pushed. Ethan's gate for committing is confirmation on his own phone and he has not built this
+yet. If he rejects it this entry gets a correction rather than being deleted.
+
+### What was slow
+
+On Ethan's device a memo MISS on the album-detail shelves cost **121–129 ms** on the main actor (a
+HIT is 0.1–0.3 ms), and misses recur through normal use because any catalog change bumps
+`libraryCatalogEpoch` and wipes both memos — including on download completion.
+
+Where that time went could not be read off his device, so it was split on a **synthetic** catalog:
+734 generated albums with repeating artists and two genres each, sized and shaped like his but
+containing none of his data. On that synthetic catalog, in the simulator:
+
+| part | before |
+|---|---|
+| `listeningTopGenres()` | 24–26 ms |
+| building the personalization context | 21 ms |
+| candidate filter | 17–19 ms |
+| **the ranking** | **183 ms** |
+| **whole miss** | **233 ms** |
+
+### The change
+
+`tasteRankedAlbumSummaries` scored each candidate by looping over the top ten genres and, inside
+that, over the album's own genres, calling `GenreCanonicalizer.canonical(for:).lowercased()` on every
+combination — for 689 candidates, up to ~14,000 canonicalizations of the same handful of strings per
+derivation. Each album's genres are now canonicalized **once** into a `Set` and the top-genre loop
+does set membership.
+
+Nothing moved off the main actor. The work is simply smaller, in the same place, so there is no new
+concurrency to reason about and playback is untouched — it renders on `MTAudioProcessingTap`'s own
+real-time thread and never involved this actor.
+
+### Measured, synthetic, three runs each
+
+| part | before (synthetic) | after (synthetic) |
+|---|---|---|
+| ranking | 183 ms | **~70 ms** |
+| whole miss | 233 ms | **~119–127 ms** |
+| `listeningTopGenres()` | 24–26 ms | 18–26 ms (untouched) |
+| context build | 21 ms | 18–22 ms (untouched) |
+| candidate filter | 17–19 ms | 16–21 ms (untouched) |
+
+The three untouched parts are the control: they do not move, so the delta is where the change is and
+nowhere else.
+
+**Do not read the ratio as an absolute.** Every number above is from a SYNTHETIC catalog in the
+simulator, which measured a 233 ms whole miss where **his device measured 121–129 ms** for the same
+operation. The split and the proportion are the findings; the milliseconds are not his.
+
+### The output is provably unchanged
+
+The risk of this change is not a crash, it is a shelf whose contents quietly differ. So it was tested
+rather than argued: the real shipping function was run against a verbatim copy of the pre-change one
+over the same synthetic catalog, comparing the **whole** ranked list at `limit = albums.count` — every
+album by id, in order — and every per-album score with exact `==`, with a divergence path that reports
+the first mismatch.
+
+    EQUIV IDENTICAL over 689 albums: same order, same ids, same scores   (three runs)
+
+Scope of that proof, stated rather than glossed: the list comparison is end-to-end with the real
+function on one side; the per-score comparison transcribes both genre-loop shapes into the verifier,
+so that half proves the two expressions agree rather than reaching into the function's private
+locals. The list half is the stronger one.
+
+The benchmark, its Darwin trigger, the driver test, the legacy copy and the verifier all stayed in a
+throwaway worktree. None of it is in this tree — checked explicitly, because the worktree patch would
+have dragged the legacy copy and verifier along with it.
+
+### Not addressed here
+
+`listeningTopGenres()` is now the largest remaining piece at ~26 ms, and the context build calls it a
+**second** time per derivation. Left alone deliberately so it cannot contaminate the measurement of
+this change.
+
+## 2026-09-02 — Kill Mode unlocks the playlist again at 100% listened (APPLIED, UNCOMMITTED, not yet built on device)
+
+Ethan asked for this at 12:37. It is new code: T107 established that no unlock gate existed anywhere
+in the tree, so there was nothing to repair.
+
+### What it does
+
+With Kill Mode on, `killModeFilteredPlayback` drops already-listened songs so each run plays the
+unheard ones. Once everything has been heard that filter leaves nothing, Play and Shuffle do nothing,
+and the only way forward was the "Clear listen history" reset. Now, when every song the user is
+KEEPING has been listened to, the filter stands down and the playlist plays again.
+
+Songs queued for removal stay out of that playback. The user has already decided on them and they
+leave the playlist when the removal is confirmed; the unlock is about replaying what is being kept.
+
+### His two rules, implemented literally
+
+**Only at 100%, never 99.** The gate compares two `Int` counts with `==`
+(`AppModel.killModeUnlockedForFullPlayback`). No `Double`, no percentage, no rounding on this path,
+deliberately: 199 of 200 is 99.5%, which `Int((… * 100).rounded())` renders as "100%". A value that
+can round up must never reach a gate, so nothing on this path can produce one.
+
+**Only songs NOT scheduled for deletion count.** The pending-removal set is excluded from both sides
+of the comparison, so marking a song for removal shrinks the denominator instead of leaving an
+unreachable target.
+
+**When every song is scheduled for deletion** the denominator is zero. That case returns `false`, not
+`true`. An empty set satisfies "all listened" vacuously, but nothing is being kept, so there is
+nothing to unlock — the existing behaviour and its toast stand.
+
+### Two sources of truth, on purpose
+
+`PlaylistKillListView.swift:184-185` computes `pctListened` / `pctRemoved`. Those are display-only and
+nothing reads them; the gate does NOT reuse them, and deliberately so. They measure a different thing
+(progress through the whole playlist, including songs marked for removal) and they round for humans.
+Reusing them would import exactly the rounding this gate has to avoid.
+
+The consequence is worth knowing: on a 200-song playlist with 199 listened, the header can read
+"100% listened" while playback stays locked. That is the gate being right and the label being coarse.
+Making the label floor rather than round would close the gap; it is a display change and was not made
+here.
+
+### Scope
+
+One file, `AppModel.swift`: the gate plus five lines in `killModeFilteredPlayback`. Nothing outside
+Kill Mode can reach either — the existing `killModeEnabledPlaylistIds` guard still returns early for
+every other playlist, so a playlist not in Kill Mode behaves exactly as before. The T023 delete
+confirmations and safety guards were not touched.
+
+**Verified: Debug build for iOS Simulator, BUILD SUCCEEDED, no errors, no warnings in `AppModel.swift`.
+Not built or installed on device — that is Ethan's gate, and a T102 change is already queued for the
+same trip.**
+
+---
+
+- [2026-09-03 05:20] **T121 — MusicBrainz metadata layer for search and artist discovery.** The
+artist page used to get its discography from whichever acquisition plugin was configured. That was
+the wrong source: a plugin reports the releases *it* knows about — its own library, or its own fuzzy
+catalog lookup — which is neither complete nor a description of the artist. MusicBrainz now owns
+artist identity, header facts and the discography; the plugin keeps only what MusicBrainz does not
+publish (artist portrait, bio) plus the request path itself. There is one artist-metadata path now,
+not two.
+
+New files: `MusicBrainzModels.swift`, `MusicBrainzClient.swift`, `MusicBrainzCacheStore.swift`,
+`MusicBrainzService.swift`, `MusicBrainzDiscographyMapping.swift`. Deleted
+`ArtistProfileClient.swift` — dead, unreferenced code that hit MusicBrainz with no pacing and no
+cache, i.e. exactly the second uncontrolled path this work exists to prevent.
+
+What matters about the implementation:
+
+- **Browse, not the bundled lookup.** `/ws/2/release-group?artist=…&limit=100&offset=N` honours
+  paging and reports `release-group-count`. The `/artist/{mbid}?inc=release-groups` form silently
+  caps at 25, ignores `limit` and reports no total — and what it drops is not evenly spread. For
+  Citizen it returns 25 of 30, and **all five it drops are singles: 13 becomes 8.** A total-only
+  check would pass while the bug survived, so the singles count is the real regression test.
+- **One serial queue with a start-to-start floor.** Requests are chained, so concurrent callers wait
+  for each other rather than each clearing "one second since *my* last call" simultaneously. The gap
+  is measured start-to-start, not end-to-start. A named User-Agent carrying a contact address keeps
+  the client out of the anonymous throttle class.
+- **From a search hit it is one call, not two.** The search payload already carries name, country,
+  area, life-span and tags, so the header renders from it directly and search rows are seeded into
+  the header cache by MBID. Opening an artist from search spends zero requests. Only a cold open
+  pays for the lookup.
+- **Name resolution is scored, not a containment test.** An exact normalized name always outranks a
+  partial one and a weak best match is refused. The pre-existing loose three-way containment test in
+  the Lidarr plugin was deliberately not copied — and, as instructed, not fixed either.
+- **Cache: expiry means stale, never deleted.** Keyed by MBID plus the `inc` set, storing raw
+  bodies, `fetched_at`, `release-group-count` and which offsets are held. A stale entry is still
+  served, still refreshed against, and is the fallback when a refresh fails. **Replacement only on a
+  complete pass** — a rescan that dies mid-pagination cannot overwrite a complete entry with a
+  partial one wearing a fresh date, which would otherwise turn a network blip into permanent silent
+  truncation that looks healthy. The store enforces this itself rather than trusting callers.
+- **Two loading states.** Header shimmer resolves first (or never appears, arriving from search);
+  discography placeholders are counted from the server's own `release-group-count`, so pages fill in
+  progressively instead of the shelf looking finished and then jumping.
+
+Two defects found and fixed during verification:
+
+1. A single failed page abandoned the whole pass, so one flaky request cost all 314 of an artist's
+   releases. Retry backoff now escalates (2s, 4s) instead of staying flat, and the result carries an
+   explicit `refreshFailed` flag so the UI can tell "this artist has no more releases" from "we could
+   not find out" — previously identical on screen.
+2. **Completeness was assumed rather than derived.** The pagination loop set `isComplete: true`
+   unconditionally on exit, so an empty or short page arriving mid-run — a server hiccup, which ends
+   the loop exactly as the genuine last page does — would have been cached as a finished pass. Worse,
+   the store's partial-write guard could not catch it, because the entry claimed to be complete. This
+   is the same silent-truncation-under-a-fresh-date failure the cache rule exists to prevent, just
+   reached through a different door. Completeness is now derived: when the server reports
+   `release-group-count`, rows received (counted before de-duplication) must meet it; only then is
+   the cache overwritten. Verified with an offline decision table covering the truncation cases —
+   short page mid-run, empty page mid-run, dropped last page — plus the legitimate short-final-page
+   and no-count-reported cases. 8/8 pass, `scratchpad/t121-mb-completeness-table.log`.
+
+**Verified by live runs against the MusicBrainz API** (no test target exists here). Harness compiles
+the shipping sources by symlink, so what ran is the shipping code. Logs:
+`scratchpad/t121-mb-verification.log` and `scratchpad/t121-mb-concurrency-burst.log`.
+
+- Citizen: **30 release groups, 13 singles** (bundled endpoint, for comparison: 25 groups, 8 singles).
+- Nana Mouskouri: **314 across 4 paged calls**, progress emitted per page (100/200/300/314).
+- Pacing: smallest gap across a 10-request mixed burst **1.051 s**; a separate test firing **12
+  uncoordinated concurrent searches produced 12 requests, zero sub-second gaps, zero failures**.
+- Cache rules exercised, not asserted: a partial write against a complete entry was refused and the
+  complete entry survived; an 8-day-old entry stayed readable and reported stale.
+
+Verified: Debug build for iOS Simulator, BUILD SUCCEEDED, no errors and no warnings in any touched
+file. Not committed and not installed to a device, per the brief.
+
+---
+
+- [2026-09-03 06:05] **T122 — retry harder, and say so on screen when a page gives up.**
+
+Retries per request go from 3 to 20. The backoff is now capped rather than doubling without limit:
+2s, 4s, 8s, then 8s for the remainder. Uncapped doubling across twenty attempts would run for days,
+which is a worse outcome than failing — nobody waits that long, and the request holds the serial
+queue the whole time, stalling every other page behind it.
+
+**Measured, not estimated: a fully exhausted request takes 149.0 s (2.48 min).** That is twenty
+attempts against an injected always-503 endpoint. Comfortably inside the five-minute budget, so the
+8 s cap stays where it is.
+
+That measurement only covers fast failures, and checking the other failure mode changed the answer.
+The attempt count and the backoff cap together bound only the *waiting* — they say nothing about the
+attempts themselves. Twenty attempts that each hang to the 20 s transport timeout would have run
+about **nine minutes**, quietly breaking the budget the other two settings were chosen to satisfy. A
+total-elapsed deadline of 240 s now bounds every failure mode, not just the fast one. Measured with
+an injected stalling endpoint: **240.5 s across 18 of 20 attempts**, the deadline stopping the pass
+rather than the attempt counter.
+
+**A page that exhausts its retries now reaches the screen in words.** The flag on the model was
+never the fix; the fix is `ArtistDiscographyLoadNotice` in `ArtistPageView.swift`, a banner above
+the discography shelves with a Retry button. It says one of two things, because they are two
+different situations for the reader:
+
+- Partial load — heading **"Couldn't load everything"**, body **"Showing 300 of 314 releases. The
+  rest didn't load."**
+- Saved copy — heading **"Showing a saved copy"**, body **"Couldn't refresh this artist's releases,
+  so this is the copy saved 3 days ago."**
+
+Confirmed rather than rebuilt: releases already on screen survive a later page failing. Each page is
+applied as it lands, and the failure path returns the partial whenever it holds rows, so three pages
+in with the fourth failing keeps all 300 rendered releases and marks them as current data — not as a
+saved copy. Proven by decision-table case, not by reading the code.
+
+- [2026-09-03 06:05] **T123 — expire instead of stale, with the refresh limiter in front.**
+
+This reverses the serving rule from T121. An out-of-date entry is no longer rendered while a refetch
+runs behind it; that swap under the reader is worse than a slightly longer load. Out of date now
+means loading state, then fresh data. Pull-to-refresh expires the cache too.
+
+**The ordering is the substance of this change.** The refresh limiter is consulted *before* anything
+is expired or discarded. Refusing is therefore always safe, because nothing has been given up at the
+moment the answer is "no". Done the other way round — expire, then discover the refresh is not
+allowed — the page is left holding neither the old data nor the new, which is strictly worse than
+never refreshing at all. A refused refresh shows a snackbar reading **"Refreshing artist page too
+many times"**, so a refresh that did not happen cannot be mistaken for one that did.
+
+Expiry happens only when the replacement is in hand: fetch first, swap on success, and on failure
+leave the previous entry untouched on disk. The retained copy reaches the screen in exactly one
+situation — the fetch failed — and when it does it is labelled as a saved copy rather than presented
+as current. There is no path on which current-looking out-of-date content swaps under the reader.
+
+**Both failure cases were exercised, not described:**
+
+- A fetch that fails leaves the previous entry intact — verified against the **real MusicBrainz
+  endpoint** by browsing an MBID the service rejects. The seeded entry survived byte-identical
+  (`fetchedAt` and `totalCount` unchanged) and the failed fetch returned the saved copy, labelled,
+  instead of an empty page.
+- A rapid double refresh is refused **while the page still has its content** — verified against the
+  real limiter. The refused call returned all 3 seeded releases, did not delete the cache entry, and
+  was reported as refused rather than as failed. A refusal that empties the page would have been a
+  failure of this task; it does not.
+
+**Evidence, in the repository rather than a session scratchpad so it outlives a tmp cleanup:**
+`docs/verification/t122-t123-verification.log` (21 checks, all passing) and
+`docs/verification/harness-t122-t123/` with a README giving the reproduction steps. The harness
+symlinks the shipping sources rather than copying them, so it cannot drift from the code it claims
+to verify; the reproduction steps were run end to end to confirm they work. The three T121 logs were
+carried across to the same directory for the same reason.
+
+Verified: Debug build for iOS Simulator, BUILD SUCCEEDED, no errors and no warnings in any touched
+file. Not committed and not installed to a device.
+
+---
+
+- [2026-09-03 06:25] **T125 — three follow-ups on the MusicBrainz layer: re-entry cost, owned-album
+alignment, and id-first matching.**
+
+**1. Re-entering an artist page does not force a refresh — confirmed, and one hole closed.**
+`.task` calls the non-forcing load, and pull-to-refresh is the only `forceRefresh: true` anywhere in
+the app. No on-appear refetch bypasses the week rule.
+
+Reading the code only proved half of it, though. The page also has to know *which* artist it is
+looking at, and resolving a bare name to an MBID was its own MusicBrainz search on every cold open —
+so opening an artist did hit MusicBrainz every time, just through name resolution rather than
+through the discography fetch. Two fixes: the server's own artist MBID is now used when it has one
+(Navidrome reports it, Jellyfin has it under `ProviderIds`), which costs nothing and cannot resolve
+to a different artist of the same name; and name resolution is cached on disk under the same week
+rule. **Measured: second open 0 requests, and 0 again after clearing the in-session memo to stand in
+for a relaunched app.**
+
+**2. Alignment count — the predicted hole is real, and the matcher is untouched pending a decision.**
+Measured against a real Navidrome (the public demo, 0.63.2) on three artists where part of the
+discography is owned:
+
+| Artist | Owned | MB release groups | Suppressed as owned | Owned matching nothing | by id | by title |
+|---|---|---|---|---|---|---|
+| Nine Inch Nails | 3 | 317 | 3 | 0 | 1 | 2 |
+| Ugress | 4 | 73 | 3 | 1 | 1 | 2 |
+| Front 242 | 1 | 73 | 1 | 0 | 1 | 0 |
+
+One duplicate pair, and it is exactly the predicted shape: owned **"Chromosome Corrupt EP"** against
+MusicBrainz **"Chromosome Corrupt"**. `albumVersionBaseKey` strips those word suffixes only when a
+dash precedes them, so the two do not collapse to one key and the release renders twice — once as
+owned, once as requestable. **The matcher has not been changed.** The count is reported first, as
+asked; changing normalization is a separate decision.
+
+**3. Id-first matching — implemented, but the premise needed correcting first.**
+The brief expected `album.mbz_release_group_id` to be available and to be what browse returns. It is
+a real column, but **Subsonic does not expose it**. Verified against the live API: the id Navidrome
+returns as an album's `musicBrainzId` answers 404 on `/release-group/{id}` and resolves on
+`/release/{id}` — it is the *release* id, one specific pressing, not the release group. Comparing it
+to a browsed discography would have matched nothing at all, not merely rarely.
+
+So the ids are modelled as what they actually are: `AlbumSummary` carries both
+`musicBrainzReleaseGroupId` and `musicBrainzReleaseId`, and a release id is resolved to its group
+through MusicBrainz before comparison. That mapping is immutable, so it is cached permanently rather
+than under the week rule, and only albums the title keys already failed to match are ever looked
+up — an artist page whose albums all matched spends nothing. Jellyfin needs none of this: it reports
+the release group directly. Title keys remain the fallback for everything without an id, which on
+the measured library is the overwhelming majority.
+
+Verified: Debug build for iOS Simulator, BUILD SUCCEEDED, no errors and no warnings in any touched
+file. The T122/T123 suite was re-run after these changes and still passes in full. Evidence:
+`docs/verification/t125-alignment.log` and `docs/verification/harness-t125/` with reproduction
+steps, which were run end to end. Not committed and not installed to a device.
+
+---
+
+- [2026-09-03 12:05] **T126 — seven defects found testing on device. Four fixed, three reported.**
+
+**6 (highest priority) — requesting an album failed, and the id was being dropped in two places.**
+The request reached Lidarr as a text search (`album/lookup?term=Citizen Halcyon Blues`), which goes
+through its metadata proxy's *search* path and answers with a SkyHookException for some albums. The
+id lookup is exact and works. Two sites dropped the id between the MusicBrainz row and the enqueue:
+`BrowseAlbumDetailView.swift:1043` rebuilt the request from artist and title text alone, discarding
+the MBIDs the row already held; and `LidarrAcquisitionPlugin.swift:64` never read
+`request.releaseGroupMBID` even when one was present. Both now pass it through, and the plugin asks
+`term=lidarr:<mbid>` first. `BrowseAlbumDetailSource.releaseGroupMBID` is the decode matching the
+`mbid:` encoding that `AcquisitionRelease.trackLookupId` already performed. When Lidarr does not
+recognise an id — its metadata mirror lags MusicBrainz, so a new or obscure release group can be
+unknown to it — the code falls through to the old title path rather than failing, so the id is a
+strictly better first question and never a worse one.
+
+**7 — raw JSON on screen.** `AcquisitionCore.swift:677` put the response body straight into the
+error, which a toast then rendered: a .NET exception type and stack trace shown to a person. The
+body now goes to the log and the throw carries a sentence, classified by status and by whether the
+body looks like a metadata-proxy failure ("The request service couldn't look this album up. It may
+not be in its catalog yet.").
+
+**1 — a not-found state shown while the fetch was still running.** `ArtistPageView.swift:167`
+tested `isLoadingServerCatalog` and `isLoadingEnrichment` but not `isLoadingDiscography` or
+`isLoadingArtistHeader`, and had no failure branch at all — so a discography that failed, or that
+the refresh limiter refused, rendered "We couldn't find any songs, releases, or biography", with no
+retry. Three states are now distinct (`ArtistViewModel.ContentState`): loading shows the skeleton
+and never the not-found copy; finished-and-genuinely-empty keeps the honest empty state; failed (or
+refused, which is also not an absence) gets its own copy and a Try Again button. Retries are the
+MusicBrainz layer's: 20 attempts, backoff capped at 8s, bounded by a 240s total deadline — measured
+worst cases 149s when failures are immediate and 240s when every attempt hangs.
+
+Tap-to-tracks was measured and the MusicBrainz layer is **not** on that path — neither detail view
+references it (zero occurrences in `ServerPlaylistViews.swift` and `BrowseAlbumDetailView.swift`).
+Server albums load tracks via `lib.tracks(forAlbumId:)` (`ServerPlaylistViews.swift:2363`),
+off-server albums via the acquisition plugin. Against a live Navidrome the tracklist fetch measured
+**289–1298 ms, median 622 ms**, dominated by the network round-trip; decode is a few KB of JSON and
+the view paints as soon as it lands. So the delay is the server call, and tonight's work did not
+lengthen it.
+
+**2 — covers only loaded on scroll.** `MusicDesignSystem.swift:700` fetches from a `.task` on
+`AlbumArtworkView`'s own body, and inside a lazy shelf that body does not exist until the cell is
+nearly on screen. Loading now starts when the URL is known, via a bounded `ArtworkPrefetcher`:
+a leading cap per shelf, four fetches in flight at a time, one job per shelf that replaces its
+predecessor, and cache hits skipped without a request. Bounded because the unbounded version is a
+different bug — measured, a Mouskouri page would have issued 196 image requests at once.
+
+| Page | Cards on screen | Before, at page open | After, at page open | Unbounded would be |
+|---|---|---|---|---|
+| Citizen (30 release groups) | 28 | 0 prefetched | 18 | 28 |
+| Nana Mouskouri (314) | 196 | 0 prefetched | 24 | 196 |
+
+**3 — no way through to the artist from an album reached via search.** The lead was that the artist
+string arrives empty; it is not. There are **three** album-detail screens, not two:
+`ServerPlaylistDetailView` (`ServerPlaylistViews.swift`, tappable artist at :1578-1596),
+`BrowseAlbumDetailView` (tappable artist at :769), and `AcquireResultDetailView`
+(`DiscoverySearchView.swift:1864`) — the one a search hit for an album not on the server opens, and
+the only one that rendered its artist as plain `Text` with no navigation at all. That view now
+navigates, preferring the MusicBrainz artist id over the name so it cannot land on a different act
+sharing it. A release credited to more than one artist, or to "Various Artists", stays plain text:
+there is no single page to land on and picking the first credit would be a guess presented as a
+fact. **The three views were not unified** — see the report below for why that was not a contained
+change.
+
+Verified: Debug build for iOS Simulator (workspace + Simulator destination), BUILD SUCCEEDED, no
+errors and no warnings in any touched file. Not committed and not installed to a device.
+
+---
+
+- [2026-09-03 12:20] **T126 report — the three items that were investigations, not fixes.** Nothing
+in this entry changes behaviour. It is the material asked for before any decision gets taken.
+
+**4 — artist covers missing for some search rows. This was a regression introduced by T121, and it
+is not a one-liner to undo.**
+
+`DiscoverySearchView.swift:1745` sets `artworkURL: nil` on every artist row built from a MusicBrainz
+search hit. That branch is guarded by `!serverArtistNames.contains(norm)`, so it only ever produces
+artists that are **not** on the server — which is exactly the split visible on screen: the rows with
+placeholders are the artists the server has never heard of, and the rows with pictures are ordinary
+server artist rows.
+
+Before T121 those rows came from the acquisition plugin and carried whatever portrait it had. T121
+replaced the plugin as the artist-search source with MusicBrainz and passed `nil`, because
+MusicBrainz has no image to pass. So the artwork did not break — it stopped being fetched from the
+only source that had been supplying it.
+
+What supplies the pictures that *do* appear: the server's own artist image, parsed in
+`NavidromeClient` (`artistImageUrl`, falling back to the artist `coverArt`) and carried on
+`LibraryArtistSummary.artworkURL`, recorded into Recently Searched at
+`DiscoverySearchView.swift:773` and `:1395`. Library membership is irrelevant to this — a Navidrome
+artist row can exist with an image and no albums the user has added, which is why "it has art
+because it is in my library" does not hold up.
+
+Why there is no one-line fix: **MusicBrainz publishes no artist images at all.** There is no URL
+being dropped that could simply be restored; a portrait has to come from somewhere else entirely.
+The honest options, with what each costs:
+
+| Option | Cost | Verdict |
+|---|---|---|
+| Leave the placeholder | nothing | Status quo. Honest, and ugly. |
+| Restore the plugin portrait when a plugin is configured | nothing extra — the call already happens | Undoes the actual regression. Measured: Lidarr holds no image for these particular artists, so it fixes the mechanism, not this screenshot. |
+| Deterministic mesh tile instead of the grey note | nothing — `AlbumArtworkView` already takes a `meshArtworkSeed`, as the radio directory uses | Cheapest visible improvement. Distinct per artist, never a wrong picture, no network. |
+| Cover Art Archive, using one of the artist's release groups | free on the artist page (the discography is already loaded); ~1 s per row in search, since it needs a browse per artist at one request per second | An album cover is not a portrait. Fine as a last resort on the artist page, too slow for search rows. |
+| MusicBrainz `inc=url-rels` → Wikidata → Wikimedia Commons | two extra requests per artist, one of them inside the 1 req/s budget; frequently absent; attribution varies by image | Expensive and unreliable. |
+| fanart.tv / TheAudioDB | an API key, plus a third-party dependency this project deliberately removed | Reintroduces what `CLAUDE.md` says not to wire back. |
+
+Recommendation, not applied: restore the plugin portrait and use the mesh seed as the fallback. Both
+cost nothing, and together they mean a row always renders something rather than one of two identical
+grey notes.
+
+**3(c) — size of unifying the three album-detail views. It is not a contained change; it was not
+attempted.**
+
+| View | Lines | Construction sites | Also rendered from |
+|---|---|---|---|
+| `ServerPlaylistDetailView` | ~3,480 (file) | **30** | Search, Library, Home, New tab, artist page, playlists, root deep links |
+| `BrowseAlbumDetailView` | ~1,075 | **9** | New tab, artist page |
+| `AcquireResultDetailView` | ~150 | **1** | Search only |
+
+They are not one view with different inputs. `AcquireResultDetailView` is a thin stub with none of
+the album-detail machinery: no backdrop palette, no cover-zoom transition, no related shelves, no
+share action, no per-track rows, no request-state UI (`ArtworkDynamicGradient` 0 vs 8-9,
+`coverZoom` 0 vs 4-7, related shelves 0 vs 1-2). Unifying would mean folding the thin one into a
+screen with 30 call sites that also renders playlists and home mixes, and every one of those
+surfaces would be in the blast radius — including the cover-zoom transition and the playlist
+soft-lock area that has its own history in this log. That is a night of regressions in screens
+nobody asked to have touched, so the artist link was added to the one view that lacked it and the
+three were left alone.
+
+**5 — where identity is decided by name and could be decided by id.**
+
+Total between MusicBrainz and MusicBrainz; roughly 3% between MusicBrainz and this library
+(measured: 290/10,420 albums, 192/5,020 artists, 3,080/74,665 tracks carry an MBID). So the split is
+**id-only where both sides are MusicBrainz, hybrid everywhere the library is involved.**
+
+| Site | Decides identity by | Could be id-first | Must stay hybrid? |
+|---|---|---|---|
+| `ArtistViewModel.swift:515-517` — server artist lookup for the page | normalized name | yes — both backends expose an artist MBID (wired in T125) | yes, ~3.8% coverage |
+| `ArtistViewModel.swift:629+` — `applyDiscography` owned-vs-external | release-group id, then title keys | already id-first (T125) | yes |
+| `AppModel.swift:4932-4936` — `serverAlbums(forArtistName:)`, the subscription "do I have it?" probe | normalized name only | yes, via artist MBID | yes |
+| `MusicSubscriptionModels.swift:10` — `FollowedArtist.id` | MBID when known, else normalized name | already id-first | yes |
+| `LidarrAcquisitionPlugin.swift:834-840` — `artistNameMatches` | loose three-way containment, no scoring | yes — Lidarr rows carry `foreignArtistId` | could go id-only against Lidarr, which is MusicBrainz-backed |
+| `LidarrAcquisitionPlugin.swift:393` — release artist grouping | normalized name | yes, same id | hybrid |
+| `ArtistViewModel.swift:591-615` — top songs from scrobbles | normalized artist + title | **no** — `ScrobbleStore` records no MBID | name-only until scrobbles carry ids |
+| `AppModel.swift:2920-2922`, `:5149-5150` — chart/catalog artist token matching | normalized token overlap | no id on either side | name-only |
+
+Two things worth stating plainly. `artistNameMatches` is the one site that could go id-only today,
+because both sides of it are MusicBrainz-derived — it is also the loose containment test flagged
+earlier and deliberately still untouched. And nothing here can drop name matching: at ~3% id
+coverage, id-only against the library would stop recognising the other 97% of albums the user owns.
+
+Verified: Debug build for iOS Simulator via `xcodebuild` on the workspace with the Simulator
+destination, BUILD SUCCEEDED, no errors and no warnings in any touched file. Not committed and not
+installed to a device.
+
+---
+
+- [2026-09-03 16:30] **T127 report — the EP-suffix duplicate. Decision packet; nothing changed.**
+
+The symbol is `AlbumSummary.albumVersionBaseKey(_:)` in `AlbumSummary+NewTabMatch.swift`, and the
+pattern is the `suffixPattern` local inside it (currently line 65, but the symbol is the durable
+reference). Reached via `AlbumSummary.discographyTitleKeys(for:)`, which is what
+`ArtistViewModel.applyDiscography` uses to decide whether an owned album and an external release
+are the same release.
+
+**1 — the smallest change.** Make the dash optional; touch nothing else.
+
+    before:  (?i)\s*[-–—]\s*(single|ep|album|deluxe edition|deluxe|expanded edition|remaster(ed)?(\s+\d{4})?)$
+    after:   (?i)(?:\s*[-–—]\s*|\s+)(single|ep|album|deluxe edition|deluxe|expanded edition|remaster(ed)?(\s+\d{4})?)$
+
+One token: `\s*[-–—]\s*` becomes `(?:\s*[-–—]\s*|\s+)`. Measured effect on the confirmed instance —
+currently `"Chromosome Corrupt EP"` keys to `chromosome corrupt ep` against `chromosome corrupt`, so
+they do not match; widened, both key to `chromosome corrupt`. **Not applied.**
+
+**4 — the hole is not specific to EP.** Tested against the shipping function, not read off the
+regex: every word in the list (EP, Single, Album, Deluxe, Remaster, Remastered, Deluxe Edition,
+Expanded Edition) collapses **with** a dash and **none** collapses without one. It is one uniform
+hole across the whole list.
+
+**2 — what it would wrongly collapse: one pair in 4,262 real titles, and it is a genuine one.**
+
+Measured over the MusicBrainz discographies of ten artists — 4,262 real release-group titles,
+including acts picked specifically because a release of theirs ends in a suffix word (Metallica,
+Weezer, The Beatles, JAY-Z). Every release group in one artist's list is a different release, so any
+pair newly sharing a key is a wrong collapse by definition, and the per-artist domain is the one the
+matcher actually runs in.
+
+| Candidate | Wrong collapses in 4,262 titles |
+|---|---|
+| A — dash optional for all words | **1** |
+| B — dash optional, `album` excluded | **1** |
+
+The single hit, both times: **Metallica, "Hero of the Day EP" vs "Hero of the Day"**. Verified
+against MusicBrainz as two distinct release groups — an **EP** dated 1996-10-23 and a **Single**
+dated 1996-10-22. Real releases, one day apart, that the widening would merge into one row with
+nothing on screen to say the other existed.
+
+Worth noting because it kills an obvious mitigation: excluding `album` from the widening (candidate
+B, aimed at "The Black Album" style titles) buys **nothing** — the collision is on EP, not Album, and
+B scores identically. Narrowing the word list does not buy safety here.
+
+**3 — how many duplicates it would fix: cannot be answered from this session, and here is why.**
+
+That number needs owned titles compared against MusicBrainz. The only library reachable from here is
+the 50-album public demo, not the 10,420-album library in question — both simulator snapshots on
+this machine contain the same 50 demo albums. On the demo the widening resolves **1** duplicate of
+8 owned albums examined (the Ugress instance already known).
+
+So a scan script is provided rather than a guessed number:
+`docs/verification/t127-suffix-widening-scan.py`, read-only, run as
+
+    python3 docs/verification/t127-suffix-widening-scan.py https://<navidrome> <user> <password>
+
+It reports (A) wrong collapses, computed entirely from library titles with no MusicBrainz traffic,
+and (B) every owned album whose title ends in a bare suffix word — the ceiling on duplicates the
+change can possibly fix, since no other album's key changes. Against the demo it prints 0 wrong
+collapses and 2 affected albums, which is how the script is shown to work.
+
+**What the numbers say about the trade.** The visible failure is rare and the invisible one is
+rarer, but not zero: about 1 wrong collapse per 4,000 titles, concentrated exactly where an artist
+released both a single and an EP under one name. Whether that is acceptable depends on (B) from the
+real library — if it resolves eighty duplicates it is plainly worth one hidden Metallica release; if
+it resolves one, the trade is much closer. That is the number this session could not produce.
+
+Nothing in the matcher was modified; the file's hash is recorded unchanged in the run notes.
+Evidence: `docs/verification/t127-measurements.log`.
+
+---
+
+- [2026-09-03 16:35] **T131 — EP-suffix widening applied.** The change costed in the T127 report,
+approved and now in the tree. One hunk, one line of code.
+
+`AlbumSummary.albumVersionBaseKey(_:)` in `AlbumSummary+NewTabMatch.swift` — the separator in
+`suffixPattern` becomes optional, so a bare space separates the suffix as well as a dash:
+
+    - (?i)\s*[-–—]\s*(single|ep|album|deluxe edition|deluxe|expanded edition|remaster(ed)?(\s+\d{4})?)$
+    + (?i)(?:\s*[-–—]\s*|\s+)(single|ep|album|deluxe edition|deluxe|expanded edition|remaster(ed)?(\s+\d{4})?)$
+
+The word list is untouched, and nothing else in the file was changed.
+
+**Both halves of the measurement, because they point opposite ways and the decision rests on the
+difference.**
+
+*Against catalogue data*, the widening is slightly lossy. Over 4,262 real MusicBrainz release-group
+titles across ten artists — chosen to include acts whose releases end in a suffix word — it causes
+exactly **one** wrong collapse: Metallica's **"Hero of the Day EP"** (EP, 1996-10-23) merging with
+**"Hero of the Day"** (Single, 1996-10-22). Two real releases a day apart become one row, and
+nothing on screen says the other existed. That is roughly one bad merge per 4,000 catalogue titles.
+Excluding `album` from the widening was tested and scores identically, so narrowing the word list
+buys nothing here.
+
+*Against the actual library*, it is the other way round. Measured on the real 10,420-album library
+(which this session could not reach — the only library available here is a 50-album public demo):
+**ninety albums end in a bare suffix word**, and of the **fourteen merges** the change creates, most
+are the same album stored twice — "Tidal Wave - EP" against "Tidal Wave EP", plus Lately, My Type
+and The Sonic Crystal. So the false-positive rate measured on catalogue data is real, and the
+practical effect on this library is a net win: fourteen duplicate rows removed against one
+catalogue-level merge that would only appear on a Metallica artist page.
+
+**Verified three ways.**
+
+- The confirmed instance, by **running** the shipping function rather than reading the pattern:
+  before, `"Chromosome Corrupt EP"` → `chromosome corrupt ep` vs `"Chromosome Corrupt"` →
+  `chromosome corrupt`, different keys; after, both → `chromosome corrupt`, same key.
+- The 4,262-title scan re-run against the applied change, with the pre-change pattern kept as the
+  baseline so what is measured is what actually shipped: **1** wrong collapse, Metallica's, matching
+  the costed number exactly.
+- Nothing else under `Sources/` touched: all 154 source files hashed before and after, **1** hash
+  changed. Done by hash rather than `git diff` on purpose — six of those files are untracked, and a
+  plain diff reports nothing for them whether they changed or not. Each was confirmed unchanged
+  individually.
+
+Verified: `xcodebuild` on the workspace against the iOS Simulator destination, BUILD SUCCEEDED, no
+errors and no warnings in the touched file. Not committed and not installed to a device. Evidence:
+`docs/verification/t131-widening-applied.log`.
+
+---
+
+- [2026-09-03 13:00] **T133 — an artist page merging every same-named artist. Diagnosis for the
+album-open failure alongside it; that one is not fixed yet.**
+
+**The merge was not the acquisition plugin.** `remoteReleasesSnapshot` is assigned in exactly one
+place (`ArtistViewModel:470`), fed only by `discography(artistMBID:)`. Browse-by-id cannot return
+another artist's release groups, and the plugin supplies no releases to this page at all — the one
+surviving `artistReleases` call is in `AppModel:1072`, for the subscription engine.
+
+**A second name-resolved source was merged into the same list.** `applyDiscography` combines the
+MusicBrainz rows with `serverAlbums`, and those came from `resolveServerArtistIdIfNeeded`, which
+matched on normalized name and then took the **first** row that matched. Servers key artist rows by
+name, so one band's albums landed on another band's page — rendered as *owned*, because they
+genuinely are on the server, with nothing on screen to say they belong to somebody else.
+
+The scale of the ambiguity, measured: MusicBrainz returns **938 artists** matching "Rocket", of which
+**18 are named exactly "Rocket"** on the first page alone.
+
+Server artist resolution is now id-first. When the page knows its MusicBrainz artist id and a
+same-named server row carries the same id, that is an exact match and it wins. When every same-named
+row carries an id and none of them is this artist, the page resolves to **no** server artist rather
+than claiming another act's albums — showing nothing is better than showing someone else's
+catalogue as owned. With no id on either side the previous behaviour is kept unchanged: at roughly
+4% artist-MBID coverage that is still the common path and must not regress.
+
+**What this does not fix, stated plainly.** It closes the case where the page arrives holding an id —
+which is the search-originated route. A page opened by bare name (Now Playing → Go to Artist,
+Recently Searched) still resolves through MusicBrainz name search, and that scorer picks
+**"ROCKET — Russian rapper"** for the query "Rocket", because every exact-name match ties and
+MusicBrainz's own relevance breaks the tie. Closing that means changing name resolution inside the
+MusicBrainz layer, which was being rewritten in another working session at the time; it was left
+alone deliberately rather than edited concurrently.
+
+**The album-open failure — diagnosed, not fixed.** The message is a handled empty state
+(`BrowseAlbumDetailView:777`), not a crash: the view loads and the track-list fetch fails under it.
+Two calls fail in sequence. `tracks(forRelease:)` asks `GET /api/v1/album?foreignAlbumId=<mbid>`
+(`LidarrAcquisitionPlugin:556`), which queries the request backend's **library** rather than its
+catalog — a release not yet requested is by definition absent, so it returns nothing. The fallback
+`tracks(artist:albumTitle:)` then runs `album/lookup?term=<artist title>`, which is the same text
+search whose metadata-proxy failure was fixed for *requests* earlier; here it is swallowed by `try?`
+and reads as an empty track list instead of an error. So it fails for exactly the releases worth
+browsing — the ones not yet in the backend's library — and never for albums on the server, which
+open a different screen entirely. The fix is the same shape as the request fix (ask by id), but
+whether the id lookup returns embedded tracks could not be confirmed without access to that backend,
+so it was not applied on a guess.
+
+Verified: `xcodebuild` on the workspace against the iOS Simulator destination, BUILD SUCCEEDED, no
+errors and no warnings in the touched file. Built on an isolated derived-data path, because a second
+working session was building the same tree and the shared build database locks. Only
+`ArtistViewModel.swift` was modified. Not committed and not installed to a device.
+
+---
+
+- [2026-09-03 13:10] **T133 (continued) — off-server releases now get a track list, and the
+release-selection rule that was picking by arrival order is replaced.**
+
+Opening a release that is not on the server showed "Couldn't load a track list for this release"
+(`BrowseAlbumDetailView:777`). Two calls failed in sequence: `tracks(forRelease:)` asked
+`GET /api/v1/album?foreignAlbumId=<mbid>`, which queries the request backend's **library** and not
+its catalog — a release nobody has requested yet is by definition absent — and the fallback then ran
+the text form of the catalog lookup, which is the same call whose metadata proxy throws. That throw
+is swallowed by `try?`, so a failure arrived on screen as an empty track list.
+
+The library is not the catalog. When the album is absent from the library, the catalog is now asked
+**by id** (`album/lookup?term=<prefix><mbid>`) and the pressings come back inline on that row. By id
+and never by title: asking the same question in words is precisely the call that fails.
+
+**Which pressing supplies the track list.** A release group holds many releases — original,
+remaster, deluxe, regional pressings — and their track lists differ, so this is a real choice that
+was previously being made by response ordering (the old code walked `releases[]` and stopped at the
+first one with any tracks). The rule is now, in order: the **monitored** release, because that is
+the pressing the backend will actually fetch and therefore what will arrive; else the release whose
+**track count matches the album's own**, which identifies the canonical edition; else the
+**shortest single-disc** release; else a stable tie-break on foreign id so the same album shows the
+same list on every open rather than flipping as the backend reorders its response.
+
+Shortest rather than longest is deliberate. When pressings disagree, a preview that over-promises is
+worse than one that under-promises: bonus tracks that never arrive read as a failed download, while
+a standard edition that turns out to have extras reads as a bonus. And the track lists are never
+unioned across pressings — that is the tempting fix and the worst one, because it manufactures a
+track list that no edition actually has and presents it with more authority than any real one.
+
+**Cached permanently, on purpose.** `AcquisitionTrackListCache` keys on the release-group id and has
+no expiry: the songs on a released record are immutable, so re-fetching them on a freshness timer
+spends requests to learn nothing. Only user-initiated cache clearing removes an entry. The one thing
+never written is a miss — an empty result means the lookup failed or the backend does not know the
+release yet, and pinning that permanently would turn a momentary outage into an album that never
+shows a track list again.
+
+**Does this fix the error or merely explain it?** It fixes it where the backend's catalog answers,
+and the render path confirms there is no third possibility. The string is reachable by exactly one
+route, verified from source rather than assumed: `tracklistSection:584` renders it only when
+`browseQueuedRows.isEmpty`, those rows derive solely from the two track arrays
+(`recomputeBrowseQueuedRows:152-159`), and the note is armed only by `tracksSettledEmpty` — both
+loads finished, both arrays empty (`:43-46`, debounced at `:57-61`). No error object or status code
+is consulted anywhere in that chain, so a populated track list necessarily removes the message.
+What remains honestly unproven is whether the backend embeds track lists in its catalog responses
+for every release; where it does not, the list stays empty and the same message appears, now for the
+true reason rather than because the wrong endpoint was asked.
+
+Verified: `xcodebuild` on the workspace against the iOS Simulator destination, BUILD SUCCEEDED, no
+errors and no warnings in any touched file. Built on an isolated derived-data path, because a second
+working session was building the same tree. Not committed and not installed to a device.
+
+---
+
+- [2026-09-03 13:20] **T133 (continued) — the track-list gap is closed, and the earlier hedge can be
+withdrawn.**
+
+The previous entry left one thing unproven: whether a request backend embeds track lists in its
+catalog responses. Measured against a live Lidarr, it does not, and not occasionally — never. For
+`album/lookup?term=<prefix><mbid>` the response carries two pressings, each with `trackCount`, a
+`media` array, and **no `tracks` key at all**; the full set of release keys is `albumId`, `country`,
+`disambiguation`, `duration`, `foreignReleaseId`, `format`, `id`, `label`, `media`, `mediumCount`,
+`monitored`, `status`. That is structural rather than a quirk: an album nobody has added yet has no
+backend album id to fetch tracks against, so there is nothing for the catalog to return.
+
+So the id-based catalog lookup added earlier stops the wrong question being asked, but on its own it
+could never produce a track list for an album the user does not own. MusicBrainz is the only source
+that can, and it is now wired as the final fallback.
+
+`AcquisitionTrackListMusicBrainzSource` asks `/release?release-group=<mbid>&inc=recordings+media`,
+which returns every pressing in the group **with its track list inline** — one request, so choosing
+between pressings costs nothing extra. It sits in ``AcquisitionManager`` rather than inside one
+plugin, because it needs nothing from the plugin except the release-group id and therefore every
+backend gets it.
+
+**Which pressing supplies the list**, on the same principle as the backend-side rule: prefer
+**Official** status, since a bootleg or promo can carry an order nobody else has and this is the
+closest MusicBrainz analogue to "the release you will actually get"; then **single disc before
+multi-disc** and **fewest tracks**, which is the standard edition rather than a deluxe or box set;
+then a **stable tie-break on release id** so the same album shows the same list on every open rather
+than shifting as MusicBrainz reorders its response. Fewest rather than most is deliberate — bonus
+tracks that never arrive read as a failed download, while a standard edition that turns out to have
+extras reads as a bonus. Track lists are never merged across pressings, which would manufacture a
+list no edition actually has. Multi-disc releases are renumbered across the whole release, because
+each disc numbers its tracks from one and the naive version shows two track ones.
+
+Cached permanently in the same store as the backend-sourced lists, under its own namespace so the
+two sources can never be served as each other. Misses are still never written.
+
+**Verified against the real payload rather than asserted.** For the release group behind the
+reported failure, MusicBrainz returns three Official single-disc pressings of eleven tracks each;
+the rule selects deterministically among them and yields *Good Fortune, I Can See You From Here,
+Halcyon Blues, Is It in My Brain, Always the Last One to Leave*, … — the album's actual track list.
+
+**The hedge in the previous entry no longer applies.** It said the fix worked "where the backend's
+catalog answers", leaving open the case where it does not. That case is now the common one and it is
+handled, so the empty-track-list message at `BrowseAlbumDetailView:777` is reachable only when
+MusicBrainz genuinely has no track list for the release group — a real absence rather than the wrong
+endpoint having been asked.
+
+Verified: `xcodebuild` on the workspace against the iOS Simulator destination, BUILD SUCCEEDED, no
+errors and no warnings in any touched file. Not committed and not installed to a device.
+
+---
+
+- [2026-09-03 13:30] **T133 (continued) — does the MusicBrainz track list actually fix the reported
+error, and a declined change recorded rather than folded in.**
+
+**Answer: yes, for the reported case — a request plugin configured, opening an album from an artist
+page.** Traced end to end rather than inferred, and every link verified in the tree as it now stands:
+
+1. An artist page's off-server rows are MusicBrainz release groups, mapped with
+   `releaseGroupMBID` set to the group id.
+2. `AcquisitionRelease.trackLookupId` encodes that as `mbid:<id>` (`AcquisitionCore:415-419`), and
+   the artist page passes it through as the detail view's `albumId` (`ArtistPageView:780`).
+3. `AcquisitionManager.tracks(forBrowseAlbumId:)` decodes the `mbid:` prefix, so the release-group
+   id is in hand.
+4. The plugin's two attempts return nothing — the library lookup because an unrequested album is
+   not in the backend's library, and the catalog lookup because that catalog never carries track
+   lists at all. Both are now measured facts rather than assumptions.
+5. The MusicBrainz fallback therefore runs, and for the release group behind the report it returns
+   the album's eleven tracks.
+
+The `isConfigured` guard is upstream of all of this and passes when a plugin is configured, so it
+plays no part in the reported failure.
+
+**Known limit, stated rather than papered over.** The fallback needs a release-group id, and it has
+one whenever the row came from a MusicBrainz discography — which is every off-server row on an
+artist page. A row sourced from a request backend's own catalog search instead carries that
+backend's native album id, so `trackLookupId` encodes `native:<id>` and no MusicBrainz id reaches
+the manager. Those rows still get no track list. That path is not the one in the report and was left
+alone rather than widened on the way past.
+
+**A gap found and declined, recorded so it is not rediscovered.** With **no** request plugin
+configured, `tracks(forBrowseAlbumId:)` returns early on `provider.isConfigured` before any
+fallback runs. MusicBrainz could supply a track list in that situation and the guard prevents it, so
+a plugin-less setup shows no track list for any off-server album even though the data is freely
+available. This is a real gap for that configuration. It was **declined for now** as a behaviour
+change to a case the reporter is not in, made while fixing something else — the guard is unchanged
+and stays unchanged until someone asks for it deliberately.
+
+Verified: `xcodebuild` on the workspace against the iOS Simulator destination, BUILD SUCCEEDED, no
+errors and no warnings in any touched file. Not committed and not installed to a device.
+
+---
+
+- [2026-09-03 13:45] **T135 — the artist page rendered owned albums first and rearranged when the
+catalogue arrived. Inverted: the catalogue is the list, ownership is marked on it.**
+
+**Where it rendered early, and whose fault it was.** `ArtistViewModel.load` painted the discography
+immediately after the server catalog returned, while the MusicBrainz pass was still in flight, so
+`applyDiscography` ran with an empty `releases` array and produced a list containing nothing but
+owned albums. A moment later the catalogue landed and the same function ran again with a full array,
+re-bucketing and re-sorting everything on screen.
+
+This is **pre-existing behaviour, not a regression from the search work** — established from git
+rather than from recollection. The call is present at `3027cba:ArtistViewModel.swift:246`, before
+any of tonight's changes; later work kept it and added a comment explaining it, which is a different
+thing from introducing it. What changed is only that it became visible: the page now resolves to the
+right artist and fetches a real discography, so there is finally a large second list to swap in
+behind the small first one.
+
+**One list, not two sources merged.** `applyDiscography` walked the server's albums first and
+appended unmatched catalogue rows behind them, which made the library the spine of the page and the
+catalogue an addendum. It now walks the catalogue (`ArtistViewModel.swift:786`) and marks ownership
+on each row: an owned release renders from the server's own copy so it stays playable, an unowned
+one renders as requestable, one row per release either way. Albums the user owns that the catalogue
+does not list are appended afterwards (`:833`) rather than dropped — the catalogue leads the page,
+but it does not get to decide that music the user demonstrably has does not exist.
+
+**Which fix, and why not the other.** Two options: withhold the list until the catalogue answers, or
+render a loading state in the discography slot. Withholding was chosen, because the page already has
+a skeleton for precisely this state and it is already gated on there being no renderable body
+content — so removing the early paint produces the loading state automatically, from the affordance
+that already exists. Adding a second one would have put two different loading treatments in the same
+region of the same screen, and left the real problem in place: the early list was never wrong, it was
+just never the answer, and it moved under the reader while they were reading it.
+
+**The cached case does not wait, measured rather than asserted.** An artist opened before has its
+discography on disk, and a second open costs **0 requests and 13.2 ms**, arriving complete with zero
+pending rows — so the list renders in full rather than assembling. Evidence:
+`docs/verification/t135-cached-open.log`.
+
+**Progressive paging is deliberately unchanged, and should stay that way.** A cold artist with
+several pages of releases still fills in page by page behind placeholders. Withholding that too was
+considered and rejected, and this is recorded so nobody later reads the paging as an oversight left
+over from this fix and helpfully removes it.
+
+Two reasons it stays. It was asked for explicitly when this layer was specified — *"load what you get
+back for each request while still showing placeholders for the rest as they come"* — so it is a
+deliberate design choice rather than an artefact of the implementation. And it is not the same
+behaviour as the defect: **appending is not displacing.** Rows arriving after their neighbours, in
+catalogue order, is a page filling in; rows that appear and are then rearranged underneath the reader
+is the defect. Only the second one is a problem. Suppressing the first would mean an artist with
+several hundred releases showing nothing at all across four sequential requests, which is a worse
+trade than either.
+
+The distinction is what makes both correct at once: the fill is catalogue-ordered from the first
+page, so a later page extends the list rather than reshuffling what is already on screen.
+
+Verified: `xcodebuild` on the workspace against the iOS Simulator destination, BUILD SUCCEEDED, no
+errors and no warnings in the touched file. Not committed and not installed to a device.
+
+---
+
+- [2026-09-03 14:10] **T136 — "Go to Artist" navigated by name, so it landed on whichever artist of
+that name a lookup returned. It now navigates by id wherever an id exists.**
+
+**The root cause was a missing field, not a missing check.** `Track` carried the artist's *name* and
+nothing else, so every "Go to Artist" from a song had only a string to navigate with. Both backends
+already send the artist's id on the track payload — Subsonic as `artistId` on each song, Jellyfin in
+the `ArtistItems` it was already being asked for — and both were dropped on parse. `Track.artistId`
+is now populated from each, optional so existing persisted snapshots keep decoding.
+
+`ArtistNameNavigation` carries that id alongside the name and exposes `artistPageInput`, which
+returns `.libraryArtist` when an id is present and `.named` only when one genuinely is not. An id
+short-circuits name matching entirely: `ArtistViewModel.init` sets `resolvedArtistId` from the input
+and `resolveServerArtistIdIfNeeded` returns immediately when it is already set, so the name-matching
+path that picked the first row of a matching name never runs.
+
+**Sites, and whether an id was available at each.** Enumerated with
+`grep -rnE 'ArtistPageView\(input:|SearchNavTarget\.namedArtist|ArtistNameNavigation\(|navigateArtist *=' Sources/VellumMusicKit`
+rather than by recollection.
+
+| Site | Id available | Result |
+|---|---|---|
+| `ServerPlaylistViews` song rows | yes — `track.artistId` | navigates by id |
+| `BrowseAlbumDetailView` song rows | yes — `track.artistId` | navigates by id |
+| `ServerPlaylistViews` album hero artist | yes, indirectly | id taken from a track *credited to that artist* |
+| `BrowseAlbumDetailView` album hero artist | yes, indirectly | same rule |
+| `MusicNewTabView`, `NewTabSectionViews` chart rows | **no** | name only — see below |
+| `HomeView`, `SubscriptionsView`, `RootView` deep link, artist-page similar artists | **no** | name only |
+
+`AlbumSummary` has no artist id, so the album-hero sites derive one from the album's own tracks —
+but only from a track whose artist name actually matches the album artist. On a compilation the
+first track's artist is often not the album artist, and navigating to that id would be confidently
+wrong, which is worse than the name lookup it replaces. No match, no id, name path takes over.
+
+**The wrong-artist risk that survives, stated so it is not mistaken for fixed.** Chart and browse
+rows carry an artist name and no id at all — they describe an artist rather than identify one. Those
+sites still resolve by name and can still land on the wrong same-named act. Closing them needs an id
+on those models, which is a separate change on a different data path.
+
+**Proved on a same-name case.** Two real artists named exactly "Rocket" — a Russian rapper
+(`9e2f71c3…`) and an indie rock band from Los Angeles (`9563966d…`). Navigating from each resolves to
+that artist's own id, the two destinations are distinguishable despite identical display names, and
+the no-id case still falls back to a name, which is asserted rather than assumed so the surviving
+risk stays visible. Verified against the shipping `ArtistNameNavigation`, extracted verbatim.
+
+Also confirmed against a live Subsonic server that song rows really do carry `artistId`
+(`'sad robot'` → `artistId 24jpYAI4N8TG0cCAYyzZk5`), so the field the fix depends on is populated in
+practice and not merely present in the schema.
+
+**Two sites were left untouched on purpose** — they are in a file another working session owns, and
+splitting one coherent change across two agents editing the same file is how one loses the other's
+work. The exact change each needs is recorded in the handover note alongside this log.
+
+Verified: `xcodebuild` on the workspace against the iOS Simulator destination, BUILD SUCCEEDED, no
+errors and no warnings in any touched file. Not committed and not installed to a device.
+
+---
+
+- [2026-09-03 15:05] **T139 — the artist page resolved the wrong same-named artist. Two causes, both
+verified before being fixed.**
+
+The reported symptom was a bulk-request count of 29 on a Rocket page. 29 is arithmetically right and
+belongs to a **different Rocket** — the Russian rapper — while the intended act, the Los Angeles
+indie band, has 8. A bulk request would have fired 29 requests for the wrong artist's catalogue.
+
+Both diagnosed causes were checked against the tree rather than taken on trust, and both held.
+
+**Cause 1 — the tie-break only counted albums on the connected server.** `ArtistIdentityResolver`
+exists to break exactly this tie, but its guard required a non-empty set of *server* albums. Owning a
+record through the request backend contributed nothing, so with the artist absent from the music
+server the tie fell to MusicBrainz relevance — which ranks the rapper above the band.
+
+**The branch taken: the request backend now votes, and it costs nothing.** Adding an artist to a
+MusicBrainz-backed backend *is* an act of identification — the user picked one act out of eighteen
+sharing the name and the backend recorded its MusicBrainz id. Better evidence than any ranking. And
+free: the profile carrying that id is already fetched for the artist header
+(`AcquisitionArtistProfile.mbid`), and identity resolution simply never consulted it. No new request.
+
+Deliberately a **vote among the candidates**, not an override. It can only select an artist who
+already matches the name exactly, so if the backend resolved its own artist loosely — its name
+matching is a loose containment test — the worst case is that the vote is ignored rather than
+followed somewhere unrelated.
+
+**Cause 2 — a race, so even a well-stocked server decided by luck.** The MusicBrainz pass ran as an
+`async let` while the server catalog filled concurrently, and the tie-break read that set partway
+through. Which artist won depended on which network call returned first, and because a guess is
+deliberately never cached, two cold opens could disagree.
+
+Fixed by waiting for the evidence **at the point of decision** rather than serialising the whole
+load: the catalog and profile fetches are held as tasks, and only the tie-break awaits them. An
+unambiguous artist never pays for the wait, and the parallelism that made the page fast is kept.
+
+The ordering is now reported rather than asserted — the Info panel shows *"Albums available to the
+tie-break"*, so a claim that the race is fixed can be checked on the device instead of believed.
+
+**Proved on the real case**, against live MusicBrainz with *R Is for Rocket* owned:
+
+    ranking alone picks: 9e2f71c3… (Russian rapper)
+      probe 9e2f71c3… rgs=29  matches=0   (Russian rapper)
+      probe d0530f94… rgs=5   matches=0   (DJ Garth & Eric James)
+      probe 9563966d… rgs=8   matches=1   (indie rock band from Los Angeles)
+    RESOLVED: 9563966d… on 1 owned album match
+
+The tie-break changes the answer: relevance alone would still pick the rapper. Evidence:
+`docs/verification/t139-rocket-tiebreak.log`.
+
+**A guess is still never cached**, confirmed after the change. Of six return paths, only the two
+decided ones (`:73` request backend, `:113` owned albums) call `cacheDecision`; all three ranking
+fallbacks (`:80`, `:86`, `:119`) return uncached. So a coin flip still cannot become sticky.
+
+Verified: `xcodebuild` on the workspace against the iOS Simulator destination, BUILD SUCCEEDED, no
+errors and no warnings in any touched file. Not committed and not installed to a device.
+
+---
+
+- [2026-09-03 15:32] **T141 — a dead 119pt band at the bottom of the not-owned album page. Measured
+from the screenshots before anything was touched.**
+
+Reported as "the bottom of an album that isn't on the server has a background behind the tab buttons
+but shouldn't", with a red circle around a card in the *More By Rocket* shelf. The reporter said
+plainly that he was unsure whether the circle and the tab buttons were the same element. They are —
+one cause, two symptoms.
+
+**No extra background is being drawn, and that matters for the fix.** The band is the page backdrop,
+proven by sampling: `#86A7D0` inside the list at y=900 and y=2100, and `#86A7D0` in the band at
+y=2560 and y=2860. Identical. What differs is that nothing *covers* it there.
+
+**What actually differs.** The two pages render the same shelf and the same card
+(`MusicDesignSystem.swift:516-517`, 168×168 plus a 56pt label block). On the library page the card
+is 168×168pt with rounded corners top *and* bottom and its title beneath it. On the not-owned page
+the same card is 168×**102**pt — rounded top corners, hard square bottom edge, no title. The cut is
+one straight line at y=2510-2511 across both cards. Below it, 357px = 119pt of bare backdrop to the
+screen edge, while the library page draws real artwork at y=2500 and y=2700 and content right down
+to y=2860.
+
+So the not-owned page's scrolling content stops 119pt above the screen bottom, uncovering the
+backdrop and guillotining whatever row straddles the boundary.
+
+**Cause, at one line.** `BrowseAlbumDetailView.swift:284` carried `.padding(.bottom, 36)` — the only
+bottom-inset difference between the two List modifier chains. Padding the List's *frame* stops it
+bleeding into the bottom safe area, so the inset was 36pt of padding **plus** the 83pt of tab bar
+and home indicator it could no longer extend under. 36 + 83 = 119pt, which is the measured band
+exactly. The intent was presumably to keep the last row clear of the mini player: a fair goal, the
+wrong instrument.
+
+**Driven by ownership, or merely correlated? Correlated.** Ownership selects nothing but the view
+type — `ArtistPageView.swift:1471-1474`, `.libraryAlbum` → `ServerPlaylistDetailView`, `.remote` →
+`BrowseAlbumDetailView`. No missing artwork colour, no absent server id, no different backdrop
+derivation is involved, which the identical band colour proves. The consequence worth knowing:
+`BrowseAlbumDetailView` is the browse/chart detail view generally, so this band was on **every**
+browse album page, not only ones reached from the artist page.
+
+**Which side was correct: the library page**, and not because more albums are owned. It is the
+platform convention and what every other scroll surface in this app already does; the alternative
+permanently sterilised 119pt of a 956pt screen, 12% where no content could ever appear; and it
+produced the exact artefact that was circled — a card cut mid-artwork with its title unreachable,
+which no amount of scrolling fixes because the boundary is pinned to the List's frame rather than to
+the content.
+
+Fixed by deleting the padding rather than substituting a content inset. The reference page has no
+bottom margin of its own, so adding one here would have made the two differ again in the other
+direction; the safe area supplies the inset that lets the last row clear.
+
+Measurements: `docs/verification/t141-bottom-band-measurements.log`.
+
+Verified: `xcodebuild` on the workspace against the iOS Simulator destination, BUILD SUCCEEDED. Not
+committed and not installed to a device.
+
+---
+
+- [2026-09-03 15:29] **T144 — Play Next on the album overflow menu, reusing the playlist menu's own
+action rather than adding a second one.**
+
+The album ⋯ menu (`ServerPlaylistViews.swift:2538`) was the thinner of the two. Enumerated against
+the playlist menu (`:1696`), the album menu had **Download Album, Add Album to Library, Pin, Delete
+Album from Library, Navidrome share** — and was missing **Favorite, Share, Add to Playlist, Play
+Next** from the playlist's set. (Edit / Sort By / Kill Mode / Delete playlist are playlist-only by
+nature: an album has no editable name or ordering to change, and Kill Mode prunes a playlist.)
+
+**Play Next was the one asked for by name, and every other album surface already had it** — the
+album cell long-press menu (`LibraryCellContextMenus.swift:49`) and the off-server album page
+(`NewTabChartOverflowPanel.swift:311`, used by `BrowseAlbumDetailView`). The album *detail* menu was
+the only album surface without it, so this fills a hole rather than starting a pattern.
+
+**No second path was built.** `playPlaylistNext()` (`:2489`) is named for the mode it was written in
+but is not playlist-specific: it queues `tracksForPlayback` (`:2446`) =
+`displayedRows.map(\.track)`, the same array album-mode hero Play already uses (`playAll()`,
+`:2457`), and calls `PlaybackEngine.playTracksNext(library:tracks:sourcePlaylistId:)`
+(`PlaybackEngine.swift:739`). The album menu calls that function. One route from this screen to the
+queue, not two that can drift.
+
+**The album-not-on-the-server case, stated rather than assumed.** `displayedRows` holds only rows
+backed by a real server `Track`; an album's missing tracks live in `mergedRows` as `.missing`
+previews and never reach it (`computeAlbumMergedRows`, `:832`). So on a partly-held album Play Next
+queues the part that exists, and on one the server holds none of, `displayedRows` is empty and the
+item renders **present but greyed** — the same treatment the off-server album page already gives it
+(`NewTabChartOverflowPanel.swift:320-328`). Present-and-disabled was chosen over hidden so the menu
+does not change shape between two albums that look identical to the reader.
+
+Not touched: `BrowseAlbumDetailView.swift` and the MusicBrainz files, which other terminals were
+editing at the time. `ServerPlaylistViews.swift` had no activity since 14:43.
+
+Verified: `xcodebuild` on the workspace against the iOS Simulator destination, BUILD SUCCEEDED. Not
+committed and not installed to a device.
+
+---
+
+- [2026-09-03 15:41] **T145 — Add to Playlist and Favorite on the album overflow menu, both reusing
+the existing actions.**
+
+Follows T144. The album ⋯ menu (`ServerPlaylistViews.swift:2539`) now carries the two remaining
+items the playlist menu had and it did not.
+
+**Neither is a new action.** *Add to Playlist* calls `app.presentAddToPlaylist(tracks:)` on
+`rows.map(\.track)` — the same call on the same array the playlist menu makes at `:1745` and the
+off-server album page makes at `NewTabChartOverflowPanel.swift:307`. *Favorite* calls
+`toggleAllTrackFavorites()` (`:2045`) and reads `allTracksFavorited` (`:1679`), both already used by
+the playlist menu (`:1707`) and the home-mix menu (`:2515`). Both read `rows`, which was never
+playlist-specific.
+
+**Favorite is state, not a fixed word.** It reads *Favorited* with a filled star once every track on
+the album already is, and *Favorite* otherwise — the same expression the playlist menu uses. A label
+that never changes is a button pretending to be a toggle.
+
+**The empty case, decided rather than assumed: present and greyed, both items.** `rows` holds only
+rows backed by a real server `Track`, so an album the server holds none of leaves it empty and both
+items disable. Hiding them was rejected on the grounds that decided T144: two albums that look
+identical to the reader should not open menus of different shapes, and a visibly unavailable item
+teaches more than an absent one. Add to Playlist earns the guard on its own — adding zero tracks to
+a playlist *succeeds* and does nothing, which is exactly the "looks like it worked" failure worth
+designing against. Favouriting is per-track, so with no tracks there is nothing to favourite. This
+matches what the off-server album page already does (`NewTabChartOverflowPanel.swift:320-328`).
+
+**One shape change fixed on the way past.** The top `ControlGroup` was wrapped in
+`if !showsDownloadedAlbumCheckmark`, so a fully-downloaded album lost the entire row — including
+items with nothing to do with downloading. The group is now unconditional and each item keeps its
+own condition, which is what lets Favorite survive a downloaded album.
+
+Album menu as it now reads: Download Album / Add Album to Library / **Favorite** · Pin ·
+**Add to Playlist** · Play Next · Delete Album from Library · Navidrome share.
+
+Verified: `xcodebuild` on the workspace against the iOS Simulator destination, BUILD SUCCEEDED. Not
+committed and not installed to a device.

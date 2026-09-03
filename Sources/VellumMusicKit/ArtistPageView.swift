@@ -24,6 +24,10 @@ struct ArtistPageView: View {
     /// the tab root.
     @State private var navigateAlbum: AlbumSummary?
     @State private var navigateAbout = false
+    @State private var showArtistIdentityInfo = false
+    /// Gate on "Request Missing": the count is shown and has to be accepted before a single
+    /// request is placed. See ``requestDiscographyConfirmationMessage``.
+    @State private var showRequestDiscographyConfirmation = false
 
     /// This page's cover-zoom key. Held rather than derived from `model` so it is stable from
     /// `init` — the animator asks for geometry before the body has run.
@@ -63,6 +67,14 @@ struct ArtistPageView: View {
                     } else {
                         Group {
                             ArtistTopSongsSection(model: model, onGoToAlbum: { navigateAlbum = $0 })
+                            // Sits above the shelves so a partial or fallback load is read
+                            // before the releases it qualifies, rather than discovered after
+                            // scrolling to an unexplained short list.
+                            if model.showsDiscographyLoadNotice {
+                                ArtistDiscographyLoadNotice(model: model) {
+                                    Task { await model.refresh(using: app) }
+                                }
+                            }
                             ArtistDiscographyCarousel(model: model, bucket: .albums, title: "Albums", layout: .prominent)
                             ArtistDiscographyCarousel(model: model, bucket: .singlesAndEPs, title: "Singles & EPs", layout: .prominent)
                             ArtistDiscographyCarousel(model: model, bucket: .live, title: "Live Albums", layout: .prominent)
@@ -122,11 +134,66 @@ struct ArtistPageView: View {
                             Label("Share", systemImage: "square.and.arrow.up")
                         }
                     }
+                    // Both labels are kept short enough to stay on one line at the longest real
+                    // count. Three digits is real — Nana Mouskouri is 314 release groups — and a
+                    // menu row that hyphenates across two lines reads as broken next to Share and
+                    // Info. Measured against "Remove from Favorites" (173.8pt at the 17pt body
+                    // font), the longest item here that is known to fit:
+                    //   "Request Discography (314)"   207.3pt  wraps  (what this used to say)
+                    //   "Request Missing (314)"       169.7pt  fits
+                    //   "Stop Requesting (196 of 314)" 222.6pt wraps
+                    //   "Stop (196 of 314)"           132.5pt  fits
+                    //
+                    // "Missing" rather than "Discography" is also the accurate word: the action
+                    // requests what the server does not have, and the number in brackets is that
+                    // missing count — never the size of the discography.
+                    if let progress = app.bulkAcquisitionProgress {
+                        Divider()
+                        Button(role: .destructive) {
+                            app.cancelBulkAcquisition()
+                        } label: {
+                            Label(
+                                "Stop (\(progress.placed) of \(progress.total))",
+                                systemImage: "stop.circle"
+                            )
+                        }
+                    } else if showsRequestDiscography {
+                        Divider()
+                        Button {
+                            showRequestDiscographyConfirmation = true
+                        } label: {
+                            Label(
+                                "Request Missing (\(model.discographyRequestPlan.count))",
+                                systemImage: "arrow.down.circle"
+                            )
+                        }
+                    }
+                    Divider()
+                    Button {
+                        showArtistIdentityInfo = true
+                    } label: {
+                        Label("Info", systemImage: "info.circle")
+                    }
                 } label: {
                     Image(systemName: "ellipsis")
                 }
                 .tint(backdropPalette.heroChromePrimary)
             }
+        }
+        // The count is the point of this dialog: a one-tap action that silently places 300
+        // requests is not an action anybody asked for. Stock `confirmationDialog`, so Cancel is
+        // where the reader already expects it.
+        .confirmationDialog(
+            "Request \(model.discographyRequestPlan.count) \(model.discographyRequestPlan.count == 1 ? "release" : "releases")?",
+            isPresented: $showRequestDiscographyConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Request \(model.discographyRequestPlan.count)") {
+                app.startBulkAcquisition(model.discographyRequestPlan.releases.map(\.acquisitionRequest))
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(requestDiscographyConfirmationMessage)
         }
         .onAppear(perform: seedCachedArtistBackdropIfNeeded)
         .task(id: artistBackdropTaskKey) {
@@ -150,16 +217,36 @@ struct ArtistPageView: View {
             await model.load(using: app)
         }
         .refreshable {
-            await model.load(using: app)
+            // The only place in the app that forces a refresh. Re-entering the page does not:
+            // `.task` above runs the ordinary cache check, which refetches only when the entry
+            // is missing, incomplete, or past its week. Adding an on-appear refetch here would
+            // mean a MusicBrainz round-trip every time an artist is opened.
+            await model.refresh(using: app)
         }
         .overlay(alignment: .center) {
-            if !model.hasAnyContent, !artistPageShowsSkeleton,
-               !model.isLoadingServerCatalog, !model.isLoadingEnrichment {
+            switch model.contentState {
+            case .loading, .content:
+                // Nothing to say. The skeleton above covers the loading case; saying "not found"
+                // while a fetch is still running tells the reader the opposite of the truth.
+                EmptyView()
+            case .empty:
                 ContentUnavailableView(
                     "No info for this artist",
                     systemImage: "mic",
                     description: Text("We couldn't find any songs, releases, or biography for \(model.displayName).")
                 )
+                .padding(.horizontal, 24)
+            case .failed:
+                ContentUnavailableView {
+                    Label("Couldn't load this artist", systemImage: "arrow.clockwise")
+                } description: {
+                    Text("Something went wrong fetching \(model.displayName)'s releases. This isn't an empty artist — the request didn't get through.")
+                } actions: {
+                    Button("Try Again") {
+                        Task { await model.refresh(using: app) }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
                 .padding(.horizontal, 24)
             }
         }
@@ -169,12 +256,29 @@ struct ArtistPageView: View {
         .navigationDestination(isPresented: $navigateAbout) {
             ArtistAboutPageView(model: model, palette: backdropPalette)
         }
+        // Diagnostic rather than decorative: the id alone does not say whether this page is
+        // showing the artist you meant, but the id plus how it was chosen does.
+        .alert("Artist Info", isPresented: $showArtistIdentityInfo) {
+            if let mbid = model.musicBrainzIdentity {
+                Button("Copy MusicBrainz ID") {
+                    #if os(iOS)
+                    UIPasteboard.general.string = mbid
+                    #endif
+                    app.showTransientToast("MusicBrainz ID copied")
+                }
+            }
+            Button("Done", role: .cancel) {}
+        } message: {
+            Text(model.identityReport)
+        }
     }
 
     private var artistTaskKey: String {
         switch model.input {
         case .libraryArtist(let a): return "lib:\(a.id)"
         case .named(let n): return "name:\(n)"
+        case .musicBrainzArtist(let a): return "mbid:\(a.id)"
+        case .musicBrainzArtistId(let id, _): return "mbid:\(id)"
         }
     }
 
@@ -191,6 +295,54 @@ struct ArtistPageView: View {
         let q = model.displayName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
         guard !q.isEmpty else { return nil }
         return URL(string: "https://music.apple.com/search?term=\(q)")
+    }
+
+    /// Whether the overflow menu offers "Request Missing".
+    ///
+    /// The same three conditions the shelves' per-row request badge answers to — a configured
+    /// plugin, an artist that plugin will accept, and at least one release the page is showing
+    /// as missing — so the menu appears exactly when tapping request on a row would have worked.
+    private var showsRequestDiscography: Bool {
+        app.acquisitionConfigured
+            && model.canRequestViaAcquisition
+            && !model.discographyRequestPlan.isEmpty
+    }
+
+    /// Who the page thinks this artist is, as the confirmation's first line.
+    ///
+    /// A count with no name attached is the most dangerous shape this dialog could take. Eighteen
+    /// MusicBrainz artists are named exactly "Rocket", and a page that resolved the wrong one
+    /// still shows a confident, correct-looking number — 29 releases, all of them the Russian
+    /// rapper's. The disambiguation is what makes that visible in the half-second before tapping,
+    /// so it is not decoration: "Rocket (Russian rapper)" and "Rocket (indie rock band from Los
+    /// Angeles)" are the difference between catching the mismatch and firing 29 requests at it.
+    ///
+    /// Uses ``MusicBrainzArtist/searchRowDescriptor`` — the same line Discover search rows use to
+    /// tell same-named artists apart — rather than a second formatting of the same fields.
+    private var requestDiscographyArtistLine: String {
+        guard let artist = model.musicBrainzArtist else { return model.displayName }
+        guard let descriptor = artist.searchRowDescriptor else { return artist.name }
+        return "\(artist.name) (\(descriptor))"
+    }
+
+    /// The sentence under the confirmation's "Request N releases?" title.
+    ///
+    /// Leads with who the releases belong to, then says what the number is made of and what each
+    /// request costs the server, and — when the discography is still paging — says plainly that
+    /// the number is not the whole catalogue yet, rather than letting a partial count read as a
+    /// complete one.
+    private var requestDiscographyConfirmationMessage: String {
+        let plan = model.discographyRequestPlan
+        var lines: [String] = [requestDiscographyArtistLine]
+        let breakdown = plan.breakdown.map(\.label).formatted(.list(type: .and))
+        lines.append(
+            "\(breakdown) on this page aren’t on your server. "
+            + "Each one is added to \(app.acquisitionCapabilities.displayName) and searched for."
+        )
+        if plan.pending > 0 {
+            lines.append("\(plan.pending) more releases are still loading and aren’t included.")
+        }
+        return lines.joined(separator: "\n\n")
     }
 
     private func toggleFavoriteArtist() {
@@ -1071,13 +1223,24 @@ private struct ArtistDiscographyCarousel: View {
         model.discography[bucket] ?? []
     }
 
+    /// Placeholder cards for release groups MusicBrainz has counted but not yet delivered.
+    ///
+    /// This is the second of the page's two loading states. A discography arrives 100 rows at a
+    /// time, and the server's `release-group-count` is known from the first page — so the shelf
+    /// can show exactly how much more is coming instead of looking finished and then jumping.
+    /// Capped so a 300-release artist does not render 200 shimmer cards nobody scrolls to.
+    private var placeholderCount: Int {
+        guard model.isPagingDiscography, !items.isEmpty else { return 0 }
+        return min(model.discographyPendingCount, 4)
+    }
+
     var body: some View {
         if !items.isEmpty {
             VStack(spacing: 0) {
                 ArtistSectionHeader(title: title)
                 ScrollView(.horizontal, showsIndicators: false) {
-                    // Lazy: a plugin discography can be 100+ releases per bucket, and each
-                    // card carries artwork plus a context menu.
+                    // Lazy: a discography can be 100+ releases per bucket, and each card
+                    // carries artwork plus a context menu.
                     LazyHStack(alignment: .top, spacing: 14) {
                         ForEach(items) { item in
                             ArtistDiscographyCard(
@@ -1086,12 +1249,137 @@ private struct ArtistDiscographyCarousel: View {
                                 canRequest: model.canRequestViaAcquisition
                             )
                         }
+                        ForEach(0 ..< placeholderCount, id: \.self) { _ in
+                            ArtistDiscographyCardSkeleton(layout: layout)
+                        }
                     }
                     .padding(.horizontal, 20)
                 }
             }
             .padding(.bottom, 4)
+            // Start the leading covers as soon as the shelf's URLs are known, rather than
+            // waiting for each cell to be built by the lazy stack. Bounded per shelf — see
+            // ``ArtworkPrefetcher`` for why the unbounded version would be a different bug.
+            .task(id: prefetchToken) {
+                let urls = items.prefix(ArtworkPrefetcher.defaultLeadingCount).compactMap(\.artworkURL)
+                await ArtworkPrefetcher.shared.prefetch(
+                    owner: prefetchOwner,
+                    urls: urls,
+                    maxPixelSize: MusicDesign.shelfCardWidth * 3
+                )
+            }
+            .onDisappear {
+                Task { await ArtworkPrefetcher.shared.cancel(owner: prefetchOwner) }
+            }
         }
+    }
+
+    private var prefetchOwner: String { "artist-shelf:\(title)" }
+
+    /// O(1) "the shelf's contents changed" token — deliberately not a map over every row, which
+    /// would run on each body evaluation of a shelf that can hold hundreds of cards.
+    private var prefetchToken: String {
+        "\(items.count)|\(items.first?.id ?? "")|\(items.last?.id ?? "")"
+    }
+}
+
+/// What the page says out loud when a discography load did not fully succeed.
+///
+/// The flag existing on the model is not the fix — the point is that a failure reaches the
+/// screen in words instead of the shelf quietly ending early. Two distinct things get said,
+/// because they are two different situations for the reader:
+///
+/// - **A pass that ran out of retries partway.** What already loaded is real and current; some
+///   of it is simply missing. The count is named so it is clear how much.
+/// - **A saved copy standing in.** The refresh failed outright and what is on screen is an
+///   older copy. It is labelled as such — showing out-of-date data without saying so is the
+///   thing this is here to prevent.
+private struct ArtistDiscographyLoadNotice: View {
+    @EnvironmentObject private var app: AppModel
+    @ObservedObject var model: ArtistViewModel
+    @Environment(\.artistPageBackdropPalette) private var backdropPalette
+    let onRetry: () -> Void
+
+    private static let savedCopyFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .full
+        return f
+    }()
+
+    private var title: String {
+        model.discographyIsSavedCopy
+            ? "Showing a saved copy"
+            : "Couldn't load everything"
+    }
+
+    private var detail: String {
+        if model.discographyIsSavedCopy {
+            guard let fetchedAt = model.discographyFetchedAt else {
+                return "This artist's releases couldn't be refreshed, so an earlier copy is shown."
+            }
+            let when = Self.savedCopyFormatter.localizedString(for: fetchedAt, relativeTo: Date())
+            return "Couldn't refresh this artist's releases, so this is the copy saved \(when)."
+        }
+        if model.discographyTotal > 0, model.discographyLoadedCount < model.discographyTotal {
+            return "Showing \(model.discographyLoadedCount) of \(model.discographyTotal) releases. The rest didn't load."
+        }
+        return "Some of this artist's releases didn't load."
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: model.discographyIsSavedCopy ? "clock.arrow.circlepath" : "exclamationmark.triangle")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(ArtistPageChrome.secondary(app: app, palette: backdropPalette))
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(ArtistPageChrome.primary(app: app, palette: backdropPalette))
+                Text(detail)
+                    .font(.footnote)
+                    .foregroundStyle(ArtistPageChrome.secondary(app: app, palette: backdropPalette))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Button("Retry", action: onRetry)
+                .font(.footnote.weight(.semibold))
+                .buttonStyle(.plain)
+                .foregroundStyle(MusicDesign.accent)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(.white.opacity(0.07))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(.white.opacity(0.12), lineWidth: 0.75)
+        )
+        .padding(.horizontal, 20)
+        .padding(.bottom, 12)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title). \(detail)")
+    }
+}
+
+/// A discography card that has not arrived yet. Matches ``ArtistDiscographyCard``'s artwork
+/// size and label block so the shelf does not reflow when the real row replaces it.
+private struct ArtistDiscographyCardSkeleton: View {
+    let layout: DiscographyLayout
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            MusicSquareArtworkSkeleton(size: layout.cardSide, cornerRadius: MusicDesign.albumCorner)
+            VStack(alignment: .leading, spacing: 4) {
+                MusicTextLineSkeleton(width: layout.cardSide * 0.8, height: 12)
+                MusicTextLineSkeleton(width: layout.cardSide * 0.5, height: 10)
+            }
+            .frame(minHeight: layout.labelBlockMinHeight, alignment: .top)
+        }
+        .frame(width: layout.cardSide, alignment: .leading)
+        .accessibilityLabel("Loading more releases")
     }
 }
 
@@ -1319,26 +1607,69 @@ private struct ArtistAboutPageView: View {
 
     @ViewBuilder
     private var metadataBlock: some View {
-        let genre = model.pluginProfile?.genres.first
+        // Genre falls back to the plugin's tags only when MusicBrainz has none, so the two
+        // sources never disagree on screen.
+        let mb = model.musicBrainzArtist
+        let genre = mb?.primaryGenre ?? model.pluginProfile?.genres.first
+        let origin = mb?.originLine
+        let formed = mb?.lifeSpanBeginDisplay
 
         VStack(alignment: .leading, spacing: 20) {
-            if let genre {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Genre")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(secondaryColor)
-                        .textCase(.uppercase)
-                        .tracking(0.5)
-                    Text(genre)
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(primaryColor)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(Capsule().fill(.white.opacity(0.08)))
-                        .overlay(Capsule().strokeBorder(.white.opacity(0.14), lineWidth: 0.75))
+            if model.isLoadingArtistHeader && mb == nil {
+                artistFactsShimmer
+            } else {
+                if let origin {
+                    factRow(label: "From", value: origin)
+                }
+                if let formed {
+                    factRow(label: mb?.lifeSpanBeginLabel ?? "Formed", value: formed)
+                }
+                if let genre {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Genre")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(secondaryColor)
+                            .textCase(.uppercase)
+                            .tracking(0.5)
+                        Text(genre)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(primaryColor)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Capsule().fill(.white.opacity(0.08)))
+                            .overlay(Capsule().strokeBorder(.white.opacity(0.14), lineWidth: 0.75))
+                    }
                 }
             }
         }
+    }
+
+    private func factRow(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(label)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(secondaryColor)
+                .textCase(.uppercase)
+                .tracking(0.5)
+            Text(value)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(primaryColor)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// The first of the page's two loading states. Only ever visible on a cold open — a page
+    /// reached from a search hit already has these facts and never shimmers here.
+    private var artistFactsShimmer: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            ForEach([CGFloat(150), CGFloat(110)], id: \.self) { width in
+                VStack(alignment: .leading, spacing: 8) {
+                    MusicTextLineSkeleton(width: 48, height: 9, cornerRadius: 3)
+                    MusicTextLineSkeleton(width: width, height: 14)
+                }
+            }
+        }
+        .accessibilityLabel("Loading artist details")
     }
 
 }

@@ -987,7 +987,7 @@ struct ServerPlaylistDetailView: View {
                 ServerPlaylistDetailView(album: album, librarySource: true)
             }
             .navigationDestination(item: $navigateArtist) { item in
-                ArtistPageView(input: .named(item.id))
+                ArtistPageView(input: item.artistPageInput)
             }
             .onAppear(perform: detailOnAppear)
             .modifier(LibraryAlbumDismissObserver(
@@ -1585,6 +1585,22 @@ struct ServerPlaylistDetailView: View {
         return (trimmed, detail.isEmpty ? nil : detail)
     }
 
+    /// Server artist id for the album's credited artist, taken from a track that is actually
+    /// credited to them.
+    ///
+    /// ``AlbumSummary`` carries no artist id, but the album's tracks do, so the id is already on
+    /// screen. The name check is what makes it safe: on a compilation the first track's artist is
+    /// often not the album artist, and navigating to that id would be confidently wrong — worse
+    /// than the name lookup this replaces. No match, no id, and the name path takes over.
+    private func serverArtistIdForHeroArtist(_ artistName: String) -> String? {
+        let target = LibraryTrackMatcher.normalize(artistName)
+        guard !target.isEmpty else { return nil }
+        return rows.lazy
+            .map(\.track)
+            .first { LibraryTrackMatcher.normalize($0.artist) == target && $0.artistId != nil }?
+            .artistId
+    }
+
     /// Apple Music–style: tapping the literal "Various Artists" string on an album
     /// page would surface a useless artist page (every collaboration on the server).
     /// Match Apple's behavior by treating it as non-tappable.
@@ -1600,7 +1616,10 @@ struct ServerPlaylistDetailView: View {
             HStack(spacing: 6) {
                 if Self.isTappableArtist(split.artist) {
                     Button {
-                        navigateArtist = ArtistNameNavigation(id: split.artist)
+                        navigateArtist = ArtistNameNavigation(
+                            id: split.artist,
+                            serverArtistId: serverArtistIdForHeroArtist(split.artist)
+                        )
                     } label: {
                         Text(split.artist)
                             .font(.subheadline.weight(.medium))
@@ -2267,7 +2286,7 @@ struct ServerPlaylistDetailView: View {
             // Same tappability rule the Now Playing menu uses — "Various Artists" is not a
             // navigable artist, so the item is hidden rather than dead.
             onGoToArtist: ArtistNavigation.isTappable(row.track.artist)
-                ? { navigateArtist = ArtistNameNavigation(id: row.track.artist) }
+                ? { navigateArtist = ArtistNameNavigation(id: row.track.artist, serverArtistId: row.track.artistId) }
                 : nil,
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [row.track]) },
             onRemoveFromPlaylist: removeFromPlaylist,
@@ -2519,8 +2538,13 @@ struct ServerPlaylistDetailView: View {
     @ViewBuilder
     private var albumOverflowMenuContent: some View {
         if let album = albumOrNil {
-            if !showsDownloadedAlbumCheckmark {
-                ControlGroup {
+            // The group itself is now unconditional; each item keeps its own condition. It used to
+            // be wrapped in `if !showsDownloadedAlbumCheckmark`, so a fully-downloaded album lost
+            // the whole row — including items that had nothing to do with downloading. Favourite
+            // has to survive that, and a menu whose shape changes between two albums is the thing
+            // this pass is trying to stop.
+            ControlGroup {
+                if !showsDownloadedAlbumCheckmark {
                     Button {
                         Task { await downloadAllTracks() }
                     } label: {
@@ -2535,8 +2559,25 @@ struct ServerPlaylistDetailView: View {
                         }
                     }
                 }
-                .tint(Color.primary)
+                // `toggleAllTrackFavorites` (`:2045`) and `allTracksFavorited` (`:1679`) are the
+                // playlist menu's own (`:1707`) and the home-mix menu's (`:2515`); both read
+                // `rows`, which is mode-agnostic. The label is state, not a fixed word: it reads
+                // Favorited once every track on the album already is, exactly as the playlist
+                // menu's does.
+                //
+                // `rows` holds only server-backed tracks, so with none of the album on the server
+                // this is greyed rather than hidden — favouriting is per-track and there are no
+                // tracks. Disabled over hidden on purpose: two albums that look identical should
+                // not open menus of different shapes.
+                Button(action: toggleAllTrackFavorites) {
+                    Label(
+                        allTracksFavorited ? "Favorited" : "Favorite",
+                        systemImage: allTracksFavorited ? "star.fill" : "star"
+                    )
+                }
+                .disabled(rows.isEmpty)
             }
+            .tint(Color.primary)
 
             Section {
                 Button(action: toggleAlbumPinned) {
@@ -2545,6 +2586,43 @@ struct ServerPlaylistDetailView: View {
                         systemImage: isAlbumPinned ? "pin.slash" : "pin"
                     )
                 }
+                // Same call the playlist menu makes (`:1745`) and the off-server album page makes
+                // (`NewTabChartOverflowPanel.swift:307`), on the same `rows.map(\.track)`.
+                //
+                // Greyed rather than hidden when `rows` is empty. Adding zero tracks to a playlist
+                // succeeds and does nothing, which is the precise failure worth designing against:
+                // an action that looks like it worked.
+                Button {
+                    app.presentAddToPlaylist(tracks: rows.map(\.track))
+                } label: {
+                    Label("Add to Playlist", systemImage: "rectangle.stack.badge.plus")
+                }
+                .disabled(rows.isEmpty)
+            }
+            .tint(Color.primary)
+
+            // Deliberately the playlist menu's own action, not a second one.
+            //
+            // `playPlaylistNext()` (`:2489`) is named for the mode it was written in but is not
+            // playlist-specific: it queues `tracksForPlayback` (`:2446`), which is
+            // `displayedRows.map(\.track)` — the same array the hero Play button uses in album
+            // mode (`playAll()`, `:2457`). So this queues exactly the tracks Play would play, and
+            // there is one path to `PlaybackEngine.playTracksNext` from this screen rather than
+            // two that can drift.
+            //
+            // `displayedRows` holds only rows backed by a real server `Track`; an album's missing
+            // tracks live in `mergedRows` as `.missing` previews and never reach it. So on an
+            // album the server holds only part of, this queues the part that exists — and on one
+            // it holds none of, `displayedRows` is empty and the item renders greyed rather than
+            // pretending it can play silence. Same treatment the off-server album page already
+            // gives it (`NewTabChartOverflowPanel.swift:320-328`).
+            Section {
+                Button {
+                    Task { await playPlaylistNext() }
+                } label: {
+                    Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                }
+                .disabled(displayedRows.isEmpty)
             }
             .tint(Color.primary)
 

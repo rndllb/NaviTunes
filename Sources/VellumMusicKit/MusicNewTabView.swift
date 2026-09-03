@@ -111,7 +111,7 @@ struct MusicNewTabView: View {
                 ))
             }
             .navigationDestination(item: $navigateArtist) { item in
-                ArtistPageView(input: .named(item.id))
+                ArtistPageView(input: item.artistPageInput)
             }
             .navigationDestination(for: NewTabSectionDestination.self) { section in
                 NewTabSectionDetailView(section: section)

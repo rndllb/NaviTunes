@@ -81,7 +81,7 @@ struct NewTabChartListView: View {
             ))
         }
         .navigationDestination(item: $navigateArtist) { item in
-            ArtistPageView(input: .named(item.id))
+            ArtistPageView(input: item.artistPageInput)
         }
     }
 
@@ -205,7 +205,7 @@ struct NewTabChartAlbumsGridView: View {
             ServerPlaylistDetailView(album: album)
         }
         .navigationDestination(item: $navigateArtist) { item in
-            ArtistPageView(input: .named(item.id))
+            ArtistPageView(input: item.artistPageInput)
         }
     }
 
