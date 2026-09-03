@@ -63,6 +63,22 @@ struct AlbumSummary: Identifiable, Hashable, Codable {
     /// Original release calendar date when the server exposes it (`PremiereDate`, Subsonic `originalReleaseDate`, etc.).
     let releaseDate: Date?
 
+    /// MusicBrainz **release group** id, when the server reports one.
+    ///
+    /// This is the id MusicBrainz browse returns, so where it exists it compares directly against
+    /// a fetched discography and beats any amount of title normalization. Jellyfin exposes it as
+    /// `ProviderIds.MusicBrainzReleaseGroup`. Navidrome does **not** expose it over Subsonic —
+    /// see ``musicBrainzReleaseId``.
+    let musicBrainzReleaseGroupId: String?
+
+    /// MusicBrainz **release** id — one specific pressing, not the work above it.
+    ///
+    /// Navidrome's Subsonic `musicBrainzId` on an album is this, not the release group (verified
+    /// against the live API: the ids it returns 404 on `/release-group/{id}` and resolve on
+    /// `/release/{id}`). A release id therefore cannot be compared to a browsed discography
+    /// without first resolving it to its release group.
+    let musicBrainzReleaseId: String?
+
     init(
         id: String,
         title: String,
@@ -74,7 +90,11 @@ struct AlbumSummary: Identifiable, Hashable, Codable {
         genres: [String] = [],
         releaseYear: Int? = nil,
         releaseDate: Date? = nil,
+        musicBrainzReleaseGroupId: String? = nil,
+        musicBrainzReleaseId: String? = nil,
     ) {
+        self.musicBrainzReleaseGroupId = musicBrainzReleaseGroupId
+        self.musicBrainzReleaseId = musicBrainzReleaseId
         self.id = id
         self.title = title
         self.artist = artist
@@ -235,6 +255,17 @@ struct Track: Identifiable, Hashable, Codable {
     /// Direct stream URL for internet radio (bypasses Subsonic ``stream`` for this item).
     let streamOverrideURL: URL?
 
+    /// The server's own id for this track's artist, when it reports one.
+    ///
+    /// Carried because a name is not an identity. "Go to Artist" had nothing but ``artist`` to
+    /// work with, so it navigated by a string and landed on whichever artist of that name the
+    /// lookup happened to return — and there are eighteen acts called "Rocket". Both backends
+    /// already send this id on the track payload; it was simply being dropped on parse.
+    ///
+    /// Optional so existing persisted snapshots keep decoding: a missing key reads as `nil`
+    /// rather than failing the whole snapshot.
+    var artistId: String?
+
     init(
         id: String,
         title: String,
@@ -254,7 +285,9 @@ struct Track: Identifiable, Hashable, Codable {
         audioBitDepth: Int? = nil,
         audioBitRateKbps: Int? = nil,
         streamOverrideURL: URL? = nil,
+        artistId: String? = nil,
     ) {
+        self.artistId = artistId
         self.id = id
         self.title = title
         self.albumId = albumId
@@ -344,6 +377,13 @@ struct LibraryArtistSummary: Identifiable, Hashable {
     let id: String
     let name: String
     let artworkURL: URL?
+    /// MusicBrainz artist id, when the server reports one (Navidrome exposes it on artists;
+    /// Jellyfin has it under `ProviderIds.MusicBrainzArtist`).
+    ///
+    /// Worth carrying because it removes a network round-trip rather than just improving a match:
+    /// with it, an artist page knows its MBID on arrival and never has to search MusicBrainz to
+    /// find out who it is looking at.
+    var musicBrainzArtistId: String?
 }
 
 /// Genre entry for Library → Genres (`id` is Jellyfin item id or Navidrome stable key — use ``albums(inGenre:limit:)``).

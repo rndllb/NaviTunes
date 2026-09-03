@@ -391,6 +391,22 @@ struct AcquisitionRelease: Identifiable, Hashable, Sendable {
     let id: String
     let title: String
     let artist: String
+    /// The full credited line for this release ("jayo & Citizen"), when the source reported one.
+    ///
+    /// Deliberately **not** folded into ``artist``, which is a matching key rather than a label:
+    /// it is what finds the release on the user's server (`AlbumSummary.firstMatch(artist:albumTitle:)`),
+    /// what the request backend is asked about (`canRequestArtist(named:)`), and what
+    /// ``AcquisitionRequest/requestKey`` normalises. Putting a two-artist credit in there would
+    /// stop an owned collaboration matching its own server album and make the request backend
+    /// report the artist as unknown — a display fix that broke ownership and requesting.
+    ///
+    /// So this rides alongside: rendered where a human reads the credit, ignored everywhere a
+    /// string is being matched. `nil` means the source only ever knew one name, and the label
+    /// falls back to ``artist``.
+    ///
+    /// `var` rather than `let` so the memberwise initialiser carries it with a default — a `let`
+    /// with a default is dropped from that initialiser entirely and could never be set.
+    var artistCreditLine: String? = nil
     let releaseDate: Date?
     let artworkURL: URL?
     let albumType: String?
@@ -409,6 +425,15 @@ struct AcquisitionRelease: Identifiable, Hashable, Sendable {
     var releaseYear: Int? {
         guard let releaseDate else { return nil }
         return Calendar(identifier: .gregorian).component(.year, from: releaseDate)
+    }
+
+    /// The artist line to put in front of a reader: the full credit when one is known, the
+    /// matching name otherwise. Never empty when ``artist`` is non-empty.
+    var displayArtistLine: String {
+        if let line = artistCreditLine?.trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty {
+            return line
+        }
+        return artist
     }
 
     /// Id passed through ``BrowseAlbumDetailSource`` so the plugin can reload tracks.
@@ -673,11 +698,43 @@ enum AcquisitionHTTP {
         }
         guard let http = resp as? HTTPURLResponse else { throw AcquisitionError("Invalid response.") }
         guard (200 ..< 300).contains(http.statusCode) else {
-            let snippet = String(data: data.prefix(200), encoding: .utf8) ?? ""
-            throw AcquisitionError(snippet.isEmpty ? "Request failed (HTTP \(http.statusCode))." : snippet)
+            // The response body is diagnostic material, not a sentence. Pasting it into the error
+            // put raw JSON and a .NET stack trace on screen in a toast — a backend's internal
+            // exception type is not something a user can read, act on, or should ever be shown.
+            // It goes to the log; the throw carries something in English.
+            let body = String(data: data.prefix(2000), encoding: .utf8) ?? ""
+            if !body.isEmpty {
+                print("[Acquisition] HTTP \(http.statusCode) from \(path): \(body)")
+            }
+            throw AcquisitionError(Self.userFacingMessage(statusCode: http.statusCode, body: body))
         }
         guard !data.isEmpty else { return [:] }
         return (try? JSONSerialization.jsonObject(with: data)) ?? [:]
+    }
+
+    /// A sentence for an HTTP failure from a request backend.
+    ///
+    /// Reads the body only to *classify* the failure, never to quote it. The one case worth
+    /// naming specially is a metadata-proxy lookup failure, because it is not the user's fault
+    /// and not fixable by retrying the same way — it is the backend's own catalog search giving
+    /// up on a title, which is exactly the case the id-based lookup exists to route around.
+    static func userFacingMessage(statusCode: Int, body: String) -> String {
+        let lowered = body.lowercased()
+        if lowered.contains("skyhook") || lowered.contains("invalid response received from") {
+            return "The request service couldn't look this album up. It may not be in its catalog yet."
+        }
+        switch statusCode {
+        case 401, 403:
+            return "The request service rejected the credentials. Check the API key in Settings."
+        case 404:
+            return "The request service didn't recognise this album."
+        case 409:
+            return "That's already been requested."
+        case 500 ..< 600:
+            return "The request service had an internal error. Try again shortly."
+        default:
+            return "The request couldn't be completed (HTTP \(statusCode))."
+        }
     }
 
     static func userFacingMessage(for error: Error) -> String {

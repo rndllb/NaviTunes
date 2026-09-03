@@ -9,6 +9,9 @@ import Foundation
 struct PlaylistRowsCache: Codable {
     var rowsByPlaylistId: [String: [PlaylistRowItem]] = [:]
     var savedAt: Date = .distantPast
+    /// Schema stamp — see ``PersistedModelSchema``. Defaults to `0` so a file written before this
+    /// existed decodes cleanly and is then rejected as too old, rather than failing to decode.
+    var schemaVersion: Int = 0
 }
 
 enum PlaylistRowsCacheStore {
@@ -36,6 +39,9 @@ enum PlaylistRowsCacheStore {
               let data = try? Data(contentsOf: url),
               let cache = try? JSONDecoder().decode(PlaylistRowsCache.self, from: data)
         else { return nil }
+        // Rows written by an older schema decode fine and are quietly wrong — they carry `nil`
+        // for fields added since. Treated as a miss so they refill from the server.
+        guard cache.schemaVersion >= PersistedModelSchema.current else { return nil }
         return cache
     }
 
@@ -81,6 +87,7 @@ enum PlaylistRowsCacheStore {
             }
             var cache = PlaylistRowsCache(rowsByPlaylistId: trimmed)
             cache.savedAt = Date()
+            cache.schemaVersion = PersistedModelSchema.current
             guard let data = try? JSONEncoder().encode(cache) else { return }
             try? data.write(to: url, options: .atomic)
         }

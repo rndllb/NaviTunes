@@ -1528,7 +1528,12 @@ final class JellyfinMusicClient: MusicLibraryProviding {
             comps.queryItems = [URLQueryItem(name: "tag", value: primary)]
             art = mediaURLWithQueryAuth(comps.url!, extraQuery: [])
         }
-        return LibraryArtistSummary(id: id, name: name, artworkURL: art)
+        return LibraryArtistSummary(
+            id: id,
+            name: name,
+            artworkURL: art,
+            musicBrainzArtistId: Self.jellyfinProviderId(dict, "MusicBrainzArtist")
+        )
     }
 
     private func parseLibraryGenre(_ dict: [String: Any]) -> LibraryGenreSummary? {
@@ -1679,12 +1684,38 @@ final class JellyfinMusicClient: MusicLibraryProviding {
             genres: genres,
             releaseYear: releaseYear,
             releaseDate: releaseDate,
+            // Jellyfin carries both, unlike Subsonic. The release group is the one that compares
+            // directly against a browsed discography.
+            musicBrainzReleaseGroupId: Self.jellyfinProviderId(dict, "MusicBrainzReleaseGroup"),
+            musicBrainzReleaseId: Self.jellyfinProviderId(dict, "MusicBrainzAlbum"),
         )
+    }
+
+    /// One entry out of Jellyfin's `ProviderIds` bag. Keys are matched case-insensitively
+    /// because Jellyfin's casing has varied across versions.
+    private static func jellyfinProviderId(_ dict: [String: Any], _ key: String) -> String? {
+        guard let ids = dict["ProviderIds"] as? [String: Any] else { return nil }
+        for (k, v) in ids where k.caseInsensitiveCompare(key) == .orderedSame {
+            if let s = v as? String, let trimmed = s.mbTrimmedNonEmpty { return trimmed }
+        }
+        return nil
     }
 
     private func jellyfinDate(_ value: Any?) -> Date? {
         guard let s = value as? String else { return nil }
         return Self.jellyfinISOFrac.date(from: s) ?? Self.jellyfinISO.date(from: s)
+    }
+
+    /// First artist id on a Jellyfin item — `ArtistItems`, then `AlbumArtists`.
+    private static func jellyfinArtistItemId(_ dict: [String: Any]) -> String? {
+        for key in ["ArtistItems", "AlbumArtists"] {
+            if let rows = dict[key] as? [[String: Any]],
+               let id = rows.compactMap({ $0["Id"] as? String }).first,
+               !id.isEmpty {
+                return id
+            }
+        }
+        return nil
     }
 
     private func parseTrack(dict: [String: Any], albumId: String) -> Track? {
@@ -1725,6 +1756,10 @@ final class JellyfinMusicClient: MusicLibraryProviding {
             audioCodec: codec,
             audioBitDepth: bitDepth,
             audioBitRateKbps: nil,
+            // `ArtistItems` is already requested in the item Fields, so the id is in the payload
+            // and was simply being dropped. Falls back to the album artist, which is the right
+            // destination for a track credited to a featured performer.
+            artistId: Self.jellyfinArtistItemId(dict),
         )
     }
 

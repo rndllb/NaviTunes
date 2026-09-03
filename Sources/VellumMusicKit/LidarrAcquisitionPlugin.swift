@@ -69,6 +69,27 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
         // download. That is what produced first the 100% stall and then the 10% one. Everything
         // displayed for a Lidarr request now comes from `requestState(for:)`, which reads Lidarr.
         let albumTitle = request.albumTitle ?? request.trackTitle ?? ""
+
+        // Ask by MusicBrainz id when the row carried one.
+        //
+        // Lidarr resolves `term=lidarr:<mbid>` as an exact catalog lookup, while a plain text term
+        // goes through its metadata proxy's *search*, which is a different code path and a fallible
+        // one: for some albums it answers with a SkyHookException rather than a result, so a
+        // request for a release that plainly exists fails on a title the user can see on screen.
+        // The id is exact, so where it exists it is the better question to ask — and the row that
+        // was tapped already knows it, because the discography it came from is keyed by it.
+        if let releaseGroupMBID = request.releaseGroupMBID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !releaseGroupMBID.isEmpty {
+            if let pick = try? await albumLookup(term: "lidarr:\(releaseGroupMBID)").first {
+                let foreignId = try await addOrSearchExistingAlbum(lookup: pick)
+                return "\(Self.nativeIdPrefix)\(foreignId)"
+            }
+            // Lidarr did not recognise the id. That is a real possibility — its metadata mirror
+            // lags MusicBrainz, so a release group new enough or obscure enough can be unknown to
+            // it — and it is not a reason to give up while a second way to ask still exists.
+            // Fall through to the text path rather than failing here.
+        }
+
         let term: String
         if !albumTitle.isEmpty {
             term = "\(request.artist) \(albumTitle)"
@@ -484,17 +505,52 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
 
     func tracks(forRelease release: AcquisitionRelease) async -> [BrowseAlbumPreviewTrack] {
         guard isConfigured else { return [] }
-        var albumId = release.nativeAlbumId.flatMap(Int.init)
-        if albumId == nil {
-            let foreign = release.releaseGroupMBID
+        let foreignId: String? = {
+            let candidate = release.releaseGroupMBID
                 ?? release.id.replacingOccurrences(of: "mbid:", with: "")
-            if foreign.count >= 36, let row = await libraryAlbum(foreignAlbumId: foreign) {
-                albumId = AcquisitionHTTP.int(row["id"])
-            }
+            return candidate.count >= 36 ? candidate : nil
+        }()
+
+        // A published release's track list does not change, so a cached one is served without
+        // asking again — see ``AcquisitionTrackListCache`` for why this is not on a freshness timer.
+        let cacheKey = foreignId.map {
+            AcquisitionTrackListCache.key(pluginKind: Self.nativeIdPrefix, releaseGroupMBID: $0)
         }
-        guard let albumId else { return [] }
+        if let cacheKey, let cached = await AcquisitionTrackListCache.loadAsync(cacheKey) {
+            return cached.rows.map(BrowseAlbumPreviewTrack.init(cached:))
+        }
+
+        var albumId = release.nativeAlbumId.flatMap(Int.init)
+        if albumId == nil, let foreignId, let row = await libraryAlbum(foreignAlbumId: foreignId) {
+            albumId = AcquisitionHTTP.int(row["id"])
+        }
+
+        guard let albumId else {
+            // Not in the backend's *library* — which is the ordinary case for a release the user
+            // has not requested yet, and the reason this used to give up and show no track list at
+            // all. The library is not the catalog: ask the catalog by id.
+            //
+            // By id, and never by title. The text form of this lookup is the call whose metadata
+            // proxy fails, so retrying the same question in words would reproduce the original
+            // failure. The id is exact and the row it returns carries the pressings inline.
+            guard let foreignId,
+                  let row = try? await albumLookup(term: "\(Self.nativeIdPrefix)\(foreignId)").first
+            else { return [] }
+            let tracks = parseEmbeddedTracks(from: row, albumTitle: release.title)
+            if let cacheKey, !tracks.isEmpty {
+                await AcquisitionTrackListCache.saveAsync(
+                    key: cacheKey,
+                    rows: tracks.map(\.cacheRow),
+                    releaseNote: Self.preferredRelease(
+                        from: row["releases"] as? [[String: Any]] ?? [],
+                        albumRow: row
+                    ).flatMap { AcquisitionHTTP.string($0["title"]) }
+                )
+            }
+            return tracks
+        }
         let rows = (try? await send(path: "track", query: ["albumId": String(albumId)])) as? [[String: Any]] ?? []
-        return rows.enumerated().compactMap { index, row in
+        let tracks = rows.enumerated().compactMap { index, row -> BrowseAlbumPreviewTrack? in
             guard let title = AcquisitionHTTP.string(row["title"]), !title.isEmpty else { return nil }
             let position = AcquisitionHTTP.int(row["trackNumber"]) ?? (index + 1)
             let duration: TimeInterval?
@@ -507,6 +563,14 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
             return BrowseAlbumPreviewTrack(id: "lidarr-track:\(tid)", position: position, title: title, duration: duration)
         }
         .sorted { $0.position < $1.position }
+        if let cacheKey, !tracks.isEmpty {
+            await AcquisitionTrackListCache.saveAsync(
+                key: cacheKey,
+                rows: tracks.map(\.cacheRow),
+                releaseNote: "from the backend library album \(albumId)"
+            )
+        }
+        return tracks
     }
 
     func tracks(artist: String, albumTitle: String) async -> [BrowseAlbumPreviewTrack] {
@@ -914,6 +978,65 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
     }
 
     /// Lookup payloads sometimes embed media/tracks before the album is in Lidarr.
+    /// Picks which pressing in a release group supplies the displayed track list.
+    ///
+    /// Ordered by how closely each signal ties the list to what the user will actually receive:
+    ///
+    /// 1. **The monitored release.** That is the pressing the backend will fetch, so its track
+    ///    list is the one that will arrive. Nothing beats matching reality.
+    /// 2. **The release whose track count equals the album's own.** The album-level count
+    ///    describes the release group's canonical shape, so a pressing that agrees with it is the
+    ///    standard edition.
+    /// 3. **The shortest single-disc release.** Deliberately not the longest: a preview that
+    ///    over-promises is worse than one that under-promises, because bonus tracks that never
+    ///    arrive read as a failed download rather than as a different edition.
+    /// 4. **A stable tie-break** on foreign id, so the same album shows the same list on every
+    ///    open instead of flipping as the backend reorders its response.
+    ///
+    /// Note what this deliberately does not do: it never unions track lists across pressings.
+    /// That is the tempting fix and the worst one — it manufactures a track list that no edition
+    /// actually has, and presents it with more authority than any real one.
+    static func preferredRelease(from releases: [[String: Any]], albumRow: [String: Any]) -> [String: Any]? {
+        let withTracks = releases.filter { release in
+            (release["media"] as? [[String: Any]] ?? []).contains { medium in
+                !((medium["tracks"] as? [[String: Any]]) ?? []).isEmpty
+            }
+        }
+        guard !withTracks.isEmpty else { return nil }
+
+        if let monitored = withTracks.first(where: { ($0["monitored"] as? Bool) == true }) {
+            return monitored
+        }
+
+        let albumTrackCount = AcquisitionHTTP.int(albumRow["trackCount"])
+            ?? AcquisitionHTTP.int((albumRow["statistics"] as? [String: Any])?["trackCount"])
+        if let albumTrackCount, albumTrackCount > 0,
+           let exact = withTracks.first(where: { AcquisitionHTTP.int($0["trackCount"]) == albumTrackCount }) {
+            return exact
+        }
+
+        func trackCount(_ r: [String: Any]) -> Int {
+            AcquisitionHTTP.int(r["trackCount"])
+                ?? (r["media"] as? [[String: Any]] ?? []).reduce(0) {
+                    $0 + ((($1["tracks"] as? [[String: Any]]) ?? []).count)
+                }
+        }
+        func mediumCount(_ r: [String: Any]) -> Int {
+            AcquisitionHTTP.int(r["mediumCount"]) ?? (r["media"] as? [[String: Any]] ?? []).count
+        }
+        func tieBreak(_ r: [String: Any]) -> String {
+            AcquisitionHTTP.string(r["foreignReleaseId"]) ?? AcquisitionHTTP.string(r["title"]) ?? ""
+        }
+
+        return withTracks.min { a, b in
+            let (ma, mb) = (mediumCount(a) <= 1 ? 0 : 1, mediumCount(b) <= 1 ? 0 : 1)
+            if ma != mb { return ma < mb }
+            let (ta, tb) = (trackCount(a), trackCount(b))
+            if ta != tb { return ta < tb }
+            return tieBreak(a) < tieBreak(b)
+        }
+    }
+
     private func parseEmbeddedTracks(from row: [String: Any], albumTitle: String) -> [BrowseAlbumPreviewTrack] {
         var rawTracks: [[String: Any]] = []
         if let media = row["media"] as? [[String: Any]] {
@@ -924,15 +1047,15 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
             }
         }
         if rawTracks.isEmpty, let releases = row["releases"] as? [[String: Any]] {
-            for release in releases {
-                if let media = release["media"] as? [[String: Any]] {
-                    for medium in media {
-                        if let tracks = medium["tracks"] as? [[String: Any]] {
-                            rawTracks.append(contentsOf: tracks)
-                        }
+            // Which pressing's track list to show is a real choice, and taking whichever came
+            // back first was not making it. A release group holds many releases — an original, a
+            // remaster, a deluxe, regional pressings — and their track lists differ.
+            if let chosen = Self.preferredRelease(from: releases, albumRow: row) {
+                for medium in (chosen["media"] as? [[String: Any]] ?? []) {
+                    if let tracks = medium["tracks"] as? [[String: Any]] {
+                        rawTracks.append(contentsOf: tracks)
                     }
                 }
-                if !rawTracks.isEmpty { break }
             }
         }
         if rawTracks.isEmpty, let tracks = row["tracks"] as? [[String: Any]] {

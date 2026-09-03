@@ -2675,6 +2675,13 @@ public final class AppModel: ObservableObject {
         LibrarySnapshotStore.clear()
         PlaylistRowsCacheStore.clear()
         StreamingMediaDiskCache.shared.clear()
+        // MusicBrainz payloads are metadata on disk, so a metadata clear has to take them
+        // too. Expiry alone never removes them — a user asking to reclaim disk is the one
+        // case where deleting a cached payload is the right answer.
+        MusicBrainzCacheStore.clearAll()
+        // Track lists have no expiry of their own, so a user-initiated clear is the only thing
+        // that ever removes them.
+        AcquisitionTrackListCache.clearAll()
         clearInMemoryPlaylistRowsCache()
         Task {
             await ArtistEnrichmentCache.shared.clear()
@@ -2689,6 +2696,10 @@ public final class AppModel: ObservableObject {
         LibrarySnapshotStore.clear()
         PlaylistRowsCacheStore.clear()
         StreamingMediaDiskCache.shared.clear()
+        MusicBrainzCacheStore.clearAll()
+        // Track lists have no expiry of their own, so a user-initiated clear is the only thing
+        // that ever removes them.
+        AcquisitionTrackListCache.clearAll()
         clearInMemoryPlaylistRowsCache()
         await ArtistEnrichmentCache.shared.clear()
         await AlbumDetailArtistCatalogCache.shared.clear()
@@ -4920,6 +4931,83 @@ public final class AppModel: ObservableObject {
             showTransientToast(message)
         }
         return result
+    }
+
+    // MARK: Bulk requests ("Request Missing")
+
+    /// Progress of an in-flight bulk request, for the Stop affordance that replaces the action.
+    struct BulkAcquisitionProgress: Equatable {
+        var placed: Int
+        var total: Int
+    }
+
+    /// Non-nil while a bulk request is placing requests. Lives here rather than on the page's
+    /// view model **because the run outlives the page**: a 300-release run takes many minutes,
+    /// the user will navigate away long before it finishes, and a run that silently died on Back
+    /// having placed 40 of 300 requests would be worse than not offering the action at all.
+    @Published private(set) var bulkAcquisitionProgress: BulkAcquisitionProgress?
+    private var bulkAcquisitionTask: Task<Void, Never>?
+
+    /// Places every request in `requests`, one at a time, and reports the outcome once.
+    ///
+    /// Deliberately **sequential**. Each Lidarr request costs a catalog lookup, an add, a monitor
+    /// write and a search — measured at 10 HTTP calls per new album — so firing 300 together
+    /// would be the app deciding to load-test somebody's server. Sequential is also what makes
+    /// Stop mean something: the request in flight finishes and nothing after it is sent.
+    ///
+    /// Goes through ``AcquisitionManager/enqueue(_:)`` rather than ``requestAcquisition(_:)`` for
+    /// the same reason ``MusicSubscriptionEngine`` does: the latter toasts once per request, and
+    /// for a 300-release run that is 300 toasts. One summary toast is shown at the end instead.
+    ///
+    /// Non-async so a menu Button can fire it directly. A second call while one is running is
+    /// ignored rather than queued.
+    func startBulkAcquisition(_ requests: [AcquisitionRequest]) {
+        guard bulkAcquisitionTask == nil, !requests.isEmpty else { return }
+        bulkAcquisitionProgress = BulkAcquisitionProgress(placed: 0, total: requests.count)
+        bulkAcquisitionTask = Task { [weak self] in
+            await self?.runBulkAcquisition(requests)
+            self?.bulkAcquisitionProgress = nil
+            self?.bulkAcquisitionTask = nil
+        }
+    }
+
+    /// Stops an in-flight bulk request after the one currently being placed.
+    func cancelBulkAcquisition() {
+        bulkAcquisitionTask?.cancel()
+    }
+
+    private func runBulkAcquisition(_ requests: [AcquisitionRequest]) async {
+        var placed = 0
+        var failed = 0
+        var stopped = false
+        for request in requests {
+            if Task.isCancelled { stopped = true; break }
+            switch await acquisition.enqueue(request) {
+            case .started, .alreadyActive:
+                placed += 1
+            case .failed:
+                failed += 1
+            case .notConfigured:
+                showTransientToast("Set up a download plugin in Settings")
+                return
+            }
+            bulkAcquisitionProgress = BulkAcquisitionProgress(placed: placed + failed, total: requests.count)
+        }
+        showTransientToast(Self.bulkAcquisitionSummary(
+            placed: placed, failed: failed, total: requests.count, stopped: stopped
+        ))
+    }
+
+    /// One sentence covering every way the run can end, rather than a cheerful count that is
+    /// wrong when half of it failed.
+    static func bulkAcquisitionSummary(placed: Int, failed: Int, total: Int, stopped: Bool) -> String {
+        let noun = placed == 1 ? "release" : "releases"
+        if stopped {
+            return placed == 0 ? "Stopped — nothing requested" : "Stopped after requesting \(placed) \(noun)"
+        }
+        if failed == 0 { return "Requested \(placed) \(noun)" }
+        if placed == 0 { return "Couldn’t request any of the \(total) releases" }
+        return "Requested \(placed) of \(total) — \(failed) failed"
     }
 
     /// Albums on the connected server credited to `name` (normalized-artist match).
