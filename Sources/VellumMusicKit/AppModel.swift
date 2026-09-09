@@ -168,11 +168,19 @@ public final class AppModel: ObservableObject {
     /// active at trigger time consumes the push (tab bar stays visible during the destination).
     @Published var presentedDeepLink: NowPlayingDeepLink? = nil
     @Published var deepLinkTab: AppTab? = nil
+    /// Incremented to ask ``RootView`` to raise the full-screen Now Playing cover.
+    ///
+    /// A counter rather than a `Bool` because the request is an *event*: the cover's own
+    /// presentation state lives in `RootView`, and the user can dismiss it without telling
+    /// AppModel. A flag would have to be reset by whoever consumed it and would go stale the
+    /// first time a second request arrived while the first was still true.
+    ///
+    /// Raised by the lock-screen / home-screen Now Playing widget (``handleWidgetDeepLink``),
+    /// and by ``DebugUIRemote`` in DEBUG builds.
+    @Published var openNowPlayingRequests = 0
 #if DEBUG
     /// Incremented by ``DebugUIRemote`` to pop the active tab's stack — see that file.
     @Published var debugPopRequests = 0
-    /// Incremented by ``DebugUIRemote`` to open the full-screen Now Playing cover.
-    @Published var debugOpenPlayerRequests = 0
 #endif
 
     /// Scroll signal consumed by an already-visible ``ServerPlaylistDetailView`` so "Go to Playlist"
@@ -2634,6 +2642,14 @@ public final class AppModel: ObservableObject {
             } else {
                 selectedTab = .home
             }
+        case "nowplaying":
+            // The Now Playing widget is about what is playing, so its tap asks for the player.
+            // No id is compared: the widget may be a refresh behind, but the user tapped
+            // "what's playing", and the answer to that is whatever is playing now.
+            //
+            // `RootView` ignores the request when nothing is loaded, so a tap on a stale widget
+            // after playback ended still just opens the app rather than raising a blank cover.
+            openNowPlayingRequests += 1
         case "track" where !itemId.isEmpty:
             selectedTab = .home
         default:

@@ -158,7 +158,7 @@ enum DebugUIRemote {
                 try? await app.player.playAlbum(library: app.activeLibrary, tracks: [track], startIndex: 0)
             }
         case "com.vellum.debug.openPlayer":
-            app.debugOpenPlayerRequests += 1
+            app.openNowPlayingRequests += 1
         case "com.vellum.debug.libraryTab":
             app.selectedTab = .library
         case "com.vellum.debug.hangwatch":
