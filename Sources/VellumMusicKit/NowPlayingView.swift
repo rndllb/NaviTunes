@@ -946,6 +946,12 @@ struct NowPlayingView: View {
                     .frame(maxWidth: .infinity, alignment: .top)
                 }
                 .defaultScrollAnchor(.bottom)
+                // A short history doesn't fill the page, and a scroll view that still claims the
+                // gesture when its content fits is what made leaving this section need an upward
+                // scroll first: the downward swipe went into a list with nowhere to go instead of
+                // paging back to Now Playing. `.basedOnSize` hands the gesture to the paging
+                // parent once the content fits, which is exactly the case this went wrong in.
+                .scrollBounceBehavior(.basedOnSize)
                 .overlay(alignment: .top) {
                     let bgColor = player.activeTrack != nil
                         ? backdropPalette.heroSolidBackdropColor
