@@ -287,7 +287,11 @@ struct ArtistPageView: View {
             && (model.isLoadingServerCatalog
                 || model.isLoadingEnrichment
                 || model.isLoadingTopSongs
-                || model.isLoadingDiscography)
+                || model.isLoadingDiscography
+                // Keep the placeholders up while later discography pages are still arriving,
+                // for the same reason `contentState` treats paging as loading: an empty first
+                // page is not an empty artist.
+                || model.isPagingDiscography)
     }
 
     /// Shareable link for the artist — an Apple Music search URL that opens to this artist.
