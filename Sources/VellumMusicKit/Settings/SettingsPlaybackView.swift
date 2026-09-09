@@ -3,7 +3,10 @@ import SwiftUI
 struct SettingsPlaybackView: View {
     @EnvironmentObject private var app: AppModel
     @State private var showResetConfirm = false
-    @AppStorage("streamingDiskCacheEnabled") private var streamingDiskCacheEnabled = false
+    // Matches the registered default in `AppModel.init`. `register(defaults:)` already makes the
+    // stored value true, so this only matters if the two ever disagree — which is exactly the
+    // bug worth not having.
+    @AppStorage("streamingDiskCacheEnabled") private var streamingDiskCacheEnabled = true
 
     private var isDefault: Bool {
         app.wifiStreamBitRate == .none
@@ -23,10 +26,10 @@ struct SettingsPlaybackView: View {
 
     var body: some View {
         List {
+            equalizerSection
             streamingSection
             downloadingSection
             streamCacheSection
-            equalizerSection
             playerControlsSection
             skipIntervalsSection
             remoteControlsSection
@@ -128,7 +131,13 @@ struct SettingsPlaybackView: View {
         } header: {
             Text("Stream Cache")
         } footer: {
-            Text("Replays fully cached streams from disk when available. Required for the equalizer to apply on first play — enabling the EQ turns this on automatically.")
+            // The old copy read "Required for the equalizer to apply on first play — enabling the
+            // EQ turns this on automatically", which described the cache as though it existed to
+            // serve the EQ. It is a streaming feature in its own right: it saves re-downloading a
+            // track you replay. The EQ relationship runs the other way — the EQ needs a local
+            // file, so it depends on this — and stating it as a condition of the cache made the
+            // setting read as EQ-only and easy to leave off.
+            Text("Replays fully cached streams from disk instead of downloading them again. The equalizer needs a cached file to apply on first play, so turning the EQ on enables this too.")
         }
     }
 
