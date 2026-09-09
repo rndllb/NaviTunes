@@ -277,6 +277,12 @@ final class ArtistViewModel: ObservableObject {
             || isLoadingDiscography || isLoadingArtistHeader {
             return .loading
         }
+        // Paging counts as loading. `isLoadingDiscography` goes false once the *first* page
+        // lands, but MusicBrainz reports a release-group total that can run to several pages —
+        // so an artist whose first page contributed no renderable row was declared empty while
+        // the rest were still on their way. The page then said this artist has nothing, and
+        // filled in moments later, which is the "says it doesn't exist before it loads" report.
+        if isPagingDiscography { return .loading }
         // A refusal is not an absence either: nothing was fetched, so "nothing exists" is not a
         // conclusion the page is entitled to draw. It gets the retry affordance too.
         if discographyRefreshFailed || discographyRefreshRefused { return .failed }
