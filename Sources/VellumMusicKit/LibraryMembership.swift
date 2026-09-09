@@ -81,6 +81,26 @@ enum LibraryMembership {
     /// True for names produced by ``magicPlaylistName(backend:serverKey:userKey:)``. Used to
     /// strip the magic playlist out of any user-facing playlist listing even when the
     /// cached id is stale.
+    ///
+    /// **This is load-bearing beyond hiding a row.** The magic playlist's tracks *are* the user's
+    /// library (`AppModel.librarySongIds`). `AppModel.filterOutMagicPlaylist` is what keeps it out
+    /// of `libraryPlaylists`, and `libraryPlaylists` is what feeds `PlaylistEditSheet` — an editor
+    /// whose `removeSelectedRows` commits a multi-row delete to the server with no confirmation
+    /// and no undo. So if this predicate ever stops matching, "edit a playlist" silently becomes
+    /// "delete from your library", through a button that was reviewed on the assumption that it
+    /// could not touch the library. The reasoning that keeps playlist-row removal out of the
+    /// library-confirmation work (T149) rests on this returning true.
+    ///
+    /// `filterOutMagicPlaylist` also matches on the cached id, but that is not a second guard in
+    /// the window that matters: `AppModel.libraryMagicPlaylistId` is nil until
+    /// `refreshLibraryMembership()` resolves, and during that window this name check is the only
+    /// thing standing between the two states.
+    ///
+    /// One known gap, recorded rather than fixed: this matches `__vellum_` only, while
+    /// ``legacyLyraMagicPlaylistNames(backend:serverKey:userKey:baseURLString:)`` shows pre-rebrand
+    /// users can still hold a `__lyra_<hash12>` playlist on the server until the one-time rename
+    /// migration runs. Such a playlist is not matched here. Widen the prefix check before assuming
+    /// this filter is total.
     static func isMagicPlaylistName(_ name: String) -> Bool {
         guard name.hasPrefix("__vellum_") else { return false }
         let suffix = name.dropFirst("__vellum_".count)

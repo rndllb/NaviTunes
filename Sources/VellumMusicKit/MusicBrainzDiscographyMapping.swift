@@ -52,9 +52,21 @@ extension MusicBrainzReleaseGroup {
 }
 
 extension MusicBrainzReleaseGroup {
-    /// Credited artist line for a search row, which is the only place a release group carries
-    /// its own artist. A browsed discography has none — the artist is the thing being browsed.
-    var searchRowArtist: String { artistCredit?.creditLine ?? "" }
+    /// The **primary** credited artist's name for a search row — a name, not a credit line.
+    ///
+    /// This is a matching key, not a label: it keys `seenReleaseKeys` and `serverAlbumsByReleaseKey`
+    /// against the server's own album artist, and it becomes `AcquisitionRequest.artist`. It used
+    /// to be ``searchRowCreditLine``, which is the string `AcquisitionRelease` documents must never
+    /// go here — a two-artist credit matches no server album and is not an artist any lookup can
+    /// resolve. The credit is still rendered; it travels in ``AcquisitionResult/artistCreditLine``.
+    ///
+    /// Falls back to the credit line only when the payload carries no artist object at all, which
+    /// is worse than a name and better than an empty row.
+    var searchRowArtist: String { artistCredit?.primaryArtistName ?? searchRowCreditLine }
+
+    /// The full credited line for a search row ("Rich Brian feat. Charlotte Day Wilson & DAISY
+    /// WORLD"). A browsed discography has none — the artist is the thing being browsed.
+    var searchRowCreditLine: String { artistCredit?.creditLine ?? "" }
 
     /// This search row as an enqueue-able request candidate.
     ///
@@ -93,7 +105,9 @@ extension MusicBrainzSongRow {
         return AcquisitionResult(
             id: recording.id,
             title: recording.title,
-            artists: artist.isEmpty ? [] : [artist],
+            // The primary credited artist, not ``artist`` — which is the credit line and was
+            // being handed to "Go to Artist" as though it were somebody's name.
+            artists: artistName.isEmpty ? [] : [artistName],
             albumName: albumTitle ?? "",
             coverURL: coverArtURL,
             year: recording.releaseYear,
@@ -107,7 +121,10 @@ extension MusicBrainzSongRow {
                 artistMBID: credit?.primaryArtistMBID,
                 releaseGroupMBID: recording.releaseGroupMBID,
                 coverURL: coverArtURL
-            )
+            ),
+            // ``artist`` is the credit line. It is still what the reader sees — it just no longer
+            // pretends to be a name.
+            artistCreditLine: artist
         )
     }
 }

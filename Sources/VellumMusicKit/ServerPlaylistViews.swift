@@ -731,7 +731,6 @@ struct ServerPlaylistDetailView: View {
     @State private var navigateAlbum: AlbumSummary?
     @State private var navigateArtist: ArtistNameNavigation?
     @State private var showPlaylistEditor = false
-    @State private var showDeleteConfirm = false
     @State private var showKillModeIntro = false
     @State private var rowPendingRemoval: PlaylistRowItem?
     @State private var navigationTitleText = ""
@@ -810,6 +809,16 @@ struct ServerPlaylistDetailView: View {
         guard isAlbum, !previewTracks.isEmpty else { return false }
         if isPersonalLibraryAlbum { return showCompleteAlbum }
         return true
+    }
+
+    /// True when album mode has merged rows to draw even though no server row survived the
+    /// filters. A plugin tracklist that matched nothing in the library merges to all-missing
+    /// Request rows, which is a real tracklist and must be drawn.
+    ///
+    /// ``trackRows`` tests the empty state before the merged branch, so without this the view
+    /// renders "No songs" while holding the very list it is refusing to draw.
+    private var hasMergedAlbumTracklistToDraw: Bool {
+        shouldShowMergedAlbumTracklist && !mergedRows.isEmpty
     }
 
     private var shouldLoadAlbumPreviewTracks: Bool {
@@ -1049,23 +1058,13 @@ struct ServerPlaylistDetailView: View {
             .sheet(isPresented: $showPlaylistEditor) {
                 playlistEditorSheet
             }
-            .confirmationDialog(
-                "Delete “\(navigationTitleText.isEmpty ? source.displayName : navigationTitleText)”?",
-                isPresented: $showDeleteConfirm,
-                titleVisibility: .visible,
-            ) {
-                Button("Delete", role: .destructive) {
-                    Task { await deletePlaylist() }
-                }
-                Button("Cancel", role: .cancel) {}
-            }
             .modifier(KillModeIntroAlert(
                 isPresented: $showKillModeIntro,
                 onEnable: { app.toggleKillMode(playlistId: playlist.id) },
             ))
             .modifier(DownloadedAlbumActionPresentation(
                 isPresented: $showDownloadedAlbumActions,
-                itemKind: isAlbum ? .album : .playlist,
+                itemKind: downloadedItemKindForConfirmation,
                 includeDeleteFromLibrary: isAlbum,
                 onRemoveDownload: { removeAllAlbumOfflineDownloads() },
                 onDeleteFromLibrary: { Task { await deleteAlbumFromLibraryAndOffline() } },
@@ -1306,7 +1305,7 @@ struct ServerPlaylistDetailView: View {
                 .padding(.horizontal, 20)
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
-        } else if visible.isEmpty {
+        } else if visible.isEmpty, !hasMergedAlbumTracklistToDraw {
             ContentUnavailableView(
                 "No songs",
                 systemImage: "music.note.list",
@@ -1811,8 +1810,17 @@ struct ServerPlaylistDetailView: View {
         )
 
         Section {
+            // Server-side delete, not a library removal — the shared confirmation says so, and
+            // says how many songs the playlist holds, before it goes for everyone on the server.
             Button("Delete playlist", role: .destructive) {
-                showDeleteConfirm = true
+                app.requestLibraryRemoval(
+                    LibraryRemovalCopy.serverPlaylistDelete(
+                        name: navigationTitleText.isEmpty ? playlist.name : navigationTitleText,
+                        songCount: playlistSongCountForConfirmation
+                    ) {
+                        await deletePlaylist()
+                    }
+                )
             }
         }
         .menuSectionDestructiveTint()
@@ -2291,7 +2299,7 @@ struct ServerPlaylistDetailView: View {
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [row.track]) },
             onRemoveFromPlaylist: removeFromPlaylist,
             onRemoveFromLibrary: app.isSongInLibrary(row.track.id)
-                ? { Task { await app.removeSongFromLibrary(row.track) } } : nil,
+                ? { app.requestRemoveSongFromLibrary(row.track) } : nil,
             onDeleteFromLibrary: { app.beginLibraryTrackDeletion(row.track) },
             canDeleteFromLibrary: app.canDeleteFromLibrary,
             onRemoveDownload: app.offline.downloadedTrackIds.contains(row.track.id)
@@ -2432,6 +2440,28 @@ struct ServerPlaylistDetailView: View {
         } catch {
             app.errorMessage = error.localizedDescription
         }
+    }
+
+    /// Song count for the delete confirmation. Prefers the rows actually loaded here over the
+    /// server's summary count, which can be stale after edits made in this session.
+    private var playlistSongCountForConfirmation: Int? {
+        rows.isEmpty ? playlist.songCount : rows.count
+    }
+
+    /// Names the downloaded-item sheet's subject. On an album that sheet is also the confirmation
+    /// for "Delete from Library", so it carries the album's own song count rather than the
+    /// playlist's — a wrong number here is the "numbers I can't reconcile" failure exactly.
+    private var downloadedItemKindForConfirmation: DownloadedLibraryItemKind {
+        if let album = albumOrNil {
+            return .album(
+                name: album.title,
+                songCount: app.libraryTrackCount(forAlbumId: album.id) ?? album.trackCount
+            )
+        }
+        return .playlist(
+            name: navigationTitleText.isEmpty ? source.displayName : navigationTitleText,
+            songCount: playlistSongCountForConfirmation
+        )
     }
 
     private func deletePlaylist() async {
@@ -2630,7 +2660,7 @@ struct ServerPlaylistDetailView: View {
             if app.isAlbumInLibrary(album.id) {
                 Section {
                     Button(role: .destructive) {
-                        Task { await app.removeAlbumFromLibrary(album) }
+                        app.requestRemoveAlbumFromLibrary(album)
                     } label: {
                         Label("Delete Album from Library", systemImage: "trash")
                     }
@@ -2895,6 +2925,9 @@ private struct PlaylistEditSheet: View {
     @State private var isUploadingCover = false
     @State private var pendingCoverData: Data?
     @State private var coverCropSubject: CoverCropSubject?
+    /// Owned here, not on ``AppModel``: this sheet is presented over the app root, so the
+    /// app-wide removal host cannot raise an alert on top of it.
+    @State private var pendingSelectedRowRemoval: LibraryRemovalRequest?
     /// Presents the photo picker (from the Edit / Choose menu, or directly when the
     /// playlist has no cover yet).
     @State private var showCoverPicker = false
@@ -3003,7 +3036,7 @@ private struct PlaylistEditSheet: View {
                 }
                 ToolbarItem(placement: .bottomBar) {
                     Button {
-                        Task { await removeSelectedRows() }
+                        requestRemoveSelectedRows()
                     } label: {
                         Image(systemName: "trash")
                             .font(.headline.weight(.semibold))
@@ -3040,6 +3073,7 @@ private struct PlaylistEditSheet: View {
                 )
                 .environmentObject(app)
             }
+            .libraryRemovalConfirmation(request: $pendingSelectedRowRemoval)
         }
     }
 
@@ -3287,6 +3321,28 @@ private struct PlaylistEditSheet: View {
             PlaylistRowItem(rowId: "\(prefix)-added-\(start + offset)-\(track.id)", track: track)
         }
         editableRows.append(contentsOf: newRows)
+    }
+
+    /// Gate in front of ``removeSelectedRows()``, and only for the half of it that reaches the
+    /// server.
+    ///
+    /// The `.create` branch is not the same act: nothing is persisted, nothing outside this sheet
+    /// has seen those rows, and re-adding is one tap away in the sheet the user is already in. A
+    /// prompt there would fire on the most routine action in the composer and would train the user
+    /// to dismiss the identically-shaped prompt that the `.edit` branch genuinely needs. So it
+    /// stays silent, deliberately.
+    private func requestRemoveSelectedRows() {
+        guard !selectedRows.isEmpty else { return }
+        guard !isCreate, let playlist else {
+            Task { await removeSelectedRows() }
+            return
+        }
+        pendingSelectedRowRemoval = LibraryRemovalCopy.playlistRows(
+            playlistName: playlist.name,
+            count: selectedRows.count
+        ) {
+            await removeSelectedRows()
+        }
     }
 
     private func removeSelectedRows() async {

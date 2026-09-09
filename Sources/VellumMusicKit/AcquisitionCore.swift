@@ -197,6 +197,18 @@ struct AcquisitionResult: Identifiable, Hashable, Sendable {
     /// artist a separate tap target. Baked into one string, the artist could not be tapped.
     let kindLabel: String?
     let request: AcquisitionRequest
+    /// The full credited line for this item ("Rich Brian feat. Charlotte Day Wilson & DAISY
+    /// WORLD"), when the source reported one.
+    ///
+    /// The same split ``AcquisitionRelease/artistCreditLine`` makes, for the same reason, and it
+    /// is the half that was missing: ``artists`` holds **names**, one per real artist, and is what
+    /// the row navigates by, what library matching compares against, and what the request carries.
+    /// A credit line is a rendering of several artists joined by punctuation — a correct label and
+    /// nobody's name — so putting one in ``artists`` produced an artist page titled with the whole
+    /// string and belonging to no one.
+    ///
+    /// `nil` means the source only ever knew one name, and the label falls back to ``artistLine``.
+    var artistCreditLine: String? = nil
 
     init(
         id: String,
@@ -208,7 +220,8 @@ struct AcquisitionResult: Identifiable, Hashable, Sendable {
         explicit: Bool,
         subtitle: String?,
         kindLabel: String? = nil,
-        request: AcquisitionRequest
+        request: AcquisitionRequest,
+        artistCreditLine: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -220,9 +233,31 @@ struct AcquisitionResult: Identifiable, Hashable, Sendable {
         self.subtitle = subtitle
         self.kindLabel = kindLabel
         self.request = request
+        self.artistCreditLine = artistCreditLine
     }
 
     var artistLine: String { artists.joined(separator: ", ") }
+
+    /// The artist line to put in front of a reader: the full credit when one is known, the names
+    /// otherwise. Never navigate by this — see ``artistCreditLine``.
+    var displayArtistLine: String {
+        if let line = artistCreditLine?.trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty {
+            return line
+        }
+        return artistLine
+    }
+
+    /// The one artist "Go to Artist" should open: the **primary** credit.
+    ///
+    /// Primary rather than a chooser. A featured performer is credited on the record, not the
+    /// author of it, and every other artist affordance in the app — the Now Playing bar, the album
+    /// hero, a song row — already means "the artist this is by". Offering a picker here would make
+    /// this the only surface in the app where tapping an artist asks a question back.
+    var primaryArtistName: String? {
+        artists.first.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap {
+            $0.isEmpty ? nil : $0
+        }
+    }
 }
 
 /// Per-file progress inside a multi-file acquisition.
@@ -509,7 +544,10 @@ struct AcquisitionRelease: Identifiable, Hashable, Sendable {
             // "Single · <artist>" with the artist as its own tap target.
             subtitle: nil,
             kindLabel: releaseKindLabel,
-            request: acquisitionRequest
+            request: acquisitionRequest,
+            // The credit rides across into the row, so the reader still sees everyone on the
+            // record while `artists` stays the one name the row navigates and matches by.
+            artistCreditLine: artistCreditLine
         )
     }
 }

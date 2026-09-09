@@ -345,7 +345,7 @@ struct LibrarySongsView: View {
             onGoToAlbum: { openAlbumDetail(for: track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
             onRemoveFromLibrary: app.isSongInLibrary(track.id)
-                ? { Task { await app.removeSongFromLibrary(track) } } : nil,
+                ? { app.requestRemoveSongFromLibrary(track) } : nil,
             onDeleteFromLibrary: { app.beginLibraryTrackDeletion(track) },
             canDeleteFromLibrary: app.canDeleteFromLibrary,
             onRemoveDownload: app.offline.downloadedTrackIds.contains(track.id)
@@ -700,7 +700,6 @@ struct LibrarySongRow: View, Equatable {
                 onRemoveFromPlaylist: onRemoveFromPlaylist,
                 onRemoveFromLibrary: trailingDeleteSwipeAction,
                 onDeleteFromLibrary: canDeleteFromLibrary ? onDeleteFromLibrary : nil,
-                trailingLibraryDeleteIsDestructive: !confirmsDownloadedDelete,
                 chipMetrics: usesAlbumSwipeChrome ? .albumTrack : nil
             )
     }
@@ -1006,8 +1005,6 @@ extension View {
         onRemoveFromPlaylist: (() -> Void)? = nil,
         onRemoveFromLibrary: (() -> Void)? = nil,
         onDeleteFromLibrary: (() -> Void)? = nil,
-        /// When false, trailing trash only presents a confirmation sheet — avoid `List` row-delete animation.
-        trailingLibraryDeleteIsDestructive: Bool = true,
         chipMetrics: SwipeActionChipMetrics? = nil
     ) -> some View {
         swipeActions(edge: .leading, allowsFullSwipe: true) {
@@ -1045,25 +1042,22 @@ extension View {
                 .tint(chipMetrics?.deleteTint ?? MusicDesign.destructiveAction)
                 .accessibilityLabel("Remove")
             } else if let onRemoveFromLibrary {
-                Group {
-                    if trailingLibraryDeleteIsDestructive {
-                        Button(role: .destructive, action: onRemoveFromLibrary) {
-                            swipeActionIcon("trash", metrics: chipMetrics)
-                        }
-                    } else {
-                        Button(action: onRemoveFromLibrary) {
-                            swipeActionIcon("trash", metrics: chipMetrics)
-                        }
-                    }
+                // No `role: .destructive`, deliberately: the swipe no longer removes anything, it
+                // asks. A destructive role would play `List`'s row-delete animation against a row
+                // that is still there while the confirmation is up (and still there if it's
+                // cancelled). The tint keeps it red.
+                Button(action: onRemoveFromLibrary) {
+                    swipeActionIcon("trash", metrics: chipMetrics)
                 }
                 .tint(chipMetrics?.deleteTint ?? MusicDesign.destructiveAction)
                 .accessibilityLabel("Delete from Library")
             } else if let onDeleteFromLibrary {
-                Button(role: .destructive, action: onDeleteFromLibrary) {
+                // Same reasoning — this one only opens the server-delete confirmation.
+                Button(action: onDeleteFromLibrary) {
                     swipeActionIcon("trash", metrics: chipMetrics)
                 }
                 .tint(chipMetrics?.deleteTint ?? MusicDesign.destructiveAction)
-                .accessibilityLabel("Delete")
+                .accessibilityLabel("Delete File from Server")
             }
         }
     }

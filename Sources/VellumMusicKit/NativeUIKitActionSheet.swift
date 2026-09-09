@@ -3,19 +3,44 @@ import SwiftUI
 import UIKit
 #endif
 
+/// What the downloaded-item sheet is being asked about.
+///
+/// The associated values are not decoration: this sheet is the confirmation for its
+/// "Delete from Library" action, so it has to name the thing and state how many songs go with
+/// it. A title that reads "this album" is exactly the generic are-you-sure that lets a
+/// fourteen-track removal look like a one-track one.
 enum DownloadedLibraryItemKind {
-    case album
-    case song
-    case playlist
+    case album(name: String, songCount: Int?)
+    case song(title: String, artist: String)
+    case playlist(name: String, songCount: Int?)
+    /// A bulk set that is not one album — today, the Favorites screen's "download / library" sheet.
+    case songs(sourceName: String, songCount: Int)
+
+    private static func quoted(_ name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "this item" : "“\(trimmed)”"
+    }
+
+    private static func scale(_ count: Int?) -> String {
+        count.map { " (\(LibraryRemovalCopy.songCount($0)))" } ?? ""
+    }
 
     var confirmationTitle: String {
         switch self {
-        case .album:
-            return "Do you want to remove this album from your downloads or delete it from your library?"
-        case .song:
-            return "Do you want to remove this song from your downloads or delete it from your library?"
-        case .playlist:
-            return "Remove all songs in this playlist from your downloads?"
+        case .album(let name, let songCount):
+            return "\(Self.quoted(name))\(Self.scale(songCount)) — remove the downloads from this "
+                + "device, or remove the album from Your Library?"
+        case .song(let title, let artist):
+            let by = artist.trimmingCharacters(in: .whitespacesAndNewlines)
+            let subject = by.isEmpty ? Self.quoted(title) : "\(Self.quoted(title)) by \(by)"
+            return "\(subject) — remove the download from this device, or remove the song from "
+                + "Your Library?"
+        case .playlist(let name, let songCount):
+            return "Remove the \(songCount.map(LibraryRemovalCopy.songCount) ?? "songs") "
+                + "downloaded from \(Self.quoted(name)) from this device?"
+        case .songs(let sourceName, let songCount):
+            return "\(LibraryRemovalCopy.songCount(songCount)) in \(Self.quoted(sourceName)) — "
+                + "remove the downloads from this device, or remove them from Your Library?"
         }
     }
 }
@@ -24,7 +49,9 @@ enum DownloadedLibraryItemKind {
 /// On current iOS versions a long title is laid out as a centered card by UIKit — no custom chrome.
 struct DownloadedAlbumActionPresentation: ViewModifier {
     @Binding var isPresented: Bool
-    var itemKind: DownloadedLibraryItemKind = .album
+    /// No default: a caller that forgets to say what it is removing would otherwise inherit
+    /// someone else's noun (the Favorites sheet used to describe itself as "this album").
+    let itemKind: DownloadedLibraryItemKind
     var includeDeleteFromLibrary: Bool = true
     let onRemoveDownload: () -> Void
     let onDeleteFromLibrary: () -> Void
@@ -72,7 +99,10 @@ extension View {
                         if !isPresented { track.wrappedValue = nil }
                     }
                 ),
-                itemKind: .song,
+                itemKind: .song(
+                    title: track.wrappedValue?.title ?? "",
+                    artist: track.wrappedValue?.artist ?? ""
+                ),
                 onRemoveDownload: {
                     guard let id = track.wrappedValue?.id else { return }
                     try? offline.remove(trackId: id)
@@ -113,6 +143,11 @@ struct NativeUIAlertActionSheetBridge: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ host: UIViewController, context: Context) {
+        // The coordinator is made once and outlives every re-render, so without this it keeps the
+        // first `self` forever — its title and its action closures. That was survivable while the
+        // title was a constant sentence; now the title names the item being removed, and a stale
+        // one would ask about whatever the user swiped a moment ago.
+        context.coordinator.parent = self
         if isPresented {
             guard context.coordinator.alert == nil else { return }
             Task { @MainActor in

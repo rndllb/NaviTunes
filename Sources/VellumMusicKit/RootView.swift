@@ -237,7 +237,7 @@ private struct MainShellView: View {
                 .environmentObject(app)
         }
         #endif
-        .modifier(LibraryTrackDeletionChrome())
+        .libraryRemovalConfirmationChrome()
         .modifier(LibraryErrorAlertChrome())
         .modifier(NowPlayingFullScreenCoverModifier(
             isPresented: $showNowPlaying,
@@ -282,6 +282,14 @@ private struct NowPlayingFullScreenCoverModifier: ViewModifier {
                         // Same occlusion argument as the toast: tap-to-play is reachable
                         // from over-player sheets, so the cover carries its own alert.
                         .musicQueueReplacementChrome()
+                        // And again for removals: the player's ⋯ menu offers "Delete from
+                        // Library", which without this resolves to an alert nobody can see.
+                        .libraryRemovalConfirmationChrome()
+                        // And once more for `errorMessage`. The runaway-skip guard stops
+                        // playback and explains why through this alert, and the moment it is
+                        // most likely to fire is while the user is watching the player, which
+                        // is exactly when the root copy is occluded.
+                        .modifier(LibraryErrorAlertChrome())
                         // Injected **outermost**, and every one of them, because a
                         // `UIHostingController` inherits no SwiftUI environment. Under
                         // `fullScreenCover` the cover picked these up from the shell's
@@ -401,43 +409,6 @@ private struct LibraryErrorAlertChrome: ViewModifier {
                     Text(app.errorMessage ?? "")
                 },
             )
-    }
-}
-
-private struct LibraryTrackDeletionChrome: ViewModifier {
-    @EnvironmentObject private var app: AppModel
-
-    func body(content: Content) -> some View {
-        content
-            .alert(
-                confirmationTitle,
-                isPresented: Binding(
-                    get: { app.libraryTrackPendingDeletion != nil },
-                    set: { newValue in
-                        if !newValue { app.cancelLibraryTrackDeletion() }
-                    },
-                ),
-                actions: {
-                    Button("Delete from Library", role: .destructive) {
-                        Task { await app.confirmLibraryTrackDeletion() }
-                    }
-                    Button("Cancel", role: .cancel) {
-                        app.cancelLibraryTrackDeletion()
-                    }
-                },
-                message: {
-                    Text(
-                        "This removes the track from your media library on the server. Depending on server settings, the file on disk may be deleted as well.",
-                    )
-                },
-            )
-    }
-
-    private var confirmationTitle: String {
-        guard let t = app.libraryTrackPendingDeletion else {
-            return "Delete from library?"
-        }
-        return "Delete \"\(t.title)\" from your library?"
     }
 }
 

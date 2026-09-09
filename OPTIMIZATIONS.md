@@ -2775,3 +2775,334 @@ Album menu as it now reads: Download Album / Add Album to Library / **Favorite**
 
 Verified: `xcodebuild` on the workspace against the iOS Simulator destination, BUILD SUCCEEDED. Not
 committed and not installed to a device.
+
+---
+
+- [2026-09-03 17:05] **T148 — a credit line was being used as an artist name for navigation. It was
+never a new navigation; it was a new *source* feeding an old one.**
+
+**The path, named.** Discover search → a request row → tapping the artist on the row's second line.
+`DiscoverySearchView.swift:1509` read `result.artists.first` as a name and `:1525` handed it to
+`SearchNavTarget.namedArtist(...)`. For the reported track — Rich Brian's "Is It?" — that string is
+`"Rich Brian feat. Charlotte Day Wilson & DAISY WORLD"`, so the push was
+`ArtistPageView(input: .named("Rich Brian feat. Charlotte Day Wilson & DAISY WORLD"))`. That is the
+whole reported symptom: the page title is `ArtistPageInput.displayName`, which for `.named` is the
+string it was given, and nothing resolves it, because no artist is called that.
+
+**Which change introduced it, plainly: commit `9579592`.** The navigation call at `:1525` is
+*older* than that commit and is byte-identical in `9579592^`. What changed is what flows into it.
+Before `9579592` the tree contained **no MusicBrainz code at all** (`git ls-tree 9579592^` →
+zero `MusicBrainz*` files; zero `MusicBrainz` references in `DiscoverySearchView.swift`), so the
+only producer of `AcquisitionResult.artists` was a request plugin, which reports one artist name.
+`9579592` added `MusicBrainzSongRow.artist` (`MusicBrainzSearchFeed.swift:49`) and
+`MusicBrainzReleaseGroup.searchRowArtist` (`MusicBrainzDiscographyMapping.swift:57`), both of them
+`artistCredit?.creditLine`, and routed both into that same `artists` array. A field documented as a
+name started carrying a label, and every reader of it inherited the bug without being edited.
+
+**The other render sites, checked rather than assumed.** Three places were supposed to have the
+`displayArtist` / `navigationArtist` split. Only one of the three actually renders a credit today,
+and it is not the one that got the treatment:
+
+| Site | Renders the credit? | Navigates by | Verdict |
+|---|---|---|---|
+| `DiscoverySearchView.swift:1509` request row subtitle | yes | `namedArtist(credit line)` | **the defect** — fixed |
+| `DiscoverySearchView.swift:2305` `AcquireResultDetailView` artist line | yes | MBID, but `name:` was the credit line | **half-broken** — right destination, page *titled* with the credit line; fixed |
+| `BrowseAlbumDetailView.swift:23` `artistCredit` | **no** | name (`navigationArtist`) | **inert** — see below |
+
+`BrowseAlbumDetailView.artistCredit` is the parameter that got the careful split, and **nothing in
+the tree passes it**: `grep -rn 'artistCredit:' Sources` returns its own declaration and two
+MusicBrainz model fields, and no call site. `AcquisitionRelease.displayArtistLine`
+(`AcquisitionCore.swift:432`) had no reader either — `asSearchResult` used `artist` instead. So the
+album screen never displayed a credit and never could; the split there is correct and unreached.
+Reported, not wired, because wiring it changes what the album page *shows*, which is not what T148
+asked for.
+
+`AcquireResultDetailView`'s guard is worth naming separately, because it was written to prevent
+exactly this and did not fire. It read `guard result.artists.count == 1` — "only navigate on a
+single credited artist". Against a MusicBrainz row a three-artist credit arrives as **one array
+element**, so the count is 1 and the guard waves it through. Counting names cannot tell a
+collaboration from a solo release once the names have already been joined into a string.
+
+**Primary, not a chooser — stated because it was asked.** "Go to Artist" opens the **primary**
+credit. A featured performer is credited on the record, not the author of it, and every other
+artist affordance in the app already means "the artist this is by" (the Now Playing bar, the album
+hero, a song row). A picker here would make this the one surface in the app where tapping an artist
+asks a question back.
+
+**And by id.** `SearchNavTarget.primaryArtist(of:)` prefers `request.artistMBID` — the primary
+credit's own MBID, which the row already carries — and falls back to a name only for a plugin row
+that never had an id. Resolving `"Rich Brian"` by name would have swapped one wrong-artist bug for
+the one T136/T139 spent the afternoon removing.
+
+**The fix restores the invariant `AcquisitionRelease` already documented for itself:** `artists`
+holds names and is what gets navigated, matched and requested; the credit line rides alongside in a
+new `AcquisitionResult.artistCreditLine` and is what gets *rendered*. `displayArtistLine` is the
+label, `primaryArtistName` is the destination, and the proof asserts the two are different strings
+so a later tidy-up cannot collapse them back.
+
+Two consequences beyond the report, from the same root and fixed by the same change:
+
+- `MusicBrainzReleaseGroup.searchRowArtist` fed `AcquisitionRequest.artist` for MusicBrainz album
+  rows — the exact string `AcquisitionRelease.artistCreditLine`'s own doc comment says must never
+  go there ("would … make the request backend report the artist as unknown"). It is now the primary
+  name.
+- The same string keyed `seenReleaseKeys` / `serverAlbumsByReleaseKey` against the server's *album
+  artist*, so a MusicBrainz row for a collaboration could never dedupe against the server's own copy
+  of it. Keying on the primary name lets it.
+
+`MusicBrainzSongRow.artist` deliberately stays the credit line: its two remaining readers
+(`DiscoverySearchView.swift:487,494`, `MusicBrainzSearchFeed.swift:325`) match it against a server
+*track*'s artist tag, which is commonly the full credit, and neither navigates.
+
+**Proved on the reported track, against the live payload.** `docs/verification/t148-is-it-recording.json`
+is the real MusicBrainz response for recording `61694497-…` ("Is It?", credited to three artists);
+`docs/verification/t148-credit-line-nav-proof.swift` drives `creditLine` / `primaryArtistName` /
+`primaryArtistMBID` and both navigation expressions extracted verbatim from the shipping source. The
+BEFORE checks are asserted as a **reproduction** — they pass when the bug is present — and the AFTER
+checks assert the fix. Output in `docs/verification/t148-credit-line-nav.log`:
+
+    credit line as rendered: "Rich Brian feat. Charlotte Day Wilson & DAISY WORLD"
+    primary credit:          "Rich Brian" (49d67664-6962-4f69-adc4-f52208c78dd2)
+    BEFORE  reproduced: the page is titled with the whole credit line
+    BEFORE  reproduced: the destination is a name lookup, so it resolves to nothing
+    AFTER   the row still shows everyone on the record
+    AFTER   the artist page is titled with a person's name  -> "Rich Brian"
+    AFTER   the destination is an identity  -> MBID 49d67664-6962-4f69-adc4-f52208c78dd2
+    VERDICT: PASS
+
+**Not reproduced end-to-end on the reporter's own library, and this is the honest limit.** The track
+is not on the demo server this tree can reach (`demo.navidrome.org`), so the chain above is proved
+from the real MusicBrainz payload through the shipping expressions rather than from a screenshot.
+One detail of the report is explained by the reporter's own server rather than by this code: an
+artist page for a name nobody has still shows **one top song** when a completed scrobble carries
+that same string (`ArtistViewModel.scrobbleTopSongs` matches `normalize(scrobble.artist)` against
+the page's display name), which is consistent with a file tagged with the full credit.
+
+**Flagged, then taken on a separate instruction — T136 Site 1.** `DiscoverySearchView.swift:1327`,
+the server song row's "Go to Artist", was navigating `namedArtist(track.artist)` with
+`track.artistId` sitting in scope. A different defect from T148 — a server tag, not a credit line —
+so it was reported and left. It was then asked for explicitly and applied verbatim from
+`docs/verification/t136-discoverysearchview-handover.md`, which is now marked CLOSED: Site 1
+applied, Site 2 **superseded** by T148's `SearchNavTarget.primaryArtist(of:)` and marked
+do-not-paste, because pasting it would pass the credit line as the destination's `name:` and
+reintroduce the wrongly-titled artist page this entry is about.
+
+The handover's own post-apply criterion was run rather than asserted:
+`grep -n "SearchNavTarget.namedArtist" Sources/VellumMusicKit/DiscoverySearchView.swift` returns
+four occurrences, every one of them the fallback branch of an id check — `:62`
+(`primaryArtist(of:)`, no `request.artistMBID`), `:266` (`NamedArtistMatch.navTarget`, no
+MusicBrainz hit), `:1336` (Site 1, no `track.artistId`), `:2023` (recent-search rows, no recovered
+MBID and off-server).
+
+Verified: `xcodebuild` on the workspace against the iOS Simulator destination, BUILD SUCCEEDED, no
+errors and no warnings in any touched file. **Joint green, not a clean-room result** — the tree
+carried twelve other modified files and two untracked additions from terminals 8 and 12 at build
+time, including edits inside `DiscoverySearchView.swift` itself (`requestRemoveSongFromLibrary` /
+`LibraryRemovalConfirmation.swift`), so this compiled their uncommitted work alongside mine. An
+earlier run in the same session failed on `ServerPlaylistViews.swift:1048` with a type-checker
+timeout in a file this work never opened, and passed on the incremental rerun. Not committed, index
+untouched, not installed to a device.
+
+## T162 — a song that cannot be played is skipped, and the guard is the feature
+
+The ask was auto-skip. The part that took the work is the part that stops it: three tracks failing
+in a row now halts playback and says which of the two things went wrong, because the failure
+reported on the night this was raised was a **server outage**, and an auto-skipper without a guard
+would have turned that outage into a queue emptying itself in silence.
+
+**The failure modes, enumerated before anything was written.** Everything funnels through
+`startCurrentItem` (`PlaybackEngine.swift:2355`), which builds a candidate ladder — offline copy,
+committed stream-cache file, then every stream URL the client can spell — and only gives up when
+each rung has failed (`:2413-2432`, throw at `:2451`). Six shapes reach it:
+
+1. **Missing on the server.** A track id that died in a rescan, or a file deleted underneath the
+   library. Item goes `.failed` at `:2270`. There is already a dedicated recovery in front of this
+   one — `recoverStaleTrackOnFailure` (`:2438`) remaps swapped ids — so this bucket is what is left
+   after that fails. Permanent.
+2. **Undecodable container or corrupt bytes.** Two different shapes, and only one of them looks
+   like an error. The item can go `.failed` with `NSOSStatusErrorDomain` (`isUnreadableStreamCacheError`,
+   `:2430`), **or** it can go `.readyToPlay` and then simply never produce audio — caught by
+   `playbackFailedAfterReady` (`:2285`), whose caller previously flattened the whole case into a bare
+   `URLError(.cannotParseResponse)` at `:2427`. That flattening is why an outage and a bad file were
+   indistinguishable downstream. Permanent.
+3. **Network failure.** No route, DNS, refused connection, connection lost mid-handshake. Arrives
+   either as `.failed` or as the ready-timeout at `:2279`. Transient.
+4. **HTTP error status.** 404, 401/403 after a token expires, 5xx from a sick server.
+   `NSURLErrorDomain` collapses *all* of these into one `.badServerResponse`, so a dead track and a
+   dead server are the same error object at this layer. Split by reading
+   `AVPlayerItem.errorLog()` — see below.
+5. **Truncated / poisoned stream-cache file.** Candidate injected at `:2383`; already evicted on
+   decode failure at `:2430`. Permanent for that rung, recoverable from the network.
+6. **Gapless promotion onto a staged item that went bad.** `promoteToEnqueuedNext:3120`. This one
+   **has no candidate ladder at all** — the item was staged while the previous track played and is
+   the only thing ever tried — so it is the single path where an ordinary blip reaches the policy
+   with nothing behind it. Handled explicitly.
+
+A seventh, adjacent: `AVPlayerItemFailedToPlayToEndTime` mid-song (`:2914`) routes into
+`handleEnded`, whose spurious-end recovery reloads in place once and then advances. That is the
+exact shape a server dying mid-playback takes, and it feeds the advance path that now counts.
+
+**Transient vs permanent, and how the code tells them apart.** `PlaybackFailurePolicy.classify`
+(new file, `PlaybackFailurePolicy.swift`) unwraps `NSUnderlyingErrorKey` innermost-first, because
+AVFoundation almost always hands over an `AVFoundationErrorDomain` wrapper with the real cause two
+or three levels down; reading only the top-level error puts everything in one bucket. Network
+`URLError`s, 5xx, 408/429 and anything unrecognised are **transient** and earn one reload after a
+1.2 s backoff. `NSOSStatusErrorDomain`, decode/parse `AVError`s, 4xx and missing files are
+**permanent** and are given up on immediately — re-requesting bytes a decoder already rejected is
+theatre that costs the listener another load timeout.
+
+**The HTTP status is doing real work here, not decoration.** `AVPlayerItem.errorLog()` carries
+`errorStatusCode`, and it is the only thing in the system that separates a 404 (this track is gone,
+skip it) from a 503 (the server is sick, retry it) — `URLError` gives both the same code. It is
+captured at the two places a load actually dies (`:2271`, `:2565`) and passed into the classifier.
+Unrecognised errors are deliberately treated as transient: a wrong retry costs about a second, a
+wrong skip silently loses a song the user asked for.
+
+**The guard. Threshold is three consecutive tracks given up on** — retries do not count, so three
+means three songs, not three attempts. Two was rejected because two dead files next to each other
+is ordinary in a real library (a partial import, one bad album side) and halting on those would
+read as the app being broken; three in a row is not a coincidence. When it trips, playback stops
+where it is, the queue is left intact, and `errorMessage` raises the app's existing alert with one
+of two texts chosen by majority vote over the streak's causes:
+
+- server-side — *"Playback stopped: 3 songs in a row couldn't be loaded from your server. This is a
+  connection problem, not an empty playlist — the songs are still there. Check that the server is
+  running and reachable, then press play again."*
+- otherwise — *"…3 songs in a row couldn't be played. They're either missing from the server or in a
+  format iPhone can't decode. The rest of the queue is untouched…"*
+
+Majority rather than "any", so one dead file inside an outage cannot flip the diagnosis away from
+the outage, and one blip inside a run of bad files cannot flip it toward one. The counter clears on
+any track that reaches confirmed playback and on every deliberate transport action, so three unlucky
+tracks spread across an hour of good listening never add up to a halt.
+
+**Alert, not toast, and that required a second change.** The per-skip notice is a transient toast
+("Skipped “Title” — the file is missing on the server"), which is right: the queue is still playing
+and nothing is blocked. The halt is not that. A 1.8 s message that disappears is precisely how "my
+server is down" gets mistaken for "this playlist is empty", so it goes through `errorMessage`. But
+`LibraryErrorAlertChrome` was applied only at the root of `RootView`, and the Now Playing cover
+occludes the root overlay — the same occlusion the toast and two other alerts already carry
+duplicates for, each with a comment saying so. The halt is *most* likely to fire while the user is
+watching the player, so the cover now carries its own copy too (`RootView.swift`, alongside
+`.musicQueueReplacementChrome()` / `.libraryRemovalConfirmationChrome()`).
+
+**One thing the auto-skip deliberately does not do: it never calls `skipNext()`.** That fires
+`onTrackSkipped`, which is Kill Mode's "the user rejected this song, mark it for removal" signal. A
+track the server could not serve must never be marked for deletion on the user's behalf, so the
+skip moves `currentIndex` directly (`autoSkipIndex():1764`, which also refuses to honour repeat-one
+— `nextAdvanceIndex()` returns the *current* index there, which would reload the failed track
+forever).
+
+**Opus: ruled out as a cause here, with evidence.** The historical finding was real but was about a
+**setting**, not this library's files: commit `55306e3` removed `.opus`/`.ogg` from
+`StreamFormatOption` and `.opus` from `DownloadFormatOption` because the app could be told to *ask*
+the server for a format AVFoundation cannot decode. That is gone, and downloads that arrive in one
+of those containers are rejected at download time with an actionable message
+(`OfflineDownloadManager.swift:708-712`). On the **streaming** path an Opus original cannot strand
+playback either, because the candidate ladder already transcodes away from it: Navidrome offers
+raw → mp3 → aac (`NavidromeClient.swift:561-577`) and Jellyfin maps `opus` straight to an mp3
+container before adding mp3 / universal-mp3 / m4a / aac / universal-aac fallbacks
+(`JellyfinMusicClient.swift:637-680`). `startCurrentItem` walks all of them. **Two residual cases
+are not ruled out and are stated rather than dismissed:** a legacy `.opus` download saved before
+`55306e3`'s guard is still candidate #0 and becomes a hard failure if the server is also
+unreachable (nothing to fall back to); and a server that cannot transcode — no ffmpeg, or
+transcoding disabled — returns the same Opus bytes on every rung. Neither was verifiable from here:
+the library lives on a server this session has no credentials for, and the simulator container
+(`com.randll.vellum.plist`) holds only equaliser keys, no server or format state. Both are
+classified `.undecodable` and skipped rather than stalled, which is the correct behaviour whichever
+way they resolve.
+
+**Timing, honestly.** With a host that refuses connections — the actual outage shape — each rung
+fails fast and the guard trips in seconds. With a host that accepts TCP and never answers, each rung
+burns up to the 22 s ready budget and the retry doubles it, so the halt can be a minute or more out.
+That is the safe direction to err given the brief ("must not tear through the queue"), but it is a
+real cost and it is not hidden: each skip toasts as it happens.
+
+Verified: `xcodebuild` on the workspace, `generic/platform=iOS Simulator`, **BUILD SUCCEEDED**, no
+errors. Build ran with `-derivedDataPath /tmp/t162-scratch/DerivedData` **and**
+`MODULE_CACHE_DIR=/tmp/t162-scratch/ModuleCache`; the shared
+`~/Library/Developer/Xcode/DerivedData/ModuleCache.noindex` was fingerprinted before and after
+(mtime `1788470951`, 777 files, 349 MB — identical both times) and nothing in DerivedData was
+cleaned, deleted or written. Note for the next agent: **`-clang-module-cache-path` is not an
+xcodebuild flag** — passing it makes xcodebuild print its usage and exit 0 *without building*, which
+is exactly how an agent silently gets no isolation. `MODULE_CACHE_DIR` is the xcodebuild spelling
+and it does work (174 MB / 353 files landed in the scratch cache on the first run).
+`docs/verification/t162-failure-policy-proof.swift` compiles **against the shipping
+`PlaybackFailurePolicy.swift`** rather than a copy of it, so it cannot drift: 40 assertions covering
+classification, the 404-vs-503 split, the majority-vote diagnosis and the streak lifecycle, ALL
+PASSED. **Joint green, not a clean-room result** — the tree carried 29 other modified/untracked
+files from the day's other terminals at build time. `ServerPlaylistViews.swift` was not opened.
+Not committed, index untouched, not installed to a device.
+
+## T189 — Wrong album cover + owned tracks shown "Not in library" (diagnosis only, 2026-09-06)
+
+Shinedown "Threat To Survival" showed the "Us and Them" cover, and three owned tracks
+(Asking for It, State of My Head, Outcast) were listed "Not in library" while Cut The Cord
+was listed as owned. No code was changed for this investigation.
+
+What the server actually holds. Navidrome album 1lhSZb8QhQE6LUYXHQPYJk has 19 media_file rows,
+but 8 of them are missing=1 — the files are gone from disk. The album is stitched from three
+folders: lidarr/Shinedown/Threat to Survival (2015) (11 FLACs, present, and the only one of the
+three that holds cover/folder/discart images), plus downtify/ and fills/Shinedown/ (8 loose mp3s,
+all now deleted). Note that album.missing=0 is an album-level flag and does NOT mean "no missing
+tracks"; the per-file column is where the 8 show up. Navidrome's own art for this album resolves
+to the correct cover.jpg, so the server is not at fault.
+
+Where the wrong values come from. Both symptoms are produced by the same store — the offline
+download manifest — which outranks the server on both the image and the tracklist, keyed by album id:
+
+- Artwork: AppModel.swift:1476, the first line of resolvedArtworkURL(for album:), returns
+  offline.localArtworkURL(forAlbumId: album.id) before any Navidrome getCoverArt URL is built.
+  The album page hero reads exactly that (ServerPlaylistViews.swift:688).
+- Tracklist: ServerPlaylistViews.swift:2383-2388 replaces the server tracklist wholesale with
+  offline.cachedTracks(forAlbumId:) when that set is non-empty and fully downloaded. The server
+  fetch at :2390 is then never reached. Any catalog track without a matching row renders through
+  missingAlbumRow (:2196) with the literal subtitle "Not in library" (:2210).
+
+So a single offline-downloaded track for this album (Cut The Cord) is enough to make the page show
+one owned row and mark every other track missing, and to pin the hero image to whatever artwork was
+captured beside that download. That matches the screenshot exactly.
+
+Not proven. Which image bytes are in the offline manifest cannot be read without a device build,
+and the 8 deleted mp3s no longer exist to inspect, so "why specifically Us and Them" is inference,
+not evidence. What would settle it: read the offline manifest and its artwork folder off the device.
+
+Scale. 6,234 of 11,601 albums contain at least one missing media_file, so the stitched-album
+condition behind this is library-wide, not specific to Shinedown.
+
+Smallest fix. Treat the offline manifest as a supplement, not a replacement: at
+ServerPlaylistViews.swift:2384 use offline rows only when the server is unreachable, and at
+AppModel.swift:1476 consult offline artwork only after the server-derived cover art id, not before.
+
+## T113 — Can artwork cache keys collide across distinct albums? No. (read-only check, 2026-09-07)
+
+Verdict: no. There are three artwork cache keys in the app and none of them can put one album's
+cover on another album. Nothing was built and no source file was edited for this check.
+
+1. Cover bytes (memory + disk) — ArtworkURLCache.swift:105. The key is the SHA-256 of the request
+   URL, hex-encoded. The URL is first normalized (ArtworkURLCache.swift:113) by dropping only the
+   Subsonic auth params t and s and sorting the rest, so a fresh salt or a different query order
+   still lands on one key. The cover id stays in the key, so two albums have two different
+   preimages, and colliding would require an actual SHA-256 collision. That is the property doing
+   the work: a 256-bit digest over an input that already contains the album's cover id.
+
+2. Decoded images — ArtworkImageDecoder.swift:77. The key is not hashed at all; it is the same
+   normalized URL string with the pixel size appended. It contains the cover id literally, so
+   distinct albums are distinct keys by construction.
+
+3. Backdrop palette — ArtworkDynamicGradient.swift:45. This one is the loosest: it keeps only the
+   URL path plus the identity params (id, coverart, size, tag) and drops scheme, host and port. For
+   Navidrome the path is the same for every cover, so the id is the only discriminator. It is always
+   present, because NavidromeClient.coverArtURL sets it unconditionally (NavidromeClient.swift:1042).
+   Two things are worth knowing anyway: a cover URL carrying no identity params at all would collapse
+   to "path|style" and collide with every other such URL, and because the host is dropped, two
+   different servers sharing a path and id would share a key. Neither is reachable through the
+   current URL builder. And this cache holds a colour palette, not an image, so even a collision
+   here would tint a backdrop wrongly, not show the wrong cover.
+
+Checked with the real ids from the Shinedown case: album al-1lhSZb8QhQE6LUYXHQPYJk (Threat To
+Survival) and al-6PF8WS6aU0NULMmu8KxcdS (Us And Them) produce different keys in every one of the
+three schemes.
+
+So the wrong-cover mechanism is not here. It remains what T189 described: the offline download
+manifest is consulted before the server for both the cover and the tracklist.

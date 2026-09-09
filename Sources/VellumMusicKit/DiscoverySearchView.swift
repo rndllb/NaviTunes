@@ -30,6 +30,39 @@ enum SearchNavTarget: Hashable {
     case acquire(AcquisitionResult)
 }
 
+extension SearchNavTarget {
+    /// Where "go to the artist" should land for a request-candidate row.
+    ///
+    /// One factory, because the row and the detail view it pushes were answering this question
+    /// separately and gave different answers. Both now target the **primary** credited artist, by
+    /// MusicBrainz id.
+    ///
+    /// Two rules, and the second is the whole of T148:
+    ///
+    /// - **The id, not the name.** `request.artistMBID` is the primary credit's own MBID, carried
+    ///   on the row precisely so this tap does not have to search for a string. A name search here
+    ///   is the wrong-artist bug this layer exists to remove; it survives only as the fallback for
+    ///   a plugin row that never had an id.
+    /// - **The name that travels is a name.** ``AcquisitionResult/artists`` holds real artist
+    ///   names; ``AcquisitionResult/displayArtistLine`` holds the credit line. Only the first is
+    ///   ever a destination or a page title. Passing the credit line — which is what happened once
+    ///   MusicBrainz began feeding these rows — titles the artist page "Rich Brian feat. Charlotte
+    ///   Day Wilson & DAISY WORLD", a page that belongs to nobody.
+    ///
+    /// `nil` when there is no navigable artist at all: an empty credit, or "Various Artists",
+    /// where a single artist page is not a meaningful destination. Those rows stay plain text.
+    static func primaryArtist(of result: AcquisitionResult) -> SearchNavTarget? {
+        guard let name = result.primaryArtistName, ArtistNavigation.isTappable(name) else {
+            return nil
+        }
+        if let mbid = result.request.artistMBID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !mbid.isEmpty {
+            return .musicBrainzArtistId(id: mbid, name: name)
+        }
+        return .namedArtist(name)
+    }
+}
+
 /// Colorful genre tile for the Discover idle grid (no heading — tiles only).
 private struct SearchGenreTile: View {
     let title: String
@@ -1291,10 +1324,21 @@ struct DiscoverySearchView: View {
                 navigationPath.append(SearchNavTarget.album(app.albumSummary(for: track)))
             },
             onGoToArtist: ArtistNavigation.isTappable(artist)
-                ? { navigationPath.append(SearchNavTarget.namedArtist(track.artist)) }
+                ? {
+                    // Navigate by the server's artist id when the track carries one. A name is not
+                    // an identity — there are eighteen artists named exactly "Rocket" — so the name
+                    // path is the fallback for rows that genuinely have no id, not the default.
+                    if let artistId = track.artistId, !artistId.isEmpty {
+                        navigationPath.append(SearchNavTarget.artist(
+                            LibraryArtistSummary(id: artistId, name: track.artist, artworkURL: nil)
+                        ))
+                    } else {
+                        navigationPath.append(SearchNavTarget.namedArtist(track.artist))
+                    }
+                }
                 : nil,
             onRemoveFromLibrary: app.isSongInLibrary(track.id)
-                ? { Task { await app.removeSongFromLibrary(track) } }
+                ? { app.requestRemoveSongFromLibrary(track) }
                 : nil
         )
     }
@@ -1504,25 +1548,38 @@ struct DiscoverySearchView: View {
     /// laid out separately and the artist routes to the artist page, the same as everywhere else
     /// in the app. A plugin-supplied `subtitle` (a quality or source hint) is still rendered
     /// verbatim, because that is not an artist and must not pretend to be tappable.
+    ///
+    /// The label and the destination are two different strings and this row is where that stopped
+    /// being true. Since MusicBrainz began feeding these rows, `artists.first` was a **credit
+    /// line** — "Rich Brian feat. Charlotte Day Wilson & DAISY WORLD" — and navigating by it opened
+    /// an artist page titled with the whole string and belonging to nobody. The line stays on
+    /// screen; the tap goes to the primary artist, by id.
     @ViewBuilder
     private func acquireRowSubtitle(_ result: AcquisitionResult) -> some View {
-        let artist = result.artists.first ?? result.artistLine
+        let label = result.displayArtistLine
         if let subtitle = result.subtitle, !subtitle.isEmpty {
             Text(subtitle)
                 .font(songSubtitleFont)
                 .foregroundStyle(MusicDesign.secondaryLabel)
                 .lineLimit(1)
         } else {
+            let target = SearchNavTarget.primaryArtist(of: result)
             HStack(spacing: 4) {
                 Text("\(result.kindLabel ?? "Song") ·")
                     .font(songSubtitleFont)
                     .foregroundStyle(MusicDesign.secondaryLabel)
-                ArtistNameButton(
-                    name: artist,
-                    font: songSubtitleFont,
-                    foreground: MusicDesign.secondaryLabel,
-                ) {
-                    navigationPath.append(SearchNavTarget.namedArtist(artist))
+                if let target {
+                    ArtistNameButton(
+                        name: label,
+                        font: songSubtitleFont,
+                        foreground: MusicDesign.secondaryLabel,
+                    ) {
+                        navigationPath.append(target)
+                    }
+                } else {
+                    Text(label)
+                        .font(songSubtitleFont)
+                        .foregroundStyle(MusicDesign.secondaryLabel)
                 }
                 Spacer(minLength: 0)
             }
@@ -2256,28 +2313,18 @@ struct AcquireResultDetailView: View {
     @State private var statusMessage: String?
     @State private var artistTarget: SearchNavTarget?
 
-    private var artistsLine: String { result.artistLine }
+    /// The full credit — everyone on the record — rather than the one name the page navigates by.
+    private var artistsLine: String { result.displayArtistLine }
 
-    /// Where tapping the artist name should go.
+    /// Where tapping the artist line should go: ``SearchNavTarget/primaryArtist(of:)``.
     ///
-    /// The MBID is preferred whenever the row carries one: it names exactly one artist, whereas
-    /// a name has to be looked up and can land on a different act sharing it. The name is the
-    /// fallback for rows that have no id at all.
-    ///
-    /// `nil` means the name is not navigable — an empty credit, or a compilation credited to
-    /// "Various Artists", where a single artist page is not a meaningful destination. Those keep
-    /// rendering as plain text, which is what the tappability gate has always been protecting.
+    /// This used to gate on `result.artists.count == 1`, meaning to refuse to navigate a
+    /// multi-artist release. Against a MusicBrainz row that gate never fired: the credit line
+    /// arrived as one array element, so a three-artist release counted as one artist and its whole
+    /// credit was handed over as the destination's name. Counting names is not how you tell a
+    /// collaboration from a solo release — the credit line is, and it is now carried separately.
     private var artistNavTarget: SearchNavTarget? {
-        // Only navigate on a single credited artist. A multi-artist release has no one page to
-        // land on, and picking the first would be a guess presented as a fact.
-        guard result.artists.count == 1, let name = result.artists.first,
-              ArtistNavigation.isTappable(name)
-        else { return nil }
-        if let mbid = result.request.artistMBID?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !mbid.isEmpty {
-            return .musicBrainzArtistId(id: mbid, name: name)
-        }
-        return .namedArtist(name)
+        SearchNavTarget.primaryArtist(of: result)
     }
 
     private var alreadyInLibrary: Bool {
