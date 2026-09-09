@@ -1916,8 +1916,12 @@ enum NavidromeLyricsParser {
             }
             if isMetadataOnlyLine(s) { continue }
 
-            if let (start, text) = parseSyncedLine(s), !text.isEmpty {
-                synced.append(LyricLine(start: start + globalOffset, text: text))
+            if let (starts, text) = parseSyncedStarts(s), !text.isEmpty {
+                // One rendered line per timestamp — a chorus written once but tagged three times
+                // is sung three times.
+                for start in starts {
+                    synced.append(LyricLine(start: start + globalOffset, text: text))
+                }
             } else if !s.hasPrefix("[") {
                 unsynced.append(s)
             }
@@ -1925,6 +1929,13 @@ enum NavidromeLyricsParser {
 
         if synced.lyricsAppearSynced {
             return ParseResult(lines: synced.sorted { $0.start < $1.start }, syncedLineCount: synced.count)
+        }
+
+        // Too few distinct timestamps to drive a highlight, but the words are still the lyrics.
+        // Returning nothing here meant a file whose only timed line was its sole line rendered
+        // as no lyrics at all. Only when there is genuinely no plain text to prefer.
+        if unsynced.isEmpty, !synced.isEmpty {
+            return ParseResult(lines: synced.sorted { $0.start < $1.start }, syncedLineCount: 0)
         }
 
         // Plain unsynced lyrics — do not invent timestamps (that desyncs from playback).
@@ -1951,21 +1962,33 @@ enum NavidromeLyricsParser {
     }
 
     /// Supports `[mm:ss]`, `[mm:ss.xx]`, `[mm:ss.xxx]`, `[h:mm:ss(.xx)]`, and repeated leading tags.
-    private static func parseSyncedLine(_ line: String) -> (TimeInterval, String)? {
+    /// Every leading timestamp on the line, in file order, with the lyric text.
+    ///
+    /// LRC lets one line carry several leading tags — `[00:10][01:40][03:10]Chorus` means the
+    /// line is sung at each of them, which is how repeated choruses are normally written. This
+    /// used to keep only the first, so every later occurrence was dropped: the highlight ran out
+    /// of lines to advance to and stopped tracking the song partway through.
+    private static func parseSyncedStarts(_ line: String) -> ([TimeInterval], String)? {
         var work = line
-        var firstStart: TimeInterval?
+        var starts: [TimeInterval] = []
         while work.hasPrefix("[") {
             guard let end = work.firstIndex(of: "]") else { break }
             let tag = String(work[work.index(after: work.startIndex)..<end])
             work = String(work[work.index(after: end)...]).trimmingCharacters(in: .whitespaces)
             if let t = parseTimeTag(tag) {
-                if firstStart == nil { firstStart = t }
+                starts.append(t)
             }
         }
-        guard let start = firstStart else { return nil }
+        guard !starts.isEmpty else { return nil }
         let cleaned = cleanInlineTimeTags(work)
         guard !cleaned.isEmpty else { return nil }
-        return (start, cleaned)
+        return (starts, cleaned)
+    }
+
+    /// The line's first timestamp only — for callers that represent a line once.
+    private static func parseSyncedLine(_ line: String) -> (TimeInterval, String)? {
+        guard let (starts, text) = parseSyncedStarts(line), let first = starts.first else { return nil }
+        return (first, text)
     }
 
     /// Navidrome copies LRC ``[offset:±ms]`` verbatim — apply LRC semantics (add offset to line start).
