@@ -458,8 +458,10 @@ public final class AppModel: ObservableObject {
     /// Mirrored from ``MainShellView``'s `showNowPlaying` for add-to-playlist routing.
     var isNowPlayingCoverPresented = false
 
-    /// When non-nil, ``MainShellView`` asks for confirmation before ``deleteTrackFromLibrary(_:)``.
-    @Published var libraryTrackPendingDeletion: Track?
+    /// When non-nil, the app root (and the Now Playing cover) is asking the user to confirm a
+    /// removal. Every path that can take something out of the library funnels through here —
+    /// see ``LibraryRemovalRequest``.
+    @Published var pendingLibraryRemoval: LibraryRemovalRequest?
 
     /// Incremented after destructive library edits so screens reload cached track lists.
     @Published private(set) var libraryCatalogEpoch: UInt = 0
@@ -1143,6 +1145,27 @@ public final class AppModel: ObservableObject {
                 self.showTransientToast(title.isEmpty ? "Couldn't play this track" : "Couldn't play \(title)")
             }
         }
+        // A track the engine gave up on and moved past by itself. Silent auto-skips are
+        // indistinguishable from a bug — and from a *deletion* — so every one of them says what
+        // was skipped and why. Toast, not alert: the queue is still playing, nothing is blocked.
+        player.onTrackAutoSkipped = { [weak self] track, reason in
+            Task { @MainActor in
+                guard let self else { return }
+                let title = track.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                let named = title.isEmpty ? "a song" : "“\(title)”"
+                self.showTransientToast("Skipped \(named) — \(reason.skipClause)")
+            }
+        }
+        // The runaway guard tripped: playback has stopped. This one is deliberately *not* a
+        // toast. A 1.8s message that disappears is exactly how "my server is down" got
+        // mistaken for "this playlist is empty" — the state is persistent, so the message has
+        // to be too. `errorMessage` is the app's existing modal channel (RootView renders it
+        // as an alert, and the Now Playing cover carries its own copy of that chrome).
+        player.onPlaybackHalted = { [weak self] summary in
+            Task { @MainActor in
+                self?.errorMessage = summary.message
+            }
+        }
         installPlaybackQueueAutosave()
     }
 
@@ -1391,7 +1414,7 @@ public final class AppModel: ObservableObject {
         favoriteTrackIds = []
         libraryPlaylists = []
         playlistPickerPayload = nil
-        libraryTrackPendingDeletion = nil
+        pendingLibraryRemoval = nil
         libraryCatalogEpoch = 0
         Task { await AlbumDetailArtistCatalogCache.shared.clear() }
         libraryStatistics = .empty
@@ -1774,19 +1797,70 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - Removal confirmations
+    //
+    // Nothing leaves the library without passing through here. Call sites hand over the thing
+    // being removed and the work to do; ``LibraryRemovalCopy`` writes the question (name +
+    // count + how far it reaches) so no surface can invent its own vaguer wording.
+
+    func requestLibraryRemoval(_ request: LibraryRemovalRequest) {
+        pendingLibraryRemoval = request
+    }
+
+    /// Songs of `albumId` that are actually in the user's library, for the confirmation's count.
+    ///
+    /// Counts what ``removeAlbumFromLibrary(_:)`` would really drop rather than the album's total
+    /// track count, so the number in the dialog is the number that leaves. Falls back to the
+    /// server's track count while the discovery index is still filling in, and to `nil` (the copy
+    /// then says "every song on this album") when we know neither.
+    func libraryTrackCount(forAlbumId albumId: String) -> Int? {
+        let indexed = discoveryLibraryTracks.reduce(into: 0) { total, track in
+            if track.albumId == albumId, librarySongIds.contains(track.id) { total += 1 }
+        }
+        if indexed > 0 { return indexed }
+        if let cached = albumTracksCache[albumId]?.tracks {
+            let inLibrary = cached.filter { librarySongIds.contains($0.id) }.count
+            if inLibrary > 0 { return inLibrary }
+        }
+        return catalogAlbum(id: albumId)?.trackCount
+    }
+
+    /// Confirm, then remove a single song from the user's library.
+    func requestRemoveSongFromLibrary(_ track: Track) {
+        requestLibraryRemoval(
+            LibraryRemovalCopy.song(track) { [weak self] in
+                await self?.removeSongFromLibrary(track)
+            }
+        )
+    }
+
+    /// Confirm, then remove an album and its library songs.
+    func requestRemoveAlbumFromLibrary(_ album: AlbumSummary) {
+        requestLibraryRemoval(
+            LibraryRemovalCopy.album(album, songCount: libraryTrackCount(forAlbumId: album.id)) { [weak self] in
+                await self?.removeAlbumFromLibrary(album)
+            }
+        )
+    }
+
+    /// Confirm, then drop a playlist from the user's library (the playlist itself is untouched).
+    func requestRemovePlaylistFromLibrary(_ playlist: PlaylistSummary) {
+        requestLibraryRemoval(
+            LibraryRemovalCopy.playlist(playlist) { [weak self] in
+                await self?.removePlaylistFromLibrary(playlist)
+            }
+        )
+    }
+
+    /// Confirm, then delete the track's file from the **server** — a different act from every
+    /// other entry point here, and worded as one. Jellyfin admins only (``canDeleteFromLibrary``).
     func beginLibraryTrackDeletion(_ track: Track) {
         guard canDeleteFromLibrary else { return }
-        libraryTrackPendingDeletion = track
-    }
-
-    func cancelLibraryTrackDeletion() {
-        libraryTrackPendingDeletion = nil
-    }
-
-    func confirmLibraryTrackDeletion() async {
-        guard let track = libraryTrackPendingDeletion else { return }
-        libraryTrackPendingDeletion = nil
-        await deleteTrackFromLibrary(track)
+        requestLibraryRemoval(
+            LibraryRemovalCopy.serverTrackDelete(track) { [weak self] in
+                await self?.deleteTrackFromLibrary(track)
+            }
+        )
     }
 
     private func deleteTrackFromLibrary(_ track: Track) async {

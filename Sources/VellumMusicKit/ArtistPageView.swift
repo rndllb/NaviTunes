@@ -1161,7 +1161,7 @@ private struct ArtistTopSongOverflowMenu: View {
                         : nil,
                     onGoToAlbum: { onGoToAlbum(app.albumSummary(for: track)) },
                     onRemoveFromLibrary: app.isSongInLibrary(track.id)
-                        ? { Task { await app.removeSongFromLibrary(track) } }
+                        ? { app.requestRemoveSongFromLibrary(track) }
                         : nil,
                     onDeleteFromLibrary: app.canDeleteFromLibrary
                         ? { app.beginLibraryTrackDeletion(track) }

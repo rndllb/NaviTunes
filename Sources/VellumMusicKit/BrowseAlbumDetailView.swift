@@ -715,7 +715,7 @@ struct BrowseAlbumDetailView: View {
                 }
             },
             onRemoveFromLibrary: app.isSongInLibrary(track.id)
-                ? { Task { await app.removeSongFromLibrary(track) } }
+                ? { app.requestRemoveSongFromLibrary(track) }
                 : nil,
             onRemoveDownload: app.offline.downloadedTrackIds.contains(track.id)
                 ? { try? app.offline.remove(trackId: track.id) } : nil,

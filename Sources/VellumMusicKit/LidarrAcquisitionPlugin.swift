@@ -21,6 +21,7 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
 
     static func resetSessionCaches() async {
         await LidarrArtistListCache.shared.reset()
+        await LidarrSearchCommandLog.shared.reset()
     }
 
     var capabilities: AcquisitionCapabilities {
@@ -236,11 +237,28 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
             return AcquisitionBackendState(phase: .queued, progress: fraction, detail: message)
         }
 
-        let search = await latestAlbumSearchCommand(albumId: albumId)
-        if let search, ["queued", "started", "running"].contains(
-            (AcquisitionHTTP.string(search["status"]) ?? "").lowercased()
-        ) {
-            return AcquisitionBackendState(phase: .searching)
+        let search = await albumSearchCommand(albumId: albumId)
+        if let search {
+            let status = (AcquisitionHTTP.string(search["status"]) ?? "").lowercased()
+            if status == "failed" || status == "aborted" {
+                return AcquisitionBackendState(
+                    phase: .failed,
+                    detail: AcquisitionHTTP.string(search["message"]) ?? "Lidarr's search for this failed.",
+                )
+            }
+            if ["queued", "started", "running"].contains(status) {
+                // "Accepted but not started" is a real and common state on a busy server — the
+                // Bambi request sat in it for over two hours — and it is not the same thing as
+                // searching. Reporting them identically is what let a stalled request look fine.
+                let started = AcquisitionHTTP.date(search["started"]) != nil
+                guard started else {
+                    return AcquisitionBackendState(
+                        phase: .queued,
+                        detail: "Lidarr has this search queued behind its other work.",
+                    )
+                }
+                return AcquisitionBackendState(phase: .searching)
+            }
         }
 
         // Nothing queued and no files. Did the search actually grab anything? A grab with no queue
@@ -289,6 +307,16 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
         return nil
     }
 
+    /// The `AlbumSearch` command for this album — the one **we** fired where we know it, otherwise
+    /// the most recent matching row.
+    private func albumSearchCommand(albumId: Int) async -> [String: Any]? {
+        if let ours = await LidarrSearchCommandLog.shared.commandId(forAlbumId: albumId),
+           let row = (try? await send(path: "command/\(ours)")) as? [String: Any] {
+            return row
+        }
+        return await latestAlbumSearchCommand(albumId: albumId)
+    }
+
     private func latestAlbumSearchCommand(albumId: Int) async -> [String: Any]? {
         guard let data = try? await send(path: "command") else { return nil }
         let rows = (data as? [[String: Any]] ?? []).filter { cmd in
@@ -296,11 +324,15 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
             let ids = (cmd["body"] as? [String: Any])?["albumIds"] as? [Any] ?? []
             return ids.compactMap { AcquisitionHTTP.int($0) }.contains(albumId)
         }
-        return rows.max { lhs, rhs in
-            let l = AcquisitionHTTP.date(lhs["started"]) ?? .distantPast
-            let r = AcquisitionHTTP.date(rhs["started"]) ?? .distantPast
-            return l < r
+        // Order by when Lidarr *took* the command, not when it started running it: a command that
+        // has never started has `started: null`, so sorting on `started` alone sank exactly the
+        // rows this function exists to find — the stalled ones — to `.distantPast`.
+        func ordering(_ cmd: [String: Any]) -> Date {
+            AcquisitionHTTP.date(cmd["started"])
+                ?? AcquisitionHTTP.date(cmd["queued"])
+                ?? .distantPast
         }
+        return rows.max { ordering($0) < ordering($1) }
     }
 
     /// How long a grab with nothing to show for it still counts as "in flight".
@@ -390,8 +422,9 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
             )
         }
         .filter { release in
-            let key = LibraryTrackMatcher.normalize(release.artist)
-            return key == target || key.contains(target) || target.contains(key)
+            // Same rule as `artistNameMatches`, and for the same reason: this list becomes the
+            // "Request Missing" plan, so a loose match here adds another artist's records.
+            LibraryTrackMatcher.normalize(release.artist) == target
         }
     }
 
@@ -649,9 +682,46 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
         }
     }
 
-    private func triggerAlbumSearch(albumIds: [Int]) async throws {
-        guard !albumIds.isEmpty else { return }
-        _ = try await send(path: "command", method: "POST", jsonBody: ["name": "AlbumSearch", "albumIds": albumIds])
+    /// Fires the indexer search and **keeps the command Lidarr hands back**.
+    ///
+    /// This used to be `_ = try await send(...)`. Lidarr answers an `AlbumSearch` POST with the
+    /// command object — an `id`, a `status` and a `trigger` — and throwing that away is what made
+    /// a search that never ran indistinguishable from one that worked. It is not a hypothetical:
+    /// on this server, command **676277** (`AlbumSearch`, `trigger: manual`, the Bambi request)
+    /// was `queued: 2026-09-04T02:31:27Z`, `started: null`, and still queued unstarted more than
+    /// two hours later, behind three long-running searches left over from a Wanted-page
+    /// "Search All Missing". Vellum reported nothing wrong for the whole two hours.
+    ///
+    /// So the id is captured and recorded against the album. `requestState(for:)` then asks about
+    /// **this** command rather than scanning `/command` and guessing which row is ours, which is
+    /// what lets the UI separate "Lidarr is searching" from "Lidarr accepted this and has not
+    /// started it yet". A queue that is backed up is an ordinary condition here, not an error —
+    /// it just has to be reported as itself.
+    @discardableResult
+    private func triggerAlbumSearch(albumIds: [Int]) async throws -> Int? {
+        guard !albumIds.isEmpty else { return nil }
+        let response = try await send(
+            path: "command",
+            method: "POST",
+            jsonBody: ["name": "AlbumSearch", "albumIds": albumIds]
+        )
+        guard let command = response as? [String: Any],
+              let commandId = AcquisitionHTTP.int(command["id"])
+        else {
+            // A 2xx that is not a command object means Lidarr did not take the search. Failing
+            // here is the point: the caller has just proven the album is monitored, so silently
+            // returning would strand a request that is ready to run.
+            throw AcquisitionError("Lidarr accepted the album but would not start a search for it.")
+        }
+        if (AcquisitionHTTP.string(command["status"]) ?? "").lowercased() == "failed" {
+            throw AcquisitionError(
+                AcquisitionHTTP.string(command["message"]) ?? "Lidarr's search command failed immediately."
+            )
+        }
+        for albumId in albumIds {
+            await LidarrSearchCommandLog.shared.record(commandId: commandId, albumId: albumId)
+        }
+        return commandId
     }
 
     /// Adds a new album (or re-searches an existing one), force-monitoring the album to
@@ -681,7 +751,24 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
             artist["qualityProfileId"] = qualityId
             artist["metadataProfileId"] = metadataId
             artist["rootFolderPath"] = root
-            artist["addOptions"] = ["monitor": "none", "monitored": true, "searchForMissingAlbums": false]
+            // No `monitor` key. Sending `monitor: "none"` here is what unmonitored every artist
+            // Vellum has ever added — Lidarr's `AddArtistService.SetPropertiesAndValidate` ends
+            // with `if (AddOptions != null && AddOptions.Monitor == MonitorTypes.None)
+            // { Monitored = false; }`, so it is written *after* our `artist["monitored"] = true`
+            // and wins. Measured on the live server, one key the only difference between them:
+            // Codeine (id 5360, key present) came back `monitored: false`; Bedhead (id 5361, key
+            // absent) came back `monitored: true`.
+            //
+            // Leaving it out sets `MonitoringOptions.Monitor` to its default `Unknown`, which
+            // `AlbumMonitoredService` returns early on — so no album is mass-monitored on the way
+            // in, and the resulting artist is identical to one added by hand in Lidarr's own UI
+            // (checked against the 20 artists added that way on 2026-08-28: all
+            // `monitored: true, monitorNewItems: "all"`).
+            //
+            // This matters beyond tidiness: an unmonitored artist takes no part in RSS or missing
+            // sweeps, so the single `AlbumSearch` fired below was the only chance a request ever
+            // got. When that command was dropped, nothing ever retried it.
+            artist["addOptions"] = ["monitored": true, "searchForMissingAlbums": false]
             body["artist"] = artist
         }
 
@@ -797,25 +884,54 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
         return id
     }
 
+    /// Picks the release a **text** lookup meant, or nothing.
+    ///
+    /// This is the fallback path: `enqueue` prefers `lidarr:<mbid>`, and only lands here when the
+    /// row carried no release-group id or Lidarr's metadata mirror did not recognise the one it
+    /// carried. Matching by name is therefore unavoidable here — but it used to end
+    /// `?? albums.first`, which is not a match at all. It hands back the first row of a text search
+    /// whatever it is, so a request could bind to an album by an entirely different artist and
+    /// **add that artist to the user's Lidarr**. Two ways in, both reachable:
+    ///
+    /// - `artistMatches` compared with two-way `contains`, and `String.contains("")` is `true` for
+    ///   every string. `ServerPlaylistViews` builds its request as `albumOrNil?.artist ?? ""`, so a
+    ///   preview row with no resolved album asks with an empty artist and matches the first row.
+    /// - Short names are substrings of longer ones. Requesting "Citizen" contains-matched
+    ///   "Citizen Cope"; requesting "Rocket" matched "Rocket Juice & the Moon".
+    ///
+    /// Adding to someone's music server is not a place to guess, so the artist must now match on
+    /// normalized equality — same normalizer the rest of the app matches names with — and a lookup
+    /// that matches no artist returns `nil` so `enqueue` throws its "no matching album" error
+    /// instead of quietly fetching the wrong record.
+    ///
+    /// The artist-only last resort stays, because a track-level row on this album-level plugin
+    /// (chart song rows) has a track title where an album title would go and cannot match one. It
+    /// is now reached only when the artist is a strict match, which is the part that was missing.
     private func pickBestAlbum(from albums: [[String: Any]], artist: String, albumTitle: String) -> [String: Any]? {
-        let a = artist.lowercased()
-        let album = albumTitle.lowercased()
+        let wantArtist = LibraryTrackMatcher.normalize(artist)
+        // An empty requested artist can only match by accident. Refuse rather than pick.
+        guard !wantArtist.isEmpty else { return nil }
+        let wantTitle = LibraryTrackMatcher.normalize(albumTitle)
 
-        func artistName(_ dict: [String: Any]) -> String {
-            let nested = dict["artist"] as? [String: Any]
-            return (AcquisitionHTTP.string(nested?["artistName"]) ?? AcquisitionHTTP.string(nested?["name"]) ?? "").lowercased()
-        }
         func artistMatches(_ dict: [String: Any]) -> Bool {
-            let name = artistName(dict)
-            return !name.isEmpty && (name.contains(a) || a.contains(name))
+            let nested = dict["artist"] as? [String: Any]
+            let raw = AcquisitionHTTP.string(nested?["artistName"])
+                ?? AcquisitionHTTP.string(nested?["name"])
+                ?? ""
+            let name = LibraryTrackMatcher.normalize(raw)
+            return !name.isEmpty && name == wantArtist
         }
-        if !album.isEmpty, let exact = albums.first(where: {
-            AcquisitionHTTP.string($0["title"])?.lowercased() == album && artistMatches($0)
-        }) { return exact }
-        if !album.isEmpty, let contains = albums.first(where: {
-            (AcquisitionHTTP.string($0["title"])?.lowercased().contains(album) == true) && artistMatches($0)
-        }) { return contains }
-        return albums.first(where: { artistMatches($0) }) ?? albums.first
+        let byArtist = albums.filter(artistMatches)
+        guard !byArtist.isEmpty else { return nil }
+
+        func title(_ dict: [String: Any]) -> String {
+            LibraryTrackMatcher.normalize(AcquisitionHTTP.string(dict["title"]) ?? "")
+        }
+        if !wantTitle.isEmpty {
+            if let exact = byArtist.first(where: { title($0) == wantTitle }) { return exact }
+            if let contains = byArtist.first(where: { title($0).contains(wantTitle) }) { return contains }
+        }
+        return byArtist.first
     }
 
     /// A queue row's `status` alone is not the whole story.
@@ -895,12 +1011,34 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
         return (try? await artistLookup(term: name))?.first { artistNameMatches($0, target: target) }
     }
 
+    /// Does this Lidarr artist row *are* the artist we asked for — not merely resemble them.
+    ///
+    /// This used to accept containment in **both** directions, which meant any short name in the
+    /// library shadowed every longer name containing it. Measured against the live library
+    /// (2,041 artists) on 2026-09-04:
+    ///
+    /// - target `nothing more` matched `NOT`, `Nothing`, `$NOT`, `OT` and `Nothing More`, and
+    ///   ``libraryArtist(matching:)`` takes `.first`, so the **Nothing More** artist page resolved
+    ///   to `NOT` (id 3923) — `"nothing more".contains("not")`.
+    /// - target `rocket` resolved to `K` (id 3894) — `"rocket".contains("k")`. A one-letter artist
+    ///   is a substring of nearly every name in the library.
+    ///
+    /// This is not a display-only concern. ``artistReleases(named:)`` lists the resolved artist's
+    /// albums, `ArtistViewModel.makeDiscographyRequestPlan` turns those rows into the plan behind
+    /// "Request Missing (N)", and `startBulkAcquisition` sends them — so a mis-resolve requested a
+    /// **different artist's** discography, each row carrying a perfectly valid release-group id for
+    /// the wrong record. No id-based check downstream can catch that, because by then the ids are
+    /// internally consistent; the error is already baked in here.
+    ///
+    /// So: normalized equality. The normalizer already folds diacritics, case, punctuation and
+    /// `&`/`and`, which covers the real spelling drift between a server's tags and Lidarr's
+    /// metadata. Anything looser is guessing about whose music to add.
     private func artistNameMatches(_ row: [String: Any], target: String) -> Bool {
         let artistName = AcquisitionHTTP.string(row["artistName"])
             ?? AcquisitionHTTP.string(row["name"])
             ?? ""
         let norm = LibraryTrackMatcher.normalize(artistName)
-        return !norm.isEmpty && (norm == target || norm.contains(target) || target.contains(norm))
+        return !norm.isEmpty && norm == target
     }
 
     private func mapAlbum(
@@ -1083,6 +1221,33 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
             )
         }
         .sorted { $0.position < $1.position }
+    }
+}
+
+/// Which `AlbumSearch` command Vellum fired for which album, this session.
+///
+/// `requestState(for:)` otherwise has to scan `/command` and pick the row whose `body.albumIds`
+/// contains the album — workable, but it cannot tell *our* manual search apart from a batch the
+/// user started from Lidarr's own Wanted page, and it sorts on `started`, which is `null` for a
+/// command that has not run. Recording the id at the moment we fire it removes the guesswork.
+///
+/// Session-scoped on purpose: it is an optimisation over the scan, never a source of truth, so
+/// losing it on relaunch costs nothing and the scan still answers.
+private actor LidarrSearchCommandLog {
+    static let shared = LidarrSearchCommandLog()
+
+    private var commandIdByAlbumId: [Int: Int] = [:]
+
+    func record(commandId: Int, albumId: Int) {
+        commandIdByAlbumId[albumId] = commandId
+    }
+
+    func commandId(forAlbumId albumId: Int) -> Int? {
+        commandIdByAlbumId[albumId]
+    }
+
+    func reset() {
+        commandIdByAlbumId.removeAll()
     }
 }
 

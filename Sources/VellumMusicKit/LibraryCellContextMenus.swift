@@ -82,7 +82,7 @@ struct LibraryAlbumContextMenuContent: View {
         if app.isAlbumInLibrary(album.id) {
             Section {
                 Button(role: .destructive) {
-                    Task { await app.removeAlbumFromLibrary(album) }
+                    app.requestRemoveAlbumFromLibrary(album)
                 } label: {
                     Label("Delete from Library", systemImage: "trash")
                 }
@@ -222,7 +222,7 @@ struct LibraryPlaylistContextMenuContent: View {
         if app.isPlaylistInLibrary(playlist.id) {
             Section {
                 Button(role: .destructive) {
-                    Task { await app.removePlaylistFromLibrary(playlist) }
+                    app.requestRemovePlaylistFromLibrary(playlist)
                 } label: {
                     Label("Delete from Library", systemImage: "trash")
                 }

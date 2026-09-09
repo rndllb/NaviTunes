@@ -1325,7 +1325,7 @@ struct NowPlayingView: View {
         if isInLibrary {
             Section {
                 Button(role: .destructive) {
-                    Task { await app.removeSongFromLibrary(track) }
+                    app.requestRemoveSongFromLibrary(track)
                 } label: {
                     Label("Delete from Library", systemImage: "trash")
                 }
@@ -1616,7 +1616,7 @@ struct NowPlayingView: View {
                 ? { dismissAndNavigate(to: .artist(ArtistNameNavigation(id: track.artist, serverArtistId: track.artistId))) }
                 : nil,
             onRemoveFromLibrary: app.isSongInLibrary(track.id)
-                ? { Task { await app.removeSongFromLibrary(track) } }
+                ? { app.requestRemoveSongFromLibrary(track) }
                 : nil,
             onDeleteFromLibrary: app.canDeleteFromLibrary
                 ? { app.beginLibraryTrackDeletion(track) }

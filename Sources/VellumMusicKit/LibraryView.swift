@@ -1207,6 +1207,10 @@ struct FavoritePlaylistView: View {
         }
         .modifier(DownloadedAlbumActionPresentation(
             isPresented: $showDownloadedFavoritesActions,
+            itemKind: .songs(
+                sourceName: favoritesRemovalSourceName,
+                songCount: favoritesRemovalSongCount
+            ),
             onRemoveDownload: { removeAllFavoritesOfflineDownloads() },
             onDeleteFromLibrary: { Task { await removeAllFavoritesFromLibraryAndOffline() } },
         ))
@@ -1431,7 +1435,7 @@ struct FavoritePlaylistView: View {
             onGoToAlbum: { openFavoriteSongAlbumDetail(for: track) },
             onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
             onRemoveFromLibrary: app.isSongInLibrary(track.id)
-                ? { Task { await app.removeSongFromLibrary(track) } } : nil,
+                ? { app.requestRemoveSongFromLibrary(track) } : nil,
             onDeleteFromLibrary: { app.beginLibraryTrackDeletion(track) },
             canDeleteFromLibrary: app.canDeleteFromLibrary,
             onRemoveDownload: app.offline.downloadedTrackIds.contains(track.id)
@@ -1483,6 +1487,15 @@ struct FavoritePlaylistView: View {
             loadError = error.localizedDescription
             tracks = []
         }
+    }
+
+    /// Names this screen in the removal sheet — the sheet used to call every set "this album".
+    private var favoritesRemovalSourceName: String { displayTitle }
+
+    /// How many songs "Delete from Library" would actually take out, not how many are listed:
+    /// ``removeAllFavoritesFromLibraryAndOffline`` skips favorites that aren't in the library.
+    private var favoritesRemovalSongCount: Int {
+        tracks.filter { app.isSongInLibrary($0.id) }.count
     }
 
     private func removeAllFavoritesOfflineDownloads() {

@@ -522,7 +522,6 @@ struct AppleMusicAlbumTrackRow<MenuItems: View>: View {
                         onPlayNext: onPlayNext!,
                         onDownload: onDownload,
                         onRemoveFromLibrary: trailingDeleteSwipeAction,
-                        trailingLibraryDeleteIsDestructive: !confirmsDownloadedDelete,
                         chipMetrics: .albumTrack
                     )
             } else {
