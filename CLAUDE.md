@@ -300,8 +300,37 @@ Document for contributors — not an exhaustive bug list:
 | Search tab: separated button vs scroll-collapse | The Search `Tab(role: .search)` (the detached search button) does **not** participate in `tabBarMinimizeBehavior`, so the tab bar + mini player don't collapse on scroll under Search. Dropping `role: .search` enables the collapse but turns the tab bar into one inline pill. iOS won't give both — currently set to keep the separated button (`.tabBarMinimizeBehavior(... == .search ? .never : .onScrollDown)` in `RootView`). |
 | iOS 27 alternate icon (Dark appearance) | `setAlternateIconName` succeeds but the home-screen icon's **dark** variant only refreshes on respring/reboot (light updates live). SpringBoard limitation; not app-fixable. Accent color and app icon are independent (`accentPresetId` / `appIconPresetId`). |
 
+## Source layout
+
+`Sources/VellumMusicKit/` is grouped by feature. SPM discovers sources recursively under the target's `path`, and the host project consumes the package as a local reference rather than listing files — so **moving a file between these folders needs no change to `Package.swift`, the pbxproj, or any import**. There are no per-folder modules; everything is one target and `internal` is visible across all of it.
+
+| Folder | Holds |
+|---|---|
+| `App/` | Composition root — `AppModel`, `RootView` — plus app-lifetime concerns: `KeychainStore`, `PersistedModelSchema`, `LegacyLyraMigration`, `DebugUIRemote`, `PerfLog` |
+| `Backends/` | `MusicLibraryProviding` and the Jellyfin / Navidrome clients, `VellumNetworking`, Navidrome shares |
+| `Acquisition/` | `AcquisitionCore`, the manager, and the Lidarr / Downtify / DroppedNeedle plugins |
+| `MusicBrainz/` | Client, service, models, query, search feed, caches, discography mapping |
+| `Playback/` | `PlaybackEngine`, failure policy, queue store, stream cache, `StaleSongRecovery` |
+| `Equalizer/` | The EQ model, curve maths, profiles, and its own settings UI |
+| `Offline/` | `OfflineDownloadManager` (+ extensions), download queue, storage browser, auto-offline |
+| `Scrobbling/` | `ScrobbleService`, listening analytics, My Listening, ListenBrainz |
+| `Library/` | Library tab, membership, matching, genres, playlists, Kill Mode |
+| `AlbumDetail/` | Browse/library album detail, related shelves, hero backdrop, track caches |
+| `Artist/` | Artist page, view model, navigation, identity resolution |
+| `NowPlaying/` | Player, mini player, the cover-zoom transitions, the shared song menu |
+| `Home/` | Home tab **and** the New tab — they share one personalization engine |
+| `Discovery/` | Search surfaces |
+| `Radio/` | Custom stations, the Radio Browser directory, server stations |
+| `Subscriptions/` | Follow-artist completeness |
+| `Settings/` | Settings hub and detail pages, account, login, client backup |
+| `DesignSystem/` | `MusicDesignSystem`, artwork pipeline, shimmer, UIKit action sheet |
+| `Widgets/` | The main app's half of the widget contract (extension views live in `VellumMusicHost/VellumWidgets`) |
+| `Deprecated/` | Unreferenced dead code — the iTunes clients, TheAudioDB, Last.fm. **Do not wire these back in.** |
+
+Tests live in `Tests/VellumMusicKitTests/` and run on an iOS Simulator via the `VellumMusicKitTests` scheme; see `CONTRIBUTING.md` for why `swift test` cannot run them.
+
 ## Build / run
 
 - iOS app target: `VellumMusicHost/VellumMusicHost.xcodeproj` (workspace at `VellumMusicHost/VellumMusicHost.xcodeproj/project.xcworkspace`).
-- Library code lives in the SPM package at `Sources/VellumMusicKit/` (`Package.swift`).
+- Library code lives in the SPM package at `Sources/VellumMusicKit/` (`Package.swift`), grouped as above.
 - Standard build: `xcodebuild -workspace VellumMusicHost/VellumMusicHost.xcodeproj/project.xcworkspace -scheme VellumMusicHost -destination 'generic/platform=iOS Simulator' build`.
