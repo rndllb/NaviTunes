@@ -230,6 +230,34 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// can now say anything to the user.
     var onPlaybackFailure: ((Track?, Error?) -> Void)?
 
+    /// Fires when a track was given up on and the engine moved past it by itself. `AppModel`
+    /// turns this into the app's transient toast: a silent auto-skip is indistinguishable from
+    /// a bug, and the reason is the whole value of the message.
+    var onTrackAutoSkipped: ((Track, PlaybackFailureReason) -> Void)?
+
+    /// Fires when consecutive failures tripped the runaway-skip guard and playback stopped.
+    /// Carries enough to say whether the queue is full of bad files or the server is down —
+    /// the two must never look alike.
+    var onPlaybackHalted: ((PlaybackHaltSummary) -> Void)?
+
+    /// Consecutive tracks given up on. Cleared by any track that reaches confirmed playback
+    /// and by every user-initiated transport action.
+    private var failureStreak = PlaybackFailureStreak()
+
+    /// Track id that has already used its one transient retry, so a dead server can't hold the
+    /// same song in a retry loop.
+    private var retriedTrackId: String?
+
+    /// HTTP status from the failing item's error log. The only thing that separates "this track
+    /// is gone" (404) from "the server is sick" (503) — `NSURLErrorDomain` collapses both into
+    /// `.badServerResponse`.
+    private var lastFailedItemHTTPStatus: Int?
+
+    /// Whether the load that failed was one the user was waiting to hear. A queue edit or a
+    /// restore can load with no play intent, and moving a paused listener's cursor for them
+    /// would be its own bug.
+    private var playbackWasIntendedForCurrentLoad = false
+
     /// Set by `AppModel` during an active Kill Mode session: returns true for tracks
     /// already "listened" (played fully or skipped) that must not be auto-advanced into,
     /// so each song plays once per run. Nil during normal playback (no effect).
@@ -530,7 +558,17 @@ final class PlaybackEngine: NSObject, ObservableObject {
         showsMiniPlayerChrome = true
     }
 
+    /// Any deliberate transport action means the user is steering, so the consecutive-failure
+    /// count (and the per-track retry budget) starts over. Without this, three unlucky tracks
+    /// spread across a session would stop playback on a queue that is otherwise fine.
+    private func clearFailureStreakForUserAction() {
+        failureStreak.reset()
+        retriedTrackId = nil
+        lastFailedItemHTTPStatus = nil
+    }
+
     func reset() {
+        clearFailureStreakForUserAction()
         cancelPendingAdvanceWork()
         teardownPlayer()
         queue = []
@@ -661,9 +699,13 @@ final class PlaybackEngine: NSObject, ObservableObject {
             isPlaying = true
             markPlayIntent()
         } catch {
-            // If the restored stream can't be reached (offline, server moved), leave the queue
-            // intact and paused — the user can still skip/jump or try again later.
-            isPlaying = false
+            // Same retry/skip policy as the rest of the queue. This is the path a play tap takes
+            // when there is no AVPlayer yet — including the tap right after the runaway guard
+            // stopped playback — so failing silently here would put the stall back exactly
+            // where the user is most likely to hit it.
+            guard isPlaybackEpochCurrent(epoch) else { return }
+            playbackWasIntendedForCurrentLoad = true
+            reportPlaybackFailure(error, track: currentTrack, context: "pending restore")
         }
         revealMiniPlayerChrome()
     }
@@ -705,7 +747,22 @@ final class PlaybackEngine: NSObject, ObservableObject {
         playbackHead = 0
         scheduleLyricsLoad()
         activateAudioSession()
-        try await startCurrentItem(epoch: epoch, autoPlay: true)
+        // A fresh queue starts with a clean slate — the user asked for this, so whatever
+        // failed before it must not count toward stopping it.
+        failureStreak.reset()
+        retriedTrackId = nil
+        configureRemoteCommandsIfNeeded()
+        do {
+            try await startCurrentItem(epoch: epoch, autoPlay: true)
+        } catch {
+            // A dead opening track used to end the whole play attempt in a toast and silence,
+            // which is the stall this policy exists to remove. Route it through the same
+            // retry/skip path the queue uses so an album with one bad track still plays.
+            guard isPlaybackEpochCurrent(epoch) else { return }
+            playbackWasIntendedForCurrentLoad = true
+            reportPlaybackFailure(error, track: currentTrack, context: "playAlbum")
+            return
+        }
         guard isPlaybackEpochCurrent(epoch), hasActivePlaybackOutput else {
             throw PlaybackEngineError.missingTrack
         }
@@ -1235,6 +1292,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     func skipNext() {
+        // The user is driving. Whatever failed before this is not part of a runaway.
+        clearFailureStreakForUserAction()
         // Shuffle is a queue-reordering action — advance sequentially regardless of mode.
         guard currentIndex + 1 < queue.count else {
             guard repeatMode == .all, !queue.isEmpty else { return }
@@ -1255,6 +1314,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     func skipPrevious() {
+        clearFailureStreakForUserAction()
         if currentTime > 3 {
             seek(toSeconds: 0)
             return
@@ -1572,6 +1632,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
     func jumpToQueueItem(at index: Int) {
         guard queue.indices.contains(index), index != currentIndex else { return }
+        clearFailureStreakForUserAction()
         captureAutoPlayIntentForAdvance()
         currentIndex = index
         resetUIProgressForTrackHandoff()
@@ -1623,23 +1684,145 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// Correcting the transport is the first job; telling the user is the second. `refreshNowPlaying()`
     /// is what drops the reported rate to 0.
     ///
-    /// **Deliberately does not retry and does not auto-skip.** Whether a dead track should be
-    /// skipped past — and after how many attempts — is a product decision, not part of fixing a
-    /// swallowed error, so this stops honestly rather than inventing a policy.
+    /// **Retries once, then skips.** A dead track no longer stops the queue: a transient cause
+    /// (network blip, 5xx, anything unrecognised) gets one reload after a short backoff, a
+    /// permanent one (missing file, undecodable container) is given up on immediately, and
+    /// either way playback moves on and says why. Three consecutive give-ups stop everything —
+    /// see ``PlaybackFailureStreak`` — because tearing through a queue is how a server outage
+    /// disguises itself as an empty playlist.
     private func reportPlaybackFailure(_ error: Error?, track: Track?, context: String) {
         isPlaying = false
         shouldAutoPlayAfterAdvance = false
         setBuffering(false)
         refreshNowPlaying()
-        // One real failure can arrive here twice — `play(rate:)` returns false *and* notifies the
-        // session's `onPlaybackFailed`. Correct the transport every time; tell the user once.
-        let now = Date.timeIntervalSinceReferenceDate
-        guard now - lastPlaybackFailureReportedAt > 2 else { return }
-        lastPlaybackFailureReportedAt = now
-        onPlaybackFailure?(track ?? activeTrack, error)
+        // One real failure can reach here twice (a load path throwing *and* an item notification
+        // for the same item). Correct the transport every time, but act once — a duplicate that
+        // reached the policy would count twice and halve the runaway threshold.
+        //
+        // Keyed on the load cycle, not on a wall-clock window: a fast permanent failure (a
+        // missing local file) can fail two tracks inside a second, and a time-based guard would
+        // swallow the second one and leave the queue stuck on a track it refuses to count.
+        guard lastFailureReportEpoch != playbackEpoch else { return }
+        lastFailureReportEpoch = playbackEpoch
+        resolveUnplayableTrack(error: error, track: track ?? activeTrack)
     }
 
-    private var lastPlaybackFailureReportedAt: TimeInterval = -1_000
+    private var lastFailureReportEpoch: UInt?
+
+    /// Retry, skip, or stop — in that order of preference.
+    private func resolveUnplayableTrack(error: Error?, track: Track?) {
+        let reason = PlaybackFailurePolicy.classify(error, httpStatus: lastFailedItemHTTPStatus)
+        lastFailedItemHTTPStatus = nil
+
+        // Nobody is waiting on audio: the load ran to keep bookkeeping straight (a queue edit
+        // while paused, a restore). Report it, but never move a paused listener's cursor.
+        guard playbackWasIntendedForCurrentLoad else {
+            onPlaybackFailure?(track, error)
+            return
+        }
+
+        // A blip must cost a pause, not a song.
+        if reason.isTransient, let track, retriedTrackId != track.id {
+            retriedTrackId = track.id
+            scheduleTransientRetry(for: track)
+            return
+        }
+
+        // Out of retries for this track. Count it, and stop if the queue is collapsing.
+        if let halt = failureStreak.recordFailure(reason) {
+            retriedTrackId = nil
+            cancelPendingAdvanceWork()
+            onPlaybackHalted?(halt)
+            return
+        }
+
+        guard let next = autoSkipIndex() else {
+            // Nothing left to skip to (end of a repeat-off queue, or every remaining track
+            // excluded by Kill Mode). Stop honestly rather than reloading the same failure.
+            failureStreak.reset()
+            retriedTrackId = nil
+            onPlaybackFailure?(track, error)
+            return
+        }
+
+        // Deliberately not `skipNext()`: that fires `onTrackSkipped`, which is Kill Mode's
+        // "the user rejected this song, mark it for removal" signal. A track the server
+        // could not serve must never be marked for deletion on the user's behalf.
+        if let track { onTrackAutoSkipped?(track, reason) }
+        retriedTrackId = nil
+        currentIndex = next
+        shouldAutoPlayAfterAdvance = true
+        resetUIProgressForTrackHandoff()
+        scheduleAdvance()
+    }
+
+    /// Next index to move to when giving up on the current track.
+    ///
+    /// Deliberately not ``nextAdvanceIndex()``: under repeat-one that returns the *current*
+    /// index, which would reload the track that just failed, forever. A dead track is skipped
+    /// past under every repeat mode; only `.all` is allowed to wrap back around.
+    private func autoSkipIndex() -> Int? {
+        guard !queue.isEmpty else { return nil }
+        let wrap = repeatMode == .all
+        var step = 1
+        while step <= queue.count {
+            let raw = currentIndex + step
+            if !wrap, raw >= queue.count { return nil }
+            let idx = wrap ? raw % queue.count : raw
+            if idx == currentIndex { return nil }
+            if !isExcludedFromAutoAdvance(idx) { return idx }
+            step += 1
+        }
+        return nil
+    }
+
+    /// Reload the current track after a short backoff.
+    ///
+    /// The candidate ladder in ``startCurrentItem`` already retries across *URLs*, but every one
+    /// of those attempts happens inside the same few seconds — a network blip kills all of them
+    /// at once. This is the retry across *time* that a blip actually needs. The spinner stays up
+    /// for the backoff so the wait reads as buffering rather than as a stall.
+    private func scheduleTransientRetry(for track: Track) {
+        cancelPendingAdvanceWork()
+        setBuffering(true)
+        advanceWork = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: PlaybackFailurePolicy.retryBackoff)
+            guard let self, !Task.isCancelled else { return }
+            // The queue may have moved under the backoff (user skipped, queue edited).
+            guard self.queue.indices.contains(self.currentIndex),
+                  self.queue[self.currentIndex].id == track.id else {
+                self.setBuffering(false)
+                return
+            }
+            let epoch = self.beginPlaybackSession()
+            self.playbackWasIntendedForCurrentLoad = true
+            self.teardownPlayer()
+            do {
+                try await self.startCurrentItem(epoch: epoch, autoPlay: true, skipTrackRefresh: true)
+                guard self.isPlaybackEpochCurrent(epoch), self.hasActivePlaybackOutput else {
+                    self.setBuffering(false)
+                    return
+                }
+                self.markPlayIntent()
+                if let player = self.player {
+                    self.beginPlayback(on: player)
+                    self.ensurePlaybackStarted(on: player, epoch: epoch)
+                }
+                self.isPlaying = true
+            } catch {
+                guard !Task.isCancelled, !(error is CancellationError) else { return }
+                self.reportPlaybackFailure(error, track: track, context: "transient retry")
+            }
+        }
+    }
+
+    /// Status code from the failing item's error log, or nil when the request never got a
+    /// response at all (which is itself the signal for "server unreachable").
+    private static func httpStatus(from item: AVPlayerItem) -> Int? {
+        guard let last = item.errorLog()?.events.last else { return nil }
+        let code = last.errorStatusCode
+        return code > 0 ? code : nil
+    }
 
     // `startEqualizedPlayback` was the guard that stopped the audio-engine transport lying about
     // whether it had actually started. With one transport there is nothing to reconcile:
@@ -1666,6 +1849,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
         // Capture before teardown — new AVPlayer starts `.paused` and KVO must not clear intent.
         let shouldAutoPlay = shouldAutoPlayAfterAdvance || isPlaying || (player?.rate ?? 0) > 0.01
         shouldAutoPlayAfterAdvance = false
+        // Recorded so a failure on this load knows whether anyone was waiting to hear it.
+        playbackWasIntendedForCurrentLoad = shouldAutoPlay
         if shouldAutoPlay { setBuffering(true) }
         if let track = currentTrack, refreshTrackBeforePlay != nil {
             let refreshed = await refreshedTrackForPlay(track)
@@ -2082,7 +2267,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
         while ContinuousClock.now < deadline {
             switch item.status {
             case .readyToPlay: return
-            case .failed: throw item.error ?? URLError(.badServerResponse)
+            case .failed:
+                lastFailedItemHTTPStatus = Self.httpStatus(from: item)
+                throw item.error ?? URLError(.badServerResponse)
             // Poll tightly so we resume within ~20ms of the item flipping ready,
             // instead of eating up to a tenth of a second of dead time per play.
             case .unknown: try await Task.sleep(for: .milliseconds(20))
@@ -2168,6 +2355,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private func startCurrentItem(epoch: UInt, startSeconds: TimeInterval = 0, autoPlay: Bool = false, allowStaleRecovery: Bool = true, skipTrackRefresh: Bool = false) async throws {
         guard isPlaybackEpochCurrent(epoch) else { return }
         guard let track = currentTrack else { throw PlaybackEngineError.missingTrack }
+        // Per-load, not per-candidate: the last candidate to fail is the one whose status
+        // describes why this track is being given up on.
+        lastFailedItemHTTPStatus = nil
         // The user expects audio — show the buffering spinner through the whole
         // load (metadata refresh, handshake, pre-buffer), not just AVPlayer stalls.
         if autoPlay { setBuffering(true) }
@@ -2369,6 +2559,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
                 stopPlayer(p)
                 return false
             }
+            // Ready, then no audio. The item's own error log is the only place the cause
+            // survives — the caller otherwise turns this into a bare `.cannotParseResponse`,
+            // which would classify every server outage on this path as a bad file.
+            lastFailedItemHTTPStatus = Self.httpStatus(from: item)
             detachPlayerKeepingQueueState()
             return false
         }
@@ -2398,6 +2592,12 @@ final class PlaybackEngine: NSObject, ObservableObject {
             // minimal server payload) — read the format off the loaded asset.
             probeDeliveredFormat(asset: asset, epoch: epoch)
         }
+        // Audio is confirmed for this track, so the queue is healthy: clear the runaway-skip
+        // streak and this track's used retry. Anything else would let three failures spread
+        // across an hour of good listening add up to a halt.
+        failureStreak.reset()
+        retriedTrackId = nil
+        lastFailedItemHTTPStatus = nil
         // Stage the next track so the OS can pre-roll and transition to it without
         // any app work at the boundary.
         refreshEnqueuedNextItem()
@@ -2923,6 +3123,14 @@ final class PlaybackEngine: NSObject, ObservableObject {
             // outgoing track's position sits under the new title.
             currentIndex = index
             resetUIProgressForTrackHandoff()
+            // This path bypasses the candidate ladder entirely — the staged item is the only
+            // thing that was ever tried — so it is the one place where a plain network blip
+            // reaches the policy with no URL fallbacks behind it. It gets a fresh load cycle so
+            // the report is not deduplicated against the outgoing track's, and audio was
+            // demonstrably wanted (the OS was mid-playback).
+            _ = beginPlaybackSession()
+            lastFailedItemHTTPStatus = Self.httpStatus(from: item)
+            playbackWasIntendedForCurrentLoad = true
             reportPlaybackFailure(item.error, track: track, context: "gapless advance")
             return
         }
