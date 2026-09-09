@@ -160,14 +160,48 @@ struct LibraryMembershipPayload: Codable, Equatable {
 
     static let empty = LibraryMembershipPayload()
 
-    /// Tolerant decode — an absent or malformed comment field becomes an empty payload
-    /// rather than blocking sign-in. Callers re-encode and write a clean payload on the
-    /// next mutation.
-    static func decode(_ raw: String?) -> LibraryMembershipPayload {
-        guard let raw, !raw.isEmpty, let data = raw.data(using: .utf8) else { return .empty }
+    /// What reading the magic playlist's comment actually told us.
+    ///
+    /// The distinction this draws is the whole point: **"the server has no membership" and "the
+    /// server has membership and we failed to read it" are different facts, and collapsing them
+    /// destroys libraries.** A truncated comment — a short read, a proxy cutting the body, a
+    /// server returning a partial field — used to decode to an empty payload that no caller
+    /// could tell from a genuine one, and the next mutation wrote that emptiness back over the
+    /// user's real library. C15.
+    enum DecodeOutcome: Equatable {
+        /// No comment field at all. A new magic playlist legitimately looks like this.
+        case absent
+        /// Parsed. Possibly empty, but empty *because the server said so*.
+        case valid(LibraryMembershipPayload)
+        /// There was content and it did not parse. Says nothing about what the user has —
+        /// callers must not treat it as empty, and must not write anything back.
+        case malformed
+    }
+
+    /// Reads the comment field, reporting whether the answer can be trusted.
+    ///
+    /// Prefer this over ``decode(_:)`` anywhere the result could be written back.
+    static func decodeOutcome(_ raw: String?) -> DecodeOutcome {
+        guard let raw else { return .absent }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .absent }
+        guard let data = trimmed.data(using: .utf8) else { return .malformed }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return (try? decoder.decode(LibraryMembershipPayload.self, from: data)) ?? .empty
+        guard let payload = try? decoder.decode(LibraryMembershipPayload.self, from: data) else {
+            return .malformed
+        }
+        return .valid(payload)
+    }
+
+    /// Lossy decode kept for read-only callers — anything that only *displays* membership.
+    ///
+    /// **Do not use this to decide what to persist.** It cannot distinguish an absent payload
+    /// from an unreadable one, which is exactly the confusion that made a truncated read wipe a
+    /// library. Use ``decodeOutcome(_:)`` on any path that can write.
+    static func decode(_ raw: String?) -> LibraryMembershipPayload {
+        if case .valid(let payload) = decodeOutcome(raw) { return payload }
+        return .empty
     }
 
     func encoded() -> String {
