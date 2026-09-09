@@ -261,7 +261,13 @@ final class NowPlayingCoverZoomController: NSObject, UIViewControllerTransitioni
         case .ended:
             let translation = finger.y - dragStart.y
             let velocity = pan.velocity(in: space).y
-            endDrag(committed: translation > 120 || velocity > 700, velocity: velocity)
+            // Lowered from 120pt / 700pt-per-second. Together with the wider start cone above,
+            // this is the other half of "picks up easier": a short, unhurried pull down used to
+            // travel most of the way and then spring back, which reads as the gesture having
+            // failed rather than as a deliberate cancel. A cancel is still available — a small
+            // drag, or one that reverses — it just no longer takes a committed-looking pull to
+            // get one by accident.
+            endDrag(committed: translation > 80 || velocity > 500, velocity: velocity)
         case .cancelled, .failed:
             endDrag(committed: false, velocity: 0)
         default:
@@ -311,7 +317,17 @@ final class NowPlayingCoverZoomController: NSObject, UIViewControllerTransitioni
         // Downward, and more vertical than horizontal — everything else belongs to the player's
         // own content (the paged artwork/lyrics/queue scroll).
         let translation = pan.translation(in: view)
-        guard translation.y > 0, abs(translation.y) > abs(translation.x) else { return false }
+        // Downward, and steeper than ~35° from horizontal.
+        //
+        // This used to demand a full 45° (`|dy| > |dx|`). `shouldBegin` is asked once, and a
+        // `false` fails the recognizer for the whole touch — so a swipe that started even
+        // slightly off-vertical was rejected outright and the user had to lift and try again.
+        // That is the "needs to pick up easier" report.
+        //
+        // Widening the cone is safe here specifically because nothing else in the player wants a
+        // shallow downward drag: the paging is vertical, and the two scrubbers — the one case a
+        // pure angle test cannot resolve — are excluded by `NowPlayingDismissExclusion` below.
+        guard translation.y > 0, translation.y > abs(translation.x) * 0.7 else { return false }
         // The two scrubbers are the exception the angle check above cannot cover. They are not
         // inside a scroll view, so ``isOverScrolledContent`` cannot see them, and a diagonal
         // thumb drag on the progress or volume bar crosses 45° as a matter of course — which
