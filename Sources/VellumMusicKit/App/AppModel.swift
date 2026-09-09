@@ -3864,15 +3864,35 @@ public final class AppModel: ObservableObject {
         try await removePlaylistRows(playlistId: playlistId, rows: [row])
     }
 
+    /// Removes rows from a server playlist.
+    ///
+    /// **Callers may pass stale rows, and that is on purpose.** Every removal target is
+    /// re-resolved against a fresh fetch by stable track id before anything reaches the server,
+    /// because a Navidrome `navidromeIndex` is a *position* that only means what it says against
+    /// the fetch it came from. A view that keeps its rows across a removal (`PlaylistEditSheet`,
+    /// the Kill Mode list) is holding indices that have shifted down, and sending one verbatim
+    /// deletes whichever song now sits there. Doing the re-resolve here rather than in each
+    /// caller means no future surface can reintroduce that by forgetting to ask.
     func removePlaylistRows(playlistId: String, rows: [PlaylistRowItem]) async throws {
         guard !rows.isEmpty else { return }
+        let (resolved, goneTrackIds) = try await resolveRowsForRemoval(playlistId: playlistId, rows: rows)
+        // A target already removed elsewhere (another client, an earlier interrupted batch) is in
+        // the desired end state — drop its pending mark and remove the rest instead of failing.
+        if !goneTrackIds.isEmpty {
+            stripKillModePending(playlistId: playlistId, trackIds: goneTrackIds)
+            invalidatePlaylistRowsCache(playlistId: playlistId)
+        }
+        guard !resolved.isEmpty else {
+            await refreshLibraryPlaylists()
+            return
+        }
         switch backendKind {
         case .jellyfin:
             guard let client = jellyfin else {
                 throw URLError(.userAuthenticationRequired)
             }
-            let entries = rows.compactMap(\.jellyfinEntryId)
-            guard entries.count == rows.count else {
+            let entries = resolved.compactMap(\.jellyfinEntryId)
+            guard entries.count == resolved.count else {
                 throw NSError(domain: "VellumMusic", code: 0, userInfo: [NSLocalizedDescriptionKey: "Missing playlist entry id."])
             }
             try await client.removeTracksFromPlaylist(playlistId: playlistId, entryIds: entries)
@@ -3880,19 +3900,14 @@ public final class AppModel: ObservableObject {
             guard let client = navidrome else {
                 throw URLError(.userAuthenticationRequired)
             }
-            let targets: [(index: Int, trackId: String)] = try rows.map { row in
-                guard let index = row.navidromeIndex else {
-                    throw NSError(domain: "VellumMusic", code: 0, userInfo: [NSLocalizedDescriptionKey: "Missing playlist index."])
-                }
-                return (index, row.track.id)
-            }
             // One index per request, highest first, so earlier deletions can't shift
             // the positions still pending. Removal isn't atomic: on a mid-batch
             // failure the rows already deleted server-side must still lose their
             // Kill Mode pending marks, or a retry would abort on the id mismatch.
+            let targets = try PlaylistRemovalTargeting.navidromeDeletionOrder(resolved)
             var removedIds: Set<String> = []
             do {
-                for target in targets.sorted(by: { $0.index > $1.index }) {
+                for target in targets {
                     try await client.removeTracksFromPlaylist(playlistId: playlistId, indexes: [target.index])
                     removedIds.insert(target.trackId)
                 }
@@ -4237,20 +4252,11 @@ public final class AppModel: ObservableObject {
     /// down to those whose track id is in the pending set).
     func commitKillModeRemovals(playlistId: String, rows: [PlaylistRowItem]) async throws {
         guard !rows.isEmpty else { return }
-        // The kill-list view holds a static row snapshot; its Navidrome positional
-        // indices go stale after each prior single removal (server positions shift
-        // down), which would delete the WRONG song on the 2nd+ swipe. Re-resolve each
-        // target against the LIVE playlist by stable track id right before removing.
-        let (resolved, goneTrackIds) = try await resolveRowsForRemoval(playlistId: playlistId, rows: rows)
-        // A marked song already removed elsewhere (another client, a normal playlist
-        // edit, an earlier interrupted batch) is in the desired end state — clear its
-        // pending mark and remove the rest instead of failing the whole batch.
-        if !goneTrackIds.isEmpty {
-            stripKillModePending(playlistId: playlistId, trackIds: goneTrackIds)
-            invalidatePlaylistRowsCache(playlistId: playlistId)
-        }
-        guard !resolved.isEmpty else { return }
-        try await removePlaylistRows(playlistId: playlistId, rows: resolved)
+        // The kill-list view holds a static row snapshot, so its Navidrome positional indices go
+        // stale after each prior single removal. `removePlaylistRows` re-resolves every target
+        // against the live playlist by track id, which is exactly what that needs — this used to
+        // resolve here as well, and the second fetch bought nothing.
+        try await removePlaylistRows(playlistId: playlistId, rows: rows)
     }
 
     /// Re-resolves removal targets against a fresh fetch of the playlist. Navidrome
@@ -4266,33 +4272,13 @@ public final class AppModel: ObservableObject {
         case .navidrome:
             guard let client = navidrome else { return (rows, []) }
             let live = try await client.fetchPlaylistRows(playlistId: playlistId)
-            var byId: [String: [PlaylistRowItem]] = [:]
-            for row in live { byId[row.track.id, default: []].append(row) }
-            var resolved: [PlaylistRowItem] = []
-            var gone: Set<String> = []
-            for row in rows {
-                if var matches = byId[row.track.id], !matches.isEmpty {
-                    resolved.append(matches.removeFirst())
-                    byId[row.track.id] = matches
-                } else {
-                    gone.insert(row.track.id)
-                }
-            }
-            return (resolved, gone)
+            let resolution = PlaylistRemovalTargeting.resolveByTrackId(requested: rows, live: live)
+            return (resolution.resolved, resolution.goneTrackIds)
         case .jellyfin:
             guard let client = jellyfin else { return (rows, []) }
             let live = try await client.fetchPlaylistRows(playlistId: playlistId)
-            let liveEntryIds = Set(live.compactMap(\.jellyfinEntryId))
-            var resolved: [PlaylistRowItem] = []
-            var gone: Set<String> = []
-            for row in rows {
-                if let entryId = row.jellyfinEntryId, !liveEntryIds.contains(entryId) {
-                    gone.insert(row.track.id)
-                } else {
-                    resolved.append(row)
-                }
-            }
-            return (resolved, gone)
+            let resolution = PlaylistRemovalTargeting.resolveByEntryId(requested: rows, live: live)
+            return (resolution.resolved, resolution.goneTrackIds)
         }
     }
 
