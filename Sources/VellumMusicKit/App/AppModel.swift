@@ -1003,9 +1003,11 @@ public final class AppModel: ObservableObject {
     public init() {
         LegacyLyraMigration.runIfNeeded()
         AppModel.shared = self
-        // Stream caching is opt-in. Enabling the equalizer still turns it on implicitly
-        // (see `equalizerEnabled`) because the EQ path needs a local file to decode.
-        UserDefaults.standard.register(defaults: ["streamingDiskCacheEnabled": false])
+        // Stream caching is on by default: replaying a track should not re-download it, the
+        // store is LRU-capped at 512 MB so it cannot grow without bound, and leaving it off
+        // meant the equalizer silently did nothing on a track's first play. Still a toggle for
+        // anyone who wants the disk back.
+        UserDefaults.standard.register(defaults: ["streamingDiskCacheEnabled": true])
         registerWidgetCommandObserver()
         player.bind(offline: offline, resolveArtwork: { [weak self] track in
             self?.resolvedArtworkURL(for: track)
