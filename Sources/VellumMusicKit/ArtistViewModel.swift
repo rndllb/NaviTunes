@@ -108,6 +108,60 @@ enum ArtistDiscographyBucket: Hashable, CaseIterable {
     }
 }
 
+/// What a release actually is, as opposed to which shelf it is filed on.
+///
+/// Singles and EPs share the ``ArtistDiscographyBucket/singlesAndEPs`` shelf because separating
+/// them into two sparse carousels reads badly, but they are not the same thing and the card has
+/// to say which one it is. Deriving the caption from the bucket meant every EP was captioned
+/// "Single" — and the same bucket was captioned "EP" one screen away, so the app contradicted
+/// itself about the same release.
+enum ArtistReleaseKind: Hashable {
+    case album
+    case ep
+    case single
+    case live
+    case compilation
+
+    var label: String {
+        switch self {
+        case .album: return "Album"
+        case .ep: return "EP"
+        case .single: return "Single"
+        case .live: return "Live"
+        case .compilation: return "Compilation"
+        }
+    }
+
+    /// From the catalogue's own type fields, which is the only source that actually knows.
+    /// MusicBrainz reports `primary-type` "Single" / "EP" / "Album" and secondary types for
+    /// live and compilation, and the plugin carries both through on ``AcquisitionRelease``.
+    static func from(albumType: String?, secondaryTypes: [String], trackCount: Int?) -> ArtistReleaseKind {
+        let type = (albumType ?? "").lowercased()
+        let secondary = secondaryTypes.map { $0.lowercased() }
+        if secondary.contains(where: { $0.contains("live") }) || type.contains("live") { return .live }
+        if secondary.contains(where: { $0.contains("compilation") })
+            || type.contains("compilation")
+            || type.contains("broadcast") {
+            return .compilation
+        }
+        // "ep" before "single": a release typed "Single" is a single, but the check has to be
+        // exact-ish either way, since "EP" is a substring of nothing else here.
+        if type.contains("ep") { return .ep }
+        if type.contains("single") { return .single }
+        if type.contains("album") { return .album }
+        return fromTrackCount(trackCount)
+    }
+
+    /// Last resort for a release the catalogue never described — a bootleg, a local rip, or an
+    /// album the server has and MusicBrainz does not. Track count is the only signal left.
+    static func fromTrackCount(_ trackCount: Int?) -> ArtistReleaseKind {
+        guard let n = trackCount else { return .album }
+        if n <= 3 { return .single }
+        if n <= 6 { return .ep }
+        return .album
+    }
+}
+
 /// A discography card — either an album on the user's server (playable) or a
 /// plugin catalog album not present locally (links to BrowseAlbumDetailView for request).
 struct ArtistDiscographyItem: Identifiable, Hashable {
@@ -120,6 +174,8 @@ struct ArtistDiscographyItem: Identifiable, Hashable {
     let title: String
     let artist: String
     let bucket: ArtistDiscographyBucket
+    /// What the release is, independent of which shelf it sits on. See ``ArtistReleaseKind``.
+    let releaseKind: ArtistReleaseKind
     let releaseYear: Int?
     /// Best-effort sort date — the most precise date the source exposes
     /// (Jellyfin/Subsonic ``AlbumSummary/releaseDate`` when present, otherwise
@@ -982,6 +1038,14 @@ final class ArtistViewModel: ObservableObject {
                     title: owned.title,
                     artist: owned.artist,
                     bucket: bucket,
+                    // The catalogue entry that matched is the one that knows what this is; the
+                    // server's own row rarely carries a release type. Falling back to the owned
+                    // album's track count only when the catalogue said nothing.
+                    releaseKind: ArtistReleaseKind.from(
+                        albumType: remote.albumType,
+                        secondaryTypes: remote.secondaryTypes,
+                        trackCount: remote.trackCount ?? owned.trackCount,
+                    ),
                     releaseYear: owned.releaseYear,
                     releaseSortDate: owned.releaseDate ?? owned.releaseYearAsDate,
                     artworkURL: owned.artworkURL,
@@ -1001,6 +1065,11 @@ final class ArtistViewModel: ObservableObject {
                 title: remote.title,
                 artist: remote.artist.isEmpty ? input.displayName : remote.artist,
                 bucket: bucket,
+                releaseKind: ArtistReleaseKind.from(
+                    albumType: remote.albumType,
+                    secondaryTypes: remote.secondaryTypes,
+                    trackCount: remote.trackCount,
+                ),
                 releaseYear: remote.releaseYear,
                 releaseSortDate: remote.releaseDate,
                 artworkURL: remote.artworkURL,
@@ -1019,6 +1088,8 @@ final class ArtistViewModel: ObservableObject {
                 title: album.title,
                 artist: album.artist,
                 bucket: bucket,
+                // Nothing in the catalogue described this one, so track count is all there is.
+                releaseKind: ArtistReleaseKind.fromTrackCount(album.trackCount),
                 releaseYear: album.releaseYear,
                 releaseSortDate: album.releaseDate ?? album.releaseYearAsDate,
                 artworkURL: album.artworkURL,
@@ -1052,10 +1123,9 @@ final class ArtistViewModel: ObservableObject {
         if title.range(of: #"\bcompilation\b|\bgreatest hits\b|\bbest of\b|\banthology\b"#, options: .regularExpression) != nil {
             return .compilations
         }
-        if let n = album.trackCount {
-            if n <= 3 { return .singlesAndEPs }
-            if n <= 6 { return .singlesAndEPs }
-        }
+        // Singles and EPs share a shelf, so both short-release cases land here. The distinction
+        // between them is carried on the item as ``ArtistReleaseKind``, not by the bucket.
+        if let n = album.trackCount, n <= 6 { return .singlesAndEPs }
         return .albums
     }
 }

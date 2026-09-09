@@ -898,7 +898,11 @@ private struct ArtistLatestReleaseCard: View {
                 artistName: release.artist,
                 title: release.title,
                 imageURL: release.artworkURL,
-                kind: release.bucket == .singlesAndEPs ? "EP" : "Album",
+                kind: ArtistReleaseKind.from(
+                    albumType: release.albumType,
+                    secondaryTypes: release.secondaryTypes,
+                    trackCount: release.trackCount,
+                ).label,
                 albumId: release.trackLookupId,
             ))
         }
@@ -1488,14 +1492,9 @@ private struct ArtistDiscographyCard: View {
         )
     }
 
-    private var bucketLabel: String {
-        switch item.bucket {
-        case .albums: return "Album"
-        case .singlesAndEPs: return "Single"
-        case .live: return "Live"
-        case .compilations: return "Compilation"
-        }
-    }
+    /// The release's own kind, not its shelf. The `singlesAndEPs` shelf holds both, so reading
+    /// the caption off the bucket labelled every EP "Single".
+    private var bucketLabel: String { item.releaseKind.label }
 
     /// Caption shown directly under the album title. Apple Music style:
     /// - year alone for albums when the year is known
