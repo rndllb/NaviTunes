@@ -68,36 +68,24 @@ struct MiniPlayerView: View {
                         horizontalDragOffset = max(-28, min(28, dx * 0.18))
                     }
                     .onEnded { value in
-                        // One gesture must produce at most one outcome, and the value that picks
-                        // the axis has to be the value that picks the direction.
-                        //
-                        // Previously the horizontal test could be satisfied by the *predicted*
-                        // translation while the upward test was satisfied by the *actual* one, so
-                        // a quick diagonal skipped a track and expanded the player in the same
-                        // flick. Direction was then read from `dx` even when the axis had been
-                        // decided by `predictedDx`, so a short fast swipe could skip the way it
-                        // was not thrown.
-                        let actual = value.translation
-                        let projected = value.predictedEndTranslation
+                        let dx = value.translation.width
+                        let dy = value.translation.height
+                        let predictedDx = value.predictedEndTranslation.width
+                        let isHorizontalSwipe = (abs(dx) > 45 && abs(dx) > abs(dy))
+                            || (abs(predictedDx) > 120
+                                && abs(predictedDx) > abs(value.predictedEndTranslation.height))
+                        let isUpwardSwipe = dy < -40
+                            && abs(dy) > abs(dx)
 
-                        // A deliberate drag is judged on where it ended; a flick that barely moved
-                        // is judged on where it was heading. Whichever is chosen, both axes and
-                        // the direction come from that same translation.
-                        let isFlick = abs(actual.width) < 45 && abs(actual.height) < 40
-                        let translation = isFlick ? projected : actual
-                        let threshold: CGFloat = isFlick ? 120 : 45
-
-                        if abs(translation.width) > abs(translation.height) {
-                            guard abs(translation.width) > threshold else {
-                                horizontalDragOffset = 0
-                                return
-                            }
-                            if translation.width < 0 {
+                        if isHorizontalSwipe {
+                            if dx < 0 || predictedDx < -120 {
                                 player.skipNext()
                             } else {
                                 player.skipPrevious()
                             }
-                        } else if translation.height < -(isFlick ? 120 : 40) {
+                        }
+
+                        if isUpwardSwipe {
                             expandNowPlaying()
                         }
 
