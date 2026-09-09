@@ -4,6 +4,8 @@ import UniformTypeIdentifiers
 struct SettingsEqualizerView: View {
     @EnvironmentObject private var app: AppModel
     @State private var drawGains: [Float] = EqualizerBand.flatGains
+    /// Whether the draw surface is on screen. See ``drawSection``.
+    @State private var isEditingCurve = false
     @State private var exportName = "My EQ"
     @State private var showImporter = false
     @State private var showHearingTest = false
@@ -17,7 +19,6 @@ struct SettingsEqualizerView: View {
             if app.equalizerEnabled {
                 graphSection
                 drawSection
-                presetSection
                 automationSection
                 advancedSection
                 sharingSection
@@ -139,29 +140,15 @@ struct SettingsEqualizerView: View {
             || app.equalizerHearingOffset.contains(where: { abs($0) > 0.01 })
     }
 
+    /// Preset, precision toggle, and the draw surface behind an explicit edit mode.
+    ///
+    /// The surface used to sit in the list permanently, and a draw gesture is indistinguishable
+    /// from the start of a scroll until it has already moved — so scrolling past it redrew the
+    /// curve and silently dropped the active preset to Flat (`onEditingEnded` reassigns
+    /// `equalizerPresetId`). Losing a preset to a scroll is not recoverable by scrolling back.
+    ///
+    /// Behind a button, the gesture only exists while the user has said they want to draw.
     private var drawSection: some View {
-        Section {
-            Toggle("Precision draw (0.5 dB snap)", isOn: $app.equalizerPrecisionDraw)
-                .tint(MusicDesign.accent)
-            EqualizerDrawSurface(
-                gains: $drawGains,
-                precisionMode: app.equalizerPrecisionDraw,
-                onEditingBegan: {
-                    app.beginEqualizerEditSession()
-                },
-                onEditingEnded: {
-                    app.setEqualizerBandGains(drawGains, recordHistory: false)
-                    app.endEqualizerEditSession()
-                    app.equalizerPresetId = EqualizerPreset.catalog[0].id
-                },
-            )
-            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-        } header: {
-            Text("Draw EQ")
-        }
-    }
-
-    private var presetSection: some View {
         Section {
             Picker("Preset", selection: $app.equalizerPresetId) {
                 ForEach(EqualizerPreset.catalog) { preset in
@@ -171,6 +158,43 @@ struct SettingsEqualizerView: View {
             .pickerStyle(.navigationLink)
             .onChange(of: app.equalizerPresetId) { _, newValue in
                 app.applyEqualizerPreset(EqualizerPreset.preset(id: newValue))
+            }
+
+            Toggle("Precision draw (0.5 dB snap)", isOn: $app.equalizerPrecisionDraw)
+                .tint(MusicDesign.accent)
+
+            Button {
+                // Re-seed from the live gains on entry so the surface always opens showing what
+                // is actually applied, not whatever was left from the last edit.
+                if !isEditingCurve { drawGains = app.equalizerBandGains }
+                withAnimation(.snappy) { isEditingCurve.toggle() }
+            } label: {
+                Label(
+                    isEditingCurve ? "Done Editing" : "Edit Curve",
+                    systemImage: isEditingCurve ? "checkmark" : "pencil.and.outline",
+                )
+            }
+
+            if isEditingCurve {
+                EqualizerDrawSurface(
+                    gains: $drawGains,
+                    precisionMode: app.equalizerPrecisionDraw,
+                    onEditingBegan: {
+                        app.beginEqualizerEditSession()
+                    },
+                    onEditingEnded: {
+                        app.setEqualizerBandGains(drawGains, recordHistory: false)
+                        app.endEqualizerEditSession()
+                        app.equalizerPresetId = EqualizerPreset.catalog[0].id
+                    },
+                )
+                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+            }
+        } header: {
+            Text("Draw EQ")
+        } footer: {
+            if !isEditingCurve {
+                Text("The Response graph above shows the curve in use. Editing here replaces the selected preset.")
             }
         }
     }
