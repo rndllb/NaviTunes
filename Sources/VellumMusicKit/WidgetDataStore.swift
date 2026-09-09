@@ -24,6 +24,18 @@ public enum WidgetDataStore {
         }
 
         public var artworkURL: URL? { artworkURLString.flatMap(URL.init(string:)) }
+
+        /// Where a tap on the **Now Playing** widget goes.
+        ///
+        /// Deliberately not ``deepLinkURL``. Both widgets render a `MusicItem`, but they are
+        /// about different things: a Recently Played tile is about a record, so its tap opens
+        /// that record; the Now Playing tile is about the thing currently playing, so its tap
+        /// opens the player. Sharing one URL builder meant the Now Playing tile asked for an
+        /// album page — and since `nowPlaying` is written with `kind: .album`, a tap landed on
+        /// album detail or, when the album wasn't in the catalog, on Home. That is the "just
+        /// opens the app" report.
+        public static let nowPlayingDeepLinkURL = URL(string: "vellum://nowplaying")!
+
         public var deepLinkURL: URL {
             var c = URLComponents()
             c.scheme = "vellum"

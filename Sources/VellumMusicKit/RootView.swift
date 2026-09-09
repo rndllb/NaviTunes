@@ -220,12 +220,12 @@ private struct MainShellView: View {
             if !presented { OverPlayerSheetPresenter.shared.dismiss(animated: false) }
             #endif
         }
-#if DEBUG
-        .onChange(of: app.debugOpenPlayerRequests) { _, _ in
+        .onChange(of: app.openNowPlayingRequests) { _, _ in
+            // Only when there is something to show. Raising an empty player from a widget tap
+            // would replace the app the user asked for with a blank screen they have to dismiss.
             guard app.player.activeTrack != nil else { return }
             showNowPlaying = true
         }
-#endif
         // AddToPlaylist is presented through the UIKit `OverPlayerSheetPresenter` on iOS
         // (see `AppModel.presentAddToPlaylist`) so a SwiftUI `.sheet` never shares the root
         // presentation host with the Now Playing `.fullScreenCover`. That pairing aborts in

@@ -139,7 +139,9 @@ struct NowPlayingWidgetView: View {
                 .buttonStyle(.plain)
             }
         }
-        .widgetURL(track?.deepLinkURL ?? URL(string: "vellum://home")!)
+        .widgetURL(track == nil
+            ? URL(string: "vellum://home")!
+            : WidgetDataStore.MusicItem.nowPlayingDeepLinkURL)
     }
 
     // MARK: Medium
@@ -183,7 +185,7 @@ struct NowPlayingWidgetView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding(14)
-                .widgetURL(track.deepLinkURL)
+                .widgetURL(WidgetDataStore.MusicItem.nowPlayingDeepLinkURL)
             } else {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 5) {
