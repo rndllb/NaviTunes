@@ -426,6 +426,13 @@ public final class AppModel: ObservableObject {
     @Published private(set) var recentAddToPlaylistIds: [String] = []
 
     /// Jellyfin / Navidrome playlists (excludes in-app “Favorite Songs”).
+    /// True when the last playlist refresh threw. See C78 in ``refreshLibraryPlaylists()``.
+    ///
+    /// The refresh no longer turns a failure into an empty list, so this is the second line:
+    /// it stops ``persistLibrarySnapshot()`` writing an empty playlist array to disk while we
+    /// are known to be out of contact with the server.
+    @Published private(set) var libraryPlaylistsFetchFailed = false
+
     @Published private(set) var libraryPlaylists: [PlaylistSummary] = [] {
         didSet {
             libraryPlaylistsById = Dictionary(libraryPlaylists.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -443,6 +450,13 @@ public final class AppModel: ObservableObject {
     /// Server-side id of the resolved magic playlist for the active session. `nil` until
     /// ``refreshLibraryMembership()`` succeeds at least once after sign-in.
     @Published private(set) var libraryMagicPlaylistId: String?
+
+    /// True while the last read of the magic playlist's membership payload was unreadable.
+    ///
+    /// Blocks writes back to the server: the in-memory entries cannot be trusted to reflect
+    /// what is there, and overwriting a library we failed to read is not recoverable. Cleared
+    /// by the next readable payload. See C15 in ``applyMagicPlaylistFetch``.
+    @Published private(set) var libraryMembershipWriteBlocked = false
     /// Song IDs the user has added to their library (mirrors magic playlist tracks).
     @Published private(set) var librarySongIds: Set<String> = [] {
         didSet { invalidateMembershipLookups() }
@@ -1619,6 +1633,11 @@ public final class AppModel: ObservableObject {
     }
 
     func persistLibrarySnapshot() {
+        // C78. Never let a known-failed refresh write an empty playlist array over a good
+        // snapshot. `refreshLibraryPlaylists()` already declines to clear the in-memory list on
+        // failure, so this only fires if the list was empty for some other reason while we are
+        // also out of contact — in which case the disk copy is the better record of the truth.
+        guard !(libraryPlaylistsFetchFailed && libraryPlaylists.isEmpty) else { return }
         PerfLog.measure("persistLibrarySnapshot.capture", details: "albums=\(libraryAlbums.count) tracks=\(discoveryLibraryTracks.count) playlists=\(libraryPlaylists.count) songIds=\(librarySongIds.count)") {
             // Capture a value snapshot on the main actor (cheap thanks to Swift CoW),
             // then hand the JSON encode + atomic disk write to a background task so
@@ -2278,7 +2297,27 @@ public final class AppModel: ObservableObject {
     }
 
     private func applyMagicPlaylistFetch(playlistId: String, fetch: LibraryPlaylistFetchShape) {
-        let payload = LibraryMembershipPayload.decode(fetch.comment)
+        let outcome = LibraryMembershipPayload.decodeOutcome(fetch.comment)
+        // C15. A comment that was present and did not parse says nothing about what the user
+        // has. It used to decode to an empty payload, and because a truncated read usually
+        // loses the track ids too, `fetch.trackIds.isEmpty` was true as well — so the guard
+        // below took the "library is genuinely empty" branch and cleared the entries. The next
+        // mutation then wrote that emptiness to the server, permanently.
+        //
+        // Refuse instead of repairing: touch nothing, and block writes until a readable payload
+        // arrives. A stale in-memory library is recoverable; an erased server one is not.
+        if case .malformed = outcome {
+            if !libraryMembershipWriteBlocked {
+                libraryMembershipWriteBlocked = true
+                showTransientToast("Couldn't read library from server")
+            }
+            return
+        }
+        libraryMembershipWriteBlocked = false
+        let payload: LibraryMembershipPayload = {
+            if case .valid(let decoded) = outcome { return decoded }
+            return .empty
+        }()
         #if DEBUG
         print("[MAGIC-SYNC] apply id=\(playlistId) tracks=\(fetch.trackIds.count) payloadAlbums=\(payload.albums.count) payloadPlaylists=\(payload.playlists.count) curEntries=\(libraryAlbumEntries.count) curCatalog=\(libraryAlbums.count)")
         #endif
@@ -2482,6 +2521,14 @@ public final class AppModel: ObservableObject {
     /// playlist's comment field. Safe to call after every mutation; idempotent.
     private func persistLibraryMembershipPayload() async {
         guard let playlistId = libraryMagicPlaylistId else { return }
+        // C15. The last read of this playlist's membership was unreadable, so the in-memory
+        // entries may not reflect what is actually on the server. Writing now would replace a
+        // library we could not read with one we inferred. Blocked until a readable payload
+        // arrives — see `applyMagicPlaylistFetch`.
+        guard !libraryMembershipWriteBlocked else {
+            showTransientToast("Library sync paused — couldn't read server copy")
+            return
+        }
         let payload = LibraryMembershipPayload(
             albums: libraryAlbumEntries,
             playlists: libraryPlaylistEntries,
@@ -3620,15 +3667,30 @@ public final class AppModel: ObservableObject {
     /// Filters out the Vellum magic playlist by both id and `__vellum_` name prefix so it
     /// never appears in user-facing playlist surfaces.
     func refreshLibraryPlaylists() async {
-        let fetched: [PlaylistSummary]
+        // C78. This used to be `(try? await …) ?? []`, which turned any thrown error — a dropped
+        // connection, an auth blip, a 500 — into an empty list. `libraryPlaylists` was then set
+        // to `[]`, and the next `persistLibrarySnapshot()` wrote `playlists: []` over the good
+        // snapshot on disk. The load path guards with `if !snap.playlists.isEmpty`, but by then
+        // the disk copy is already gone, so there is nothing left to guard.
+        //
+        // An error is not a fact about the user's playlists. On failure the existing list is
+        // left exactly as it is and nothing is persisted; the next successful refresh replaces
+        // it. Sign-out clears `libraryPlaylists` explicitly elsewhere, so a missing client here
+        // is a transient state to wait out, not a reason to erase.
+        let fetched: [PlaylistSummary]?
         switch backendKind {
         case .jellyfin:
-            guard let client = jellyfin else { libraryPlaylists = []; return }
-            fetched = (try? await client.fetchPlaylistSummaries()) ?? []
+            guard let client = jellyfin else { return }
+            fetched = try? await client.fetchPlaylistSummaries()
         case .navidrome:
-            guard let client = navidrome else { libraryPlaylists = []; return }
-            fetched = (try? await client.fetchPlaylistSummaries()) ?? []
+            guard let client = navidrome else { return }
+            fetched = try? await client.fetchPlaylistSummaries()
         }
+        guard let fetched else {
+            libraryPlaylistsFetchFailed = true
+            return
+        }
+        libraryPlaylistsFetchFailed = false
         libraryPlaylists = filterOutMagicPlaylist(fetched)
         rebuildHomeRecentlyPlayed()
         warmPlaylistRowsCache()
