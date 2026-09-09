@@ -14,7 +14,7 @@ import Testing
 ///     matching a name the generator produces, "edit a playlist" becomes "delete my library".
 @Suite("LibraryMembership")
 struct LibraryMembershipTests {
-    private static let user = "ethan"
+    private static let user = "listener"
     private static let server = "music.example.com"
 
     // MARK: - Name generation is deterministic
@@ -30,10 +30,10 @@ struct LibraryMembershipTests {
     /// hash, the same account would land on two different playlists.
     @Test(
         "user key is normalised for case and whitespace",
-        arguments: ["ethan", "Ethan", "ETHAN", "  ethan  ", "\tethan\n"],
+        arguments: ["listener", "Listener", "LISTENER", "  listener  ", "\tlistener\n"],
     )
     func userKeyNormalised(userKey: String) {
-        let expected = LibraryMembership.magicPlaylistName(backend: .navidrome, serverKey: Self.server, userKey: "ethan")
+        let expected = LibraryMembership.magicPlaylistName(backend: .navidrome, serverKey: Self.server, userKey: "listener")
         #expect(LibraryMembership.magicPlaylistName(backend: .navidrome, serverKey: Self.server, userKey: userKey) == expected)
     }
 
@@ -90,7 +90,7 @@ struct LibraryMembershipTests {
     func generatorAndPredicateAgree() {
         for backend in BackendKind.allCases {
             for server in [Self.server, "other.example.com:4533", ""] {
-                for user in ["ethan", "a", "user with spaces", "ünïcøde"] {
+                for user in ["listener", "a", "user with spaces", "ünïcøde"] {
                     let name = LibraryMembership.magicPlaylistName(backend: backend, serverKey: server, userKey: user)
                     #expect(
                         LibraryMembership.isMagicPlaylistName(name),
