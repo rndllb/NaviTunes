@@ -67,8 +67,8 @@ ALBUMS = [
     album_obj("Japanese Denim", DANIEL, "aaaaaaaa-0000-0000-0000-000000000001", "Single", 2016),
     album_obj("Freudian", DANIEL, "aaaaaaaa-0000-0000-0000-000000000002", "Album", 2017),
     album_obj("Pilot Talk", POLISH, "aaaaaaaa-0000-0000-0000-000000000003", "Album", 2010),
-    # The rest of what Ethan's `japanese de` actually returned, so the ranking is exercised
-    # against the same shape of candidate list.
+    # The rest of what a real `japanese de` lookup actually returned, so the ranking is
+    # exercised against the same shape of candidate list.
     album_obj("Japanese Death Machine", JDEATH, "aaaaaaaa-0000-0000-0000-000000000004", "EP", 2019),
     album_obj("The Fame Monster (Japanese Deluxe Edition)", GAGA, "aaaaaaaa-0000-0000-0000-000000000005", "Album", 2009),
     album_obj("1999 Japanese denim", ACIDGVRL, "aaaaaaaa-0000-0000-0000-000000000006", "Single", 2019),
@@ -120,7 +120,7 @@ def matches(term, *fields):
 def artist_matches(term, name):
     """Looser than `matches`, to imitate how fuzzy Lidarr's artist lookup really is.
 
-    Ethan's `japanese de` came back with "DJ.Deplorer", which shares only the "de". A strict
+    A real `japanese de` lookup came back with "DJ.Deplorer", which shares only the "de". A strict
     all-tokens rule would never return that, and it is the single most important row to
     reproduce: relevance 0, yet the old flat +1.0 bump put it above the exact match.
     Also matches on a 4-char prefix so a typo like "dafto" still finds "Daft Punk".
