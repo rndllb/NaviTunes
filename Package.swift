@@ -26,5 +26,11 @@ let package = Package(
             path: "Sources/VellumMusic",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
+        .testTarget(
+            name: "VellumMusicKitTests",
+            dependencies: ["VellumMusicKit"],
+            path: "Tests/VellumMusicKitTests",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
     ]
 )

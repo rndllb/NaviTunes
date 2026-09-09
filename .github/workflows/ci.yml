@@ -1,0 +1,75 @@
+name: CI
+
+# Runs on pull requests only. Pushes to a feature branch don't burn runner minutes;
+# the check fires once a PR opens against dev or main, which is where it gates merging.
+on:
+  pull_request:
+    branches: [dev, main]
+  workflow_dispatch:
+
+# A new push to the same PR cancels the previous run rather than queueing behind it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # This job's name is what you mark as a required status check in the branch
+  # ruleset: "build-and-test".
+  build-and-test:
+    # macOS runners bill at 10x on private repos. If minutes become the constraint,
+    # register a self-hosted runner and swap this for:
+    #   runs-on: [self-hosted, macOS, ARM64]
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The package targets iOS 26.1 with swift-tools 6.2, so an older Xcode cannot
+      # build it at all. Fail loudly here rather than deep inside a build log.
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      # Simulator names and UDIDs differ per runner image, so resolve one at runtime.
+      # simctl lists runtimes oldest-first, so the last iPhone is on the newest iOS.
+      - name: Resolve an iOS simulator
+        id: sim
+        run: |
+          set -euo pipefail
+          xcrun simctl list devices available
+          UDID=$(xcrun simctl list devices available \
+            | grep -E '^\s+iPhone' \
+            | tail -1 \
+            | sed -E 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/')
+          test -n "$UDID"
+          echo "Using simulator $UDID"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/org.swift.swiftpm
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.swift') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      # Compiles the host app and the package, then runs the VellumMusicKit unit tests.
+      # Code signing is off because a Simulator build needs no certificate or profile.
+      # VellumMusicUITests is deliberately not in this scheme: it needs a signed-in
+      # Navidrome/Jellyfin server and would be flaky here.
+      - name: Build and test
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -workspace VellumMusic.xcworkspace \
+            -scheme VellumMusicKitTests \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            -resultBundlePath TestResults.xcresult \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TestResults
+          path: TestResults.xcresult
+          if-no-files-found: ignore
