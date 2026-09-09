@@ -1982,7 +1982,16 @@ enum NavidromeLyricsParser {
         guard !starts.isEmpty else { return nil }
         let cleaned = cleanInlineTimeTags(work)
         guard !cleaned.isEmpty else { return nil }
-        return (starts, cleaned)
+        // Distinct timestamps only. A line tagged twice at the same time — `[00:10][00:10]` —
+        // is one performance written clumsily, not two, and emitting it twice produced two
+        // `LyricLine`s with the same `id` ("10.0-Chorus"). The lyrics view renders
+        // `ForEach(Array(displayItems.enumerated()), id: \.element.id)`, so duplicate ids there
+        // are undefined behaviour and corrupt the index/identity pairing the rows are laid out
+        // from. Deduplicating at the source keeps every genuine repeat while making a
+        // same-time repeat impossible to express.
+        var seen = Set<TimeInterval>()
+        let distinct = starts.filter { seen.insert($0).inserted }
+        return (distinct, cleaned)
     }
 
     /// The line's first timestamp only — for callers that represent a line once.

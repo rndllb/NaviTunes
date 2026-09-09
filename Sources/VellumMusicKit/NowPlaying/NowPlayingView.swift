@@ -2817,7 +2817,7 @@ private struct LyricsFocusScrollView: View {
                     ForEach(Array(displayItems.enumerated()), id: \.element.id) { index, item in
                         renderItemView(item, index: index)
                             .id(item.id)
-                            .padding(.bottom, spacingAfterItem(at: index))
+                            .padding(.bottom, spacingAfter(item: item, index: index))
                     }
                 }
                 .padding(.horizontal, 28)
@@ -2971,10 +2971,28 @@ private struct LyricsFocusScrollView: View {
         }
     }
 
-    private func spacingAfterItem(at index: Int) -> CGFloat {
+    /// Spacing below a row, decided from the row itself rather than by looking it up again.
+    ///
+    /// This used to take only an index and read `displayItems[index]`, which crashed with
+    /// "index out of range". The index comes from `Array(displayItems.enumerated())` inside the
+    /// `ForEach`; this function then read `displayItems` a *second* time, at call time. Those
+    /// are two separate reads of the same `@State`, and they can disagree — `displayItems` is
+    /// replaced wholesale on a track change or a lyric reload, so a row body still being
+    /// evaluated against the previous, longer array indexes past the end of the new one.
+    ///
+    /// Bounds-checking the subscript would have silenced the trap while leaving the row laid out
+    /// from a stale index. The item is already in scope at the call site, so the fix is to stop
+    /// doing the second lookup at all: nothing here needs the array, only this row's kind and
+    /// whether it is the active one. `index != activeIndex` is an integer comparison and is safe
+    /// however stale either side is — a wrong spacing for one frame is not a crash.
+    ///
+    /// The sibling access in `scrollToActiveItem` already guards with
+    /// `displayItems.indices.contains(activeIndex)`, so this hazard was known here; this one was
+    /// simply missed.
+    private func spacingAfter(item: LyricRenderItem, index: Int) -> CGFloat {
         guard !isUnsynced else { return 14 }
         // Collapsed (inactive) silence rows must not leave a phantom gap.
-        if case .silence = displayItems[index], index != activeIndex { return 0 }
+        if case .silence = item, index != activeIndex { return 0 }
         return index == activeIndex ? 30 : 22
     }
 

@@ -219,4 +219,69 @@ struct NavidromeLyricsParserTests {
         #expect(NavidromeLyricsParser.parse(plain: "").isEmpty)
         #expect(NavidromeLyricsParser.parse(plain: "\n\n  \n").isEmpty)
     }
+
+    // MARK: - Row identity (T240 crash)
+
+    /// **`LyricLine.id` is a SwiftUI identity, not a debugging aid.** The lyrics view renders
+    /// `ForEach(Array(displayItems.enumerated()), id: \.element.id)`, so two lines sharing an id
+    /// are duplicate identities in a `ForEach` — undefined behaviour, and it corrupts the
+    /// index/identity pairing the rows are laid out from. The app crashed with "index out of
+    /// range" in that view.
+    ///
+    /// The regression was mine: expanding repeated timestamps (issue #2) made a line tagged
+    /// twice at the *same* time emit two identical lines. Measured before and after that commit
+    /// on this exact input — before: 2 lines, 2 unique ids; after: 3 lines, 2 unique ids.
+    @Test("a line tagged twice at the same time yields one row, not two identical ones")
+    func sameTimestampTwiceIsOneRow() {
+        let lines = NavidromeLyricsParser.parse(plain: """
+        [00:10.00][00:10.00]Chorus
+        [00:20.00]Verse
+        """)
+        #expect(lines.map(\.text) == ["Chorus", "Verse"])
+        let ids = lines.map(\.id)
+        #expect(Set(ids).count == ids.count, "duplicate ids: \(ids)")
+    }
+
+    /// Deduplicating same-time repeats must not swallow genuine ones.
+    @Test("distinct repeats survive deduplication")
+    func distinctRepeatsSurvive() {
+        let lines = NavidromeLyricsParser.parse(plain: """
+        [00:10.00][00:10.00][01:40.00][01:40.00][03:10.00]Chorus
+        [00:20.00]Verse
+        """)
+        #expect(lines.map(\.text) == ["Chorus", "Verse", "Chorus", "Chorus"])
+        let ids = lines.map(\.id)
+        #expect(Set(ids).count == ids.count, "duplicate ids: \(ids)")
+    }
+
+    /// The invariant itself, over the shapes most able to collide: repeated tags, an offset that
+    /// shifts every start, duplicated file rows, and a chorus written out longhand.
+    @Test(
+        "parsed lyrics never contain two rows with the same id",
+        arguments: [
+            "[00:10.00][00:10.00]Chorus\n[00:20.00]Verse",
+            "[offset:500]\n[00:10.00][00:10.00]Chorus\n[00:20.00]Verse",
+            "[00:10.00][01:40.00][03:10.00]Chorus\n[00:20.00]Verse\n[02:00.00]Verse",
+            "[00:10.00]Chorus\n[01:40.00]Chorus\n[03:10.00]Chorus",
+            "[00:05.00]La\n[00:05.50]La\n[00:06.00]La",
+        ],
+    )
+    func idsAreUnique(source: String) {
+        let ids = NavidromeLyricsParser.parse(plain: source).map(\.id)
+        #expect(Set(ids).count == ids.count, "duplicate ids: \(ids)")
+    }
+
+    /// Two *different* lyrics at the same timestamp are still two rows — the dedupe is per line,
+    /// not global, so a genuine simultaneous pair must not collapse.
+    @Test("different text at the same timestamp stays two rows")
+    func differentTextSameTimeKeptSeparate() {
+        let lines = NavidromeLyricsParser.parse(plain: """
+        [00:10.00]First voice
+        [00:10.00]Second voice
+        [00:20.00]Verse
+        """)
+        #expect(lines.count == 3)
+        let ids = lines.map(\.id)
+        #expect(Set(ids).count == ids.count, "duplicate ids: \(ids)")
+    }
 }
