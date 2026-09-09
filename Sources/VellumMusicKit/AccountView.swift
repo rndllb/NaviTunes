@@ -338,6 +338,15 @@ struct AccountView: View {
                     title: { $0.title }
                 )
                 .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                // Signed in, this bar wrote straight through to `app.backendKind` — swapping the
+                // active backend under a live session, with the previous server's library,
+                // playlists and magic-playlist id still loaded. Signing out is the way to change
+                // it, so the control reflects that rather than accepting a tap it can't honour.
+                .disabled(app.isSignedIn)
+            } footer: {
+                if app.isSignedIn {
+                    Text("Sign out to connect to a different server.")
+                }
             }
 
             Section {
@@ -353,6 +362,7 @@ struct AccountView: View {
                 } label: {
                     Label("Primary", systemImage: "globe")
                 }
+                .disabled(app.isSignedIn)
 
                 LabeledContent {
                     TextField("Local IP address", text: $serverDraft.secondaryURL, prompt: Text(localServerURLPlaceholder))
@@ -366,6 +376,7 @@ struct AccountView: View {
                 } label: {
                     Label("Fallback", systemImage: "wifi.router")
                 }
+                .disabled(app.isSignedIn)
 
                 Button {
                     app.trustCurrentServerCertificate()
@@ -450,31 +461,39 @@ struct AccountView: View {
                     .textContentType(.username)
                     .musicTextInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .disabled(app.isSignedIn)
 
                 SecureField("Password", text: $serverDraft.password)
                     .textContentType(.password)
+                    .disabled(app.isSignedIn)
 
-                Button {
-                    Task { await checkConnection() }
-                } label: {
-                    HStack {
-                        Spacer(minLength: 0)
-                        if isCheckingConnection {
-                            ProgressView()
-                                .tint(MusicDesign.accent)
-                        } else if connectionSuccess {
-                            Label("Connected", systemImage: "checkmark.circle.fill")
-                        } else {
-                            Text(app.isSignedIn ? "Update connection" : "Sign in")
+                // Hidden rather than disabled while signed in: with every field above locked, the
+                // only thing it could submit is the credentials already in use. A button that is
+                // present, enabled and incapable of changing anything is the same defect as a
+                // control that silently does nothing.
+                if !app.isSignedIn {
+                    Button {
+                        Task { await checkConnection() }
+                    } label: {
+                        HStack {
+                            Spacer(minLength: 0)
+                            if isCheckingConnection {
+                                ProgressView()
+                                    .tint(MusicDesign.accent)
+                            } else if connectionSuccess {
+                                Label("Connected", systemImage: "checkmark.circle.fill")
+                            } else {
+                                Text("Sign in")
+                            }
+                            Spacer(minLength: 0)
                         }
-                        Spacer(minLength: 0)
                     }
+                    .disabled(
+                        isCheckingConnection
+                            || serverDraft.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || serverDraft.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    )
                 }
-                .disabled(
-                    isCheckingConnection
-                        || serverDraft.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        || serverDraft.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                )
             } header: {
                 Text("Account")
             } footer: {
