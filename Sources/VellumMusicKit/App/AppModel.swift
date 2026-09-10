@@ -2670,11 +2670,6 @@ public final class AppModel: ObservableObject {
     public func handleAppBecameActive() {
         offline.handleAppBecameActive()
         Task { await evaluateAutoOfflineMode() }
-        #if os(iOS)
-        // A Live Activity outlives the process, so reclaim one left over from a previous run
-        // before `writeWidgetData()` decides whether to start or update.
-        NowPlayingLiveActivityController.adoptExistingActivity()
-        #endif
         writeWidgetData()
         // Pick up any widget command that fired while the app wasn't running
         handleWidgetCommandFromNotification()
@@ -5932,15 +5927,6 @@ public final class AppModel: ObservableObject {
         )
         WidgetDataStore.write(payload)
         #if os(iOS)
-        // The Live Activity rides the same funnel as the widgets so the Dynamic Island cannot
-        // drift out of step with them. It shows the *track* title where the widgets show the
-        // album: the island is about what is sounding right now.
-        NowPlayingLiveActivityController.sync(
-            title: player.activeTrack?.title,
-            artist: player.activeTrack?.artist ?? "",
-            isPlaying: player.isPlaying,
-            artworkItemId: nowPlaying?.id,
-        )
         // First reload: title/artist/play-state update immediately.
         WidgetCenter.shared.reloadAllTimelines()
         // Second reload: after artwork is fetched and saved to the shared container.
