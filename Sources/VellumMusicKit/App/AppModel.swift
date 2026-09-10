@@ -2681,17 +2681,6 @@ public final class AppModel: ObservableObject {
         // Resume the library-membership poll paused on background. Guarded
         // against double-start; the loop refreshes immediately on resume.
         if isSignedIn { startLibraryMembershipAutoSync() }
-        // Tapping the artwork in the system Now Playing control launches this app, but iOS
-        // hands over no reason for the launch, so this is the only place the tap can be
-        // answered — and it cannot be told apart from any other foreground. See
-        // `NowPlayingAutoPresent` for what that costs.
-        if NowPlayingAutoPresent.shouldPresentOnBecomingActive(
-            isPlaying: player.isPlaying,
-            hasActiveTrack: player.activeTrack != nil,
-            isAlreadyPresented: isNowPlayingCoverPresented,
-        ) {
-            openNowPlayingRequests += 1
-        }
     }
 
     public func handleWidgetDeepLink(_ url: URL) {
