@@ -12,7 +12,6 @@
 		BB0000000000000000000011 /* VellumWidgetsBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000003 /* VellumWidgetsBundle.swift */; };
 		BB0000000000000000000012 /* VellumRecentlyPlayedWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000004 /* VellumRecentlyPlayedWidget.swift */; };
 		BB0000000000000000000013 /* VellumNowPlayingWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000005 /* VellumNowPlayingWidget.swift */; };
-		BB0000000000000000000015 /* VellumNowPlayingLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000008 /* VellumNowPlayingLiveActivity.swift */; };
 		BB0000000000000000000014 /* VellumWidgets.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000006 /* VellumWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		BB0000000000000000000070 /* VellumMusicKit in Frameworks */ = {isa = PBXBuildFile; productRef = BB0000000000000000000071 /* VellumMusicKit */; };
 		IC0000000000000000000020 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000010 /* AppIcon.icon */; };
@@ -75,7 +74,6 @@
 		BB0000000000000000000003 /* VellumWidgetsBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumWidgetsBundle.swift; sourceTree = "<group>"; };
 		BB0000000000000000000004 /* VellumRecentlyPlayedWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumRecentlyPlayedWidget.swift; sourceTree = "<group>"; };
 		BB0000000000000000000005 /* VellumNowPlayingWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumNowPlayingWidget.swift; sourceTree = "<group>"; };
-		BB0000000000000000000008 /* VellumNowPlayingLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumNowPlayingLiveActivity.swift; sourceTree = "<group>"; };
 		BB0000000000000000000006 /* VellumWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = VellumWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		BB0000000000000000000007 /* VellumMusicHost.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = VellumMusicHost.entitlements; sourceTree = "<group>"; };
 		IC0000000000000000000010 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
@@ -179,7 +177,6 @@
 				BB0000000000000000000003 /* VellumWidgetsBundle.swift */,
 				BB0000000000000000000004 /* VellumRecentlyPlayedWidget.swift */,
 				BB0000000000000000000005 /* VellumNowPlayingWidget.swift */,
-				BB0000000000000000000008 /* VellumNowPlayingLiveActivity.swift */,
 				BB0000000000000000000001 /* VellumWidgets.entitlements */,
 				BB0000000000000000000002 /* Info.plist */,
 			);
@@ -366,7 +363,6 @@
 				BB0000000000000000000011 /* VellumWidgetsBundle.swift in Sources */,
 				BB0000000000000000000012 /* VellumRecentlyPlayedWidget.swift in Sources */,
 				BB0000000000000000000013 /* VellumNowPlayingWidget.swift in Sources */,
-				BB0000000000000000000015 /* VellumNowPlayingLiveActivity.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
