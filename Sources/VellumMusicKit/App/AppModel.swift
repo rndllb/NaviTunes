@@ -2684,19 +2684,13 @@ public final class AppModel: ObservableObject {
     }
 
     public func handleWidgetDeepLink(_ url: URL) {
-        guard url.scheme == "vellum" else { return }
-        let host = url.host ?? ""
-        let itemId = url.pathComponents.dropFirst().first ?? ""
-        switch host {
-        case "album" where !itemId.isEmpty:
-            if let album = libraryAlbums.first(where: { $0.id == itemId }) {
-                selectedTab = .library
-                deepLinkTab = .library
-                presentedDeepLink = .album(album)
-            } else {
-                selectedTab = .home
-            }
-        case "nowplaying":
+        // Routing — including the already-open guard — lives in `WidgetDeepLink` so every
+        // surface that sends one of these URLs is covered once. See that type for why the guard
+        // is not in the presenting view.
+        switch WidgetDeepLink.route(for: url, isNowPlayingPresented: isNowPlayingCoverPresented) {
+        case .ignore:
+            return
+        case .openNowPlaying:
             // The Now Playing widget is about what is playing, so its tap asks for the player.
             // No id is compared: the widget may be a refresh behind, but the user tapped
             // "what's playing", and the answer to that is whatever is playing now.
@@ -2704,9 +2698,15 @@ public final class AppModel: ObservableObject {
             // `RootView` ignores the request when nothing is loaded, so a tap on a stale widget
             // after playback ended still just opens the app rather than raising a blank cover.
             openNowPlayingRequests += 1
-        case "track" where !itemId.isEmpty:
-            selectedTab = .home
-        default:
+        case .album(let id):
+            if let album = libraryAlbums.first(where: { $0.id == id }) {
+                selectedTab = .library
+                deepLinkTab = .library
+                presentedDeepLink = .album(album)
+            } else {
+                selectedTab = .home
+            }
+        case .home:
             selectedTab = .home
         }
     }
