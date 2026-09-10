@@ -5949,8 +5949,44 @@ public final class AppModel: ObservableObject {
             let wrote = await WidgetDataStore.cacheArtwork(items: allItems)
             if wrote {
                 await WidgetCenter.shared.reloadAllTimelines()
+                // **A Live Activity is not a WidgetKit timeline.** `reloadAllTimelines()` does
+                // nothing for it; it only re-renders when `activity.update(_:)` is called.
+                //
+                // The sync above runs before this download, so on a track change the activity is
+                // handed an `artworkItemId` whose file does not exist yet, `cachedArtworkData`
+                // returns nil, and it draws the note placeholder. Without this second sync it
+                // kept that placeholder for the rest of the track — which is why the system Now
+                // Playing control showed the real cover (it is fed in-process by
+                // `MPNowPlayingInfoCenter`) while ours sat on a glyph directly below it.
+                await MainActor.run { AppModel.shared?.syncLiveActivityToCurrentTrack() }
             }
         }
+        #endif
+    }
+
+    /// Re-pushes the current track to the Live Activity.
+    ///
+    /// Exists because the activity has to be told twice on a track change: once immediately, so
+    /// title and play state are right, and again once the artwork file lands in the App Group —
+    /// the first push necessarily references a file that has not been downloaded yet.
+    ///
+    /// Reads the player rather than taking captured values, so a track that changed again while
+    /// the download was in flight publishes the *current* one instead of resurrecting the old.
+    func syncLiveActivityToCurrentTrack() {
+        #if os(iOS)
+        guard let track = player.activeTrack else {
+            NowPlayingLiveActivityController.sync(title: nil, artist: "", isPlaying: false, artworkItemId: nil)
+            return
+        }
+        // Same id derivation as the widget payload, or the activity would look for a file the
+        // cache never wrote under that name.
+        let artworkItemId = track.albumId.isEmpty ? track.id : track.albumId
+        NowPlayingLiveActivityController.sync(
+            title: track.title,
+            artist: track.artist,
+            isPlaying: player.isPlaying,
+            artworkItemId: artworkItemId,
+        )
         #endif
     }
 
