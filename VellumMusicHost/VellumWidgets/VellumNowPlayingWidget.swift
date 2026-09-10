@@ -57,11 +57,20 @@ struct VellumNowPlayingWidget: Widget {
             provider: NowPlayingProvider()
         ) { entry in
             NowPlayingWidgetView(entry: entry)
-                .containerBackground(.fill.tertiary, for: .widget)
         }
         .configurationDisplayName("Now Playing")
         .description("See what's playing in Vellum Music.")
-        .supportedFamilies([.systemSmall, .systemMedium])
+        // The accessory families are the Lock Screen. Without them this widget can only be
+        // placed on the Home Screen, so "tap the Lock Screen widget" had nothing to tap — the
+        // report that it "doesn't open the player" was really a widget that could not be added
+        // there at all. Every family's tap resolves to `nowPlayingDeepLinkURL`.
+        .supportedFamilies([
+            .systemSmall,
+            .systemMedium,
+            .accessoryRectangular,
+            .accessoryCircular,
+            .accessoryInline,
+        ])
     }
 }
 
@@ -73,9 +82,59 @@ struct NowPlayingWidgetView: View {
 
     var body: some View {
         switch family {
-        case .systemSmall: smallView
-        default:           mediumView
+        case .accessoryRectangular: accessoryRectangularView
+        case .accessoryCircular:    accessoryCircularView
+        case .accessoryInline:      accessoryInlineView
+        case .systemSmall:          smallView.containerBackground(.fill.tertiary, for: .widget)
+        default:                    mediumView.containerBackground(.fill.tertiary, for: .widget)
         }
+    }
+
+    /// The Lock Screen renders accessory widgets vibrantly and supplies its own backing, so these
+    /// carry no container background and no `Button(intent:)`. A button would claim the tap, and
+    /// the whole point of the Lock Screen tile is that tapping it opens the player.
+    private var lockScreenTrack: WidgetDataStore.MusicItem? {
+        entry.nowPlaying ?? entry.recentItems.first
+    }
+
+    private var lockScreenURL: URL {
+        lockScreenTrack == nil
+            ? URL(string: "vellum://home")!
+            : WidgetDataStore.MusicItem.nowPlayingDeepLinkURL
+    }
+
+    private var accessoryRectangularView: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(entry.nowPlaying != nil ? "NOW PLAYING" : "RECENTLY PLAYED")
+                .font(.system(size: 10, weight: .semibold))
+                .widgetAccentable()
+                .lineLimit(1)
+            Text(lockScreenTrack?.title ?? "Nothing Playing")
+                .font(.headline)
+                .lineLimit(1)
+            Text(lockScreenTrack?.artist ?? "Open Vellum Music")
+                .font(.caption)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .widgetURL(lockScreenURL)
+    }
+
+    private var accessoryCircularView: some View {
+        ZStack {
+            AccessoryWidgetBackground()
+            Image(systemName: entry.isPlaying ? "waveform" : "music.note")
+                .font(.title2)
+                .widgetAccentable()
+        }
+        .widgetURL(lockScreenURL)
+    }
+
+    private var accessoryInlineView: some View {
+        // Inline is one line of system-styled text; it gets the title only, since the artist
+        // pushes the title out of the truncation budget on most Lock Screens.
+        Label(lockScreenTrack?.title ?? "Vellum Music", systemImage: "music.note")
+            .widgetURL(lockScreenURL)
     }
 
     // MARK: Small — Apple Music-style layout
