@@ -38,6 +38,10 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<!-- Without this, ActivityKit refuses every request and there is no Dynamic Island
+	     presence at all, however much code is written against it. -->
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Vellum Music connects to your Jellyfin or Navidrome server on your local network.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
