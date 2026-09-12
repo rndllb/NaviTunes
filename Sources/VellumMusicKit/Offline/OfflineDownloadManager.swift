@@ -1120,8 +1120,13 @@ final class OfflineDownloadManager: ObservableObject {
             audioCodec: track.audioCodec,
             audioBitDepth: track.audioBitDepth,
             audioBitRateKbps: track.audioBitRateKbps,
+            artistId: track.artistId,
         )
     }
+
+    // `streamOverrideURL` is deliberately NOT copied here, and that is not the C10 omission
+    // repeating itself: this rebuild exists to point a track at its downloaded file, and carrying a
+    // radio-stream override across would make `isInternetRadioStream` true for a local file.
 
     private func cacheArtwork(
         for track: Track,
