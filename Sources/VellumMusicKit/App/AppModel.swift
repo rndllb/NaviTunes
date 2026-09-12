@@ -6539,14 +6539,49 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    /// One step of a stale-id swap against the magic playlist.
+    ///
+    /// The order of these is the whole point, so it is a value rather than control flow: it can be
+    /// asserted in a test without a server, which the two `await`s below cannot.
+    enum MagicPlaylistSwapStep: Equatable {
+        /// Current track ids — the ones the server uses *now*, after a rescan.
+        case add([String])
+        /// Stale track ids — the ids the server used *before* the rescan. A different set of
+        /// values from `.add`, not the same tracks twice.
+        case remove(Set<String>)
+    }
+
+    /// Add-before-remove, deliberately.
+    ///
+    /// A swap is two server writes with no transaction around them, so the process can die between
+    /// them and something has to be left behind. This chooses *what*. Removing first means a
+    /// failure in the gap leaves the tracks gone from the library with nothing holding their ids —
+    /// the Subsonic remove is by index and batched, it is not rolled back, and there is no record
+    /// left to retry from. Adding first means a failure in the gap leaves the same song listed
+    /// twice, under its stale id and its current one, which the next swap or a manual tidy can fix.
+    ///
+    /// Make before break. Duplicates are recoverable; deletions are not.
+    nonisolated static func magicPlaylistSwapSteps(
+        for swaps: [String: Track]
+    ) -> [MagicPlaylistSwapStep] {
+        guard !swaps.isEmpty else { return [] }
+        return [
+            .add(swaps.values.map(\.id).sorted()),
+            .remove(Set(swaps.keys)),
+        ]
+    }
+
     private func persistTrackIDSwapsToMagicPlaylist(_ swaps: [String: Track]) async {
         guard let playlistId = libraryMagicPlaylistId else { return }
         do {
-            try await removeTracksFromServerMagicPlaylist(playlistId: playlistId, trackIds: Set(swaps.keys))
-            try await addTracksToServerMagicPlaylist(
-                playlistId: playlistId,
-                trackIds: swaps.values.map(\.id)
-            )
+            for step in Self.magicPlaylistSwapSteps(for: swaps) {
+                switch step {
+                case let .add(trackIds):
+                    try await addTracksToServerMagicPlaylist(playlistId: playlistId, trackIds: trackIds)
+                case let .remove(trackIds):
+                    try await removeTracksFromServerMagicPlaylist(playlistId: playlistId, trackIds: trackIds)
+                }
+            }
             await persistLibraryMembershipPayload()
         } catch {}
     }
