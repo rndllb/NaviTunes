@@ -3,7 +3,7 @@
 Applies to all Swift UI code in `Sources/VellumMusicKit/`. Read together with
 `Rules/swiftui-render-cost.md`.
 
-Nearly every view holds `@EnvironmentObject var app: AppModel`, and `AppModel` has ~100
+Nearly every view holds `@EnvironmentObject var app: AppModel`, and `AppModel` has 138
 `@Published` properties. **Any** publish re-runs **every** visible body. So treat a `body` —
 and every computed property or method reached from one — as code that runs constantly.
 
