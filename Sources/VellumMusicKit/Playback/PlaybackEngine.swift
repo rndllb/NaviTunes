@@ -165,7 +165,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
     var equalizerBypass = false
     var equalizerBandGains: [Float] = EqualizerBand.flatGains
 
-    private var timeObserver: Any?
+    /// The periodic time observer and the player that vended it, kept together. Storing the token
+    /// alone is what let a reinstall hand a new player the old player's observer — an uncatchable
+    /// ObjC exception. See `PeriodicTimeObserverBinding`.
+    private let timeObserver = PeriodicTimeObserverBinding()
     private var endObserver: NSObjectProtocol?
     private var failObserver: NSObjectProtocol?
     /// A single pre-warmed `AVURLAsset` for the track that will play next, keyed by
@@ -2019,8 +2022,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     private func detachPlayerKeepingQueueState() {
-        if let timeObserver { player?.removeTimeObserver(timeObserver) }
-        timeObserver = nil
+        // Removes from the player that vended it, which is not necessarily `self.player` by now.
+        timeObserver.remove()
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         endObserver = nil
         if let failObserver { NotificationCenter.default.removeObserver(failObserver) }
@@ -2879,9 +2882,11 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private func installPeriodicTimeObserver() {
         guard let ctx = timeObserverContext else { return }
         let p = ctx.player
-        if let obs = timeObserver { p.removeTimeObserver(obs); timeObserver = nil }
         let interval = CMTime(seconds: periodicTimeObserverInterval(), preferredTimescale: 600)
-        timeObserver = p.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
+        // `install` drops the previous observer from *its own* player first. `p` here is whatever
+        // player the context now holds, which after a reload or an interruption recovery is not
+        // the one the previous observer came from.
+        timeObserver.install(on: p, interval: interval) { [weak self] time in
             guard let self else { return }
             MainActor.assumeIsolated {
                 self.periodicTimeObserverTick(
