@@ -330,6 +330,7 @@ struct Track: Identifiable, Hashable, Codable {
             audioBitDepth: audioBitDepth,
             audioBitRateKbps: audioBitRateKbps,
             streamOverrideURL: streamOverrideURL,
+            artistId: artistId,
         )
     }
 
@@ -353,6 +354,7 @@ struct Track: Identifiable, Hashable, Codable {
             audioBitDepth: audioBitDepth,
             audioBitRateKbps: audioBitRateKbps,
             streamOverrideURL: streamOverrideURL,
+            artistId: artistId,
         )
     }
 }
