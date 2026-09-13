@@ -117,34 +117,17 @@ struct LibraryAlbumContextMenuContent: View {
         }
     }
 
-    private func play() async {
-        guard let lib = app.activeLibrary else { return }
-        do {
-            let tracks = try await loadTracks()
-            guard !tracks.isEmpty else { return }
-            try await app.player.playAlbum(library: lib, tracks: tracks, startIndex: 0)
-        } catch {
-            app.errorMessage = error.localizedDescription
-        }
-    }
+    private func play() async { await perform(.play) }
 
-    private func shuffle() async {
-        guard let lib = app.activeLibrary else { return }
-        do {
-            let tracks = try await loadTracks()
-            guard !tracks.isEmpty else { return }
-            try await app.player.playAlbum(library: lib, tracks: tracks.shuffled(), startIndex: 0)
-        } catch {
-            app.errorMessage = error.localizedDescription
-        }
-    }
+    private func shuffle() async { await perform(.shuffle) }
 
-    private func playNext() async {
-        guard let lib = app.activeLibrary else { return }
+    private func playNext() async { await perform(.playNext) }
+
+    /// Same path as the album hero: the queue-replacement confirmation, and a real shuffle.
+    private func perform(_ intent: AppModel.CollectionPlayIntent) async {
         do {
             let tracks = try await loadTracks()
-            guard !tracks.isEmpty else { return }
-            try await app.player.playTracksNext(library: lib, tracks: tracks)
+            await app.playCollectionOrToast(tracks: tracks, source: nil, intent: intent)
         } catch {
             app.errorMessage = error.localizedDescription
         }
@@ -245,44 +228,22 @@ struct LibraryPlaylistContextMenuContent: View {
         return rows.map(\.track)
     }
 
-    private func play() async {
-        guard let lib = app.activeLibrary else { return }
+    private func play() async { await perform(.play) }
+
+    private func shuffle() async { await perform(.shuffle) }
+
+    private func playNext() async { await perform(.playNext) }
+
+    /// Same path as the playlist hero: Kill Mode's filter, the everything-listened toast, the
+    /// queue-replacement confirmation, and a real shuffle.
+    private func perform(_ intent: AppModel.CollectionPlayIntent) async {
         do {
             let tracks = try await loadTracks()
-            guard !tracks.isEmpty else { return }
-            try await app.player.playAlbum(
-                library: lib,
+            await app.playCollectionOrToast(
                 tracks: tracks,
-                startIndex: 0,
-                source: .playlist(playlist)
+                source: .playlist(app.libraryPlaylist(id: playlist.id) ?? playlist),
+                intent: intent
             )
-        } catch {
-            app.errorMessage = error.localizedDescription
-        }
-    }
-
-    private func shuffle() async {
-        guard let lib = app.activeLibrary else { return }
-        do {
-            let tracks = try await loadTracks()
-            guard !tracks.isEmpty else { return }
-            try await app.player.playAlbum(
-                library: lib,
-                tracks: tracks.shuffled(),
-                startIndex: 0,
-                source: .playlist(playlist)
-            )
-        } catch {
-            app.errorMessage = error.localizedDescription
-        }
-    }
-
-    private func playNext() async {
-        guard let lib = app.activeLibrary else { return }
-        do {
-            let tracks = try await loadTracks()
-            guard !tracks.isEmpty else { return }
-            try await app.player.playTracksNext(library: lib, tracks: tracks, sourcePlaylistId: playlist.id)
         } catch {
             app.errorMessage = error.localizedDescription
         }

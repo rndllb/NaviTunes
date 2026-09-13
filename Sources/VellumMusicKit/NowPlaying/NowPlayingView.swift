@@ -568,41 +568,13 @@ struct NowPlayingView: View {
     /// second copy hit the first, and reordering trapped in
     /// `Dictionary(uniqueKeysWithValues:)` with "Fatal error: Duplicate values for key".
     ///
-    /// `rowId` is the id plus which occurrence it is, so identity survives rows shifting position
-    /// when something above them is removed — an absolute index would change for every row after
-    /// the removal and make SwiftUI animate the wrong one out. `queueIndex` and `upNextOffset`
-    /// carry the *position*, which is what the engine is told to act on.
-    private struct QueueEntry: Identifiable {
-        let rowId: String
-        /// Absolute index into `PlaybackEngine.queue`.
-        let queueIndex: Int
-        /// Offset from the start of up-next — the coordinate space `moveUpNextItem` and
-        /// `removeUpNextItems` both use.
-        let upNextOffset: Int
-        let track: Track
-        var id: String { rowId }
-    }
-
-    /// Pairs each up-next track with its position and a stable per-row identity.
-    private func upNextEntries() -> [QueueEntry] {
-        let start = player.currentIndex + 1
-        guard start < player.queue.count else { return [] }
-        var occurrences: [String: Int] = [:]
-        return player.queue.indices.dropFirst(start).map { index in
-            let track = player.queue[index]
-            let n = occurrences[track.id, default: 0]
-            occurrences[track.id] = n + 1
-            return QueueEntry(
-                rowId: "\(track.id)#\(n)",
-                queueIndex: index,
-                upNextOffset: index - start,
-                track: track,
-            )
-        }
-    }
+    /// Rows are ``UpNextEntry`` values: a per-occurrence identity plus the row's raw queue position.
+    /// Up Next omits songs Kill Mode will pass over, so a row's place in this list is not its offset
+    /// in the queue — every gesture below acts on the entry's `upNextOffset`, never on a list index.
+    private typealias QueueEntry = UpNextEntry
 
     private func queueScrollContent(track: Track) -> some View {
-        let upNext = upNextEntries()
+        let upNext = player.upNextEntries()
         // Don't duplicate the currently-playing track in the history list.
         // Storage is newest-first; the queue view reads oldest-at-top so the most
         // recently played track sits right above the Now Playing line.
@@ -867,7 +839,8 @@ struct NowPlayingView: View {
     /// Translates an `onMove` IndexSet+destination from a section's local coordinates into
     /// the full `Up Next` index space, then forwards to `PlaybackEngine.moveUpNextItem`.
     ///
-    /// Each entry already knows its own `upNextOffset`, so this is a direct lookup. It used to
+    /// Each entry already knows its own raw `upNextOffset` (``UpNextRows/moveArguments(entries:source:destination:)``),
+    /// which is what keeps a drag on the right song while Kill Mode hides rows between. It used to
     /// build `Dictionary(uniqueKeysWithValues:)` keyed on `Track.id` to recover those offsets,
     /// which has a documented precondition of unique keys — so with the same song twice in up-next
     /// it trapped with "Fatal error: Duplicate values for key" and hard-crashed the app. Note it
@@ -875,16 +848,8 @@ struct NowPlayingView: View {
     /// row could trigger it, not only a duplicated one, because the dictionary was built over the
     /// whole of up-next.
     private func moveWithinSection(entries: [QueueEntry], source: IndexSet, destination: Int) {
-        guard !entries.isEmpty else { return }
-        let mappedSource = IndexSet(source.compactMap { entries.indices.contains($0) ? entries[$0].upNextOffset : nil })
-        guard !mappedSource.isEmpty else { return }
-        let mappedDestination: Int = {
-            if destination < entries.count { return entries[destination].upNextOffset }
-            // Append at end of section: just past the section's last row, in up-next coords.
-            if let last = entries.last { return last.upNextOffset + 1 }
-            return 0
-        }()
-        player.moveUpNextItem(from: mappedSource, to: mappedDestination)
+        guard let move = UpNextRows.moveArguments(entries: entries, source: source, destination: destination) else { return }
+        player.moveUpNextItem(from: move.source, to: move.destination)
     }
 
     @ViewBuilder
@@ -1597,7 +1562,7 @@ struct NowPlayingView: View {
             track: track,
             onPlayNext: {
                 Task { @MainActor in
-                    try? await player.playTracksNext(library: app.activeLibrary, tracks: [track])
+                    try? await player.playNext(library: app.activeLibrary, track: track)
                 }
             },
             onAddToQueue: {
