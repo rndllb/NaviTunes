@@ -20,6 +20,12 @@ struct PlaybackQueueSnapshot: Codable {
     /// shuffle-off carry-over that reads it, survive a relaunch — without this, toggling
     /// shuffle off after a cold start deleted every queued track.
     var userQueuedTrackIds: [String]? = nil
+    /// The subset of `userQueuedTrackIds` queued as a single song, which Kill Mode lets play even
+    /// when already listened. Nil in older snapshots: everything restores as a collection queue.
+    var handPickedTrackIds: [String]? = nil
+    /// Whether the playing track was hand-queued when it started, so a resumed track is not marked
+    /// in the source playlist. Nil in older snapshots.
+    var activeTrackWasUserQueued: Bool? = nil
 }
 
 enum PlaybackQueueStore {

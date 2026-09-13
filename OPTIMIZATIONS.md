@@ -3106,3 +3106,47 @@ three schemes.
 
 So the wrong-cover mechanism is not here. It remains what T189 described: the offline download
 manifest is consulted before the server for both the cover and the tracklist.
+
+## T329–T331 — Kill Mode and the queue: fourteen fixes (2026-09-13, committed in T332)
+
+**The bug you hit.** You queued a song with Play Next in a Kill Mode playlist and it was silently
+skipped when the current song ended. Kill Mode skips songs you have already listened to, and it had
+no idea you had just picked that one by hand. So if the song was already green or red, it was
+dropped. It was worse on the gapless path, which picks the next song the moment you tap Play Next.
+
+**What happens now.** A single song you queue yourself (Play Next or Add to Queue on one song) always
+plays, listened or not. A whole playlist or album queued at once still follows Kill Mode, the same as
+pressing Play on it. The audit found fourteen more problems and you said "do all but K5". These are
+fixed too:
+
+- Songs you queued by hand no longer get marked green or red in the playlist, including songs that
+  were never in it.
+- An unlocked playlist (100% listened) no longer stops after one song.
+- Under repeat-all, the song that just finished no longer plays a second time.
+- Skipping the last song marks it. A skip also passes over listened songs, the same way the natural
+  end does. Skipping onto a listened song you queued yourself still works.
+- Shuffling mid-run no longer pulls songs you have already heard back into Up Next. This only
+  applies in Kill Mode; everywhere else shuffle works as before.
+- Removing a song from the playlist mid-run also takes it out of the run, so it doesn't play and
+  get marked again. If a song is in the playlist twice, removing one copy keeps the other copy's
+  marks.
+- Up Next no longer lists songs Kill Mode is going to skip. Swipe-to-remove and drag-to-reorder
+  still act on the row you touched.
+- The long-press menu's Play and Shuffle go through the same path as the hero buttons, so they
+  start on an unheard song and Shuffle really turns shuffle on.
+- Marks survive a server rescan that changes song ids.
+- The Kill List percentages only count songs actually in the playlist.
+- Deleting a playlist clears its Kill Mode state. Kill Mode progress is now kept per server and
+  per account. Signing out and back in to the same server keeps it, and your old progress carries
+  over.
+
+**Two behaviour changes you should know about:**
+
+1. **Skipping the last song now stops playback.** It used to do nothing. This is true outside
+   Kill Mode too, and it's what Apple Music does. The stop is also the feedback that the skip
+   happened, so a stray swipe on the last song can't quietly mark it red.
+2. **The playlist hero's Shuffle now asks before replacing a queue that holds songs you queued by
+   hand.** It used to replace them without asking. Play already asked; Shuffle now matches it.
+
+60 new tests (23 + 17 + 20); the whole suite is 168 tests in 15 suites, all passing. You have
+confirmed the build on your phone.
