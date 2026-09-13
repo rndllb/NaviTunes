@@ -46,7 +46,13 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// IDs of tracks that were inserted into the queue via "Play Next" / "Add to Queue"
     /// (vs. items that came from the active source like an album or playlist). Drives the
     /// Now Playing → Queue → "Queue" vs "Continue Playing" split.
-    @Published private(set) var userQueuedTrackIds: Set<String> = []
+    private(set) var userQueuedTrackIds: Set<String> {
+        get { userQueue.queuedIds }
+        set { userQueue.queuedIds = newValue }
+    }
+    /// Hand-queued ids plus the single-song / collection distinction and the playing row's
+    /// provenance. See ``UserQueueProvenance``.
+    @Published private(set) var userQueue = UserQueueProvenance()
     @Published private(set) var isPlaying: Bool = false
     /// True while the player intends to play but audio is not progressing —
     /// loading a new item or stalled waiting for the network to buffer. Drives
@@ -217,13 +223,28 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// natural end-of-track advances or by `skipPrevious`. Drives Kill Mode's
     /// "mark for removal" path — `AppModel` inspects the source + queue to decide
     /// whether to mark the outgoing track.
-    var onTrackSkipped: ((Track, PlaybackSource?) -> Void)?
+    ///
+    /// The `Bool` is whether that track was hand-queued, captured when it *started*. It is passed
+    /// rather than left for the receiver to look up, because the id has left
+    /// ``userQueuedTrackIds`` by then — see ``UserQueueProvenance``.
+    var onTrackSkipped: ((Track, PlaybackSource?, _ wasUserQueued: Bool) -> Void)?
 
     /// Fires when a track reaches its **natural end** (end-of-playback advance), NOT
     /// on a user skip. Drives Kill Mode's "played fully → kept (green)" path —
     /// `AppModel` marks the outgoing track listened when the source is a kill-mode
-    /// playlist.
-    var onTrackCompleted: ((Track, PlaybackSource?) -> Void)?
+    /// playlist. Fired *before* the advance picks the next index, and the receiver must act
+    /// synchronously: the advance reads the mark it writes.
+    var onTrackCompleted: ((Track, PlaybackSource?, _ wasUserQueued: Bool) -> Void)?
+
+    /// Fires synchronously whenever the queue is replaced wholesale (a new source, or a restore),
+    /// before anything loads.
+    var onQueueReplaced: (() -> Void)?
+
+    /// Whether `trackId` is part of the source the current queue was started from, as opposed to
+    /// something inserted into it. False when there is no recorded source order.
+    func isInSourceQueueOrder(trackId: String) -> Bool {
+        sourceQueueOrder?.contains { $0.id == trackId } ?? false
+    }
 
     /// Fires when playback has genuinely failed and the transport has already been corrected.
     ///
@@ -265,6 +286,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// already "listened" (played fully or skipped) that must not be auto-advanced into,
     /// so each song plays once per run. Nil during normal playback (no effect).
     var autoAdvanceExclusion: ((Track) -> Bool)?
+
+    /// Whether the queue is a Kill Mode run right now. Scopes queue behaviour only a burn-down run
+    /// wants — see ``shuffleQueueFromCurrentTrack()``. Nil reads as not a run.
+    var isKillModeRun: (() -> Bool)?
 
     private var didConfigureRemoteCommands = false
     private var sleepTimerTask: Task<Void, Never>?
@@ -586,7 +611,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         duration = 0
         playbackSource = nil
         showsMiniPlayerChrome = false
-        userQueuedTrackIds.removeAll()
+        userQueue = UserQueueProvenance()
         trackOriginPlaylistIds.removeAll()
         unshuffledQueue = nil
         cancelNowPlayingArtworkLoad()
@@ -619,6 +644,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
             unshuffledQueue: unshuffledQueue,
             sourceQueueOrder: sourceQueueOrder,
             userQueuedTrackIds: Array(userQueuedTrackIds),
+            handPickedTrackIds: Array(userQueue.handPickedIds),
+            activeTrackWasUserQueued: queue.indices.contains(currentIndex)
+                && userQueue.activeTrackId == queue[currentIndex].id
+                && userQueue.activeTrackWasUserQueued,
         )
     }
 
@@ -650,8 +679,15 @@ final class PlaybackEngine: NSObject, ObservableObject {
         sourceQueueOrder = snapshot.sourceQueueOrder
         // Snapshots written before this field existed decode as nil — start empty rather
         // than inheriting the previous session's ids.
-        userQueuedTrackIds = Set(snapshot.userQueuedTrackIds ?? [])
+        userQueue = UserQueueProvenance(
+            queuedIds: Set(snapshot.userQueuedTrackIds ?? []),
+            handPickedIds: Set(snapshot.handPickedTrackIds ?? []),
+            activeTrackWasUserQueued: snapshot.activeTrackWasUserQueued ?? false,
+            activeIndex: clampedIndex,
+            activeTrackId: queue.indices.contains(clampedIndex) ? queue[clampedIndex].id : nil
+        )
         pruneUserQueuedIds()
+        onQueueReplaced?()
         duration = activeTrack?.duration ?? 0
         // A restored snapshot represents real playback the user wants to resume — surface
         // the mini player so the saved track + playhead are visible on launch. Only the
@@ -740,10 +776,13 @@ final class PlaybackEngine: NSObject, ObservableObject {
         currentIndex = min(max(0, startIndex), max(normalized.count - 1, 0))
         playbackSource = source
         // Fresh source = no user-queued items yet.
-        userQueuedTrackIds.removeAll()
+        userQueue = UserQueueProvenance()
         trackOriginPlaylistIds.removeAll()
         unshuffledQueue = nil
         sourceQueueOrder = normalized
+        // Before anything loads, so a consumer that has to decide something once per queue
+        // (Kill Mode's unlock) decides it before the first auto-advance can ask.
+        onQueueReplaced?()
         // Caller may flip this back to `.on` (e.g. ``playAlbumShuffled``) after the queue lands.
         shuffleMode = .off
         lastEmittedUIProgress = -10_000
@@ -791,7 +830,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
         removeUpcomingOccurrences(of: [normalized.id])
         let insertAt = min(currentIndex + 1, queue.count)
         queue.insert(normalized, at: insertAt)
-        userQueuedTrackIds.insert(normalized.id)
+        // Single-song entry point: the user picked this one song, so Kill Mode lets it play.
+        userQueue.insert([normalized.id], handPicked: true)
         recordTrackOriginPlaylist([normalized.id], playlistId: sourcePlaylistId)
         refreshEnqueuedNextItem()
     }
@@ -808,17 +848,30 @@ final class PlaybackEngine: NSObject, ObservableObject {
         let insertAt = min(currentIndex + 1, queue.count)
         for (i, t) in normalized.enumerated() {
             queue.insert(t, at: insertAt + i)
-            userQueuedTrackIds.insert(t.id)
         }
+        // Collection entry point (a playlist/album hero or cell menu): same intent as pressing
+        // play on it, so Kill Mode's filter still applies. Single songs use `playNext(track:)`.
+        userQueue.insert(normalized.map(\.id), handPicked: false)
         recordTrackOriginPlaylist(normalized.map(\.id), playlistId: sourcePlaylistId)
         refreshEnqueuedNextItem()
     }
 
+    /// Single-song entry point — Kill Mode lets the song play even if already listened.
     func addToQueue(library: MusicLibraryProviding?, track: Track, sourcePlaylistId: String? = nil) async throws {
-        try await addTracksToQueue(library: library, tracks: [track], sourcePlaylistId: sourcePlaylistId)
+        try await enqueueAtQueueBlockEnd(library: library, tracks: [track], sourcePlaylistId: sourcePlaylistId, handPicked: true)
     }
 
+    /// Collection entry point — Kill Mode's filter still applies to what it queues.
     func addTracksToQueue(library: MusicLibraryProviding?, tracks: [Track], sourcePlaylistId: String? = nil) async throws {
+        try await enqueueAtQueueBlockEnd(library: library, tracks: tracks, sourcePlaylistId: sourcePlaylistId, handPicked: false)
+    }
+
+    private func enqueueAtQueueBlockEnd(
+        library: MusicLibraryProviding?,
+        tracks: [Track],
+        sourcePlaylistId: String?,
+        handPicked: Bool
+    ) async throws {
         guard !tracks.isEmpty else { return }
         if let library { self.library = library }
         if queue.isEmpty {
@@ -833,8 +886,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
         let insertAt = userQueueBlockEnd
         for (i, t) in normalized.enumerated() {
             queue.insert(t, at: insertAt + i)
-            userQueuedTrackIds.insert(t.id)
         }
+        userQueue.insert(normalized.map(\.id), handPicked: handPicked)
         recordTrackOriginPlaylist(normalized.map(\.id), playlistId: sourcePlaylistId)
         refreshEnqueuedNextItem()
     }
@@ -958,6 +1011,50 @@ final class PlaybackEngine: NSObject, ObservableObject {
         captureAutoPlayIntentForAdvance()
         resetUIProgressForTrackHandoff()
         scheduleAdvance()
+    }
+
+    /// Takes songs that have left the source playlist out of the run that is playing it.
+    ///
+    /// Deliberately **not** ``removeTracksFromQueue(trackIds:)``: that removes every copy, the
+    /// playing one included, and advances when it hits it. A song removed from a playlist while it is
+    /// playing keeps playing. What changes:
+    ///
+    /// - **Up next** — rows after the cursor are removed by position (``removeUpNextItems(at:)``),
+    ///   which cannot reach the playing row. A song the user queued by hand stays: that is not the
+    ///   playlist's row.
+    /// - **Source order** — the ids leave `sourceQueueOrder`, so none of them, the playing one
+    ///   included, is marked into a playlist it is no longer in, and a queue nobody reordered still
+    ///   reads as in natural order.
+    /// - **Shuffle snapshot** — the ids leave `unshuffledQueue` too, or turning shuffle off would put
+    ///   them back. The playing song's row stays in it, because restoring finds the cursor by it.
+    ///
+    /// Rows already behind the cursor are left alone: they are history, not the run.
+    func dropTracksRemovedFromSource(_ trackIds: Set<String>) {
+        guard !trackIds.isEmpty, !queue.isEmpty else { return }
+        sourceQueueOrder?.removeAll { trackIds.contains($0.id) }
+        if let original = unshuffledQueue {
+            let cursorRow = activeTrack.flatMap { active in original.firstIndex { $0.id == active.id } }
+            unshuffledQueue = original.indices
+                .filter { $0 == cursorRow || !trackIds.contains(original[$0].id) }
+                .map { original[$0] }
+        }
+        let start = currentIndex + 1
+        guard start < queue.count else { return }
+        let offsets = IndexSet(
+            queue[start...]
+                .enumerated()
+                .filter { trackIds.contains($0.element.id) && !userQueuedTrackIds.contains($0.element.id) }
+                .map(\.offset)
+        )
+        guard !offsets.isEmpty else { return }
+        removeUpNextItems(at: offsets)
+    }
+
+    /// Up Next as Now Playing lists it: the rows after the cursor, minus those Kill Mode's exclusion
+    /// will pass over — the natural end and a forward skip both skip them, so listing them promised
+    /// songs that were never going to play. Each entry keeps its raw offset; see ``UpNextRows``.
+    func upNextEntries() -> [UpNextEntry] {
+        UpNextRows.entries(queue: queue, currentIndex: currentIndex) { isExcludedFromAutoAdvance($0) }
     }
 
     /// Applies new equalizer settings to audio that is already playing.
@@ -1294,26 +1391,61 @@ final class PlaybackEngine: NSObject, ObservableObject {
         queue[currentIndex] = track.withDuration(seconds)
     }
 
+    /// Skips forward to where ``skipTargetIndex()`` lands, or ends the queue when there is nowhere
+    /// to go.
+    ///
+    /// The skip is reported **before** the landing is chosen, on every path — the last song included.
+    /// Kill Mode's handler marks synchronously, so the walk already sees the song as rejected and a
+    /// repeat-all skip cannot land straight back on it. Skipping the last song used to return before
+    /// reporting, so it was never marked and came back next run.
+    ///
+    /// Skipping the last song now does what the queue running out does at a natural end: playback
+    /// stops, and the next play tap starts that song again. That stop is the feedback — the song the
+    /// user was hearing ends, exactly as it does on every other skip — so a stray mini-player swipe on
+    /// the last song is no longer a silent mark.
     func skipNext() {
         // The user is driving. Whatever failed before this is not part of a runaway.
         clearFailureStreakForUserAction()
-        // Shuffle is a queue-reordering action — advance sequentially regardless of mode.
-        guard currentIndex + 1 < queue.count else {
-            guard repeatMode == .all, !queue.isEmpty else { return }
-            let outgoing = queue[currentIndex]
-            onTrackSkipped?(outgoing, playbackSource)
-            captureAutoPlayIntentForAdvance()
-            currentIndex = 0
-            resetUIProgressForTrackHandoff()
-            scheduleAdvance()
+        guard queue.indices.contains(currentIndex) else { return }
+        let outgoing = queue[currentIndex]
+        onTrackSkipped?(outgoing, playbackSource, userQueue.wasUserQueuedAtTrackEnd(id: outgoing.id, index: currentIndex))
+        guard let next = skipTargetIndex() else {
+            stopAfterSkippingPastEnd()
             return
         }
-        let outgoing = queue[currentIndex]
-        onTrackSkipped?(outgoing, playbackSource)
         captureAutoPlayIntentForAdvance()
-        currentIndex += 1
+        currentIndex = next
         resetUIProgressForTrackHandoff()
         scheduleAdvance()
+    }
+
+    /// Where a forward skip lands: the same walk the natural end takes (``nextAdvanceIndex()``), so it
+    /// passes over songs Kill Mode excludes — including on the repeat-all wrap — and lands on the row
+    /// Up Next lists first. The one difference is repeat-one, which a skip moves past rather than
+    /// replaying. Shuffle is a queue reorder, so the walk is sequential in every mode.
+    ///
+    /// A song queued on its own is exempt from the exclusion, so a skip still reaches it: that, not
+    /// skipping blind, is the deliberate way to hear a listened song again.
+    func skipTargetIndex() -> Int? {
+        guard !queue.isEmpty else { return nil }
+        guard repeatMode == .one else { return nextAdvanceIndex() }
+        var idx = currentIndex + 1
+        while idx < queue.count {
+            if !isExcludedFromAutoAdvance(idx) { return idx }
+            idx += 1
+        }
+        return nil
+    }
+
+    /// The end-of-queue state ``handleEnded`` drops to, reached by a skip. Any load still in flight for
+    /// the skipped song is abandoned so it cannot start playing after the stop.
+    private func stopAfterSkippingPastEnd() {
+        cancelPendingAdvanceWork()
+        _ = beginPlaybackSession()
+        shouldAutoPlayAfterAdvance = false
+        isPlaying = false
+        teardownPlayer()
+        refreshNowPlaying()
     }
 
     func skipPrevious() {
@@ -1562,11 +1694,23 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
     /// Turning shuffle ON: snapshot the current order and randomize everything after the
     /// playing track.
+    ///
+    /// A Kill Mode run shuffles only the rows **after** the cursor and leaves everything behind it
+    /// where it is. Those rows have had their turn this run; rebuilding from the whole queue pulled
+    /// them back into Up Next, and an unlocked run (which only passes over red songs) played the
+    /// green ones a second time. Outside Kill Mode the whole queue is reshuffled, as intended.
+    /// ``restoreNaturalQueueOrder()`` needs no branch: it rebuilds from the full snapshot either way.
     private func shuffleQueueFromCurrentTrack() {
         // Bail if there's no valid current track (empty/invalid queue) —
         // remove(at:) below would otherwise crash on an out-of-range index.
         guard queue.indices.contains(currentIndex) else { return }
         unshuffledQueue = queue
+        if isKillModeRun?() == true {
+            let upNextStart = currentIndex + 1
+            queue.replaceSubrange(upNextStart..., with: queue[upNextStart...].shuffled())
+            shuffleMode = .on
+            return
+        }
         let currentTrack = activeTrack
         var remaining = queue
         remaining.remove(at: currentIndex)
@@ -1764,7 +1908,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// Deliberately not ``nextAdvanceIndex()``: under repeat-one that returns the *current*
     /// index, which would reload the track that just failed, forever. A dead track is skipped
     /// past under every repeat mode; only `.all` is allowed to wrap back around.
-    private func autoSkipIndex() -> Int? {
+    func autoSkipIndex() -> Int? {
         guard !queue.isEmpty else { return nil }
         let wrap = repeatMode == .all
         var step = 1
@@ -1891,7 +2035,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         revealMiniPlayerChrome()
         schedulePrewarmNextTrack()
         if let started = activeTrack {
-            userQueuedTrackIds.remove(started.id)
+            userQueue.trackStarted(id: started.id, index: currentIndex)
             onTrackStarted?(started)
         }
     }
@@ -2167,7 +2311,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// order, mirroring ``handleEnded``'s branch logic (repeat-one stays put;
     /// repeat-all wraps; repeat-off stops at the end). De-duplicated so short
     /// queues don't stage the same track twice.
-    private func upcomingQueueIndices(limit: Int) -> [Int] {
+    func upcomingQueueIndices(limit: Int) -> [Int] {
         guard !queue.isEmpty, limit > 0 else { return [] }
         switch repeatMode {
         case .one:
@@ -2322,16 +2466,12 @@ final class PlaybackEngine: NSObject, ObservableObject {
             sq = sq.map { swaps[$0.id] ?? $0 }
             sourceQueueOrder = sq
         }
-        var nextUserQueued = userQueuedTrackIds
         for (oldId, newTrack) in swaps {
-            if nextUserQueued.remove(oldId) != nil {
-                nextUserQueued.insert(newTrack.id)
-            }
             if let playlistId = trackOriginPlaylistIds.removeValue(forKey: oldId) {
                 trackOriginPlaylistIds[newTrack.id] = playlistId
             }
         }
-        userQueuedTrackIds = nextUserQueued
+        userQueue.remap(swaps.mapValues(\.id))
     }
 
     /// Budget for the proactive metadata refresh before play. On a slow network
@@ -2993,7 +3133,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// through spurious-end recovery. Reset on every track handoff.
     private var spuriousEndRecoveryAttempted = false
 
-    private func handleEnded(endedItem: AVPlayerItem? = nil) {
+    /// Internal, not private, so tests can drive a natural end on an engine that has no player.
+    func handleEnded(endedItem: AVPlayerItem? = nil) {
         let endedAtLog = endedItem?.currentTime().seconds ?? -1
         let itemDurLog = endedItem?.duration.seconds ?? -1
         // Spurious end: chunked/transcoded streams can't seek past the data
@@ -3030,7 +3171,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
         // Natural end-of-track (past spurious-end recovery). Notify BEFORE the advance
         // moves currentIndex — Kill Mode marks the just-finished track "kept (green)".
         if queue.indices.contains(currentIndex) {
-            onTrackCompleted?(queue[currentIndex], playbackSource)
+            let ended = queue[currentIndex]
+            onTrackCompleted?(ended, playbackSource, userQueue.wasUserQueuedAtTrackEnd(id: ended.id, index: currentIndex))
         }
 
         // Fast path: the OS queue auto-advanced to the item we pre-enqueued and the
@@ -3078,7 +3220,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// Kill Mode auto-advance exclusion. Returns nil when nothing qualifies (end of a
     /// repeat-off queue, or every candidate excluded). `.all` may return the current
     /// index as a last resort so a single-track repeat-all still loops.
-    private func nextAdvanceIndex() -> Int? {
+    func nextAdvanceIndex() -> Int? {
         guard !queue.isEmpty else { return nil }
         switch repeatMode {
         case .one:
@@ -3103,7 +3245,11 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
     private func isExcludedFromAutoAdvance(_ index: Int) -> Bool {
         guard let exclude = autoAdvanceExclusion, queue.indices.contains(index) else { return false }
-        return exclude(queue[index])
+        let track = queue[index]
+        // The one place all three walks (natural end, gapless staging, failure auto-skip) share, so
+        // a single-song queue cannot be honoured by one of them and dropped by another.
+        if userQueue.isExemptFromKillModeFilter(track.id) { return false }
+        return exclude(track)
     }
 
     /// Adopt the just-auto-advanced item as the current track without tearing the
@@ -3186,7 +3332,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         refreshNowPlaying()
         revealMiniPlayerChrome()
 
-        userQueuedTrackIds.remove(track.id)
+        userQueue.trackStarted(id: track.id, index: index)
         onTrackStarted?(track)
 
         // Stage the track after this one for the next boundary.

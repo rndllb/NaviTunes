@@ -2484,41 +2484,19 @@ struct ServerPlaylistDetailView: View {
         return .playlist(app.libraryPlaylist(id: playlist.id) ?? playlist)
     }
 
+    // Hero Play / Shuffle / Play Next share one path with the cell long-press menus
+    // (`AppModel.playCollectionOrToast`): Play starts on the first unheard song, not literal row 0 —
+    // only an explicit row tap keeps a listened track (`keepStartTrack`).
     private func playAll() async {
-        guard !tracksForPlayback.isEmpty else { return }
-        // Hero Play starts on the first unheard song, not literal row 0 — only an
-        // explicit row tap keeps a listened track (`keepStartTrack`).
-        await app.playAlbumOrToast(
-            tracks: tracksForPlayback,
-            startIndex: 0,
-            source: playbackSource,
-            keepStartTrack: false
-        )
+        await app.playCollectionOrToast(tracks: tracksForPlayback, source: playbackSource, intent: .play)
     }
 
     private func shuffleAll() async {
-        guard let lib = app.activeLibrary, !tracksForPlayback.isEmpty else { return }
-        // Kill Mode: shuffle only the unheard songs — same filter as hero Play.
-        let (playTracks, _) = app.killModeFilteredPlayback(
-            tracks: tracksForPlayback,
-            startIndex: 0,
-            source: playbackSource,
-            keepStartTrack: false
-        )
-        guard !playTracks.isEmpty else {
-            app.showTransientToast("Every song here has been listened. Clear listen history in Kill Mode to start over.")
-            return
-        }
-        do {
-            try await app.player.playAlbumShuffled(library: lib, tracks: playTracks, source: playbackSource)
-        } catch {
-            app.showTransientToast(error.musicPlaybackToastMessage)
-        }
+        await app.playCollectionOrToast(tracks: tracksForPlayback, source: playbackSource, intent: .shuffle)
     }
 
     private func playPlaylistNext() async {
-        guard let lib = app.activeLibrary, !tracksForPlayback.isEmpty else { return }
-        try? await app.player.playTracksNext(library: lib, tracks: tracksForPlayback)
+        await app.playCollectionOrToast(tracks: tracksForPlayback, source: playbackSource, intent: .playNext)
     }
 
     private func play(row: PlaylistRowItem) async {

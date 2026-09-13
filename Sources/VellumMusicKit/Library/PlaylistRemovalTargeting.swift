@@ -57,6 +57,26 @@ enum PlaylistRemovalTargeting {
         return Resolution(resolved: resolved, goneTrackIds: gone)
     }
 
+    /// Which `candidates` no longer have any row in the playlist once `committedRowTrackIds` are gone.
+    ///
+    /// Kill Mode marks are per **song** (track id), not per row, and a playlist can list a song twice.
+    /// Removing one row must leave the marks of the copy still there, so a mark is dropped only when a
+    /// removal takes the song's *last* row. What tells the cases apart is multiplicity: how many rows
+    /// of that id the live fetch taken just before the removal held (`liveTrackIds`, duplicates kept),
+    /// minus how many of those rows this removal committed. `committedRowTrackIds` must be rows that
+    /// were in that fetch; a row already gone before the removal is a candidate with nothing committed.
+    static func trackIdsLeavingPlaylist(
+        candidates: Set<String>,
+        liveTrackIds: [String],
+        committedRowTrackIds: [String]
+    ) -> Set<String> {
+        guard !candidates.isEmpty else { return [] }
+        var remaining: [String: Int] = [:]
+        for id in liveTrackIds where candidates.contains(id) { remaining[id, default: 0] += 1 }
+        for id in committedRowTrackIds where candidates.contains(id) { remaining[id, default: 0] -= 1 }
+        return candidates.filter { remaining[$0, default: 0] <= 0 }
+    }
+
     /// Deletion order for a batch of already-resolved rows: **highest position first**, because
     /// removing a high position never shifts a lower one. The track id rides along so a caller
     /// interrupted mid-batch knows which songs actually left.

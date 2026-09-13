@@ -1,5 +1,36 @@
 import SwiftUI
 
+/// The Kill List header's numbers. Only marks that match one of the playlist's own rows count —
+/// the same intersection the playlist toolbar badge uses — so ids removed elsewhere or stranded by
+/// a rescan cannot inflate the percentages. Both bar segments are clamped so together they never
+/// exceed the total, even when `songCount` lags the rows.
+struct KillListProgress: Equatable {
+    let total: Int
+    let kept: Int
+    let removed: Int
+    let listened: Int
+    let percentListened: Int
+    let percentRemoved: Int
+    let keptFraction: Double
+    let removedFraction: Double
+
+    init(rowTrackIds: Set<String>, pending: Set<String>, passed: Set<String>, totalSongCount: Int) {
+        let total = max(totalSongCount, 1)
+        let removed = min(pending.intersection(rowTrackIds).count, total)
+        // A song is red or green, never both; red wins, as in marking.
+        let kept = min(passed.intersection(rowTrackIds).subtracting(pending).count, total - removed)
+        let listened = kept + removed
+        self.total = total
+        self.kept = kept
+        self.removed = removed
+        self.listened = listened
+        percentListened = Int((Double(listened) / Double(total) * 100).rounded())
+        percentRemoved = Int((Double(removed) / Double(total) * 100).rounded())
+        keptFraction = Double(kept) / Double(total)
+        removedFraction = Double(removed) / Double(total)
+    }
+}
+
 /// Reviewer screen for tracks Kill Mode has queued for removal from a single playlist.
 ///
 /// Receives the parent playlist's current `rows` snapshot and filters down to the rows
@@ -177,24 +208,28 @@ struct PlaylistKillListView: View {
     /// removal, with a two-segment bar (green = kept, red = to-remove) and the
     /// "Clear listen history" reset.
     private var summaryHeader: some View {
-        let total = max(totalSongCount, 1)
-        let passed = app.killModePassedTrackIds(playlistId: playlistId).count
-        let removed = app.killModePendingTrackIds(playlistId: playlistId).count
-        let listened = min(passed + removed, total)
-        let pctListened = Int((Double(listened) / Double(total) * 100).rounded())
-        let pctRemoved = Int((Double(removed) / Double(total) * 100).rounded())
+        let passedIds = app.killModePassedTrackIds(playlistId: playlistId)
+        let progress = KillListProgress(
+            rowTrackIds: Set(rows.map(\.track.id)),
+            pending: app.killModePendingTrackIds(playlistId: playlistId),
+            passed: passedIds,
+            totalSongCount: totalSongCount
+        )
+        // Clearing works on the stored set, so it stays available while any green mark exists —
+        // including ones that no longer match a row and so no longer count above.
+        let hasListenHistory = !passedIds.isEmpty
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(pctListened)% listened")
+                    Text("\(progress.percentListened)% listened")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.primary)
-                    Text("\(listened) of \(total) · \(removed) to remove")
+                    Text("\(progress.listened) of \(progress.total) · \(progress.removed) to remove")
                         .font(.caption)
                         .foregroundStyle(MusicDesign.secondaryLabel)
                 }
                 Spacer(minLength: 8)
-                Text("\(pctRemoved)% removed")
+                Text("\(progress.percentRemoved)% removed")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.red)
             }
@@ -204,9 +239,9 @@ struct PlaylistKillListView: View {
                     Capsule().fill(Color.primary.opacity(0.12))
                     HStack(spacing: 0) {
                         Rectangle().fill(Color.green)
-                            .frame(width: w * (Double(passed) / Double(total)))
+                            .frame(width: w * progress.keptFraction)
                         Rectangle().fill(Color.red)
-                            .frame(width: w * (Double(removed) / Double(total)))
+                            .frame(width: w * progress.removedFraction)
                     }
                     .clipShape(Capsule())
                 }
@@ -221,8 +256,8 @@ struct PlaylistKillListView: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(MusicDesign.accent)
-            .disabled(passed == 0)
-            .opacity(passed == 0 ? 0.4 : 1)
+            .disabled(!hasListenHistory)
+            .opacity(hasListenHistory ? 1 : 0.4)
             .padding(.top, 2)
         }
         .padding(.vertical, 4)

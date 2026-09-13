@@ -805,7 +805,7 @@ struct BrowseAlbumDetailView: View {
             onPlay: { Task { await play(startingAt: track) } },
             onPlayNext: {
                 Task { @MainActor in
-                    try? await app.player.playTracksNext(library: app.activeLibrary, tracks: [track])
+                    try? await app.player.playNext(library: app.activeLibrary, track: track)
                 }
             },
             onAddToQueue: {
