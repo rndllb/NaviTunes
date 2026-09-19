@@ -18,15 +18,27 @@ struct SettingsLibraryDataView: View {
         .settingsSubpageChrome()
     }
 
+    /// Counts of what the user has **added** in Vellum, not what exists on the server.
+    ///
+    /// These three read personal-library membership state, so "Playlists" is the number of
+    /// server playlists explicitly added here (`addPlaylistToLibrary`, reachable only from a
+    /// playlist's context menu) — **not** how many playlists exist on the server. Zero is the
+    /// correct and ordinary reading for someone who has never used that menu item, however many
+    /// playlists they own. That is what the old wording hid: "Music you've added in Vellum" read
+    /// as a description of the section rather than as the definition of each number, so a
+    /// legitimate 0 looked like a failed query. The server's own totals are the section below,
+    /// which is where "how many playlists do I have" is actually answered.
     private var yourLibraryStatsSection: some View {
         Section {
-            statRow(title: "Songs", value: app.librarySongIds.count)
-            statRow(title: "Albums", value: app.libraryAlbumEntries.count)
-            statRow(title: "Playlists", value: app.libraryPlaylistEntries.count)
+            statRow(title: "Songs added", value: app.librarySongIds.count)
+            statRow(title: "Albums added", value: app.libraryAlbumEntries.count)
+            statRow(title: "Playlists added", value: app.libraryPlaylistEntries.count)
         } header: {
-            Text("Your Library")
+            Text("Added in Vellum")
         } footer: {
-            Text("Music you've added in Vellum — synced via your personal library playlist.")
+            Text("Songs, albums and playlists you've added to your library from inside Vellum, "
+                 + "synced across your devices via your personal library playlist. This is not a "
+                 + "count of everything on your server — see Server Catalog below for that.")
         }
     }
 
