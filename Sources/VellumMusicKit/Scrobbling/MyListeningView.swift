@@ -9,9 +9,33 @@ struct MyListeningView: View {
     // abandoning the app's rounded-cover language for square edges.
     private static let artworkSize: CGFloat = 64
     private static let artworkDecodePixels: CGFloat = 192
-    private static let rankColumnWidth: CGFloat = 38
     private static let rowSpacing: CGFloat = 12
     private static let rowVerticalPadding: CGFloat = 5
+    private static let rankFontSize: CGFloat = 30
+
+    /// Width of the rank column, **measured** from the widest label a top-10 chart can show.
+    ///
+    /// A hardcoded 38pt was too narrow for "10", so the last row of every chart — and every
+    /// chart has a tenth row — broke the numeral across two lines. The width now comes from
+    /// laying out the widest string in the same font the row renders it with, so it cannot be
+    /// wrong for the content it has to hold. `.monospacedDigit()` on the label means every
+    /// digit has the same advance, so "10" is the widest two-digit case and measuring it
+    /// covers 11 through 99 as well.
+    private static let rankColumnWidth: CGFloat = {
+        let widest = "10" as NSString
+        #if canImport(UIKit)
+        let base = UIFont.monospacedDigitSystemFont(ofSize: rankFontSize, weight: .heavy)
+        let font: UIFont
+        if let rounded = base.fontDescriptor.withDesign(.rounded) {
+            font = UIFont(descriptor: rounded, size: rankFontSize)
+        } else {
+            font = base
+        }
+        return ceil(widest.size(withAttributes: [.font: font]).width)
+        #else
+        return ceil(rankFontSize * 1.3)
+        #endif
+    }()
 
     /// Resolved covers, keyed by track id and by artist name.
     ///
@@ -66,8 +90,17 @@ struct MyListeningView: View {
 
         var tracks: [String: URL] = [:]
         for row in s.topTracks {
+            // Preferred: the cached `Track`, which knows its album's own cover id.
             if let track = app.cachedLibraryTrack(id: row.trackId),
                let url = app.resolvedArtworkURL(for: track) {
+                tracks[row.trackId] = url
+                continue
+            }
+            // Fallback: ask the server for art by song id. A scrobble outlives the caches —
+            // `cachedLibraryTrack` only sees the personal-library index, recently played, and
+            // albums whose track lists happen to be cached — so a track played twice months ago
+            // and never added resolved to nothing and rendered the placeholder.
+            if let url = app.artworkURLForTrackId(row.trackId) {
                 tracks[row.trackId] = url
             }
         }
@@ -140,9 +173,13 @@ struct MyListeningView: View {
         }
     }
 
+    /// Each entry is its **own** `Section`, so it renders as its own inset card rather than as
+    /// one row of a shared grouped list. Only the first carries the header, which keeps a single
+    /// "Top artists" title above the run of cards instead of repeating it ten times.
+    @ViewBuilder
     private var topArtistsSection: some View {
-        Section {
-            ForEach(Array(summary.topArtists.enumerated()), id: \.offset) { index, row in
+        ForEach(Array(summary.topArtists.enumerated()), id: \.offset) { index, row in
+            Section {
                 chartRow(
                     rank: index + 1,
                     artworkURL: artistArtwork[row.name],
@@ -150,9 +187,9 @@ struct MyListeningView: View {
                     subtitle: nil,
                     count: row.count,
                 )
+            } header: {
+                if index == 0 { Text("Top artists") } else { EmptyView() }
             }
-        } header: {
-            Text("Top artists")
         }
     }
 
@@ -169,9 +206,13 @@ struct MyListeningView: View {
     ) -> some View {
         HStack(spacing: Self.rowSpacing) {
             Text("\(rank)")
-                .font(.system(size: 30, weight: .heavy, design: .rounded))
+                .font(.system(size: Self.rankFontSize, weight: .heavy, design: .rounded))
                 .monospacedDigit()
                 .foregroundStyle(.primary)
+                // Belt and braces alongside the measured width: even if the measurement and the
+                // rendered font ever disagreed, the numeral must not wrap.
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .frame(width: Self.rankColumnWidth, alignment: .leading)
             AlbumArtworkView(
                 url: artworkURL,
@@ -200,9 +241,11 @@ struct MyListeningView: View {
         .listRowSeparator(.hidden)
     }
 
+    /// Own-section-per-entry, matching ``topArtistsSection``.
+    @ViewBuilder
     private var topTracksSection: some View {
-        Section {
-            ForEach(Array(summary.topTracks.enumerated()), id: \.offset) { index, row in
+        ForEach(Array(summary.topTracks.enumerated()), id: \.offset) { index, row in
+            Section {
                 chartRow(
                     rank: index + 1,
                     artworkURL: trackArtwork[row.trackId],
@@ -210,9 +253,9 @@ struct MyListeningView: View {
                     subtitle: row.artist,
                     count: row.count,
                 )
+            } header: {
+                if index == 0 { Text("Top tracks") } else { EmptyView() }
             }
-        } header: {
-            Text("Top tracks")
         }
     }
 
