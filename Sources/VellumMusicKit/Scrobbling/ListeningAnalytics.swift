@@ -8,24 +8,33 @@ struct ListeningDayStat: Identifiable, Hashable {
 }
 
 struct ListeningAnalyticsSummary {
+    /// Lifetime completed scrobbles. Comes from the running counter, not from the retained
+    /// array, so it is not bounded by the 500-item cap the way every field below it is.
     let totalPlays: Int
+    /// Number of scrobbles the detail stats below were actually computed over. Equal to
+    /// ``totalPlays`` until the cap bites, lower afterwards — the view says so rather than
+    /// presenting a windowed figure as a lifetime one.
+    let analyzedPlays: Int
     let uniqueTracks: Int
-    let currentStreakDays: Int
-    let longestStreakDays: Int
     let topArtists: [(name: String, count: Int)]
     let topTracks: [(title: String, artist: String, count: Int)]
     let dailyHeatmap: [ListeningDayStat]
 }
 
 enum ListeningAnalytics {
-    static func summarize(completed: [CompletedScrobble], calendar: Calendar = .current) -> ListeningAnalyticsSummary {
+    /// - Parameter lifetimePlays: the store's running total. Everything else here is derived
+    ///   from `completed`, which is capped, so this is the one figure that survives trimming.
+    ///   Passing `nil` falls back to the array's own count.
+    static func summarize(
+        completed: [CompletedScrobble],
+        lifetimePlays: Int? = nil,
+        calendar: Calendar = .current,
+    ) -> ListeningAnalyticsSummary {
         let plays = completed
-        let totalPlays = plays.count
+        let analyzedPlays = plays.count
+        let totalPlays = max(lifetimePlays ?? analyzedPlays, analyzedPlays)
         let uniqueTracks = Set(plays.map(\.trackId)).count
 
-        let dayKeys = plays.map { dayKey(for: $0.timestamp, calendar: calendar) }
-        let uniqueDays = Set(dayKeys)
-        let streaks = computeStreaks(dayKeys: uniqueDays, calendar: calendar)
         let heatmap = dailyCounts(from: plays, calendar: calendar)
 
         var artistCounts: [String: Int] = [:]
@@ -56,9 +65,8 @@ enum ListeningAnalytics {
 
         return ListeningAnalyticsSummary(
             totalPlays: totalPlays,
+            analyzedPlays: analyzedPlays,
             uniqueTracks: uniqueTracks,
-            currentStreakDays: streaks.current,
-            longestStreakDays: streaks.longest,
             topArtists: Array(topArtists),
             topTracks: Array(topTracks),
             dailyHeatmap: heatmap,
@@ -89,37 +97,9 @@ enum ListeningAnalytics {
             .map { $0 }
     }
 
-    private static func computeStreaks(dayKeys: Set<String>, calendar: Calendar) -> (current: Int, longest: Int) {
-        guard !dayKeys.isEmpty else { return (0, 0) }
-        let formatter = DateFormatter()
-        formatter.calendar = calendar
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd"
-        let sortedDays = dayKeys.compactMap { formatter.date(from: $0) }.sorted()
-        guard !sortedDays.isEmpty else { return (0, 0) }
-
-        var longest = 1
-        var run = 1
-        for i in 1..<sortedDays.count {
-            let prev = calendar.startOfDay(for: sortedDays[i - 1])
-            let cur = calendar.startOfDay(for: sortedDays[i])
-            if let next = calendar.date(byAdding: .day, value: 1, to: prev), calendar.isDate(next, inSameDayAs: cur) {
-                run += 1
-            } else {
-                longest = max(longest, run)
-                run = 1
-            }
-        }
-        longest = max(longest, run)
-
-        let today = calendar.startOfDay(for: Date())
-        var current = 0
-        var cursor = today
-        while dayKeys.contains(dayKey(for: cursor, calendar: calendar)) {
-            current += 1
-            guard let prev = calendar.date(byAdding: .day, value: -1, to: cursor) else { break }
-            cursor = prev
-        }
-        return (current, longest)
-    }
+    // Streaks were removed along with the section that displayed them. A streak read off the
+    // capped `completed` array is wrong in a way no label can fix: once the tail is trimmed the
+    // oldest retained day is not the oldest day listened to, so "longest streak" is bounded by
+    // whatever survived rather than by what happened, and a long streak silently shortens as
+    // history rolls off. Restoring it needs a source of truth that is not trimmed.
 }
