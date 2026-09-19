@@ -17,7 +17,9 @@ struct ListeningAnalyticsSummary {
     let analyzedPlays: Int
     let uniqueTracks: Int
     let topArtists: [(name: String, count: Int)]
-    let topTracks: [(title: String, artist: String, count: Int)]
+    /// `trackId` rides along so the view can resolve each row's cover art. It is the scrobble's
+    /// own id, which is what `AppModel.cachedLibraryTrack(id:)` takes.
+    let topTracks: [(trackId: String, title: String, artist: String, count: Int)]
     let dailyHeatmap: [ListeningDayStat]
 }
 
@@ -38,7 +40,7 @@ enum ListeningAnalytics {
         let heatmap = dailyCounts(from: plays, calendar: calendar)
 
         var artistCounts: [String: Int] = [:]
-        var trackCounts: [String: (title: String, artist: String, count: Int)] = [:]
+        var trackCounts: [String: (trackId: String, title: String, artist: String, count: Int)] = [:]
         for scrobble in plays {
             let artist = scrobble.artist.trimmingCharacters(in: .whitespacesAndNewlines)
             if !artist.isEmpty {
@@ -49,7 +51,7 @@ enum ListeningAnalytics {
                 existing.count += 1
                 trackCounts[key] = existing
             } else {
-                trackCounts[key] = (scrobble.title, scrobble.artist, 1)
+                trackCounts[key] = (key, scrobble.title, scrobble.artist, 1)
             }
         }
 
@@ -61,7 +63,7 @@ enum ListeningAnalytics {
         let topTracks = trackCounts.values
             .sorted { $0.count > $1.count || ($0.count == $1.count && $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending) }
             .prefix(10)
-            .map { ($0.title, $0.artist, $0.count) }
+            .map { ($0.trackId, $0.title, $0.artist, $0.count) }
 
         return ListeningAnalyticsSummary(
             totalPlays: totalPlays,

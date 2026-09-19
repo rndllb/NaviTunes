@@ -3,6 +3,25 @@ import SwiftUI
 struct MyListeningView: View {
     @EnvironmentObject private var app: AppModel
 
+    // Row metrics. The charts are the point of this screen, so they get a tall editorial row
+    // rather than the default list density: a heavy rank numeral, a cover the height of the
+    // row, then the name. Covers sit close enough to read as one vertical strip without
+    // abandoning the app's rounded-cover language for square edges.
+    private static let artworkSize: CGFloat = 64
+    private static let artworkDecodePixels: CGFloat = 192
+    private static let rankColumnWidth: CGFloat = 38
+    private static let rowSpacing: CGFloat = 12
+    private static let rowVerticalPadding: CGFloat = 5
+
+    /// Resolved covers, keyed by track id and by artist name.
+    ///
+    /// Held in `@State` and filled from a `.task` rather than resolved in `body`: finding an
+    /// artist's cover means scanning the album catalog, and every view here observes the whole
+    /// of `AppModel`, so doing that per row per publish is exactly the body cost the project
+    /// rules forbid.
+    @State private var trackArtwork: [String: URL] = [:]
+    @State private var artistArtwork: [String: URL] = [:]
+
     private var summary: ListeningAnalyticsSummary {
         ListeningAnalytics.summarize(
             completed: app.scrobbleService.store.completed,
@@ -33,6 +52,52 @@ struct MyListeningView: View {
         }
         .navigationTitle("My Listening")
         .navigationBarTitleDisplayMode(.inline)
+        .task { resolveArtwork() }
+    }
+
+    /// Fills the two artwork maps once per appearance.
+    ///
+    /// Tracks resolve through the same cache the rest of the app uses. Artists have no artwork
+    /// of their own on this path, so the first catalog album credited to them supplies the
+    /// cover — which is what the artist circles elsewhere fall back to as well. The catalog is
+    /// walked exactly once here rather than once per row.
+    private func resolveArtwork() {
+        let s = summary
+
+        var tracks: [String: URL] = [:]
+        for row in s.topTracks {
+            if let track = app.cachedLibraryTrack(id: row.trackId),
+               let url = app.resolvedArtworkURL(for: track) {
+                tracks[row.trackId] = url
+            }
+        }
+
+        let wanted = Set(s.topArtists.map { $0.name.lowercased() })
+        var artists: [String: URL] = [:]
+        if !wanted.isEmpty {
+            for album in app.libraryAlbums {
+                let key = album.artist.lowercased()
+                guard wanted.contains(key), artists[album.artist] == nil else { continue }
+                if let url = app.resolvedArtworkURL(for: album) { artists[album.artist] = url }
+            }
+        }
+        // Key on the exact spelling the rows use, not the lowercased match key.
+        var byDisplayName: [String: URL] = [:]
+        for row in s.topArtists {
+            if let exact = artists[row.name] {
+                byDisplayName[row.name] = exact
+            } else if let loose = artists.first(where: { $0.key.lowercased() == row.name.lowercased() })?.value {
+                byDisplayName[row.name] = loose
+            } else if let fallback = tracks.first(where: { id, _ in
+                s.topTracks.first { $0.trackId == id }?.artist.lowercased() == row.name.lowercased()
+            })?.value {
+                // An artist with no album row in the catalog still has their tracks' covers.
+                byDisplayName[row.name] = fallback
+            }
+        }
+
+        trackArtwork = tracks
+        artistArtwork = byDisplayName
     }
 
     private var overviewSection: some View {
@@ -78,45 +143,73 @@ struct MyListeningView: View {
     private var topArtistsSection: some View {
         Section {
             ForEach(Array(summary.topArtists.enumerated()), id: \.offset) { index, row in
-                HStack {
-                    Text("\(index + 1).")
-                        .foregroundStyle(.secondary)
-                        .frame(width: 24, alignment: .leading)
-                    Text(row.name)
-                    Spacer()
-                    Text("\(row.count)")
-                        .foregroundStyle(.secondary)
-                }
+                chartRow(
+                    rank: index + 1,
+                    artworkURL: artistArtwork[row.name],
+                    title: row.name,
+                    subtitle: nil,
+                    count: row.count,
+                )
             }
         } header: {
             Text("Top artists")
         }
     }
 
+    /// One ranked row: numeral, cover, name, play count.
+    ///
+    /// Shared by both charts so they cannot drift apart again — the previous versions were
+    /// written separately and disagreed about where the text column started.
+    private func chartRow(
+        rank: Int,
+        artworkURL: URL?,
+        title: String,
+        subtitle: String?,
+        count: Int,
+    ) -> some View {
+        HStack(spacing: Self.rowSpacing) {
+            Text("\(rank)")
+                .font(.system(size: 30, weight: .heavy, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(.primary)
+                .frame(width: Self.rankColumnWidth, alignment: .leading)
+            AlbumArtworkView(
+                url: artworkURL,
+                cornerRadius: MusicDesign.albumCorner,
+                maxDecodePixels: Self.artworkDecodePixels,
+            )
+            .frame(width: Self.artworkSize, height: Self.artworkSize)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(2)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 8)
+            Text("\(count)")
+                .font(.subheadline.weight(.medium))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, Self.rowVerticalPadding)
+        .listRowSeparator(.hidden)
+    }
+
     private var topTracksSection: some View {
         Section {
             ForEach(Array(summary.topTracks.enumerated()), id: \.offset) { index, row in
-                // Title and artist share one leading edge because they share one column.
-                // They used to be siblings in a VStack with the artist nudged across by a
-                // hand-written `.padding(.leading, 24)` that matched the index frame but not
-                // the HStack's own spacing, so the artist sat ~8pt left of the title it
-                // belonged to — and out of line with the Top artists rows above.
-                HStack(alignment: .firstTextBaseline) {
-                    Text("\(index + 1).")
-                        .foregroundStyle(.secondary)
-                        .frame(width: 24, alignment: .leading)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(row.title)
-                            .font(.body.weight(.medium))
-                        Text(row.artist)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Text("\(row.count)")
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.vertical, 2)
+                chartRow(
+                    rank: index + 1,
+                    artworkURL: trackArtwork[row.trackId],
+                    title: row.title,
+                    subtitle: row.artist,
+                    count: row.count,
+                )
             }
         } header: {
             Text("Top tracks")
