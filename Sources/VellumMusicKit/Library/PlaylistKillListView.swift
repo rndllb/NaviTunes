@@ -98,7 +98,20 @@ struct PlaylistKillListView: View {
                 rowView(row)
                     .listRowBackground(MusicDesign.background)
                     .disabled(isRemoving)
-                    .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                    // Both actions live on the trailing edge on purpose. A leading
+                    // `swipeActions` row eats the leading-edge pan, which is the same
+                    // gesture as the interactive back-swipe — so dragging right from a row
+                    // ran "Keep" instead of popping Kill Mode, and a drag begun at the very
+                    // edge fell through to the playlist underneath. Back-swipe is a
+                    // system-wide expectation and its absence reads as a bug, so the leading
+                    // edge is left to navigation. "Remove" stays declared first, which keeps
+                    // it the full-swipe action exactly as before.
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        Button(role: .destructive) {
+                            pendingRowDelete = row
+                        } label: {
+                            Label("Remove", systemImage: "trash")
+                        }
                         Button {
                             app.restoreFromKillList(playlistId: playlistId, trackId: row.track.id)
                             app.showTransientToast("Kept in Playlist")
@@ -106,13 +119,6 @@ struct PlaylistKillListView: View {
                             Label("Keep", systemImage: "arrow.uturn.backward")
                         }
                         .tint(.green)
-                    }
-                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        Button(role: .destructive) {
-                            pendingRowDelete = row
-                        } label: {
-                            Label("Remove", systemImage: "trash")
-                        }
                     }
             }
         }
