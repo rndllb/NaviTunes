@@ -1529,6 +1529,25 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    /// Cover art for a track we know only by id.
+    ///
+    /// The artwork path proper needs a `Track`, which means the track has to be in one of the
+    /// local caches. A scrobble row can outlive all of them — it keeps only an id, a title and
+    /// an artist — and then had no art at all. Both backends will serve a cover for a *song* id
+    /// directly (Subsonic `getCoverArt?id=`, Jellyfin `/Items/{id}/Images/Primary`), so the id
+    /// on the scrobble is enough. Used as a fallback only; a cached `Track` is still preferred
+    /// because it carries the album's own cover id.
+    func artworkURLForTrackId(_ id: String) -> URL? {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        switch backendKind {
+        case .navidrome:
+            return navidrome?.coverArtURL(forId: trimmed, size: 400)
+        case .jellyfin:
+            return jellyfin?.albumPrimaryImageURL(albumId: trimmed)
+        }
+    }
+
     private func navidromeCoverArtId(for track: Track) -> String? {
         if let fromTrack = navidromeCoverArtId(from: track.artworkURL) { return fromTrack }
         if let album = libraryAlbumsById[track.albumId] {
