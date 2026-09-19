@@ -63,6 +63,12 @@ struct SettingsView: View {
             settingsRow("Library", systemImage: "music.note.list", subtitle: librarySubtitle) {
                 SettingsLibraryDataView()
             }
+            // Directly below Library, by product decision. Position here is literal source
+            // order inside this `Section` — there is no sort or index driving it — so a
+            // reorder can only happen by moving this call, which a diff will show.
+            settingsRow("History", systemImage: "clock.arrow.circlepath", subtitle: historySubtitle) {
+                SettingsHistoryView()
+            }
             settingsRow("Sync", systemImage: "arrow.triangle.2.circlepath", subtitle: syncSubtitle) {
                 SettingsSyncSectionView()
             }
@@ -162,6 +168,12 @@ struct SettingsView: View {
         }
         guard let songs = app.libraryStatistics.songCount else { return nil }
         return "\(SettingsFormatting.decimalString(songs)) on server"
+    }
+
+    private var historySubtitle: String? {
+        let completed = app.scrobbleService.store.completed.count
+        guard completed > 0 else { return nil }
+        return "\(SettingsFormatting.decimalString(completed)) scrobbles"
     }
 
     private var syncSubtitle: String? {

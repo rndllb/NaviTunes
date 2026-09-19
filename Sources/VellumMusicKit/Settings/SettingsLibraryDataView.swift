@@ -10,7 +10,6 @@ struct SettingsLibraryDataView: View {
             serverCatalogStatsSection
             mixesSection
             albumCacheSection
-            listeningHistorySection
             LibraryScanControlsView()
             backupSection
             navidromeSharesSection
@@ -137,48 +136,6 @@ struct SettingsLibraryDataView: View {
             Text("Album Cache Refresh")
         } footer: {
             Text("Re-fetch album track lists before playback when the cache is older than this threshold. Helps catch server-side ID changes.")
-        }
-    }
-
-    private var listeningHistorySection: some View {
-        Section {
-            HStack {
-                Text("Pending scrobbles")
-                Spacer()
-                Text("\(app.scrobbleService.store.pending.count)")
-                    .foregroundStyle(.secondary)
-            }
-            HStack {
-                Text("Completed scrobbles")
-                Spacer()
-                Text("\(app.scrobbleService.store.completed.count)")
-                    .foregroundStyle(.secondary)
-            }
-            HStack {
-                Text("Exclusions")
-                Spacer()
-                Text("\(app.scrobbleService.store.exclusions.count)")
-                    .foregroundStyle(.secondary)
-            }
-            NavigationLink {
-                MyListeningView()
-            } label: {
-                Label("My Listening", systemImage: "chart.bar.fill")
-            }
-            NavigationLink {
-                ScrobbleBrowserView()
-            } label: {
-                Label("Browse scrobbles", systemImage: "list.bullet")
-            }
-            NavigationLink {
-                ScrobbleExclusionBrowserView()
-            } label: {
-                Label("Manage exclusions", systemImage: "eye.slash")
-            }
-        } header: {
-            Text("Listening History")
-        } footer: {
-            Text("Scrobbles are submitted to your server when a track passes the playback threshold (~50% or 30 seconds).")
         }
     }
 
