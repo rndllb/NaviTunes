@@ -7047,10 +7047,22 @@ public final class AppModel: ObservableObject {
         return meta.shareRole
     }
 
+    /// Creates the share on the server, then hands the URL to the system share sheet.
+    ///
+    /// The complaint this answers is that creating a link left it on the pasteboard with a
+    /// toast and nothing else — you could not send it anywhere from where you were standing,
+    /// and a silent clipboard write is invisible if you miss the toast. A declarative
+    /// `ShareLink` is not an option at the call sites: they are context-menu buttons, and the
+    /// URL does not exist until the server round-trip returns, so the sheet is presented
+    /// imperatively once there is something real to share.
+    ///
+    /// The pasteboard write is kept as the fallback for the case where no presenter can be
+    /// found, so the link is never simply lost.
     func createNavidromeShareAndNotify(forItemId id: String, description: String) async {
         do {
             let entry = try await createNavidromeShare(forItemId: id, description: description)
             #if os(iOS)
+            if SystemShareSheetPresenter.present(url: entry.url) { return }
             UIPasteboard.general.url = entry.url
             #endif
             showTransientToast("Share link copied")
