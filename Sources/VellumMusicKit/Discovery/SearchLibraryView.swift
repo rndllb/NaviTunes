@@ -137,11 +137,11 @@ private struct SearchTabHeader: View {
                     .autocorrectionDisabled()
                     .submitLabel(.search)
                     .tint(MusicDesign.accent)
-                    if searchText.isEmpty {
-                        Image(systemName: "microphone.fill")
-                            .font(.body)
-                            .foregroundStyle(MusicDesign.secondaryLabel)
-                    } else {
+                    // No mic affordance by design: the system keyboard already carries a
+                    // dictation key, so a second entry point here would duplicate it at the
+                    // cost of a microphone permission and an audio-session negotiation
+                    // against the player. The trailing slot is the clear button only.
+                    if !searchText.isEmpty {
                         Button {
                             searchText = ""
                         } label: {

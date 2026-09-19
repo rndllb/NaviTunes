@@ -1634,20 +1634,16 @@ struct MusicAlphabetIndexScrubber: View {
 struct LibrarySearchPill: View {
     let prompt: String
     @Binding var text: String
-    var showsMic: Bool = true
 
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(MusicDesign.secondaryLabel)
+            // No mic affordance by design — see the note in `SearchLibraryView`. Dictation
+            // is the system keyboard's job.
             TextField(prompt, text: $text)
                 .foregroundStyle(.primary)
                 .musicTextInputAutocapitalization(.never)
-            if showsMic {
-                Image(systemName: "mic.fill")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(MusicDesign.secondaryLabel.opacity(0.85))
-            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
