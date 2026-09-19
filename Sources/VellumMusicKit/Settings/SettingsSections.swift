@@ -37,46 +37,6 @@ extension View {
     }
 }
 
-// MARK: - Sync
-
-struct SettingsSyncSectionView: View {
-    @EnvironmentObject private var app: AppModel
-
-    var body: some View {
-        Form {
-            Section {
-                LabeledContent("Last synced") {
-                    if let d = app.lastLibrarySyncAt {
-                        Text(d.formatted(date: .abbreviated, time: .shortened))
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("Never")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Button {
-                    Task { await app.syncLibraryNow() }
-                } label: {
-                    HStack {
-                        if app.isLibrarySyncing {
-                            ProgressView()
-                                .tint(MusicDesign.accent)
-                                .scaleEffect(0.85)
-                        }
-                        Text("Sync now")
-                    }
-                }
-                .disabled(!app.isSignedIn || app.isLibrarySyncing)
-                .tint(MusicDesign.accent)
-            } footer: {
-                Text("Refreshes albums, playlists, home shelves, and the discovery track index.")
-            }
-        }
-        .navigationTitle("Sync")
-        .settingsSubpageChrome()
-    }
-}
-
 // MARK: - Offline
 
 struct SettingsOfflineSectionView: View {
