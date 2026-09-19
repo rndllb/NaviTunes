@@ -67,15 +67,41 @@ final class ScrobbleStore: ObservableObject {
     @Published private(set) var completed: [CompletedScrobble] = []
     @Published private(set) var exclusions: [ScrobbleExclusion] = []
 
+    /// Every completed scrobble ever recorded, counted rather than stored.
+    ///
+    /// `completed` is capped at 500 so the defaults blob stays small, which meant "Total plays"
+    /// — `completed.count` — silently stopped climbing at 500 and reported a cap as a lifetime
+    /// figure. This counter is incremented at the same moments the array is appended to, so it
+    /// keeps counting after the array starts dropping its tail.
+    ///
+    /// It is exact from the build that introduced it onward. For a library that already trimmed
+    /// history before then it is a floor, not a recovered total — there is no way back to plays
+    /// that were discarded. Seeded from the surviving array on first run so it starts at the
+    /// best number available rather than at zero.
+    @Published private(set) var lifetimeCompletedCount: Int = 0
+
     private static let pendingKey = "vellumPendingScrobbles"
     private static let completedKey = "vellumCompletedScrobbles"
     private static let exclusionsKey = "vellumScrobbleExclusions"
+    private static let lifetimeCompletedKey = "vellumLifetimeCompletedScrobbleCount"
     private static let completedCap = 500
 
     init() {
         pending = Self.load(Self.pendingKey, as: [PendingScrobble].self) ?? []
         completed = Self.load(Self.completedKey, as: [CompletedScrobble].self) ?? []
         exclusions = Self.load(Self.exclusionsKey, as: [ScrobbleExclusion].self) ?? []
+        // `object(forKey:)` rather than `integer(forKey:)` — the latter cannot tell "absent"
+        // from a stored 0, and absent is what the seed-from-array case has to detect.
+        if let stored = UserDefaults.standard.object(forKey: Self.lifetimeCompletedKey) as? Int {
+            lifetimeCompletedCount = max(stored, completed.count)
+        } else {
+            lifetimeCompletedCount = completed.count
+        }
+        persistLifetimeCompletedCount()
+    }
+
+    private func persistLifetimeCompletedCount() {
+        UserDefaults.standard.set(lifetimeCompletedCount, forKey: Self.lifetimeCompletedKey)
     }
 
     func addPending(_ item: PendingScrobble) {
@@ -90,6 +116,8 @@ final class ScrobbleStore: ObservableObject {
 
     func recordCompleted(_ item: CompletedScrobble) {
         completed.insert(item, at: 0)
+        lifetimeCompletedCount += 1
+        persistLifetimeCompletedCount()
         if completed.count > Self.completedCap {
             completed = Array(completed.prefix(Self.completedCap))
         }
@@ -107,8 +135,13 @@ final class ScrobbleStore: ObservableObject {
         persistExclusions()
     }
 
+    /// Restore-from-backup. The imported array is the only evidence of its own size, so the
+    /// lifetime count is raised to it where it is larger — never lowered, since a restore must
+    /// not erase plays this install already counted past the cap.
     func replaceCompleted(_ items: [CompletedScrobble]) {
         completed = Array(items.prefix(Self.completedCap))
+        lifetimeCompletedCount = max(lifetimeCompletedCount, items.count)
+        persistLifetimeCompletedCount()
         persistCompleted()
     }
 
@@ -130,6 +163,8 @@ final class ScrobbleStore: ObservableObject {
             completed.insert(item, at: 0)
             inserted += 1
         }
+        lifetimeCompletedCount += inserted
+        persistLifetimeCompletedCount()
         if completed.count > Self.completedCap {
             completed = Array(completed.prefix(Self.completedCap))
         }

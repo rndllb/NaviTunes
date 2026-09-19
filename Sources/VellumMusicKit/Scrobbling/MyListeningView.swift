@@ -4,7 +4,10 @@ struct MyListeningView: View {
     @EnvironmentObject private var app: AppModel
 
     private var summary: ListeningAnalyticsSummary {
-        ListeningAnalytics.summarize(completed: app.scrobbleService.store.completed)
+        ListeningAnalytics.summarize(
+            completed: app.scrobbleService.store.completed,
+            lifetimePlays: app.scrobbleService.store.lifetimeCompletedCount,
+        )
     }
 
     var body: some View {
@@ -17,7 +20,6 @@ struct MyListeningView: View {
                 )
             } else {
                 overviewSection
-                streakSection
                 if !summary.dailyHeatmap.isEmpty {
                     heatmapSection
                 }
@@ -39,17 +41,15 @@ struct MyListeningView: View {
             statRow("Unique tracks", value: "\(summary.uniqueTracks)")
         } header: {
             Text("Overview")
-        }
-    }
-
-    private var streakSection: some View {
-        Section {
-            statRow("Current streak", value: streakLabel(summary.currentStreakDays))
-            statRow("Longest streak", value: streakLabel(summary.longestStreakDays))
-        } header: {
-            Text("Streaks")
         } footer: {
-            Text("A streak counts consecutive days with at least one completed scrobble.")
+            // Say which numbers are lifetime and which are windowed, rather than letting one
+            // doubtful figure cast doubt over the whole screen.
+            if summary.totalPlays > summary.analyzedPlays {
+                Text("Total plays counts every scrobble. Unique tracks and the sections below are "
+                     + "computed over your most recent \(summary.analyzedPlays) plays.")
+            } else {
+                Text("Counted from completed scrobbles.")
+            }
         }
     }
 
@@ -96,21 +96,25 @@ struct MyListeningView: View {
     private var topTracksSection: some View {
         Section {
             ForEach(Array(summary.topTracks.enumerated()), id: \.offset) { index, row in
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text("\(index + 1).")
-                            .foregroundStyle(.secondary)
-                            .frame(width: 24, alignment: .leading)
+                // Title and artist share one leading edge because they share one column.
+                // They used to be siblings in a VStack with the artist nudged across by a
+                // hand-written `.padding(.leading, 24)` that matched the index frame but not
+                // the HStack's own spacing, so the artist sat ~8pt left of the title it
+                // belonged to — and out of line with the Top artists rows above.
+                HStack(alignment: .firstTextBaseline) {
+                    Text("\(index + 1).")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 24, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 2) {
                         Text(row.title)
                             .font(.body.weight(.medium))
-                        Spacer()
-                        Text("\(row.count)")
+                        Text(row.artist)
+                            .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    Text(row.artist)
-                        .font(.caption)
+                    Spacer()
+                    Text("\(row.count)")
                         .foregroundStyle(.secondary)
-                        .padding(.leading, 24)
                 }
                 .padding(.vertical, 2)
             }
@@ -126,10 +130,6 @@ struct MyListeningView: View {
             Text(value)
                 .foregroundStyle(.secondary)
         }
-    }
-
-    private func streakLabel(_ days: Int) -> String {
-        days == 1 ? "1 day" : "\(days) days"
     }
 
     private func barHeight(for count: Int) -> CGFloat {
