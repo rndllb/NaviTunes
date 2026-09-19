@@ -63,45 +63,10 @@ struct SettingsView: View {
             settingsRow("Library", systemImage: "music.note.list", subtitle: librarySubtitle) {
                 SettingsLibraryDataView()
             }
-            syncNowRow
-        } footer: {
-            Text("Sync refreshes albums, playlists, home shelves, and the discovery track index.")
-        }
-    }
-
-    /// The Sync subpage held exactly one button and one timestamp, which does not earn a push of
-    /// its own, so both are inline here and the subpage is gone.
-    ///
-    /// Deliberately *not* merged with Library → "Scan library now": that asks the server to
-    /// rescan its own files, whereas this is a client-side re-fetch. They only sound alike.
-    private var syncNowRow: some View {
-        Button {
-            Task { await app.syncLibraryNow() }
-        } label: {
-            HStack(spacing: 14) {
-                Image(systemName: "arrow.triangle.2.circlepath")
-                    .font(.body.weight(.medium))
-                    .foregroundStyle(MusicDesign.accent)
-                    .frame(width: 28, alignment: .center)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Sync now")
-                        .foregroundStyle(.primary)
-                    Text(syncSubtitle ?? "Never synced")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
-                if app.isLibrarySyncing {
-                    ProgressView()
-                        .tint(MusicDesign.accent)
-                        .scaleEffect(0.85)
-                }
+            settingsRow("Sync", systemImage: "arrow.triangle.2.circlepath", subtitle: syncSubtitle) {
+                SettingsSyncSectionView()
             }
-            .padding(.vertical, 2)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .disabled(!app.isSignedIn || app.isLibrarySyncing)
     }
 
     private var connectivitySection: some View {
