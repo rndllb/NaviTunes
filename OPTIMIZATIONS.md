@@ -3150,3 +3150,44 @@ fixed too:
 
 60 new tests (23 + 17 + 20); the whole suite is 168 tests in 15 suites, all passing. You have
 confirmed the build on your phone.
+
+## T431 — Lyrics ↔ queue: the header holds still and everything else slides (2026-09-21, not committed)
+
+**The bug you hit.** You asked for the header (cover, song title, artist, star and ⋯) to stay put
+when you switch between lyrics and the queue, while everything under it keeps sliding. The previous
+fix (T411) did the opposite. It stopped the whole lower part from moving, so the queue (shuffle /
+repeat / 1× row, "Continue Playing", the songs) and the lyrics just appeared in place with no
+slide. Meanwhile the header visibly faded out and back in. Your recording showed it: one frame has
+the queue already fully in place while the header still shows the lyrics version.
+
+**Why it happened.** In the queue, the header isn't really a header. It's the first row of the
+queue list, so it lives inside the part that slides. T411 stopped the header moving by stopping the
+whole pane from moving. It was checked by measuring only the header (0 pt of movement), and nobody
+measured the part that was supposed to keep moving.
+
+**What happens now.** Both panes slide again, exactly as they do to and from the main player. For
+the length of a lyrics ↔ queue switch, the fixed header above the panes draws the cover, title,
+artist, star and ⋯ for *both* screens. It isn't inside either pane, so it can't move. The queue's
+own copy stays hidden until the slide lands, then the two swap in a single frame at exactly the same
+spot, the same trick the cover already used. The thin divider under the lyrics header now fades
+where it is instead of sliding up.
+
+**Measured on the simulator, frame by frame from a screen recording, both directions:**
+
+| | Header (title / buttons, cover) | Queue body (shuffle row, "Queue", rows) | Lyrics body |
+|---|---|---|---|
+| Before, lyrics → queue | 0.0 pt, fades out and in | 0.0 pt, pops in | pops out |
+| Before, queue → lyrics | 0.0 pt | pops out | 0.0 pt, pops in |
+| After, lyrics → queue | **0.0 pt**, fully visible every frame | **245 pt** slide up: 243 → 114 → 55 → 22 → 6 → −2 → 0 | slides down and out |
+| After, queue → lyrics | **0.0 pt**, fully visible every frame | slides down and out: 0 → 8 → 104 → 221 | **92–114 pt** slide up: 92 → 32 → 13 → 1 → −2 → 0 |
+
+The negative numbers are the spring's usual small overshoot. Main ↔ lyrics and main ↔ queue are
+unchanged: the header still rides up into place there.
+
+**Also fixed on the way.** T411 had a second, quieter bug. The first time you switched after
+coming from the main player, the old pane still slid, because SwiftUI animates a disappearing view
+with the settings from its previous frame. The switch now sets up the held header one frame
+*before* the panes move, so it behaves the same every time.
+
+All in `NowPlayingView.swift`. Your uncommitted cover work in that file is untouched apart from
+four conditions that now also know about the held header. Nothing else in the tree changed.

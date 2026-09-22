@@ -91,6 +91,42 @@ struct TransportPressButtonStyle: ButtonStyle {
     }
 }
 
+private struct NowPlayingArtworkArrival: ViewModifier {
+    var scale: CGFloat = 1
+    var offset: CGSize = .zero
+
+    func body(content: Content) -> some View {
+        content.scaleEffect(scale).offset(offset)
+    }
+}
+
+/// Geometry is sampled at the button tap; scrolling must not invalidate the player body.
+private final class QueueArtworkGeometry {
+    var row: CGRect = .zero
+    var viewport: CGRect = .zero
+    private(set) var exitRow: CGRect?
+    private var exitViewport: CGRect = .zero
+
+    func captureExit() {
+        exitViewport = viewport
+        exitRow = !row.isEmpty && viewport.contains(row) ? row : nil
+    }
+
+    func arrival(center: CGPoint, artworkSide: CGFloat, headerHeight: CGFloat, lyrics: Bool) -> NowPlayingArtworkArrival {
+        if let source = exitRow {
+            return NowPlayingArtworkArrival(
+                scale: source.width / artworkSide,
+                offset: CGSize(width: source.midX - center.x, height: source.midY - center.y)
+            )
+        }
+        // Lyrics enters from below; the main player enters from above. No alpha transition.
+        return NowPlayingArtworkArrival(offset: CGSize(
+            width: 0,
+            height: lyrics ? max(0, exitViewport.height - headerHeight) : -headerHeight
+        ))
+    }
+}
+
 private enum NowPlayingLibraryRoute: Hashable {
     case album(AlbumSummary)
     /// Carries the tapped row's own artist id, not just the name. The row that was tapped is not
@@ -110,10 +146,25 @@ struct NowPlayingView: View {
     /// The queue's now-playing module is *always* a real first list row (so it
     /// scrolls natively with the queue and never fights the history paging gesture).
     /// During the open morph the floating ``sharedHeader`` artwork travels into the
-    /// row's slot; this flag flips `true` once it lands — instantly hiding the
-    /// floating copy and showing the row's own artwork at the same coordinates.
-    /// Set on the open animation's completion, or earlier if the user scrolls.
+    /// row's slot; this flag flips `true` once it lands and lets the list row paint
+    /// its copy. On exit, the row's measured frame supplies the artwork transition.
     @State private var queueArtworkHandedOff = false
+    @State private var queueArtworkGeometry = QueueArtworkGeometry()
+    @State private var queueTransitionGeneration = 0
+    /// True from the tap until the landing of a lyrics ↔ queue switch, and only then.
+    ///
+    /// Both compact panes carry the same header chrome — title, artist menu, favourite and the
+    /// 3-dot menu — but from different owners: lyrics from ``sharedHeader``'s compact block,
+    /// queue from ``queueNowPlayingModuleRow`` as the list's first row, *inside* the pane. The
+    /// panes slide on this switch like on any other, so the queue's copy would slide with its
+    /// pane. While this is set, ``sharedHeader`` draws the chrome (and the artwork) for both
+    /// panes — it sits outside them, so it cannot travel — and the row's copy stays hidden until
+    /// the landing swaps them in one non-animated frame, at identical coordinates.
+    ///
+    /// Set in its own update *before* the animated one (``swapCompactPaneHoldingHeader``):
+    /// SwiftUI animates a removed view with the transition from its last render, so a flag set
+    /// in the same update as the removal would only take effect one switch late.
+    @State private var headerChromeSwapsInPlace = false
     /// Tap counters driving the lock-screen-style skip-button symbol bounce.
     @State private var prevTapPulse = 0
     @State private var nextTapPulse = 0
@@ -129,10 +180,9 @@ struct NowPlayingView: View {
     ///
     /// Held with `@State` rather than `@StateObject` deliberately: `@State` on a reference type
     /// does not subscribe to `objectWillChange`, so this view keeps the object *alive* without
-    /// observing it. Lifetime is therefore exactly what it was — it survives leaving and
-    /// re-entering the queue pane, and survives a close/reopen, so which page you return to is
-    /// unchanged. (Scoping it to the queue pane's own view would have reset it on every visit,
-    /// which is the kind of pane-restoration change this pass must not make.)
+    /// observing it. The queue button resets it to `.nowPlayingHeader` each time it opens the
+    /// pane: returning to History after switching to lyrics or the main player read as a
+    /// visual inconsistency, so the queue always opens at its default page.
     @State private var queuePageAnchor = QueuePageAnchorModel()
     @Namespace private var artworkNamespace
 
@@ -389,6 +439,9 @@ struct NowPlayingView: View {
                         }
                         .allowsHitTesting(!showLyrics && !showQueue)
 
+                        // The panes always slide, lyrics ↔ queue included. What must not move on
+                        // that switch is the header chrome, and it is held by ``sharedHeader``
+                        // (see ``headerChromeSwapsInPlace``), not by freezing the panes.
                         Group {
                             if showLyrics {
                                 lyricsScrollContent(track: track)
@@ -407,6 +460,9 @@ struct NowPlayingView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .clipped()
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                        if showQueue { queueArtworkGeometry.viewport = frame }
+                    }
 
                     pinnedBottomChrome(track: track)
                 } else {
@@ -621,20 +677,30 @@ struct NowPlayingView: View {
         HStack(alignment: .center, spacing: 12) {
             ZStack {
                 Color.clear.frame(width: 56, height: 56)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                        queueArtworkGeometry.row = frame
+                    }
+                    .onDisappear { queueArtworkGeometry.row = .zero }
                 // Static slot: the shared header's artwork is what actually morphs through here,
                 // so this copy never travels and can decode at row size.
-                artworkView(
+                // Not while a lyrics ↔ queue switch holds the header: this row slides with its
+                // pane, and ``sharedHeader`` is drawing the cover in place meanwhile.
+                if queueArtworkHandedOff && showQueue && !headerChromeSwapsInPlace {
+                    artworkView(
                     for: track,
                     cornerRadius: 6,
                     maxDecodePixels: Self.rowArtworkDecodePixels,
                 )
                     .frame(width: 56, height: 56)
+                    .coverZoomHeroAnchor(id: NowPlayingCoverZoom.id, cornerRadius: 6)
+                    .nowPlayingHeroFlightHiding()
                     .shadow(
                         color: .black.opacity(backdropPalette.prefersDarkHeroChrome ? 0.22 : 0.45),
                         radius: 6,
                         y: 4,
                     )
-                    .opacity(queueArtworkHandedOff ? 1 : 0)
+                    .transition(.identity)
+                }
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -645,8 +711,13 @@ struct NowPlayingView: View {
                 compactArtistMenu(track: track)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .opacity(headerChromeSwapsInPlace ? 0 : 1)
+            .allowsHitTesting(!headerChromeSwapsInPlace)
 
+            // Hidden, like the title above, while ``sharedHeader`` holds the chrome still.
             compactHeaderActionButtons(track: track)
+                .opacity(headerChromeSwapsInPlace ? 0 : 1)
+                .allowsHitTesting(!headerChromeSwapsInPlace)
         }
         .padding(.horizontal, 20)
         .padding(.top, 14)
@@ -794,7 +865,11 @@ struct NowPlayingView: View {
         // slot, no late fade). This is a passive *observer* — unlike a gesture it
         // doesn't compete with the list scroll or the history paging swipe.
         .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, offset in
-            if offset > 0.5 && !queueArtworkHandedOff { queueArtworkHandedOff = true }
+            if showQueue && offset > 0.5 && !queueArtworkHandedOff {
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { queueArtworkHandedOff = true }
+            }
         }
         #if os(iOS)
         .environment(\.editMode, .constant(.active))
@@ -1393,18 +1468,33 @@ struct NowPlayingView: View {
             // the list — carrying its own now-playing first row — rises to the top.
             return inQueue ? 0 : (smallSize + topPad + bottomPad)
         }()
+        // Lyrics ↔ queue in flight: this header draws the chrome and cover for both panes.
+        let holdsChrome = headerChromeSwapsInPlace
+        // The lyrics header's height, which the held chrome keeps even while `containerHeight`
+        // collapses to the queue's zero underneath it.
+        let lyricsHeaderHeight: CGFloat = smallSize + 14 + 12
 
         return GeometryReader { geo in
             let centerX = geo.size.width / 2
             let leadingX = 20 + smallSize / 2
             let xCenter = compact ? leadingX : centerX
             let yCenter = topPad + artworkSize / 2
+            let headerFrame = geo.frame(in: .global)
+            let arrival = queueArtworkGeometry.arrival(
+                center: CGPoint(x: headerFrame.minX + xCenter, y: headerFrame.minY + yCenter),
+                artworkSide: artworkSize * playPulseScale,
+                // Queue → lyrics inserts the cover one update before the panes switch, while
+                // this still reads as the queue; describe the lyrics it is arriving into.
+                headerHeight: holdsChrome ? lyricsHeaderHeight : containerHeight,
+                lyrics: showLyrics || holdsChrome
+            )
 
             ZStack(alignment: .topLeading) {
                 // Play-pulse scale lives in a separate wrapper so its
                 // .animation(value: isPlaying) context only sees the scale,
                 // not the morph's frame/position/shadow changes.
-                artworkView(for: track, cornerRadius: cornerRadius)
+                if !inQueue || !queueArtworkHandedOff || holdsChrome {
+                    artworkView(for: track, cornerRadius: cornerRadius)
                     .frame(width: artworkSize, height: artworkSize)
                     // Destination rect for the mini-player cover zoom. The shared header is the
                     // one artwork that is on screen when the player opens and closes.
@@ -1418,12 +1508,17 @@ struct NowPlayingView: View {
                         radius: compact ? 6 : 20,
                         y: compact ? 4 : 12,
                     )
+                    .transition(.asymmetric(
+                        insertion: .modifier(active: arrival, identity: NowPlayingArtworkArrival())
+                            .animation(queueArtworkGeometry.exitRow == nil && !compact
+                                ? .spring(response: 0.25, dampingFraction: 0.9)
+                                : .spring(duration: 0.46, bounce: 0.16)),
+                        removal: .identity
+                    ))
                     .position(x: xCenter, y: yCenter)
-                    // Hidden the instant the morph lands and the in-list row's own
-                    // artwork takes over (same coordinates). Instant, no crossfade.
-                    .opacity(inQueue && queueArtworkHandedOff ? 0 : 1)
+                }
 
-                if compact && !inQueue {
+                if compact && (!inQueue || holdsChrome) {
                     HStack(alignment: .center, spacing: 12) {
                         Color.clear.frame(width: smallSize, height: smallSize)
                         VStack(alignment: .leading, spacing: 2) {
@@ -1438,23 +1533,37 @@ struct NowPlayingView: View {
                         compactHeaderActionButtons(track: track)
                     }
                     .padding(.horizontal, 20)
-                    .padding(.vertical, 12)
-                    // Slide up from below + fade in on the same snappy curve as
-                    // the standard title's exit, so visually it reads as "the
-                    // title moved up into the compact header" rather than two
-                    // independent fades.
+                    // Matches ``queueNowPlayingModuleRow``'s 14/6 exactly, so this block and
+                    // that row put the title, artist, favourite and 3-dot menu on the same
+                    // baseline. They were 12/12 here against 14/6 there, which left the chrome
+                    // 2pt higher in lyrics than in queue — a step measurable on every switch
+                    // even once the animated travel is gone. It also squares the block against
+                    // the cover, whose centre is `topPad + artworkSize / 2` = 14 + 28.
+                    .padding(.top, 14)
+                    .padding(.bottom, 6)
+                    // Moving between lyrics and queue this block stays put through the whole
+                    // switch, and hands over to ``queueNowPlayingModuleRow``'s copy at the same
+                    // coordinates with no transition — the trick that row's artwork already uses.
+                    // Main ↔ compact keeps the slide-and-fade, where the chrome really does
+                    // change place and reads as "the title moved up into the header".
                     .transition(
-                        AnyTransition.move(edge: .bottom)
-                            .combined(with: .opacity)
-                            .animation(.spring(response: 0.25, dampingFraction: 0.9))
+                        holdsChrome
+                            ? AnyTransition.identity
+                            : AnyTransition.move(edge: .bottom)
+                                .combined(with: .opacity)
+                                .animation(.spring(response: 0.25, dampingFraction: 0.9))
                     )
                 }
             }
         }
         .frame(height: containerHeight)
-        .overlay(alignment: .bottom) {
+        // Lyrics only. Pinned to the lyrics header's bottom while the chrome is held, so on the
+        // way to or from the queue it fades where it stands instead of riding the collapsing
+        // container; otherwise it follows the container's bottom, as the main ↔ lyrics morph wants.
+        .overlay(alignment: holdsChrome ? .top : .bottom) {
             if compact && !inQueue {
                 Rectangle().fill(fgDivider).frame(height: 0.5)
+                    .offset(y: holdsChrome ? lyricsHeaderHeight - 0.5 : 0)
             }
         }
         // Explicit binding so every property the morph touches — frame,
@@ -1925,10 +2034,20 @@ struct NowPlayingView: View {
                 isEnabled: !liveRadio,
                 iconFont: .system(size: 20, weight: .semibold),
             ) {
-                queueArtworkHandedOff = false
-                withAnimation(.spring(duration: 0.46, bounce: 0.16)) {
-                    showLyrics.toggle()
-                    if showLyrics { showQueue = false }
+                queueTransitionGeneration &+= 1
+                if showQueue {
+                    // Queue → lyrics: the chrome is already on screen where lyrics draws it.
+                    queueArtworkGeometry.captureExit()
+                    swapCompactPaneHoldingHeader(generation: queueTransitionGeneration) {
+                        showLyrics = true
+                        showQueue = false
+                    }
+                } else {
+                    // Main ↔ lyrics: the chrome genuinely changes place, so it moves.
+                    headerChromeSwapsInPlace = false
+                    withAnimation(.spring(duration: 0.46, bounce: 0.16)) {
+                        showLyrics.toggle()
+                    }
                 }
             }
             if player.showSleepTimerButton {
@@ -1964,21 +2083,43 @@ struct NowPlayingView: View {
                 isEnabled: !liveRadio,
                 iconFont: .system(size: 20, weight: .semibold),
             ) {
+                queueTransitionGeneration &+= 1
                 if showQueue {
-                    // Closing: hide the row's artwork so the floating header artwork
-                    // takes the slot back and morphs to big.
-                    queueArtworkHandedOff = false
+                    // Back to the main player: the chrome genuinely changes place, so it moves.
+                    headerChromeSwapsInPlace = false
+                    queueArtworkGeometry.captureExit()
                     withAnimation(.spring(duration: 0.46, bounce: 0.16)) {
                         showQueue = false
                     }
                 } else {
                     queueArtworkHandedOff = false
+                    queueArtworkGeometry.row = .zero
+                    let generation = queueTransitionGeneration
+                    // Always open on Now Playing, never on the page last visited (e.g. History).
+                    // Reset before the pane is inserted so the pager is built at the default page
+                    // rather than scrolling there visibly, and without a stray snap haptic.
+                    queuePageAnchor.anchor = .nowPlayingHeader
+                    queuePageAnchor.lastHapticAnchor = .nowPlayingHeader
+                    if showLyrics {
+                        // Lyrics → queue: the chrome is already where the queue row will draw it.
+                        // The landing hands the cover to the row, as below.
+                        swapCompactPaneHoldingHeader(generation: generation) {
+                            showQueue = true
+                            showLyrics = false
+                        }
+                        return
+                    }
+                    headerChromeSwapsInPlace = false
                     withAnimation(.spring(duration: 0.46, bounce: 0.16)) {
                         showQueue = true
                         showLyrics = false
                     } completion: {
                         // Morph landed: hand off to the row's own artwork (instant).
-                        if showQueue { queueArtworkHandedOff = true }
+                        if showQueue && generation == queueTransitionGeneration {
+                            var transaction = Transaction()
+                            transaction.disablesAnimations = true
+                            withTransaction(transaction) { queueArtworkHandedOff = true }
+                        }
                     }
                 }
             }
@@ -1986,6 +2127,31 @@ struct NowPlayingView: View {
         .frame(maxWidth: .infinity)
         .padding(.top, 6)
         .padding(.bottom, 12)
+    }
+
+    /// Lyrics ↔ queue: the panes slide, the header holds still.
+    ///
+    /// Two updates, not one. The first sets ``headerChromeSwapsInPlace`` with nothing else
+    /// changing, so ``sharedHeader`` takes over the chrome and cover in place and the outgoing
+    /// pane renders once with its copy hidden. Only then does the animated pane switch run,
+    /// so the pane leaving slides out with no header in it. The landing hands the chrome (and,
+    /// arriving in the queue, the cover) to the row in one non-animated frame and clears the flag.
+    private func swapCompactPaneHoldingHeader(generation: Int, _ switchPanes: @escaping () -> Void) {
+        headerChromeSwapsInPlace = true
+        Task { @MainActor in
+            guard generation == queueTransitionGeneration else { return }
+            withAnimation(.spring(duration: 0.46, bounce: 0.16)) {
+                switchPanes()
+            } completion: {
+                guard generation == queueTransitionGeneration else { return }
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    if showQueue { queueArtworkHandedOff = true }
+                    headerChromeSwapsInPlace = false
+                }
+            }
+        }
     }
 
     /// Native overflow menu for sleep timer durations — same `Menu` / `Section`
