@@ -406,6 +406,19 @@ private func tapFinalize(tap: MTAudioProcessingTap) {
     guard let storage = MTAudioProcessingTapGetStorage(tap) as UnsafeMutableRawPointer? else { return }
     let state = storage.assumingMemoryBound(to: TapRenderState.self)
     let itemTag = state.pointee.itemTag
+
+    // Tell the registry to let go **before** the storage is freed.
+    //
+    // The registry holds this tap strongly and reads `state.pointee` twice a second from its drain
+    // timer, and once more whenever the CPU sampler asks for a callback total. Freeing here while
+    // leaving the tap in that dictionary left both of those reading deallocated memory — the same
+    // use-after-free the comment on `EqualizerAudioTap` describes for `prepare`, on the other side
+    // of the object's life. What came back was garbage counters, and the arithmetic the registry
+    // does on them trapped: `EXC_BREAKPOINT` in `EqualizerTapRegistry.drain(_:)` (T264).
+    //
+    // `forget` removes without draining, because a drain is exactly the read that must not happen.
+    EqualizerTapRegistry.shared.forget(itemTag: itemTag)
+
     state.pointee.coefficients?.deallocate()
     state.pointee.filterState?.deallocate()
     state.pointee.ring?.deallocate()

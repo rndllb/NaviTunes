@@ -4007,11 +4007,37 @@ public final class AppModel: ObservableObject {
     /// Clears the "kept (green)" set only — kept songs become eligible to play again on
     /// the next run so the user can do another culling pass over the leftovers. The
     /// pending-removal (red) queue is left intact for review.
+    /// The listened set this device last cleared, kept so the clear can be taken back.
+    ///
+    /// In memory only, and deliberately: the point is to survive the moment of realising the tap
+    /// was a mistake, not to be a second persistent store. Cleared state is *not* recoverable from
+    /// anywhere else on the device — `KillModeStore` overwrites the defaults key on clear and
+    /// `VellumClientBackup` has never carried Kill Mode state — so without this snapshot the only
+    /// way back is re-listening.
+    @Published private(set) var lastClearedKillModeHistory: (playlistId: String, passed: Set<String>)?
+
     func clearKillModeListenHistory(playlistId: String) {
-        guard killModePassedTracks[playlistId] != nil else { return }
+        guard let cleared = killModePassedTracks[playlistId], !cleared.isEmpty else { return }
+        lastClearedKillModeHistory = (playlistId, cleared)
         killModePassedTracks[playlistId] = nil
         KillModeStore.savePassed(killModePassedTracks)
         invalidateKillModeListenedCache()
+    }
+
+    /// Puts back the set the last clear removed, for this playlist.
+    func undoClearKillModeListenHistory(playlistId: String) {
+        guard let snapshot = lastClearedKillModeHistory, snapshot.playlistId == playlistId else { return }
+        // Union rather than assign: anything listened since the clear is real listening and must
+        // not be thrown away by the undo.
+        killModePassedTracks[playlistId] = (killModePassedTracks[playlistId] ?? []).union(snapshot.passed)
+        KillModeStore.savePassed(killModePassedTracks)
+        invalidateKillModeListenedCache()
+        lastClearedKillModeHistory = nil
+    }
+
+    /// How many songs a clear would forget for this playlist.
+    func killModeListenHistoryCount(playlistId: String) -> Int {
+        killModePassedTracks[playlistId]?.count ?? 0
     }
 
     /// Filters a playlist's tracks for a Kill Mode run: drops already-listened songs so

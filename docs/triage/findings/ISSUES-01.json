@@ -1,0 +1,25 @@
+{
+  "id": "ISSUES-01",
+  "source": "ISSUES.md",
+  "source_verdict": null,
+  "title": "Playlist search bar reveals on scroll-to-top instead of pull-to-reveal only",
+  "claim": "ISSUES.md documents ServerPlaylistDetailView's `.searchable(... placement: .navigationBarDrawer(displayMode: .automatic))` as broken at step 4: after scrolling down and back to the top, iOS auto-reveals the search bar regardless of how the user got there. It lists two failed remediation attempts and three 'plausible paths forward', i.e. presents the defect as unresolved.",
+  "class": "visual",
+  "status": "already_fixed",
+  "video": "videos/ISSUES-01.mp4",
+  "description": "The playlist screen used to pop its search field back into view on its own whenever you scrolled back to the top, instead of only when you deliberately pulled down.",
+  "issue": "Nothing goes wrong for a user today. Filmed on a 60-song playlist, all five of ISSUES.md's desired steps now hold, including the one it documents as failing: scrolling back to the top leaves the search field hidden.",
+  "proposed_fix": "No code change. ISSUES.md is stale — delete this section or move it to a resolved list. Ethan stated it directly: 'that issues MD document talking about the search bar being broken is not true, that has been fixed but now works as intended.' The fix taken was a placement change, closest to the document's third option: `.searchable(placement: .automatic)` plus `.searchToolbarBehavior(.automatic)` via `musicNativeSearchable`, which on iOS 26 collapses the field into a toolbar search button on scroll instead of a navigation-bar drawer.",
+  "steps": [
+    "Seed a playlist long enough to scroll, inside the account's own data: Subsonic createPlaylist \"T344 Scroll Probe\" with 60 random songs.",
+    "Source (CORRECTED — see notes): ServerPlaylistViews.swift:979 applies `.playlistTrackSearchable(enabled: !isAlbumStyleDetail, text: $searchText)`, which calls `musicNativeSearchable` (MusicDesignSystem.swift:1003-1006) → `.searchable(text:, placement: .automatic, prompt:)` + `.searchToolbarBehavior(.automatic)`. The `.navigationBarDrawer(displayMode: .automatic)` placement ISSUES.md names is gone from this view.",
+    "Drive and record: Library → Playlists → 'T344 Scroll Probe, 60 songs'; dump after each of ISSUES.md's five steps.",
+    "Step 1, open: no SearchField in the tree — hidden. (desired: hidden)",
+    "Step 2, pull down at top: SearchField {{16,117},{370×44}} label 'Search' appears. (desired: appears)",
+    "Step 3, scroll down 4 swipes: no SearchField; a toolbar Button 'Search' at {{326,798}}. (desired: hides)",
+    "Step 4, scroll back to top 4 swipes, settle 2.5 s: no SearchField — stays hidden. (desired: stays hidden — this is the step ISSUES.md says fails)",
+    "Step 5, pull down again: SearchField {{16,117},{370×44}} appears. (desired: appears)"
+  ],
+  "tested_at": "2026-09-16T14:28:00Z",
+  "notes": "CORRECTION OF THIS RUN'S OWN EARLIER EVIDENCE. The previous session recorded this as already_fixed because 'the defective `.searchable` modifier was REMOVED from ServerPlaylistDetailView', based on a grep for the literal `.searchable` that found only AddToPlaylistSheet. That was wrong: the detail view still applies `.searchable`, through the `playlistTrackSearchable` → `musicNativeSearchable` wrapper that a literal grep cannot see. The status survives, but on different and stronger evidence — the documented step-4 behaviour now filmed working — rather than on an absent modifier. The earlier claim that 'there is no interaction left to film' was consequently also wrong, which is why this finding now carries a video instead of a null. Lesson for a full run: verify absence claims by symbol and wrapper, not by literal grep."
+}

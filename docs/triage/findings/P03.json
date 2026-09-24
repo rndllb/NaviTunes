@@ -1,0 +1,24 @@
+{
+  "id": "P03",
+  "source": "CODE_SWEEP.md",
+  "source_verdict": "CONFIRMED",
+  "title": "Every Top Pick card is captioned \"New Release\" regardless of what it is",
+  "claim": "`HomeTopPickCard.metadataBlock` hardcodes `Text(\"New Release\")` above every card in \"Top Picks for You\", whose pool is recently-added + recently-played + top-genre catalog albums ranked by taste with no release-date constraint, so decades-old albums are labelled as new releases.",
+  "class": "visual",
+  "status": "confirmed",
+  "video": null,
+  "image": "images/P03.png",
+  "description": "The big cards at the top of Home each carry a small grey caption above the album title. That caption always says \"New Release\", whatever the album is.",
+  "issue": "The caption is false on almost every card. In this run it labelled The Other Side of Make‐Believe (Interpol, 2022) and, on other launches, _Ohms (Deftones, 2020) and \"But Seriously, Folks...\" (Joe Walsh, 1978) as new releases. VoiceOver repeats the lie: the card's accessibility label is \"New Release, _Ohms, Deftones\", so a screen-reader user hears it too.",
+  "proposed_fix": "Make the eyebrow data-driven and compute it once in `HomeTopPickCard.init(album:)` into a `let eyebrow: String`: \"New Release\" only when `album.releaseYear` is the current year; else, when `libraryAddedDate` is within ~30 days, \"New on Your Server\" (not \"Recently Added\" — CLAUDE.md flags that field as server scan time, not user-add time); else the canonical genre via `GenreCanonicalizer.canonical(for:)` or the year. Better still, pass the reason in from `applyHomeDiscoveryShelvesRanking`, where the taste reason is known.",
+  "steps": [
+    "Confirm the literal is still in the working tree: Sources/VellumMusicKit/Home/HomeView.swift:606 `Text(\"New Release\")` (the sweep cited 596; HomeView.swift carries uncommitted working-tree edits that shifted it 10 lines — the literal itself is unchanged).",
+    "Cold-boot simulator 065F03D0 (iPhone 17 Pro, iOS 26.5), launch com.randll.vellum signed in as vellum-test against http://100.127.122.120:4533.",
+    "Screenshot Home at 10:12 local: both visible Top Picks cards read \"New Release\" — The Other Side of Make‐Believe (Interpol) and Stone Age Complication (Queens of the Stone Age).",
+    "Look up the first card on the server via Subsonic search3: The Other Side of Make‐Believe, year 2022 — not a 2026 release.",
+    "Across later launches (P05 and P11 recordings) the first card was _Ohms (Deftones, year 2020) and the second \"But Seriously, Folks...\" (Joe Walsh), both also captioned \"New Release\".",
+    "Accessibility dump of Home (XCUITest debugDescription): card buttons are labelled 'New Release, _Ohms, Deftones', 'New Release, \"But Seriously, Folks...\", Joe Walsh', 'New Release, (A) Senile Animal, (The) Melvins'."
+  ],
+  "tested_at": "2026-09-16T14:19:00Z",
+  "notes": "Evidence is a full-screen still per the static-defect ruling: a hardcoded caption is wholly present in one frame and nothing about it is temporal. The image is the c2 relaunch screenshot, which already showed two false captions, so no separate capture was needed. The sweep's supporting sentence that \"New Releases for You\" sits directly below was already corrected by both verify passes (it is further down the screen); the runtime dump agrees — Rock / Browse by Genre and New Artists Added sit between."
+}

@@ -1,0 +1,23 @@
+{
+  "id": "P08",
+  "source": "CODE_SWEEP.md",
+  "source_verdict": "CONFIRMED",
+  "title": "The toast's bottom offset is a magic number that fits one host, it is dark-on-dark, and VoiceOver never hears it",
+  "claim": "`MusicTransientToastChrome` pads the toast `.padding(.bottom, 110)` — the tab bar plus mini-player height — but the same modifier is mounted on the Now Playing cover, which has neither, so the toast lands over the player controls. The pill is always `Color.black.opacity(0.85)`, so in dark mode it is a black capsule on a black canvas. And no `AccessibilityNotification` is posted anywhere, so VoiceOver users never hear a toast.",
+  "class": "visual",
+  "status": "confirmed",
+  "video": "videos/P08.mp4",
+  "description": "The small black pop-up message that confirms an action is positioned for the main tab screens. When it appears on the full-screen player, it lands on top of the playback controls.",
+  "issue": "On the Now Playing screen the confirmation \"No similar tracks found\" appeared directly over the transport row, between the play/pause button and the volume slider — covering controls the user is likely to reach for next. A VoiceOver user gets the haptic but never the message.",
+  "proposed_fix": "Give `MusicTransientToastChrome` a `bottomInset: CGFloat` (default 110) and pass a small inset — ideally derived from the host's safe area — from the cover mount at RootView.swift:281. Post `AccessibilityNotification.Announcement(...)` from `AppModel.showTransientToast(_:)`. For dark mode, per the second verifier, either keep the single dark pill and add a hairline `Capsule().stroke(.white.opacity(0.15))`, or switch the fill and the two hard-coded `.white` text styles to `.primary` / `.secondary` together — changing only the fill breaks light mode.",
+  "steps": [
+    "Confirm current source: MusicDesignSystem.swift:1870 `.fill(Color.black.opacity(0.85))` and :1873 `.padding(.bottom, 110)`; tree-wide grep for `AccessibilityNotification|UIAccessibility.post` returns zero hits.",
+    "Drive and record: Home → first Top Pick (The Other Side of Make‐Believe) → Play → album More menu → Play Next; wait 3 s; tap the mini player to open Now Playing; player More menu → \"Add similar to queue\"; wait 4 s.",
+    "Player menu contents from the accessibility dump: Play artist mix, Add similar to queue, Play more like this, Go to Album, Exclude from Listening History, Add to Playlist, Add to Library, Share.",
+    "On the cover, the toast \"No similar tracks found\" appears overlapping the transport row, just above the volume slider (video ~39.8-41 s).",
+    "On the album page, \"Play Next\" produced no visible toast within the 3 s window, so the in-tab position (where 110 pt is correct) was not captured this run.",
+    "VoiceOver cannot run in the iOS Simulator, so the missing announcement was verified in source only (zero posts tree-wide)."
+  ],
+  "tested_at": "2026-09-16T14:47:00Z",
+  "notes": "Confirmed for the offset on the Now Playing cover (runtime) and for VoiceOver silence (source; untestable in the simulator). The dark-on-dark half was NOT observed: both surfaces in this capture sat on a grey backdrop sampled from the album artwork, where the black pill is clearly legible — reaching a pure-black canvas needs a toast raised from a screen without an artwork backdrop, which this run did not do. Filed as video because a toast is inherently temporal (it appears, then vanishes after ~1.8 s). Side effect inside the boundary: Toni and the album were queued/played on vellum-test, which creates recently-played state."
+}

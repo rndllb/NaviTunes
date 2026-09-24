@@ -1,0 +1,32 @@
+{
+  "id": "C135",
+  "source": "CODE_SWEEP.md",
+  "source_verdict": "DENIED",
+  "title": "`autoOfflineActive` is not published, so every offline indicator in the app renders a stale value",
+  "claim": "`autoOfflineActive` is a plain stored `private var` and `effectiveOfflineMode` is computed from it, so flipping the flag publishes nothing. The entry asserts every reader — the Settings 'Active' subtitle, the 'Browsing downloaded content only' label, `RadioTabView.canLoadDirectory`, Discovery's search gates — keeps rendering the old value, and that in `.homeWifi` mode walking onto another network 'produces no publish at all'.",
+  "class": "systemic",
+  "status": "not_reproduced",
+  "video": null,
+  "no_video_reason": "The headline symptom did not occur, so there is no defect to film for it; the surviving defect is a signed-out user flipping auto-offline, whose missing re-render cannot be distinguished on screen from ordinary Radio loading without instrumenting the app, which this run may not do.",
+  "surviving_defect": {
+    "title": "`autoOfflineActive` is unpublished, so correctness depends on an unrelated incidental publish — and a signed-out user gets none",
+    "severity": "low",
+    "description": "`private var autoOfflineActive` (AppModel.swift:726) carries no @Published. Readers re-render today only because `applyEffectiveOfflinePresentation()` happens to trigger an unguarded @Published write to `serverConnectionHealth` — and that call is gated on `hasInternetPath, isSignedIn`. A signed-out user, for whom Radio's directory is explicitly usable (`canLoadDirectory` has no sign-in check), gets no invalidation when auto-offline flips.",
+    "proposed_fix": "`@Published private(set) var autoOfflineActive = false`, assigned through an equality guard (`let next = ...; if next != autoOfflineActive { autoOfflineActive = next }`) matching the file's existing pattern for `hasInternetPath`. No view changes."
+  },
+  "description": "A claim that the app's offline indicators would show out-of-date information because the underlying flag does not notify the interface when it changes.",
+  "issue": "As written, nothing goes wrong for a signed-in user on a network. The stale-render symptom the entry describes does not occur, because the flag is always set before a publish that follows it. A genuine but much narrower defect does survive: the correct behaviour is accidental rather than designed, and one specific case — a signed-out user — gets no publish at all.",
+  "proposed_fix": "No fix for the headline as written (the stated stale render does not occur). Apply the two-line robustness fix in surviving_defect.",
+  "steps": [
+    "Read the entry's claim and both review passes, which contradict each other on publish ordering.",
+    "Locate the symbols by name rather than by the cited line numbers, which have drifted: AppModel.swift has absorbed several post-sweep commits, moving these ~265 lines from the cited 711-712 / 6135-6157.",
+    "Confirm at AppModel.swift:725-726 that `var effectiveOfflineMode: Bool { offlineMode || autoOfflineActive }` is computed and `private var autoOfflineActive = false` carries no `@Published` — so the flag itself publishes nothing. This half of the claim is TRUE.",
+    "Read `evaluateAutoOfflineMode()` in full: on the guard path and on both `.wifiOnly` and `.homeWifi` branches, `autoOfflineActive` is assigned BEFORE the trailing `applyEffectiveOfflinePresentation()` call. There is no branch where the flag is set after.",
+    "Read `applyEffectiveOfflinePresentation()`: its body is `if hasInternetPath, isSignedIn { Task { await refreshServerConnectionHealth() } }`, and `refreshServerConnectionHealth` assigns the `@Published private(set) var serverConnectionHealth` (declared AppModel.swift:213) with no equality guard — so it publishes on every call.",
+    "Conclude the stated symptom does not reproduce for a signed-in user on a network: the flag is already updated when the publish lands.",
+    "Test the `.homeWifi` sub-claim specifically: that branch is only reached when `hasInternetPath` is true, which is the very gate on the publish — so 'produces no publish at all' is directly contradicted by the source.",
+    "Identify what does survive: the publish is gated on `isSignedIn`, and Radio's directory is usable signed out (`canLoadDirectory` has no sign-in check), so a signed-out user flipping auto-offline gets no invalidation."
+  ],
+  "tested_at": "2026-09-16T00:04:00Z",
+  "notes": "WHERE REALITY DIVERGES FROM THE DOCUMENT: the mechanism is correct (the flag is unpublished) but the stated impact is not. Every named reader re-renders correctly for a signed-in, connected user, because evaluateAutoOfflineMode sets the flag before applyEffectiveOfflinePresentation() triggers an unguarded @Published write to serverConnectionHealth. The .homeWifi 'no publish at all' sub-claim is false on its face, since that branch requires hasInternetPath. not_reproduced rather than already_fixed because NO commit fixed this — the code still matches the sweep; its reasoning about consequences was wrong from the start. Filed DENIED by the sweep; the T238 re-verification (agent 03) records `Denial: DOES NOT HOLD`, `Problem: PARTLY REAL` — this run agrees: headline wrong, narrow defect real, carried in surviving_defect so it arrives as its own card."
+}

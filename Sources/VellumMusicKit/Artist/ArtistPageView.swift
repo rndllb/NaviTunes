@@ -61,32 +61,31 @@ struct ArtistPageView: View {
                     ArtistLatestReleaseCard(model: model, onGoToAlbum: { navigateAlbum = $0 })
                     ArtistAcquisitionBanner(model: model)
 
-                    if artistPageShowsSkeleton {
-                        ArtistPageLoadingSkeletonSections()
-                            .transition(.opacity)
-                    } else {
-                        Group {
-                            ArtistTopSongsSection(model: model, onGoToAlbum: { navigateAlbum = $0 })
-                            // Sits above the shelves so a partial or fallback load is read
-                            // before the releases it qualifies, rather than discovered after
-                            // scrolling to an unexplained short list.
-                            if model.showsDiscographyLoadNotice {
-                                ArtistDiscographyLoadNotice(model: model) {
-                                    Task { await model.refresh(using: app) }
-                                }
-                            }
-                            ArtistDiscographyCarousel(model: model, bucket: .albums, title: "Albums", layout: .prominent)
-                            ArtistDiscographyCarousel(model: model, bucket: .singlesAndEPs, title: "Singles & EPs", layout: .prominent)
-                            ArtistDiscographyCarousel(model: model, bucket: .live, title: "Live Albums", layout: .prominent)
-                            ArtistDiscographyCarousel(model: model, bucket: .compilations, title: "Compilations", layout: .prominent)
-                            ArtistSimilarSection(model: model)
+                    // Each section shows what it already has plus its own placeholders while its
+                    // source is still loading. A single page-wide skeleton hid everything until
+                    // *nothing* was loading, then vanished the moment the server's top songs
+                    // landed — leaving no sign that albums were still on their way.
+                    ArtistTopSongsSection(model: model, onGoToAlbum: { navigateAlbum = $0 })
+                    // Sits above the shelves so a partial or fallback load is read
+                    // before the releases it qualifies, rather than discovered after
+                    // scrolling to an unexplained short list.
+                    if model.showsDiscographyLoadNotice {
+                        ArtistDiscographyLoadNotice(model: model) {
+                            Task { await model.refresh(using: app) }
                         }
-                        .transition(.opacity)
                     }
+                    // Albums and Singles & EPs hold their place while loading even when empty — most
+                    // artists have both. Live and Compilations only appear once they have a release.
+                    ArtistDiscographyCarousel(model: model, bucket: .albums, title: "Albums", layout: .prominent, reservesSpaceWhileLoading: true)
+                    ArtistDiscographyCarousel(model: model, bucket: .singlesAndEPs, title: "Singles & EPs", layout: .prominent, reservesSpaceWhileLoading: true)
+                    ArtistDiscographyCarousel(model: model, bucket: .live, title: "Live Albums", layout: .prominent, reservesSpaceWhileLoading: false)
+                    ArtistDiscographyCarousel(model: model, bucket: .compilations, title: "Compilations", layout: .prominent, reservesSpaceWhileLoading: false)
+                    ArtistDiscographyCarousel(model: model, bucket: .featuredOn, title: "Featured On", layout: .prominent, reservesSpaceWhileLoading: false)
+                    ArtistSimilarSection(model: model)
 
                     Spacer(minLength: 32)
                 }
-                .animation(.easeInOut(duration: 0.18), value: artistPageShowsSkeleton)
+                .animation(.easeInOut(duration: 0.18), value: model.isDiscographyStillLoading)
             }
             .modifier(ArtistPageScrollChromeModifier(
                 scrollSpace: Self.scrollCoordinateSpace,
@@ -280,18 +279,6 @@ struct ArtistPageView: View {
         case .musicBrainzArtist(let a): return "mbid:\(a.id)"
         case .musicBrainzArtistId(let id, _): return "mbid:\(id)"
         }
-    }
-
-    private var artistPageShowsSkeleton: Bool {
-        !model.hasRenderableBodyContent
-            && (model.isLoadingServerCatalog
-                || model.isLoadingEnrichment
-                || model.isLoadingTopSongs
-                || model.isLoadingDiscography
-                // Keep the placeholders up while later discography pages are still arriving,
-                // for the same reason `contentState` treats paging as loading: an empty first
-                // page is not an empty artist.
-                || model.isPagingDiscography)
     }
 
     /// Shareable link for the artist — an Apple Music search URL that opens to this artist.
@@ -863,6 +850,28 @@ private struct ArtistLatestReleaseCard: View {
             .overlay(MusicDesign.artworkSubtleBorderOverlay(cornerRadius: cornerRadius, colorScheme: colorScheme))
             .padding(.horizontal, 20)
             .padding(.top, 16)
+        } else if model.isDiscographyStillLoading {
+            // The latest release comes from the catalogue, so it is the last thing on the page to
+            // be known. Hold its place rather than pushing every section down when it lands.
+            HStack(spacing: 12) {
+                MusicSquareArtworkSkeleton(size: 88, cornerRadius: MusicDesign.albumCorner)
+                VStack(alignment: .leading, spacing: 6) {
+                    MusicTextLineSkeleton(width: 80, height: 10)
+                    MusicTextLineSkeleton(width: 150, height: 13)
+                    MusicTextLineSkeleton(width: 60, height: 10)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 16)
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(.white.opacity(0.08)),
+            )
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Latest release, loading")
         }
     }
 
@@ -999,6 +1008,7 @@ private struct ArtistTopSongsSection: View {
                 .scrollTargetBehavior(.viewAligned)
             }
             .padding(.bottom, 4)
+            .transition(.opacity)
             .sheet(item: $requestSheetFor) { row in
                 NavigationStack {
                     BrowseAlbumDetailView(source: .chartBrowse(
@@ -1010,7 +1020,34 @@ private struct ArtistTopSongsSection: View {
                     ))
                 }
             }
+        } else if model.isLoadingTopSongs {
+            VStack(spacing: 0) {
+                ArtistSectionHeader(title: "Top Songs")
+                VStack(spacing: 0) {
+                    ForEach(0 ..< Self.rowsPerPage, id: \.self) { _ in
+                        ArtistTopSongRowSkeleton()
+                    }
+                }
+                .padding(.horizontal, 20)
+            }
+            .padding(.bottom, 4)
+            .transition(.opacity)
         }
+    }
+}
+
+private struct ArtistTopSongRowSkeleton: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            MusicSquareArtworkSkeleton(size: 44, cornerRadius: 4)
+            VStack(alignment: .leading, spacing: 6) {
+                MusicTextLineSkeleton(width: 160, height: 12)
+                MusicTextLineSkeleton(width: 100, height: 10)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 6)
+        .accessibilityLabel("Loading song")
     }
 }
 
@@ -1226,24 +1263,28 @@ private struct ArtistDiscographyCarousel: View {
     let bucket: ArtistDiscographyBucket
     let title: String
     let layout: DiscographyLayout
+    /// Show the shelf, all placeholders, while loading even before it has a single release.
+    let reservesSpaceWhileLoading: Bool
 
     private var items: [ArtistDiscographyItem] {
         model.discography[bucket] ?? []
     }
 
-    /// Placeholder cards for release groups MusicBrainz has counted but not yet delivered.
+    /// Placeholder cards trailing whatever has already landed — owned albums from the server
+    /// paint first, catalogue releases fill in behind them.
     ///
-    /// This is the second of the page's two loading states. A discography arrives 100 rows at a
-    /// time, and the server's `release-group-count` is known from the first page — so the shelf
-    /// can show exactly how much more is coming instead of looking finished and then jumping.
-    /// Capped so a 300-release artist does not render 200 shimmer cards nobody scrolls to.
+    /// Before the catalogue reports its `release-group-count` there is no number to show, so a
+    /// fixed handful stands in; once it does, the shelf shows how much more is coming. Capped so a
+    /// 300-release artist does not render 200 shimmer cards nobody scrolls to.
     private var placeholderCount: Int {
-        guard model.isPagingDiscography, !items.isEmpty else { return 0 }
-        return min(model.discographyPendingCount, 4)
+        guard model.isDiscographyStillLoading else { return 0 }
+        if items.isEmpty { return reservesSpaceWhileLoading ? 4 : 0 }
+        if model.isPagingDiscography { return min(model.discographyPendingCount, 4) }
+        return model.isLoadingDiscography ? 3 : 0
     }
 
     var body: some View {
-        if !items.isEmpty {
+        if !items.isEmpty || placeholderCount > 0 {
             VStack(spacing: 0) {
                 ArtistSectionHeader(title: title)
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -1510,6 +1551,8 @@ private struct ArtistDiscographyCard: View {
             return nil
         }()
         switch item.bucket {
+        case .featuredOn:
+            return item.artist
         case .albums:
             return yearStr ?? ""
         case .singlesAndEPs, .live, .compilations:
@@ -1678,34 +1721,6 @@ private struct ArtistAboutPageView: View {
 }
 
 // MARK: - Similar Artists
-
-private struct ArtistPageLoadingSkeletonSections: View {
-    var body: some View {
-        VStack(spacing: 0) {
-            MusicHorizontalShelfSkeleton(
-                title: "Top Songs",
-                style: .album,
-                count: 3,
-                horizontalInset: 20,
-            )
-            .padding(.bottom, 24)
-            MusicHorizontalShelfSkeleton(
-                title: "Albums",
-                style: .album,
-                count: 4,
-                horizontalInset: 20,
-            )
-            .padding(.bottom, 24)
-            MusicHorizontalShelfSkeleton(
-                title: "Similar Artists",
-                style: .artistCircle,
-                count: 4,
-                horizontalInset: 20,
-            )
-            .padding(.bottom, 24)
-        }
-    }
-}
 
 private struct ArtistSimilarSection: View {
     @ObservedObject var model: ArtistViewModel

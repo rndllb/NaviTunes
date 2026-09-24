@@ -1,0 +1,24 @@
+{
+  "id": "P11",
+  "source": "CODE_SWEEP.md",
+  "source_verdict": "CONFIRMED",
+  "title": "The navigation chevron is a hard-coded grey that does not follow light/dark mode, copy-pasted past the shared view",
+  "claim": "`MusicNavigationChevron` paints its chevron with `Color(white: 0.35)` — a fixed 35% grey that does not adapt to colour scheme — and two more sites re-implement the same chevron inline with the same literal rather than using the shared view, so a fix to the shared view would leave those two rows unfixed.",
+  "class": "visual",
+  "status": "confirmed",
+  "video": "videos/P11.mp4",
+  "description": "The small grey '>' arrow at the right edge of navigation rows is painted one fixed shade of grey in both light and dark mode, while everything around it switches. Two Library screens also draw their own copy of that arrow instead of reusing the shared one.",
+  "issue": "Measured while flipping the simulator between dark and light mode on the Library hub: the row label inverts (white 255 on black ↔ black 0 on white) while the chevron stays mid-grey (≈91-98 on black, ≈79 on white). So it does not adapt — confirmed. But the likely harm is mismatch with system chrome rather than poor dark-mode contrast: on black it measures roughly 3.1:1, which is actually brighter than iOS's own `tertiaryLabel` chevron in dark mode, and in light mode it is noticeably darker than a system chevron.",
+  "proposed_fix": "Change `foregroundStyle` in `MusicNavigationChevron` to a semantic colour, adding a `MusicDesign.tertiaryLabel` token beside `secondaryLabel`, and replace the inline chevrons at LibraryView.swift:373-375 and LibraryArtistsGenresViews.swift:156-159 with `MusicNavigationChevron()` so the fix cannot be partially applied again (swap the artist row's 9/20/17 padding literals for `MusicChevronRowMetrics` at the same time). Note from the measurement: `tertiaryLabel` makes the dark-mode chevron DIMMER than today, so the justification is matching system chrome, not raising dark-mode contrast — if contrast is the goal, `secondaryLabel` is the token to choose.",
+  "steps": [
+    "Source: MusicDesignSystem.swift:1456 `.foregroundStyle(Color(white: 0.35))` in `MusicNavigationChevron`; the same literal inline at LibraryView.swift:375 (Library hub rows) and LibraryArtistsGenresViews.swift:158 (artist rows). Tree-wide grep for `Color(white: 0.35)` returns exactly these three.",
+    "Drive and record: Library tab (hub rows Playlists … Downloaded, each with the LibraryView.swift:375 inline chevron), hold 18 s, then tap Artists (the LibraryArtistsGenresViews.swift:158 chevron).",
+    "While recording, flip the simulator appearance externally with `xcrun simctl ui <udid> appearance`: dark → light → dark → light → dark.",
+    "Sample pixels from recorded frames, chevron crop (x 1115-1155, y 393-453) and 'Playlists' label crop, taking the ink pixel furthest from the background.",
+    "Dark frames (6.5 s, 12.5 s): background (0,0,0); label ink (255,255,255); chevron ink (98,98,98) / (91,91,91).",
+    "Light frames (9.5 s, 16.5 s): background (253,253,253); label ink (0,0,0); chevron ink (79,79,79) / (79,79,79).",
+    "`Color(white: 0.35)` is 89/255 before antialiasing and compression; the chevron stays within ~20 levels of that in both schemes while the label swings the full 255."
+  ],
+  "tested_at": "2026-09-16T14:17:00Z",
+  "notes": "Upgraded from source-only to runtime evidence. Filed as video because non-adaptation is a state change — a single frame in one scheme cannot show that the colour fails to change. Frame values are from an h264 recording, so they carry a few levels of compression noise; the conclusion does not depend on precision. The ~3.1:1 dark-mode figure is computed from the measured ≈91 grey on pure black. The sweep's own verifier had marked the dark-mode contrast UNVERIFIED; it is now measured, and it cuts against the implied harm while confirming the structural defect. Citation corrections carried from the verify pass: LibraryArtistsGenresViews:156-159 is the ARTIST row, and the LibraryView block is 373-375. The video opens on Home for ~5 s (the app's launch tab) before the Library tab is selected."
+}

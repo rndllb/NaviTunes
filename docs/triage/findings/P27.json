@@ -1,0 +1,23 @@
+{
+  "id": "P27",
+  "source": "CODE_SWEEP.md",
+  "source_verdict": "DENIED",
+  "title": "The A–Z index scrubber's letters are unlabelled VoiceOver focus stops at a fixed 11 pt that ignores Dynamic Type",
+  "claim": "The sweep filed this DENIED. The original headline said both A–Z index scrubbers expose '27 inert letters: drag-only, no adjustable action'. The verifier refuted 'inert' — with `minimumDistance: 0` a synthesized VoiceOver touch does fire `onChanged` and select a letter — and treated '27' as a ceiling rather than a count, then demoted severity medium to low. Its own 'What survives' paragraph kept the unlabelled focus stops, the 14 pt rows, the fixed 11 pt font and the absence of accessibility modifiers.",
+  "class": "visual",
+  "status": "confirmed",
+  "video": "videos/P27.mp4",
+  "description": "The A–Z strip down the edge of the Artists list. Each letter is its own screen-reader stop that announces a single character with no name or button role, and the letters stay tiny when the user turns up the system text size.",
+  "issue": "A VoiceOver user swiping through Artists meets 27 separate stops, each announcing a bare letter with nothing to say it is a control. A low-vision user who raises the text size sees every row and header on the screen grow — rows double in height — while the index letters stay exactly the same size.",
+  "proposed_fix": "On the container add `.accessibilityElement(children: .ignore)`, `.accessibilityLabel(\"Alphabetical index\")` and an `.accessibilityAdjustableAction` stepping a private `@State a11yIndex` and calling `onSelect` (do NOT use `.accessibilityValue(selectedLetter ?? \"\")` as the entry proposes — `selectedLetter` is nil except mid-scrub, so it would announce empty). Scale the letters with `@ScaledMetric`, or accept `.accessibilityHidden(true)` and let the section headers carry rotor navigation. Fix the live `LibraryAlphabetScrubberHost` and delete the dead duplicate `MusicAlphabetIndexScrubber` (L29).",
+  "steps": [
+    "Source: `LibraryAlphabetScrubberHost` (LibraryAlphabetIndex.swift) contains zero `accessib*` modifiers; `rowHeight = 14`, `letterWidth = 18`, `hitWidth = 40` (74-76); `.font(.system(size: 11, ...))` hardcoded (126); the DragGesture is on the container (135-138). `MusicAlphabetIndexScrubber` has one tree-wide hit, its own definition.",
+    "Drive and record: Library → Artists, wait 3 s, accessibility dump at the default text size (content_size 'large').",
+    "Scrubber in the dump: 27 StaticText elements at x≈390, each 8×13.3 pt, labelled with a single character ('A' at y 271.3, 'B' at 286.3, … 'Z' at 646.3, plus '#'). StaticText, not Button — no button role, no label beyond the character.",
+    "While the screen is recorded, raise the system text size externally: `xcrun simctl ui <udid> content_size accessibility-extra-extra-extra-large`; dump again; then restore 'large'.",
+    "At AX-XXXL: the section header 'A' grows from 402×52 to 402×87 pt and the row 'A Boogie wit da Hoodie' from 402×72 to 402×145.3 pt — while every scrubber letter is still 8×13.3 pt at the identical positions (A 271.3, B 286.3, Z 646.3).",
+    "Simulator text size confirmed restored to 'large' after the run."
+  ],
+  "tested_at": "2026-09-16T14:42:00Z",
+  "notes": "REPRODUCED DESPITE BEING FILED DENIED — the reason DENIED entries are never a filter. The denial disputes only the adjective 'inert' and the number 27; runtime confirms both surviving halves and even shows the count is exactly 27 on this list. The headline is amended to drop 'inert'. The video carries the Dynamic Type half, which is a state change (text size changes, then everything but the scrubber grows). The VoiceOver half cannot be filmed because VoiceOver does not run in the iOS Simulator; it rests on the accessibility tree quoted in steps. The sweep's T238 re-verification (agent 02) records `Denial: DOES NOT HOLD`."
+}

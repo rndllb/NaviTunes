@@ -1,0 +1,24 @@
+{
+  "id": "P01",
+  "source": "CODE_SWEEP.md",
+  "source_verdict": "DENIED",
+  "title": "The Now Playing previous/next buttons announce raw SF Symbol names to VoiceOver",
+  "claim": "The sweep filed this DENIED. The original entry said `transportButton` never attaches an `accessibilityLabel`, that custom triangles leave VoiceOver nothing to fall back on so it reads \"button\", and that \"a screen-reader user cannot operate playback\". The verifier refuted the custom-triangle premise (they are SF Symbols), the bolded conclusion and the button counts, while conceding \"The fix stands\"; the T238 re-verifier recorded `Denial: DOES NOT HOLD`.",
+  "class": "visual",
+  "status": "confirmed",
+  "video": null,
+  "no_video_reason": "The defect is what VoiceOver announces, and VoiceOver does not run in the iOS Simulator, so there is no on-screen behaviour to film. The runtime evidence is the accessibility tree read by XCUITest from the live Now Playing screen, quoted verbatim in steps.",
+  "description": "On the full-screen player, the skip-back and skip-forward buttons have no spoken names of their own, so a screen reader reads out the internal icon file names instead — twice each.",
+  "issue": "A VoiceOver user landing on the previous-track button hears \"arrowtriangle.backward.fill, arrowtriangle.backward.fill\" and on next-track \"arrowtriangle.forward.fill, arrowtriangle.forward.fill\" — not \"Previous\" and \"Next\". That is worse than the verifier assumed (it expected an SF Symbol description such as a glyph name, not the raw identifier doubled). The verifier was right that playback remains operable: play/pause is announced as \"Pause\", and the ellipsis menu as \"More\".",
+  "proposed_fix": "Add a required `accessibilityLabel:` parameter to `transportButton(...)` and pass \"Previous\", \"Play\"/\"Pause\", \"Next\" and the skip-interval strings at the call sites; per the T238 re-verifier, also mark the two `SkipMarchGlyph` images `.accessibilityHidden(true)` (or use `.accessibilityElement(children: .ignore)` on the button content) so the doubled image descriptions cannot compete with the label. Label the buffering `Button` \"Pause\". Leave DiscoverySearchView / OfflineStorageBrowserViews to a separate pass, as the re-verifier recommends.",
+  "steps": [
+    "Confirm source: NowPlayingView.swift contains exactly three `accessibilityLabel` calls (lines 224, 239, 1891); `transportButton` attaches none.",
+    "Drive: Home → first Top Pick (The Other Side of Make‐Believe) → Play → tap the mini player ('Toni, Interpol') → wait 3 s → accessibility dump.",
+    "Mini player (before opening): Button identifier 'pause.fill' label 'Pause'; Button identifier 'forward.fill' label 'Forward' — default SF Symbol labels, so the mini-player half of the original claim does not reproduce.",
+    "Now Playing dump, transport row: Button label 'arrowtriangle.backward.fill, arrowtriangle.backward.fill' (containing two Images labelled 'arrowtriangle.backward.fill'); Button identifier 'pause.fill' label 'Pause'; Button label 'arrowtriangle.forward.fill, arrowtriangle.forward.fill'.",
+    "Now Playing dump, other controls: ellipsis Button label 'More'; Favorite 'Favorite'; lyrics 'Bubble'; AirPlay 'AirPlay'; queue 'List'; volume images 'Volume Lower' / 'Volume Higher'.",
+    "The buffering-state `Button` (ProgressView content, no label) is transient and was not caught in a dump; it remains verified in source only."
+  ],
+  "tested_at": "2026-09-16T14:43:00Z",
+  "notes": "REPRODUCED DESPITE BEING FILED DENIED, which is why DENIED entries are never a filter. The runtime tree settles the dispute between the passes: previous/next carry no explicit label and announce the raw symbol identifiers, doubled, because the button's content is two animating Images. The refuted parts stay refuted — play/pause and the ellipsis menu do announce meaningful names, and playback is operable — so the title is amended to the defect that actually survives. Adjacent labels worth Ethan's attention but not part of this finding: the lyrics and queue buttons announce \"Bubble\" and \"List\"."
+}

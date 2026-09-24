@@ -30,6 +30,7 @@
 		CC0000000000000000000015 /* QueueHistorySwipe.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000008 /* QueueHistorySwipe.swift */; };
 		CC0000000000000000000016 /* HistoryPlaybackLyrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000009 /* HistoryPlaybackLyrics.swift */; };
 		CC0000000000000000000091 /* DiscoverAlbumSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000090 /* DiscoverAlbumSearch.swift */; };
+		CC0000000000000000000014 /* VellumTestSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000006 /* VellumTestSignIn.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -93,6 +94,7 @@
 		CC0000000000000000000008 /* QueueHistorySwipe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueHistorySwipe.swift; sourceTree = "<group>"; };
 		CC0000000000000000000090 /* DiscoverAlbumSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoverAlbumSearch.swift; sourceTree = "<group>"; };
 		CC0000000000000000000009 /* HistoryPlaybackLyrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryPlaybackLyrics.swift; sourceTree = "<group>"; };
+		CC0000000000000000000006 /* VellumTestSignIn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VellumTestSignIn.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -192,6 +194,7 @@
 				CC0000000000000000000008 /* QueueHistorySwipe.swift */,
 				CC0000000000000000000090 /* DiscoverAlbumSearch.swift */,
 				CC0000000000000000000009 /* HistoryPlaybackLyrics.swift */,
+				CC0000000000000000000006 /* VellumTestSignIn.swift */,
 			);
 			path = VellumMusicUITests;
 			sourceTree = "<group>";
@@ -376,6 +379,7 @@
 				CC0000000000000000000015 /* QueueHistorySwipe.swift in Sources */,
 				CC0000000000000000000091 /* DiscoverAlbumSearch.swift in Sources */,
 				CC0000000000000000000016 /* HistoryPlaybackLyrics.swift in Sources */,
+				CC0000000000000000000014 /* VellumTestSignIn.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

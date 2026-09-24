@@ -1,0 +1,25 @@
+{
+  "id": "C15",
+  "source": "CODE_SWEEP.md",
+  "source_verdict": "REINFORCED",
+  "title": "A malformed, truncated or newer-version membership payload decodes to `.empty`, and the next write persists that emptiness",
+  "claim": "The magic-playlist membership payload is decoded lossily: anything unreadable — malformed JSON, a truncated read, a payload written by a newer schema version — yields `.empty`, which is indistinguishable from 'this user has added nothing'. The next write then persists that empty state back to the server, destroying the real membership.",
+  "class": "systemic",
+  "status": "already_fixed",
+  "video": null,
+  "no_video_reason": "The fixed behaviour is the absence of data loss, which has no on-screen event, and reproducing the original defect would need a deliberately corrupted server payload — the old decode path it would exercise no longer exists. Evidence is the commit naming C15 plus the three-way decode in current source.",
+  "description": "The app stores which albums and playlists you have added inside a hidden playlist on your server. If it ever failed to read that list — corrupted text, a half-downloaded response, a format from a newer version — it treated the failure as 'you have added nothing', and the next save wrote that emptiness back, wiping your library membership.",
+  "issue": "Nothing goes wrong for a user today. The decode path now distinguishes an absent payload from an unreadable one, and write paths are required to use the distinguishing variant, so an unreadable read can no longer be laundered into an empty write.",
+  "proposed_fix": "No code change. Fixed by commit f39eae7, which adds `decodeOutcome(_:)` returning `.absent` / `.malformed` / `.valid`, demotes the old lossy `decode(_:)` to read-only display callers with an explicit warning, and ships LibraryMembershipDecodeTests.swift (103 lines).",
+  "steps": [
+    "Read the claim: an unreadable payload decodes to `.empty` and the next write persists it.",
+    "Read current source at Sources/VellumMusicKit/Library/LibraryMembership.swift:180-205.",
+    "Confirm `decodeOutcome(_:)` exists and returns `.absent` for nil/empty input, `.malformed` for non-UTF8 or non-decodable JSON, and `.valid(payload)` otherwise — the three-way split the fix requires.",
+    "Confirm the lossy `decode(_:)` survives only for read-only callers and carries the warning: 'Do not use this to decide what to persist. It cannot distinguish an absent payload from an unreadable one, which is exactly the confusion that made a truncated read wipe a library.'",
+    "Check provenance: `git log` shows commit f39eae7 'Refuse to write library membership we could not read (C15, C78)', naming this finding id.",
+    "Check the diffstat: f39eae7 touches AppModel.swift (+74/-), LibraryMembership.swift (+46/-) and adds 103 lines of LibraryMembershipDecodeTests.swift.",
+    "Confirm a runtime marker survives in AppModel.swift:458 — 'by the next readable payload. See C15 in applyMagicPlaylistFetch' — showing the guard is wired into the live fetch path, not just the model."
+  ],
+  "tested_at": "2026-09-15T23:52:00Z",
+  "notes": "already_fixed claimed on two independent pieces of evidence per the contract: a commit naming the finding id (f39eae7) AND the guard present in current source. C16 (membership poll clobbers an in-flight add) is a DIFFERENT defect in adjacent code, not covered by this commit; it was reproduced separately in this batch (the cross-device lost-update half)."
+}

@@ -87,14 +87,15 @@ struct ArtistTopSongRow: Identifiable, Hashable {
 
 /// Bucketing of a release for the artist page's discography sections.
 ///
-/// `CaseIterable` in declaration order, and that order is the shelf order the page renders
-/// (`ArtistPageView.swift:78-81`). "Request Missing" walks `allCases`, so a bucket added
-/// here is picked up by both the shelves and the bulk request rather than only the shelves.
+/// Declaration order matches the shelves. Guest appearances are excluded from bulk requests.
 enum ArtistDiscographyBucket: Hashable, CaseIterable {
     case albums
     case singlesAndEPs
     case live
     case compilations
+    case featuredOn
+
+    var includesInBulkRequest: Bool { self != .featuredOn }
 
     /// How the "Request Missing" confirmation names this bucket's share of the count.
     /// Singular where the count is 1, so "1 albums" never reaches the screen.
@@ -104,6 +105,7 @@ enum ArtistDiscographyBucket: Hashable, CaseIterable {
         case .singlesAndEPs: return count == 1 ? "1 single or EP" : "\(count) singles & EPs"
         case .live: return count == 1 ? "1 live album" : "\(count) live albums"
         case .compilations: return count == 1 ? "1 compilation" : "\(count) compilations"
+        case .featuredOn: return count == 1 ? "1 guest appearance" : "\(count) guest appearances"
         }
     }
 }
@@ -303,6 +305,10 @@ final class ArtistViewModel: ObservableObject {
     /// Whether a second page (or more) is still in flight.
     var isPagingDiscography: Bool { discographyPendingCount > 0 && !discographyRefreshFailed }
 
+    /// Whether the shelves may still grow — the first catalogue page, or later ones, are in flight.
+    /// Drives the per-shelf placeholders shown alongside whatever has already landed.
+    var isDiscographyStillLoading: Bool { isLoadingDiscography || isPagingDiscography }
+
     init(input: ArtistPageInput) {
         self.input = input
         if case .libraryArtist(let a) = input {
@@ -341,7 +347,8 @@ final class ArtistViewModel: ObservableObject {
     /// The artist's most recent plugin/server-adjacent release, shown as a
     /// featured card under the hero. `remoteReleasesSnapshot` is newest-first.
     var latestRelease: AcquisitionRelease? {
-        remoteReleasesSnapshot.first(where: { $0.releaseDate != nil }) ?? remoteReleasesSnapshot.first
+        remoteReleasesSnapshot.first(where: { !$0.isFeaturedOn && $0.releaseDate != nil })
+            ?? remoteReleasesSnapshot.first(where: { !$0.isFeaturedOn })
     }
 
     /// The server album matching a remote release by title, when the user already has it.
@@ -433,7 +440,7 @@ final class ArtistViewModel: ObservableObject {
 
     private func makeDiscographyRequestPlan() -> DiscographyRequestPlan {
         var plan = DiscographyRequestPlan(pending: isPagingDiscography ? discographyPendingCount : 0)
-        for bucket in ArtistDiscographyBucket.allCases {
+        for bucket in ArtistDiscographyBucket.allCases where bucket.includesInBulkRequest {
             let missing = (discography[bucket] ?? []).filter(\.needsRequest).compactMap(\.remoteAlbum)
             guard !missing.isEmpty else { continue }
             plan.releases.append(contentsOf: missing)
@@ -517,17 +524,13 @@ final class ArtistViewModel: ObservableObject {
 
         await catalogTask.value
         rebuildTopSongs(using: app)
-        // Deliberately no discography paint here.
-        //
-        // This used to render the server's albums immediately and merge the catalogue in behind
-        // them, which meant an artist you own one record by showed exactly that one record and
-        // then reshuffled a moment later when the rest arrived. Content that appears and then
-        // rearranges is worse than a slightly longer wait: the first list was never wrong, but it
-        // was never the answer either, and it moved under the reader while they were reading it.
-        //
-        // The discography now paints once, from the catalogue, as soon as the catalogue answers —
-        // which for an artist opened before is straight off disk. The existing skeleton covers the
-        // gap until then.
+        // Paint what the server already has now, merged with whatever catalogue pages have landed.
+        // The shelves carry trailing placeholders while ``isDiscographyStillLoading`` holds, so an
+        // artist you own one record by reads as "one record, more on the way" rather than as a
+        // finished one-item list — which was the reason this paint used to be withheld until the
+        // catalogue answered. Also re-marks catalogue rows that arrived before the server's albums
+        // did, which would otherwise show as requestable until the next page.
+        applyDiscography(releases: remoteReleasesSnapshot, serverAlbums: serverAlbums)
 
         await musicBrainzSide
         await pluginSide
@@ -1034,7 +1037,10 @@ final class ArtistViewModel: ObservableObject {
                     return hit
                 }
                 return discographyTitleKeys(for: remote.title)
-                    .lazy.compactMap { ownedByTitleKey[$0] }.first
+                    .lazy.compactMap { ownedByTitleKey[$0] }.first { album in
+                        !remote.isFeaturedOn
+                            || LibraryTrackMatcher.normalize(album.artist) == LibraryTrackMatcher.normalize(remote.artist)
+                    }
             }()
 
             if let owned {
@@ -1060,7 +1066,7 @@ final class ArtistViewModel: ObservableObject {
                 continue
             }
 
-            guard bucket == .albums || bucket == .singlesAndEPs else { continue }
+            guard bucket == .albums || bucket == .singlesAndEPs || bucket == .featuredOn else { continue }
             // A single already present as a track is not worth offering to request.
             if bucket == .singlesAndEPs,
                discographyTitleKeys(for: remote.title).contains(where: { serverTrackTitles.contains($0) }) {

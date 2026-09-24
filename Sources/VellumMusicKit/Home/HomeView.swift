@@ -27,6 +27,7 @@ struct HomeView: View {
     /// matches it.
     @State private var navigateAlbum: AlbumSummary?
     @State private var navigatePlaylist: PlaylistSummary?
+    @State private var navigateMix: HomeMix?
     @State private var navigateArtistName: String?
 
     private let inset: CGFloat = MusicDesign.newTabHorizontalInset
@@ -183,6 +184,9 @@ struct HomeView: View {
             }
             .navigationDestination(item: $navigatePlaylist) { playlist in
                 ServerPlaylistDetailView(playlist: playlist)
+            }
+            .navigationDestination(item: $navigateMix) { mix in
+                ServerPlaylistDetailView(homeMixId: mix.id)
             }
             .navigationDestination(item: $navigateArtistName) { name in
                 ArtistPageView(input: .named(name))
@@ -386,12 +390,16 @@ struct HomeView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 14) {
                     ForEach(mixes) { mix in
+                        // Tap opens the mix like any playlist; Play / Shuffle live on the
+                        // long-press menu — the same one Library's mix rows use.
                         Button {
-                            Task { await app.playHomeMix(mix) }
+                            navigateMix = mix
                         } label: {
                             mixShelfCard(mix: mix)
+                                .coverZoomSource(id: mix.libraryPlaylistId, style: .custom)
                         }
                         .buttonStyle(.plain)
+                        .homeMixOrPlaylistContextMenu(mix.asPlaylistSummary(), app: app)
                     }
                 }
                 .padding(.horizontal, inset)
@@ -595,7 +603,7 @@ private struct HomeTopPickCard: View, Equatable {
 
     private var metadataBlock: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("New Release")
+            Text("New Addition")
                 .font(.caption)
                 .foregroundStyle(Color.white.opacity(0.55))
                 .lineLimit(1)

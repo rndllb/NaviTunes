@@ -136,13 +136,29 @@ extension MusicBrainzDiscography {
         artistArtworkURL: URL? = nil,
         artistOverview: String? = nil
     ) -> [AcquisitionRelease] {
-        releaseGroups.map {
-            $0.asAcquisitionRelease(
-                artist: artist,
-                artistMBID: artistMBID,
-                artistArtworkURL: artistArtworkURL,
-                artistOverview: artistOverview
+        releaseGroups.map { group in
+            let featured = group.isSecondaryCredit(for: artistMBID)
+            var release = group.asAcquisitionRelease(
+                artist: featured ? (group.artistCredit?.primaryArtistName ?? artist) : artist,
+                artistMBID: featured ? group.artistCredit?.primaryArtistMBID : artistMBID,
+                artistArtworkURL: featured ? nil : artistArtworkURL,
+                artistOverview: featured ? nil : artistOverview
             )
+            release.isFeaturedOn = featured
+            return release
+        }
+    }
+}
+
+extension MusicBrainzReleaseGroup {
+    func isSecondaryCredit(for artistMBID: String) -> Bool {
+        guard !artistMBID.isEmpty,
+              let credits = artistCredit,
+              let primary = credits.first?.artist?.id,
+              !primary.isEmpty,
+              primary.caseInsensitiveCompare(artistMBID) != .orderedSame else { return false }
+        return credits.dropFirst().contains {
+            $0.artist?.id.caseInsensitiveCompare(artistMBID) == .orderedSame
         }
     }
 }
