@@ -106,6 +106,24 @@ enum PlaybackCPUSampler {
         }
     }
 
+    /// Callbacks since the last sample, saturating rather than trapping.
+    ///
+    /// `Int64($0) - Int64(lastCallbackCount)` was the second crashing frame in T264 —
+    /// `_assertionFailure` reached through `Optional.map` from `sample(reason:)`. `Int64(_:)` traps
+    /// on any `UInt64` above `Int64.max`, and the value here is not this file's to trust: it comes
+    /// from `callbackCountProvider`, which on the tap branch sums `processCount` across live taps
+    /// with **wrapping** addition, reading each one through a raw pointer. A freed tap made that
+    /// sum arbitrary.
+    ///
+    /// The counter is also wrapping, so `current` below `previous` is a legitimate state and not a
+    /// reason to trap either. Both are reported as a clamped delta: this number is a diagnostic
+    /// line, and no reading of it is worth taking the process down for.
+    static func callbackDelta(current: UInt64, previous: UInt64) -> Int64 {
+        guard current >= previous else { return 0 }
+        let delta = current - previous
+        return delta > UInt64(Int64.max) ? .max : Int64(delta)
+    }
+
     private static func sample(reason: String) {
         let now = CFAbsoluteTimeGetCurrent()
         let cpu = cpuSeconds()
@@ -116,7 +134,7 @@ enum PlaybackCPUSampler {
         if let since = runningSince { audioSeconds += now - since }
 
         let callbacks = callbackCountProvider?()
-        let callbackDelta: Int64 = callbacks.map { Int64($0) - Int64(lastCallbackCount) } ?? -1
+        let callbackDelta: Int64 = callbacks.map { Self.callbackDelta(current: $0, previous: lastCallbackCount) } ?? -1
 
         let item = currentItemProvider?() ?? (tag: 0, title: "")
 

@@ -332,17 +332,21 @@ struct AccountView: View {
     private var serverSection: some View {
         Group {
             Section {
-                MusicGlassSegmentPillBar(
-                    options: Array(BackendKind.allCases),
-                    selection: $app.backendKind,
-                    title: { $0.title }
-                )
-                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
-                // Signed in, this bar wrote straight through to `app.backendKind` — swapping the
+                // Signed in, the bar wrote straight through to `app.backendKind` — swapping the
                 // active backend under a live session, with the previous server's library,
                 // playlists and magic-playlist id still loaded. Signing out is the way to change
-                // it, so the control reflects that rather than accepting a tap it can't honour.
-                .disabled(app.isSignedIn)
+                // it. A disabled bar dimmed both segments equally and hid which one was active,
+                // so signed in it is replaced by a read-only row naming the server.
+                if app.isSignedIn {
+                    LabeledContent("Server", value: serverKindName)
+                } else {
+                    MusicGlassSegmentPillBar(
+                        options: Array(BackendKind.allCases),
+                        selection: $app.backendKind,
+                        title: { $0.title }
+                    )
+                    .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                }
             } footer: {
                 if app.isSignedIn {
                     Text("Sign out to connect to a different server.")
@@ -456,22 +460,19 @@ struct AccountView: View {
                 }
             }
 
-            Section {
-                TextField("Username", text: $serverDraft.username)
-                    .textContentType(.username)
-                    .musicTextInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .disabled(app.isSignedIn)
+            // Signed out only. Signed in, every field here was locked and the button hidden, so the
+            // section was a read-only echo of credentials that can only be changed on the server.
+            // Connection health, which its footer used to carry, is in the profile header pill.
+            if !app.isSignedIn {
+                Section {
+                    TextField("Username", text: $serverDraft.username)
+                        .textContentType(.username)
+                        .musicTextInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
 
-                SecureField("Password", text: $serverDraft.password)
-                    .textContentType(.password)
-                    .disabled(app.isSignedIn)
+                    SecureField("Password", text: $serverDraft.password)
+                        .textContentType(.password)
 
-                // Hidden rather than disabled while signed in: with every field above locked, the
-                // only thing it could submit is the credentials already in use. A button that is
-                // present, enabled and incapable of changing anything is the same defect as a
-                // control that silently does nothing.
-                if !app.isSignedIn {
                     Button {
                         Task { await checkConnection() }
                     } label: {
@@ -493,13 +494,13 @@ struct AccountView: View {
                             || serverDraft.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                             || serverDraft.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                     )
-                }
-            } header: {
-                Text("Account")
-            } footer: {
-                if let footer = serverSectionFooter {
-                    Text(footer)
-                        .foregroundStyle(serverFooterIsError ? .red : .secondary)
+                } header: {
+                    Text("Account")
+                } footer: {
+                    if let footer = serverSectionFooter {
+                        Text(footer)
+                            .foregroundStyle(serverFooterIsError ? .red : .secondary)
+                    }
                 }
             }
 

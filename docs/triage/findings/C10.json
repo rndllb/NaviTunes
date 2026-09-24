@@ -1,0 +1,24 @@
+{
+  "id": "C10",
+  "source": "CODE_SWEEP.md",
+  "source_verdict": "CONFIRMED",
+  "title": "`Track.withArtworkURL` / `withDuration` silently drop `artistId` on the playback path",
+  "claim": "The two Track copy constructors rebuild a Track field by field and omit `artistId`, so any track passing through them loses its artist identity — silently, because the omission is a missing argument rather than an explicit nil.",
+  "class": "systemic",
+  "status": "already_fixed",
+  "video": null,
+  "no_video_reason": "A missing argument in a copy constructor has no screen behaviour. The fix is evidenced by a commit naming C10 and by the argument's presence in current source; footage of working artist navigation would not distinguish this fix from any other reason navigation works.",
+  "description": "Two helper methods that make a modified copy of a song — one to attach artwork, one to correct the duration — used to forget to carry the song's artist ID across, so the copy came out without it.",
+  "issue": "Nothing goes wrong for a user today. Both copy constructors now carry `artistId` through, so a track that passes through the playback path keeps its artist identity and artist navigation from those tracks continues to resolve.",
+  "proposed_fix": "No code change. Fixed by commit 8fd35ba, which threads `artistId` through both constructors and adds TrackCopyConstructorTests.swift (109 lines) to prevent silent regression. The sweep's proposed fix and the shipped fix agree.",
+  "steps": [
+    "Read the claim: `withArtworkURL` and `withDuration` in MusicLibraryProviding.swift omit `artistId`.",
+    "Read current source at Sources/VellumMusicKit/Backends/MusicLibraryProviding.swift:313-359.",
+    "Confirm `artistId: artistId,` is present as the final argument in `withArtworkURL` (line 333) and in `withDuration` (line 357).",
+    "Check provenance: `git log` shows commit 8fd35ba 'Thread artistId through the Track copy constructors (C10)', naming this finding id explicitly.",
+    "Check the diffstat: 8fd35ba adds +2 lines to MusicLibraryProviding.swift (one per constructor) and +109 lines of TrackCopyConstructorTests.swift.",
+    "Confirm MusicLibraryProviding.swift is not among the five files with uncommitted working-tree changes, so the fix is committed, not local."
+  ],
+  "tested_at": "2026-09-15T23:50:00Z",
+  "notes": "already_fixed is claimed on two independent pieces of evidence, per the contract's rule not to guess: a commit naming the finding id (8fd35ba) AND the fix present in current source. Not inferred from absence of symptoms."
+}

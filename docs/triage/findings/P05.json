@@ -1,0 +1,27 @@
+{
+  "id": "P05",
+  "source": "CODE_SWEEP.md",
+  "source_verdict": "CONFIRMED",
+  "title": "The Home fallback shelf titled \"Your Library\" shows the server catalog",
+  "claim": "HomeView renders `shelf(title: \"Your Library\", albums: Array(app.libraryAlbums.prefix(20)))` when recently-played, genre shelves and Top Picks are all empty and the catalog is not. `libraryAlbums` is the whole server catalog, not the user's library, so a new user's first Home screen shows the first 20 server albums captioned \"Your Library\".",
+  "class": "visual",
+  "status": "not_reproduced",
+  "video": "videos/P05.mp4",
+  "surviving_defect": {
+    "title": "A reachable-in-principle branch still labels the server catalog \"Your Library\"",
+    "severity": "low",
+    "description": "HomeView.swift:144-151 is unchanged: if every other shelf is empty while the catalog is loaded, the screen captions server-catalog albums as the user's own library — the exact catalog/library confusion CLAUDE.md warns about. It did not render in two attempts on this rig because Top Picks is never empty once the catalog is in memory, but nothing structural prevents it, and the second verifier's permanent case (every catalog album excluded by `isEligibleForHomeTopPick`) would show it indefinitely.",
+    "proposed_fix": "Retitle the fallback honestly — \"From Your Server\" — which is the operative half of the sweep's fix; both verifiers agree the personal-library branch adds plumbing for a case that rarely differs."
+  },
+  "description": "A backup row on the Home screen, meant to show something when nothing else is available. It is titled \"Your Library\" but is filled from everything on the server.",
+  "issue": "As tested, nothing goes wrong: the row never appeared. On a signed-in account Top Picks is populated from the saved snapshot before the fallback's conditions can all be true, and on a first paint with no snapshot the catalog is not loaded yet while the skeletons are showing. The mislabelled branch is still in the code.",
+  "proposed_fix": "No headline fix is warranted by the runtime evidence; apply the retitle in surviving_defect.",
+  "steps": [
+    "Confirm the branch is in current source: HomeView.swift:144-151 (`homeRecentlyPlayed.isEmpty, homeGenreShelves.isEmpty, topPicksAlbums.isEmpty, !libraryAlbums.isEmpty` → shelf \"Your Library\"). It sits at the bottom of the stack, below the \"New Releases for You\" skeleton.",
+    "Attempt 1 — warm cold launch (account has 500+ catalog albums persisted, an empty personal library, no plays): drive `relaunch`, then accessibility dumps at +0, +1, +3, +5, +7 s after the tab bar appears. The dump includes off-screen elements (\"New Releases for You\" is listed while below the fold), so a bottom-of-stack shelf would appear in it. Result: no \"Your Library\" in any dump. Recorded frames show Top Picks already populated at first paint (_Ohms, Joe Walsh) seeded from the persisted snapshot.",
+    "Attempt 2 — first-paint state with no persisted catalog: terminate the app, move Library/Application Support/VellumMusic/library-snapshot.json out of the container (kept at ~/agent-scratch/T344/stash/), launch while recording, dump at +0, +1, +3, +6, +9, +11 s. Result: Top Picks, Browse by Genre and New Releases render as skeletons (`homeDiscoveryPending`), then populate; \"Your Library\" never appears in any dump or frame.",
+    "Divergence from the document: the sweep says this is \"the first shelf a new user sees\". It is not on this build — in the pre-ranking window the catalog is not yet in memory (the fallback's `!libraryAlbums.isEmpty` fails), and once it is, ranking fills Top Picks in the same pass. Both verifiers had already narrowed reachability; runtime narrows it further to no observed window at all."
+  ],
+  "tested_at": "2026-09-16T14:21:00Z",
+  "notes": "The video is attempt 2, cut from the raw recording so it includes the launch itself: a no-snapshot cold start showing skeletons then populated shelves, with no \"Your Library\" row. It is evidence of what was tried, not of a defect. Attempt 1's warm-launch clip is kept at ~/agent-scratch/T344/set-aside/P05-warm-launch.mp4. Reclassification history: an earlier session filed this cannot_test for want of seeded data; that premise was wrong (an empty personal library is the state most likely to trigger it), and it was blocked only on the driver. The app rewrote its snapshot on the next launch; the moved copy was not restored because the regenerated one supersedes it."
+}

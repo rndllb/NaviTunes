@@ -457,6 +457,9 @@ struct AcquisitionRelease: Identifiable, Hashable, Sendable {
     let monitored: Bool
     let wanted: Bool
 
+    /// Relative to the artist page that loaded this release, not a release type.
+    var isFeaturedOn: Bool = false
+
     var releaseYear: Int? {
         guard let releaseDate else { return nil }
         return Calendar(identifier: .gregorian).component(.year, from: releaseDate)
@@ -479,6 +482,7 @@ struct AcquisitionRelease: Identifiable, Hashable, Sendable {
     }
 
     var bucket: ArtistDiscographyBucket {
+        if isFeaturedOn { return .featuredOn }
         let type = (albumType ?? "").lowercased()
         let secondary = secondaryTypes.map { $0.lowercased() }
         if secondary.contains(where: { $0.contains("live") }) || type.contains("live") {

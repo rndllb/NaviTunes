@@ -86,11 +86,38 @@ final class EqualizerTapRegistry {
         lock.lock()
         let tap = taps.removeValue(forKey: itemTag)
         drainedCount.removeValue(forKey: itemTag)
+        // Both marks, not just the ring one. Leaving `drainedEntryCount` behind kept a dead tag's
+        // high-water mark alive for the life of the process.
+        drainedEntryCount.removeValue(forKey: itemTag)
         let remaining = taps.count
         lock.unlock()
         if let tap {
             drain(tap)
             PlaybackTapLog.tap("retire item=\(itemTag) track=\(tap.trackId) liveTaps=\(remaining)")
+        }
+        if remaining == 0 { stopTimer() }
+    }
+
+    /// Drops a tap **without** draining it, for the one caller that must not drain: the tap's
+    /// `finalize` callback, which is about to free the render state this registry reads from.
+    ///
+    /// `retire(itemTag:)` is the orderly path — the item is done, so emit a last summary and let
+    /// go. `finalize` is the framework telling us the storage is going away *now*; reading it for
+    /// one more summary is the use-after-free, not a courtesy. So this removes and says nothing
+    /// about the counters.
+    ///
+    /// Idempotent: an item that was already retired is simply not here.
+    func forget(itemTag: UInt64) {
+        lock.lock()
+        let removed = taps.removeValue(forKey: itemTag) != nil
+        drainedCount.removeValue(forKey: itemTag)
+        drainedEntryCount.removeValue(forKey: itemTag)
+        let remaining = taps.count
+        lock.unlock()
+        // `currentItemTag` is deliberately left alone: if the finalized tap was the current item,
+        // the honest report is `attached=false` on the next activity line, not silence.
+        if removed {
+            PlaybackTapLog.tap("forget item=\(itemTag) reason=finalize liveTaps=\(remaining)")
         }
         if remaining == 0 { stopTimer() }
     }
@@ -159,7 +186,20 @@ final class EqualizerTapRegistry {
         guard written > alreadyDrained || entries > alreadyDrainedEntries else { return }
 
         let capacity = UInt64(max(1, state.pointee.ringCapacity))
-        let newRecords = written - alreadyDrained
+        // Clamped, not `written - alreadyDrained`.
+        //
+        // The two counters are read from the render state without the lock, and the guard above is
+        // satisfied by *either* of them — so a call can reach here with `written` below the mark a
+        // previous drain recorded. On a live tap that cannot happen; on a tap whose storage has
+        // been freed underneath us the values are unrelated garbage, and the subtraction was an
+        // unsigned underflow. That trap is the crash in T264.
+        //
+        // `EqualizerAudioTap.tapFinalize` now drops the tap from this registry before it frees the
+        // storage, which is the actual fix. This clamp is the backstop: the registry still reads a
+        // raw pointer outside its lock, so a drain already in flight when `finalize` lands can
+        // still see freed memory. That residual race must degrade to a wrong number in a
+        // diagnostic log, never to a trap that kills playback.
+        let newRecords = written >= alreadyDrained ? written - alreadyDrained : 0
         let lost = newRecords > capacity ? newRecords - capacity : 0
 
         let first = state.pointee.firstProcessHostTime
