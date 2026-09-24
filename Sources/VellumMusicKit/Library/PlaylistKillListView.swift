@@ -56,6 +56,7 @@ struct PlaylistKillListView: View {
 
     @State private var pendingRowDelete: PlaylistRowItem?
     @State private var showRemoveAllConfirm = false
+    @State private var showClearHistoryConfirm = false
     /// Copied out of `AppModel` when a run finishes so the alert keeps its content while it
     /// animates away — same pattern as `pendingRowDelete`.
     @State private var finishedSummary: AppModel.KillModeRemovalSummary?
@@ -98,20 +99,17 @@ struct PlaylistKillListView: View {
                 rowView(row)
                     .listRowBackground(MusicDesign.background)
                     .disabled(isRemoving)
-                    // Both actions live on the trailing edge on purpose. A leading
-                    // `swipeActions` row eats the leading-edge pan, which is the same
-                    // gesture as the interactive back-swipe — so dragging right from a row
-                    // ran "Keep" instead of popping Kill Mode, and a drag begun at the very
-                    // edge fell through to the playlist underneath. Back-swipe is a
-                    // system-wide expectation and its absence reads as a bug, so the leading
-                    // edge is left to navigation. "Remove" stays declared first, which keeps
-                    // it the full-swipe action exactly as before.
-                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        Button(role: .destructive) {
-                            pendingRowDelete = row
-                        } label: {
-                            Label("Remove", systemImage: "trash")
-                        }
+                    // Keep on the leading edge, Remove on the trailing edge — the arrangement
+                    // this screen shipped with, restored by product decision.
+                    //
+                    // These were briefly both trailing, on the theory that a leading swipe
+                    // action was eating the interactive back-swipe. Putting them together was
+                    // tested and did **not** fix the dismissal it was meant to fix, so the
+                    // rearrangement cost the two-sided gesture and bought nothing. Anything
+                    // that revisits the back-swipe should leave the edges alone: the
+                    // recognizer state on this screen is already correct (UIKit's pop enabled,
+                    // the cover-zoom pan stood down), so a leading action is not what decides it.
+                    .swipeActions(edge: .leading, allowsFullSwipe: true) {
                         Button {
                             app.restoreFromKillList(playlistId: playlistId, trackId: row.track.id)
                             app.showTransientToast("Kept in Playlist")
@@ -119,6 +117,13 @@ struct PlaylistKillListView: View {
                             Label("Keep", systemImage: "arrow.uturn.backward")
                         }
                         .tint(.green)
+                    }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        Button(role: .destructive) {
+                            pendingRowDelete = row
+                        } label: {
+                            Label("Remove", systemImage: "trash")
+                        }
                     }
             }
         }
@@ -135,6 +140,29 @@ struct PlaylistKillListView: View {
                     Text("Remove All")
                 }
                 .disabled(visibleRows.isEmpty || isRemoving)
+            }
+            // Listen-history controls live in a menu in the bar, not in the list body: a swipe
+            // across the content cannot open a menu, and opening one is a deliberate two-step.
+            ToolbarItem(placement: MusicToolbar.trailingItemPlacement) {
+                Menu {
+                    if app.lastClearedKillModeHistory?.playlistId == playlistId {
+                        Button {
+                            app.undoClearKillModeListenHistory(playlistId: playlistId)
+                            app.showTransientToast("Listen history restored")
+                        } label: {
+                            Label("Undo Clear Listen History", systemImage: "arrow.uturn.backward")
+                        }
+                    }
+                    Button(role: .destructive) {
+                        showClearHistoryConfirm = true
+                    } label: {
+                        Label("Clear Listen History", systemImage: "arrow.counterclockwise")
+                    }
+                    .disabled(app.killModeListenHistoryCount(playlistId: playlistId) == 0)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .disabled(isRemoving)
             }
         }
         .musicNavigationChrome()
@@ -208,6 +236,38 @@ struct PlaylistKillListView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+        // Applied as a modifier rather than another `.alert` inline: this chain was already at
+        // the limit of what the type-checker will solve in reasonable time, and one more
+        // trailing-closure alert on it tipped the whole body over.
+        .modifier(ClearListenHistoryAlert(
+            isPresented: $showClearHistoryConfirm,
+            message: clearHistoryWarning,
+            onClear: {
+                app.clearKillModeListenHistory(playlistId: playlistId)
+                app.showTransientToast("Listen history cleared")
+            }
+        ))
+    }
+
+    /// Names what goes and how much of it. Deliberately says what is *not* affected too: the
+    /// songs, the removal queue and the plays already sent to the server all survive, and saying
+    /// so is what stops this reading as "clear everything".
+    private var clearHistoryWarning: String {
+        let count: Int = app.killModeListenHistoryCount(playlistId: playlistId)
+        let plural: String = count == 1 ? "" : "s"
+        let name: String? = app.libraryPlaylist(id: playlistId)?.name
+        let target: String
+        if let name, !name.isEmpty {
+            target = "\u{201C}" + name + "\u{201D}"
+        } else {
+            target = "this playlist"
+        }
+        let line1: String = "This forgets that you have listened to \(count) song\(plural) in \(target), "
+            + "so they can be picked again on the next Kill Mode run."
+        let line2: String = "No songs are removed, nothing queued for removal changes, and plays "
+            + "already scrobbled to your server are not affected."
+        let line3: String = "This cannot be undone once you leave this screen."
+        return line1 + "\n\n" + line2 + " " + line3
     }
 
     /// Progress summary: % of the playlist listened (kept + removed) and % marked for
@@ -253,18 +313,18 @@ struct PlaylistKillListView: View {
                 }
             }
             .frame(height: 6)
-            Button {
-                app.clearKillModeListenHistory(playlistId: playlistId)
-                app.showTransientToast("Listen history cleared")
-            } label: {
-                Label("Clear Listen History", systemImage: "arrow.counterclockwise")
-                    .font(.footnote.weight(.medium))
+            // "Clear Listen History" used to sit here, as a bare button in the first row of the
+            // list, directly under the progress bar. That put an irreversible control inside the
+            // scroll content — the exact area a swipe-to-dismiss is aimed at, and a swipe that
+            // travels too little to be recognised as a pan arrives as a tap. It has moved to the
+            // toolbar overflow, out of the list body, and now asks first. `hasListenHistory` is
+            // read there instead.
+            if hasListenHistory {
+                Text("\(passedIds.count) song\(passedIds.count == 1 ? "" : "s") marked as listened")
+                    .font(.caption)
+                    .foregroundStyle(MusicDesign.secondaryLabel)
+                    .padding(.top, 2)
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(MusicDesign.accent)
-            .disabled(!hasListenHistory)
-            .opacity(hasListenHistory ? 1 : 0.4)
-            .padding(.top, 2)
         }
         .padding(.vertical, 4)
     }
@@ -377,5 +437,24 @@ struct PlaylistKillListView: View {
     private func commit(rows: [PlaylistRowItem]) async {
         guard !rows.isEmpty else { return }
         await app.runKillModeRemoval(playlistId: playlistId, rows: rows)
+    }
+}
+
+/// Confirmation for Kill Mode's "Clear Listen History".
+///
+/// Its own `ViewModifier` so it type-checks independently of the Kill Mode body, which already
+/// carries three alerts and a confirmation dialog and will not solve with a fourth inline.
+private struct ClearListenHistoryAlert: ViewModifier {
+    @Binding var isPresented: Bool
+    let message: String
+    let onClear: () -> Void
+
+    func body(content: Content) -> some View {
+        content.alert("Clear listen history?", isPresented: $isPresented) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear", role: .destructive) { onClear() }
+        } message: {
+            Text(message)
+        }
     }
 }

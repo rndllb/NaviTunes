@@ -21,7 +21,6 @@ struct SettingsEqualizerView: View {
 
             if app.equalizerEnabled {
                 graphSection
-                drawSection
                 automationSection
                 advancedSection
                 sharingSection
@@ -121,9 +120,13 @@ struct SettingsEqualizerView: View {
                     .foregroundStyle(MusicDesign.secondaryLabel)
             }
 
+            presetPicker
+
             // Directly under the graph it edits. Response is the curve you are looking at, so
             // the way into changing it belongs here rather than further down the screen.
             if isEditingCurve {
+                drawRows
+
                 HStack {
                     Button(role: .cancel) {
                         cancelCurveEdit()
@@ -150,7 +153,9 @@ struct SettingsEqualizerView: View {
         } header: {
             Text("Response")
         } footer: {
-            if app.equalizerHistory.canUndo {
+            if isEditingCurve {
+                Text("Changes are audible as you draw. Save keeps them; Cancel restores the curve you started from.")
+            } else if app.equalizerHistory.canUndo {
                 Text("Use the toolbar buttons to undo or redo curve edits. \(app.equalizerHistory.undoStepCount) edit\(app.equalizerHistory.undoStepCount == 1 ? "" : "s") can be undone.")
             } else {
                 Text("Use Bypass to A/B against your curve. EQ only affects downloaded tracks and cached streams — live streams and radio use normal playback until cached.")
@@ -170,7 +175,24 @@ struct SettingsEqualizerView: View {
             || app.equalizerHearingOffset.contains(where: { abs($0) > 0.01 })
     }
 
-    /// Preset, precision toggle, and the draw surface behind an explicit edit mode.
+    /// Applies a preset only when the user picks one.
+    ///
+    /// This used to be `.onChange(of: app.equalizerPresetId)`, which also fired when the model
+    /// reassigned the id to Flat after a manual edit (band slider, drawn curve, undo, import) —
+    /// so the first edit away from a named preset re-applied Flat and zeroed every band.
+    private var presetPicker: some View {
+        Picker("Preset", selection: Binding(
+            get: { app.equalizerPresetId },
+            set: { app.applyEqualizerPreset(EqualizerPreset.preset(id: $0)) },
+        )) {
+            ForEach(EqualizerPreset.catalog) { preset in
+                Text(preset.name).tag(preset.id)
+            }
+        }
+        .pickerStyle(.navigationLink)
+    }
+
+    /// Precision toggle and the draw surface, shown only in edit mode, directly above Save/Cancel.
     ///
     /// The surface used to sit in the list permanently, and a draw gesture is indistinguishable
     /// from the start of a scroll until it has already moved — so scrolling past it redrew the
@@ -178,47 +200,26 @@ struct SettingsEqualizerView: View {
     /// `equalizerPresetId`). Losing a preset to a scroll is not recoverable by scrolling back.
     ///
     /// Behind a button, the gesture only exists while the user has said they want to draw.
-    private var drawSection: some View {
-        Section {
-            Picker("Preset", selection: $app.equalizerPresetId) {
-                ForEach(EqualizerPreset.catalog) { preset in
-                    Text(preset.name).tag(preset.id)
-                }
-            }
-            .pickerStyle(.navigationLink)
-            .onChange(of: app.equalizerPresetId) { _, newValue in
-                app.applyEqualizerPreset(EqualizerPreset.preset(id: newValue))
-            }
+    @ViewBuilder
+    private var drawRows: some View {
+        Toggle("Precision draw (0.5 dB snap)", isOn: $app.equalizerPrecisionDraw)
+            .tint(MusicDesign.accent)
 
-            if isEditingCurve {
-                Toggle("Precision draw (0.5 dB snap)", isOn: $app.equalizerPrecisionDraw)
-                    .tint(MusicDesign.accent)
-
-                EqualizerDrawSurface(
-                    gains: $drawGains,
-                    precisionMode: app.equalizerPrecisionDraw,
-                    onEditingBegan: {
-                        // The session is opened once by `beginCurveEdit()`; this guards on a
-                        // non-nil baseline, so a per-stroke call is a no-op and is left off.
-                    },
-                    onEditingEnded: {
-                        // Apply each stroke so the change is audible while drawing, but commit
-                        // nothing: the preset is not reassigned and no undo entry is recorded
-                        // until Save. Cancel has to be able to put this back exactly.
-                        app.setEqualizerBandGains(drawGains, recordHistory: false)
-                    },
-                )
-                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-            }
-        } header: {
-            Text("Draw EQ")
-        } footer: {
-            if isEditingCurve {
-                Text("Changes are audible as you draw. Save keeps them; Cancel restores the curve you started from.")
-            } else {
-                Text("Choose a preset, or use Edit Curve under the Response graph to draw your own.")
-            }
-        }
+        EqualizerDrawSurface(
+            gains: $drawGains,
+            precisionMode: app.equalizerPrecisionDraw,
+            onEditingBegan: {
+                // The session is opened once by `beginCurveEdit()`; this guards on a
+                // non-nil baseline, so a per-stroke call is a no-op and is left off.
+            },
+            onEditingEnded: {
+                // Apply each stroke so the change is audible while drawing, but commit
+                // nothing: the preset is not reassigned and no undo entry is recorded
+                // until Save. Cancel has to be able to put this back exactly.
+                app.setEqualizerBandGains(drawGains, recordHistory: false)
+            },
+        )
+        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
     }
 
     // MARK: - Curve editing

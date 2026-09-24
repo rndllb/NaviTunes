@@ -1,0 +1,24 @@
+{
+  "id": "P13",
+  "source": "CODE_SWEEP.md",
+  "source_verdict": "REINFORCED",
+  "title": "User-facing copy references features that no longer exist",
+  "claim": "The Discover \"Recently Searched\" empty state says \"Search your server or Apple Music for songs, albums, and artists.\" although the app has no Apple Music search path; and the Following banner says \"Set one up in Plugins → Downloads\" although that section was renamed Music Requests and a separate offline-media Downloads page now exists, sending the user to the wrong screen.",
+  "class": "visual",
+  "status": "confirmed",
+  "video": "videos/P13.mp4",
+  "description": "Two pieces of on-screen text are left over from older versions of the app: one promises Apple Music search, the other names a settings section that has since been renamed.",
+  "issue": "Tapping into Search shows a promise of Apple Music results the app cannot deliver. And a user who follows an artist without a download plugin is told to go to \"Plugins → Downloads\"; the Plugins page actually lists \"Music Requests\", while a different page called \"Downloads\" (offline media) exists elsewhere in Settings — so following the instruction literally leads to the wrong place.",
+  "proposed_fix": "DiscoverySearchView.swift:864 → user-facing wording without backend brands, e.g. \"Search your server for songs, albums, and artists, or find new music to request.\" SubscriptionsView.swift:54 → \"… Set one up in Settings → Plugins → Music Requests to fetch them automatically.\", ideally from one constant shared with SettingsSections.swift:335 and SettingsView.swift:309 so the names cannot drift again. Update the stale iTunes doc comments (including AppModel.swift's \"External (iTunes) browse shelves\" and BrowseAlbumDetailSource.swift) and delete the uncalled `mergeUniqueTracks`.",
+  "steps": [
+    "Confirm both literals are current: DiscoverySearchView.swift:864 and SubscriptionsView.swift:54.",
+    "Drive and record: Search tab → tap the \"Artists, Songs, and More\" field (focused, empty query → Recently Searched state).",
+    "Dump shows StaticText 'Recently Searched' and StaticText 'Search your server or Apple Music for songs, albums, and artists.'",
+    "Tap Close to dismiss the search keyboard (tab-bar taps are swallowed while it is up), then Home → Interpol → tap 'Follow Interpol' (local subscription on vellum-test) → back.",
+    "Library → Settings → Plugins. Dump: Button 'Music Requests, Set up Lidarr' and Button 'Following, 1 artist' — there is no 'Downloads' entry under Plugins.",
+    "Tap Following. Dump shows the banner verbatim: 'No download plugin is configured, so missing albums are saved as a wishlist. Set one up in Plugins → Downloads to fetch them automatically.'",
+    "Settings hub dump (earlier probe) shows the separate top-level 'Downloads' row — the offline-media page the stale instruction now points at."
+  ],
+  "tested_at": "2026-09-16T14:39:00Z",
+  "notes": "Both strings reproduce on screen. Each half is static, but they live on two different screens and the banner only renders after following an artist, so no single frame holds the finding — hence video rather than image. Following Interpol is local subscription state on the throwaway account; it was left in place and it also supplied the taste signal P04 needed. The sweep's secondary claims (24-27 stale iTunes references in comments, uncalled mergeUniqueTracks) are source-only and were not re-counted this run."
+}

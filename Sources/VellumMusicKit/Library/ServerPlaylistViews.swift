@@ -671,6 +671,10 @@ struct ServerPlaylistDetailView: View {
     private var isHomeMix: Bool { source.isHomeMix }
     /// Album detail layout (numbered rows, hero triplet, no in-page search). Also used for dynamic home mixes.
     private var isAlbumStyleDetail: Bool { isAlbum || isHomeMix }
+    /// Song-row chrome only (numbered rows, no artwork/artist, no Go to Album). Albums only:
+    /// a mix spans many artists, so its rows read as a playlist. Deliberately narrower than
+    /// ``isAlbumStyleDetail`` — mixes keep the mosaic hero, album toolbar, and no search/edit.
+    private var usesAlbumRowStyle: Bool { isAlbum }
 
     private var activeHomeMix: HomeMix? {
         guard let mixId = source.homeMixIdOrNil else { return nil }
@@ -1259,11 +1263,11 @@ struct ServerPlaylistDetailView: View {
         }
         .listStyle(.plain)
         .listSectionSpacing(0)
-        .listRowSpacing(isAlbumStyleDetail ? 5 : 0)
-        .modifier(AlbumDetailListContentMargins(isAlbum: isAlbumStyleDetail))
+        .listRowSpacing(usesAlbumRowStyle ? 5 : 0)
+        .modifier(AlbumDetailListContentMargins(isAlbum: usesAlbumRowStyle))
         .scrollContentBackground(.hidden)
         .background(Color.clear)
-        .environment(\.defaultMinListRowHeight, isAlbumStyleDetail ? 0 : 44)
+        .environment(\.defaultMinListRowHeight, usesAlbumRowStyle ? 0 : 44)
         .onChange(of: rowsContentToken, initial: true) { _, _ in
             scrollToFocusedTrackIfNeeded(proxy: scrollProxy)
             recomputeTrackDurationTotal()
@@ -1366,7 +1370,7 @@ struct ServerPlaylistDetailView: View {
                 let showsBottomDivider = index < visible.count - 1
                 let highlightOpacity: Double = row.rowId == highlightedRowId ? 0.28 : 0
                 Group {
-                    if isAlbumStyleDetail {
+                    if usesAlbumRowStyle {
                         songRow(row, displayIndex: index + 1, showsBottomDivider: showsBottomDivider)
                             .albumTrackListRowStyle(highlightOpacity: highlightOpacity)
                     } else {
@@ -2290,7 +2294,7 @@ struct ServerPlaylistDetailView: View {
                 }
             },
             hasActiveQueue: !app.player.queue.isEmpty,
-            onGoToAlbum: isAlbumStyleDetail ? nil : { pushAlbumDetailNavigation(app.albumSummary(for: row.track), into: $navigateAlbum) },
+            onGoToAlbum: usesAlbumRowStyle ? nil : { pushAlbumDetailNavigation(app.albumSummary(for: row.track), into: $navigateAlbum) },
             // Same tappability rule the Now Playing menu uses — "Various Artists" is not a
             // navigable artist, so the item is hidden rather than dead.
             onGoToArtist: ArtistNavigation.isTappable(row.track.artist)
@@ -2307,15 +2311,15 @@ struct ServerPlaylistDetailView: View {
             onAddToLibrary: app.isSongInLibrary(row.track.id)
                 ? nil : { Task { await app.addSongToLibrary(row.track) } },
             isInLibrary: app.isSongInLibrary(row.track.id),
-            hidesAddToLibraryChip: !isAlbumStyleDetail,
-            showsArtwork: !isAlbumStyleDetail,
-            showsArtist: !isAlbumStyleDetail,
+            hidesAddToLibraryChip: !usesAlbumRowStyle,
+            showsArtwork: !usesAlbumRowStyle,
+            showsArtist: !usesAlbumRowStyle,
             rowBackgroundFill: .clear,
-            usesAlbumSwipeChrome: isAlbumStyleDetail,
+            usesAlbumSwipeChrome: usesAlbumRowStyle,
             showsBottomDivider: showsBottomDivider,
-            dividerPalette: isAlbumStyleDetail ? backdropPalette : nil,
-            rowLabelPalette: isAlbumStyleDetail ? nil : backdropPalette,
-            trackDisplayIndex: isAlbumStyleDetail ? displayIndex : nil,
+            dividerPalette: usesAlbumRowStyle ? backdropPalette : nil,
+            rowLabelPalette: usesAlbumRowStyle ? nil : backdropPalette,
+            trackDisplayIndex: usesAlbumRowStyle ? displayIndex : nil,
             onPresentDownloadedDeleteSheet: {
                 trackPendingDownloadedDelete = row.track
             }
