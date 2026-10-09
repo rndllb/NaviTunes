@@ -17,6 +17,7 @@ struct SettingsPlaybackView: View {
             && app.downloadFormat == .mp3
             && !app.showSkipIntervalButtons
             && !app.showSleepTimerButton
+            && !app.autoMixEnabled
             && app.skipBackwardInterval == .s15
             && app.skipForwardInterval == .s30
             && app.remoteControlMode == .skipTrack
@@ -27,6 +28,7 @@ struct SettingsPlaybackView: View {
     var body: some View {
         List {
             equalizerSection
+            autoMixSection
             streamingSection
             downloadingSection
             streamCacheSection
@@ -157,6 +159,25 @@ struct SettingsPlaybackView: View {
         }
     }
 
+    private var autoMixSection: some View {
+        Section {
+            Toggle("AutoMix", isOn: $app.autoMixEnabled)
+                .tint(MusicDesign.accent)
+            if app.autoMixEnabled, !app.player.autoMixAnalysisAvailable {
+                Label("Needs the analysis model — transitions stay as they are until it is in this build.", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if app.autoMixEnabled {
+                AutoMixDiagnosticRow(player: app.player)
+            }
+        } header: {
+            Text("AutoMix")
+        } footer: {
+            Text("Blends each song into the next like a DJ: beat-matched when the tempos fit, a smooth crossfade when they don't. Works on downloaded and streamed songs: the next song is fetched and analysed on this device while the current one plays, once, and the result is kept.")
+        }
+    }
+
     private var playerControlsSection: some View {
         Section {
             Toggle("Show skip interval buttons", isOn: $app.showSkipIntervalButtons)
@@ -223,5 +244,19 @@ struct SettingsPlaybackView: View {
         } footer: {
             Text("You can also change speed from Now Playing while listening.")
         }
+    }
+}
+
+
+/// One line of AutoMix status, live. Observes the engine directly so it updates on every decision
+/// without a whole-`AppModel` publish.
+private struct AutoMixDiagnosticRow: View {
+    @ObservedObject var player: PlaybackEngine
+
+    var body: some View {
+        Text(player.autoMixDiagnostic)
+            .font(.caption2.monospaced())
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
     }
 }

@@ -4,11 +4,13 @@ import Foundation
 /// LRU disk cache of fully-streamed media files so replaying a recently-played
 /// track is served from local disk (instant) instead of re-streamed.
 ///
-/// Populated opportunistically by ``CachingResourceLoaderDelegate``: a file is
-/// only committed once the *entire* byte range `[0, contentLength)` has been
-/// observed flowing through to `AVPlayer` during normal playback — so caching
-/// adds **no extra network bytes** (we never fetch anything `AVPlayer` didn't ask
-/// for; we just keep a copy). Partially-played tracks are never committed.
+/// Populated two ways:
+/// 1. Opportunistically by ``CachingResourceLoaderDelegate``: a file is committed once the
+///    *entire* byte range `[0, contentLength)` has been observed flowing through to `AVPlayer`
+///    during normal playback — no extra network bytes, we just keep a copy.
+/// 2. Deliberately by ``AutoMixStreamPrefetcher`` through ``fetchAndCommit``: with AutoMix on,
+///    the next queued stream is fetched whole while the current song plays, so it can be
+///    analysed and then played from the cached copy with no second download.
 ///
 /// Lives in Caches (not Application Support) so the OS may purge it under disk
 /// pressure, and it is wiped on sign-out / "clear metadata cache" like the other
@@ -21,26 +23,55 @@ final class StreamingMediaDiskCache: @unchecked Sendable {
     /// Tiny files are HTML/JSON error bodies or truncated commits — never playable audio.
     private static let minimumUsableBytes: Int64 = 32_768
     private let lock = NSLock()
-    private var inFlightPrefetches: [String: Task<URL, Error>] = [:]
+    private let directory: URL?
+    /// Fires (off the lock, on whatever thread committed) with the key of every file that lands —
+    /// from the resource loader finishing a stream the player pulled, or from a deliberate fetch.
+    /// `PlaybackEngine` uses it to re-plan an AutoMix boundary the moment the playing track
+    /// becomes a local file mid-song.
+    var onCommit: ((String) -> Void)?
 
-    private lazy var directory: URL? = {
+    /// The app's cache under `Caches/VellumMusic/stream-cache`. Tests pass their own directory.
+    init(directory: URL? = nil) {
+        if let directory {
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            self.directory = directory
+            return
+        }
         guard let base = try? FileManager.default.url(
             for: .cachesDirectory,
             in: .userDomainMask,
             appropriateFor: nil,
             create: true,
-        ) else { return nil }
+        ) else {
+            self.directory = nil
+            return
+        }
         let dir = base.appendingPathComponent("VellumMusic/stream-cache", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
-    }()
+        self.directory = dir
+    }
 
-    /// Stable cache key for a stream URL. Includes the full query string so the
-    /// same track at a different bitrate/format is cached separately (those are
-    /// distinct files as far as the player is concerned).
+    /// Stable cache key for a stream URL. Keeps the query (the same track at a different
+    /// bitrate/format is a different file) but drops the **auth** parameters: Subsonic's salted
+    /// token (`s`, `t`, `p`) is regenerated on every `streamURL(for:)` call and Jellyfin's
+    /// `api_key` changes per session, so keying on the full string meant a file committed under one
+    /// URL was never found by the next lookup for the same track — and AutoMix's early fetch
+    /// re-downloaded the same song on every re-plan.
     static func key(for url: URL) -> String {
-        let digest = SHA256.hash(data: Data(url.absoluteString.utf8))
+        let digest = SHA256.hash(data: Data(mediaIdentityString(for: url).utf8))
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Query names that identify the *requester*, not the media.
+    static let volatileQueryNames: Set<String> = ["s", "t", "p", "api_key", "apikey", "x-emby-token", "c", "v", "f"]
+
+    static func mediaIdentityString(for url: URL) -> String {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url.absoluteString }
+        let kept = (components.queryItems ?? [])
+            .filter { !volatileQueryNames.contains($0.name.lowercased()) }
+            .sorted { $0.name < $1.name }
+        components.queryItems = kept.isEmpty ? nil : kept
+        return components.string ?? url.absoluteString
     }
 
     private func fileURL(forKey key: String) -> URL? {
@@ -88,8 +119,9 @@ final class StreamingMediaDiskCache: @unchecked Sendable {
     /// Atomically move a fully-assembled temp file into the cache under `key`,
     /// then enforce the size budget. No-op (temp removed) if anything fails.
     func commit(temporaryFileURL: URL, forKey key: String) {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         guard let dest = fileURL(forKey: key) else {
+            lock.unlock()
             try? FileManager.default.removeItem(at: temporaryFileURL)
             return
         }
@@ -97,19 +129,33 @@ final class StreamingMediaDiskCache: @unchecked Sendable {
         do {
             try FileManager.default.moveItem(at: temporaryFileURL, to: dest)
         } catch {
+            lock.unlock()
             try? FileManager.default.removeItem(at: temporaryFileURL)
             return
         }
         enforceBudgetLocked()
+        let landed = usableCachedFileURLLocked(forKey: key) != nil
+        lock.unlock()
+        if landed { onCommit?(key) }
     }
 
     func discardTemporaryFile(_ url: URL) {
         try? FileManager.default.removeItem(at: url)
     }
 
-    /// Downloads a progressive stream to disk when not already cached. Network and
-    /// commit work stay off the main actor; concurrent callers share one in-flight task per URL.
-    func ensureCached(url: URL, headers: [String: String] = [:], timeout: TimeInterval = 120) async throws -> URL {
+    /// Fetches a whole progressive stream and commits it under its key, returning the cached
+    /// file. Returns the existing file without touching the network when it is already cached.
+    /// Cancellation of the calling task cancels the download. The session is a parameter so a
+    /// test can count exactly what went over the wire.
+    ///
+    /// This is the one deliberate writer of the cache; the resource-loader path commits only what
+    /// playback already streamed. It replaced two fire-and-forget warmers that had no callers.
+    func fetchAndCommit(
+        url: URL,
+        headers: [String: String] = [:],
+        session: URLSession = .shared,
+        timeout: TimeInterval = 120,
+    ) async throws -> URL {
         let key = Self.key(for: url)
         if let existing = peekCachedFileURL(forKey: key) {
             markAccessed(fileURL: existing)
@@ -118,105 +164,31 @@ final class StreamingMediaDiskCache: @unchecked Sendable {
         guard CachingResourceLoaderDelegate.isCacheable(url) else {
             throw URLError(.unsupportedURL)
         }
-
-        let task: Task<URL, Error> = lock.withLock {
-            if let existing = inFlightPrefetches[key] {
-                return existing
-            }
-            let created = Task.detached(priority: .utility) {
-                try await Self.downloadAndCommit(
-                    url: url,
-                    headers: headers,
-                    key: key,
-                    timeout: timeout,
-                    cache: self,
-                )
-            }
-            inFlightPrefetches[key] = created
-            return created
-        }
-
-        do {
-            let result = try await task.value
-            lock.withLock { inFlightPrefetches.removeValue(forKey: key) }
-            return result
-        } catch {
-            lock.withLock { inFlightPrefetches.removeValue(forKey: key) }
-            throw error
-        }
-    }
-
-    /// Fire-and-forget cache warm for EQ — must not block playback/UI.
-    func prefetchInBackground(url: URL, headers: [String: String] = [:]) {
-        let key = Self.key(for: url)
-        guard peekCachedFileURL(forKey: key) == nil,
-              CachingResourceLoaderDelegate.isCacheable(url) else { return }
-
-        let task: Task<URL, Error>? = lock.withLock {
-            if inFlightPrefetches[key] != nil { return nil }
-            let created = Task.detached(priority: .utility) {
-                try await Self.downloadAndCommit(
-                    url: url,
-                    headers: headers,
-                    key: key,
-                    timeout: 120,
-                    cache: self,
-                )
-            }
-            inFlightPrefetches[key] = created
-            return created
-        }
-        guard let task else { return }
-        Task.detached(priority: .utility) {
-            defer { self.lock.withLock { self.inFlightPrefetches.removeValue(forKey: key) } }
-            _ = try? await task.value
-        }
-    }
-
-    func clear() {
-        lock.lock(); defer { lock.unlock() }
-        for task in inFlightPrefetches.values { task.cancel() }
-        inFlightPrefetches.removeAll()
-        guard let dir = directory else { return }
-        let contents = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
-        for url in contents { try? FileManager.default.removeItem(at: url) }
-    }
-
-    private static func downloadAndCommit(
-        url: URL,
-        headers: [String: String],
-        key: String,
-        timeout: TimeInterval,
-        cache: StreamingMediaDiskCache,
-    ) async throws -> URL {
-        if let existing = cache.peekCachedFileURL(forKey: key) {
-            cache.markAccessed(fileURL: existing)
-            return existing
-        }
-
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout
         for (field, value) in headers {
             request.setValue(value, forHTTPHeaderField: field)
         }
-
-        let (tempDownloadURL, response) = try await URLSession.shared.download(for: request)
-        guard let http = response as? HTTPURLResponse else {
+        let (tempDownloadURL, response) = try await session.download(for: request)
+        guard let http = response as? HTTPURLResponse, (200 ... 299).contains(http.statusCode) else {
             try? FileManager.default.removeItem(at: tempDownloadURL)
             throw URLError(.badServerResponse)
         }
-        guard (200 ... 299).contains(http.statusCode) else {
-            try? FileManager.default.removeItem(at: tempDownloadURL)
-            throw URLError(.badServerResponse)
-        }
-
-        cache.commit(temporaryFileURL: tempDownloadURL, forKey: key)
-        guard let cached = cache.peekCachedFileURL(forKey: key) else {
-            cache.evict(forKey: key)
+        try Task.checkCancellation()
+        commit(temporaryFileURL: tempDownloadURL, forKey: key)
+        guard let cached = peekCachedFileURL(forKey: key) else {
+            evict(forKey: key)
             throw URLError(.cannotCreateFile)
         }
-        cache.markAccessed(fileURL: cached)
+        markAccessed(fileURL: cached)
         return cached
+    }
+
+    func clear() {
+        lock.lock(); defer { lock.unlock() }
+        guard let dir = directory else { return }
+        let contents = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        for url in contents { try? FileManager.default.removeItem(at: url) }
     }
 
     private func usableCachedFileURLLocked(forKey key: String) -> URL? {
@@ -258,10 +230,3 @@ final class StreamingMediaDiskCache: @unchecked Sendable {
     }
 }
 
-private extension NSLock {
-    func withLock<T>(_ body: () throws -> T) rethrows -> T {
-        lock()
-        defer { unlock() }
-        return try body()
-    }
-}

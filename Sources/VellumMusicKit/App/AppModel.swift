@@ -509,6 +509,7 @@ public final class AppModel: ObservableObject {
     private static let skipForwardIntervalKey = "vellumSkipForwardInterval"
     private static let showSkipIntervalButtonsKey = "vellumShowSkipIntervalButtons"
     private static let showSleepTimerButtonKey = "vellumShowSleepTimerButton"
+    private static let autoMixEnabledKey = "vellumAutoMixEnabled"
     private static let remoteControlModeKey = "vellumRemoteControlMode"
     private static let playbackRateKey = "vellumPlaybackRate"
     private static let artistPlayModeKey = "vellumArtistPlayMode"
@@ -618,6 +619,17 @@ public final class AppModel: ObservableObject {
     @Published var showSleepTimerButton = false {
         didSet {
             UserDefaults.standard.set(showSleepTimerButton, forKey: Self.showSleepTimerButtonKey)
+            syncPlaybackPreferencesToEngine()
+        }
+    }
+
+    /// Settings → Sound & Playback → AutoMix. **Off by default.** When on, the playing track and the
+    /// next queued one are analysed on-device (lazily, cached forever) and the boundary between
+    /// them is a beat-matched blend or a smooth crossfade; when analysis is missing or late, the
+    /// transition is the app's existing gapless one.
+    @Published var autoMixEnabled = false {
+        didSet {
+            UserDefaults.standard.set(autoMixEnabled, forKey: Self.autoMixEnabledKey)
             syncPlaybackPreferencesToEngine()
         }
     }
@@ -6340,6 +6352,9 @@ public final class AppModel: ObservableObject {
         if UserDefaults.standard.object(forKey: Self.showSleepTimerButtonKey) != nil {
             showSleepTimerButton = UserDefaults.standard.bool(forKey: Self.showSleepTimerButtonKey)
         }
+        if UserDefaults.standard.object(forKey: Self.autoMixEnabledKey) != nil {
+            autoMixEnabled = UserDefaults.standard.bool(forKey: Self.autoMixEnabledKey)
+        }
         if let raw = UserDefaults.standard.string(forKey: Self.remoteControlModeKey),
            let v = RemoteControlMode(rawValue: raw) {
             remoteControlMode = v
@@ -6524,6 +6539,13 @@ public final class AppModel: ObservableObject {
         player.skipForwardInterval = skipForwardInterval.seconds
         player.showSkipIntervalButtons = showSkipIntervalButtons
         player.showSleepTimerButton = showSleepTimerButton
+        if player.autoMixAnalysis == nil {
+            // Built once, on first sync: the coordinator owns the forever-cache and the lazy,
+            // next-track-only scheduling. The analyzer is unavailable until the Core ML model is
+            // in the bundle, in which case every pair gets the default transition.
+            player.autoMixAnalysis = AutoMixAnalysisCoordinator(analyzer: CoreMLBeatAnalyzer())
+        }
+        player.autoMixEnabled = autoMixEnabled
         player.remoteControlMode = remoteControlMode
         player.playbackRate = defaultPlaybackRate.rawValue
         syncEqualizerToEngine()
@@ -6774,6 +6796,7 @@ public final class AppModel: ObservableObject {
         skipForwardInterval = .s30
         showSkipIntervalButtons = false
         showSleepTimerButton = false
+        autoMixEnabled = false
         remoteControlMode = .skipTrack
         defaultPlaybackRate = .normal
         artistPlayMode = .topSongs
@@ -7135,6 +7158,7 @@ public final class AppModel: ObservableObject {
             showSkipIntervalButtons: showSkipIntervalButtons,
             showSleepTimerButton: showSleepTimerButton,
             metadataRefreshThreshold: metadataRefreshThreshold.rawValue,
+            autoMixEnabled: autoMixEnabled,
         )
     }
 
@@ -7168,6 +7192,7 @@ public final class AppModel: ObservableObject {
         }
         showSkipIntervalButtons = snapshot.showSkipIntervalButtons
         showSleepTimerButton = snapshot.showSleepTimerButton
+        if let autoMix = snapshot.autoMixEnabled { autoMixEnabled = autoMix }
         if let v = MetadataRefreshThreshold(rawValue: snapshot.metadataRefreshThreshold) {
             metadataRefreshThreshold = v
         }

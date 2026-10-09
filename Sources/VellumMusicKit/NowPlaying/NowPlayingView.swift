@@ -139,6 +139,7 @@ private enum NowPlayingLibraryRoute: Hashable {
 /// Apple Music–style Now Playing: artwork-derived backdrop + luminance handoff (same as album detail).
 struct NowPlayingView: View {
     @EnvironmentObject private var app: AppModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var player: PlaybackEngine
     @Binding var isPresented: Bool
     @State private var showLyrics = false
@@ -243,6 +244,75 @@ struct NowPlayingView: View {
             cornerRadius: cornerRadius,
             maxDecodePixels: maxDecodePixels,
             showsSubtleBorder: false,
+        )
+        // AutoMix: during the audible overlap the next track's cover fades in over this one, in
+        // step with the audio. With Reduce Motion it switches at the midpoint instead of fading.
+        .overlay {
+            if let visual = player.autoMixVisual, visual.isPartOfBlend(track.id) {
+                // Whichever side the cursor is on, the base shows the outgoing cover and this
+                // overlay the incoming one, so the cover never jumps at the promotion.
+                AlbumArtworkView(
+                    url: artworkURL(for: visual.outgoing),
+                    meshArtworkSeed: nil,
+                    cornerRadius: cornerRadius,
+                    maxDecodePixels: maxDecodePixels,
+                    showsSubtleBorder: false,
+                )
+                .allowsHitTesting(false)
+                AlbumArtworkView(
+                    url: artworkURL(for: visual.incoming),
+                    meshArtworkSeed: nil,
+                    cornerRadius: cornerRadius,
+                    maxDecodePixels: maxDecodePixels,
+                    showsSubtleBorder: false,
+                )
+                .opacity(autoMixVisualOpacity(visual.progress))
+                .animation(reduceMotion ? nil : .linear(duration: 0.35), value: visual.progress)
+                .allowsHitTesting(false)
+            }
+        }
+    }
+
+    /// 0…1 opacity for the incoming track's chrome during a blend: the audio's own equal-power
+    /// curve so picture and sound cross at the same moment; a snap at the midpoint under Reduce Motion.
+    private func autoMixVisualOpacity(_ progress: Double) -> Double {
+        if reduceMotion { return progress >= 0.5 ? 1 : 0 }
+        return sin(min(1, max(0, progress)) * .pi / 2)
+    }
+
+    /// The artist region (a menu button, or plain text) fading out while the incoming track's
+    /// artist name fades in, on the same curve as the title. Outside a blend: `content` as is.
+    @ViewBuilder
+    private func autoMixCrossfadeArtist<Content: View>(for track: Track, font: Font, @ViewBuilder content: () -> Content) -> some View {
+        if let visual = player.autoMixVisual, visual.isPartOfBlend(track.id) {
+            let p = AutoMixCrossfadeText.incomingOpacity(progress: visual.progress, reduceMotion: reduceMotion)
+            ZStack(alignment: .leading) {
+                Text(artistDisplay(visual.outgoing.artist))
+                    .font(font)
+                    .foregroundStyle(fgSecondary)
+                    .lineLimit(1)
+                    .opacity(1 - p)
+                Text(artistDisplay(visual.incoming.artist))
+                    .font(font)
+                    .foregroundStyle(fgSecondary)
+                    .lineLimit(1)
+                    .opacity(p)
+            }
+            .animation(reduceMotion ? nil : .linear(duration: 0.35), value: visual.progress)
+        } else {
+            content()
+        }
+    }
+
+    /// A text field of the playing track crossfading into the incoming track's during a blend —
+    /// the shipping component, also rendered frame by frame in `AutoMixBlendChromeTests`.
+    private func autoMixCrossfadeText(for track: Track, _ field: KeyPath<Track, String>) -> some View {
+        let visual = player.autoMixVisual.flatMap { $0.isPartOfBlend(track.id) ? $0 : nil }
+        return AutoMixCrossfadeText(
+            outgoing: visual?.outgoing[keyPath: field] ?? track[keyPath: field],
+            incoming: visual?.incoming[keyPath: field],
+            progress: player.autoMixVisual?.progress ?? 0,
+            reduceMotion: reduceMotion,
         )
     }
 
@@ -488,13 +558,17 @@ struct NowPlayingView: View {
                     await MainActor.run { backdropPalette = .listSurface(colorScheme: colorScheme) }
                     return
                 }
-                if let url = artworkURL(for: player.activeTrack) {
-                    if let cached = ArtworkDynamicGradient.cachedBackdrop(for: url) {
-                        backdropPalette = cached
-                        return
+                // During a blend: the incoming track's palette, animated over the overlap that is
+                // left so the colours finish crossing when the audio does. Reduce Motion: no animation.
+                let blend = player.autoMixVisual
+                let paletteTrack = blend?.incoming ?? player.activeTrack
+                let fade: Animation? = (blend != nil && !reduceMotion) ? .linear(duration: max(0.3, blend!.remaining)) : nil
+                if let url = artworkURL(for: paletteTrack) {
+                    let p: ArtworkDynamicGradient.BackdropPalette
+                    if let cached = ArtworkDynamicGradient.cachedBackdrop(for: url) { p = cached } else { p = await ArtworkDynamicGradient.analyzeBackdrop(from: url) }
+                    await MainActor.run {
+                        if let fade { withAnimation(fade) { backdropPalette = p } } else { backdropPalette = p }
                     }
-                    let p = await ArtworkDynamicGradient.analyzeBackdrop(from: url)
-                    await MainActor.run { backdropPalette = p }
                     return
                 }
                 if let track = player.activeTrack,
@@ -524,6 +598,12 @@ struct NowPlayingView: View {
     }
 
     private var nowPlayingBackdropTaskKey: String {
+        // Includes the blend's incoming track: without it this task only re-ran when the active
+        // track changed, i.e. after the audio overlap had ended, so the backdrop never faded
+        // during the blend (device report, 2026-10-09).
+        if let visual = player.autoMixVisual {
+            return "blend-\(visual.incoming.id)-\(app.playerBackdropEnabled)-\(colorScheme)"
+        }
         guard let track = player.activeTrack else { return "none-\(colorScheme)" }
         if let url = artworkURL(for: track) {
             return "url-\(url.absoluteString)-\(app.playerBackdropEnabled)-\(colorScheme)"
@@ -704,7 +784,7 @@ struct NowPlayingView: View {
             }
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(track.title)
+                autoMixCrossfadeText(for: track, \.title)
                     .font(.headline.weight(.bold))
                     .foregroundStyle(fgPrimary)
                     .lineLimit(1)
@@ -1033,12 +1113,12 @@ struct NowPlayingView: View {
                 .frame(width: 56, height: 56)
                 .matchedGeometryEffect(id: "nowPlayingArtwork", in: artworkNamespace)
             VStack(alignment: .leading, spacing: 2) {
-                Text(track.title)
+                autoMixCrossfadeText(for: track, \.title)
                     .font(.headline.weight(.bold))
                     .foregroundStyle(fgPrimary)
                     .lineLimit(1)
                 if artistKey.isEmpty {
-                    Text(track.artist)
+                    autoMixCrossfadeText(for: track, \.artist)
                         .font(.subheadline)
                         .foregroundStyle(fgSecondaryStrong)
                         .lineLimit(1)
@@ -1142,12 +1222,12 @@ struct NowPlayingView: View {
                 .matchedGeometryEffect(id: "nowPlayingArtwork", in: artworkNamespace)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(track.title)
+                autoMixCrossfadeText(for: track, \.title)
                     .font(.headline.weight(.bold))
                     .foregroundStyle(fgPrimary)
                     .lineLimit(2)
                     .minimumScaleFactor(0.85)
-                Text(track.artist)
+                autoMixCrossfadeText(for: track, \.artist)
                     .font(.subheadline)
                     .foregroundStyle(fgSecondaryStrong)
                     .lineLimit(1)
@@ -1522,11 +1602,13 @@ struct NowPlayingView: View {
                     HStack(alignment: .center, spacing: 12) {
                         Color.clear.frame(width: smallSize, height: smallSize)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(track.title)
+                            autoMixCrossfadeText(for: track, \.title)
                                 .font(.headline.weight(.bold))
                                 .foregroundStyle(fgPrimary)
                                 .lineLimit(1)
-                            compactArtistMenu(track: track)
+                            autoMixCrossfadeArtist(for: track, font: .subheadline) {
+                                compactArtistMenu(track: track)
+                            }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -1586,12 +1668,13 @@ struct NowPlayingView: View {
         // title AND artist rows (Apple Music) instead of hugging the title.
         return HStack(alignment: .center, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(track.title)
+                autoMixCrossfadeText(for: track, \.title)
                     .font(.title2)
                     .foregroundStyle(fgPrimary)
                     .multilineTextAlignment(.leading)
                     .lineLimit(2)
                     .minimumScaleFactor(0.8)
+                autoMixCrossfadeArtist(for: track, font: .title3) {
                 if isLiveRadio(track) {
                     Text("Live stream")
                         .font(.title3)
@@ -1629,6 +1712,7 @@ struct NowPlayingView: View {
                     )
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
