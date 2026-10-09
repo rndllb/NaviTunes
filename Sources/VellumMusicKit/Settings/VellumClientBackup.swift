@@ -30,6 +30,8 @@ struct VellumPlaybackSettingsSnapshot: Codable, Equatable {
     var showSkipIntervalButtons: Bool
     var showSleepTimerButton: Bool
     var metadataRefreshThreshold: String
+    /// Optional so backups written before AutoMix existed still decode.
+    var autoMixEnabled: Bool?
 }
 
 enum VellumClientBackupRestoreMode {
