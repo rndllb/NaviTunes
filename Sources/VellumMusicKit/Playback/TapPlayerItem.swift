@@ -27,7 +27,23 @@ enum TapPlayerItem {
         gains: [Float],
         bypassed: Bool,
         eligibleForEqualizer: Bool,
+        volumeRamps: [AutoMixVolumeRamp] = [],
     ) async -> (item: AVPlayerItem, tap: EqualizerAudioTap?) {
+        let (item, tap, _) = await make(asset: asset, track: track, gains: gains, bypassed: bypassed, eligibleForEqualizer: eligibleForEqualizer, volumeRamps: volumeRamps, keepPlainMix: false)
+        return (item, tap)
+    }
+
+    /// As `make`, also returning the same tap's mix *without* the ramps, for `AutoMixPlayerBlend`
+    /// to swap in once its transition has settled (T677).
+    static func make(
+        asset: AVAsset,
+        track: Track,
+        gains: [Float],
+        bypassed: Bool,
+        eligibleForEqualizer: Bool,
+        volumeRamps: [AutoMixVolumeRamp],
+        keepPlainMix: Bool,
+    ) async -> (item: AVPlayerItem, tap: EqualizerAudioTap?, plainMix: AVAudioMix?) {
         let item = AVPlayerItem(asset: asset)
 
         // Kill switch, for isolating the tap from everything else on one build:
@@ -41,14 +57,14 @@ enum TapPlayerItem {
         if UserDefaults.standard.object(forKey: "vellumTapEnabled") != nil,
            !UserDefaults.standard.bool(forKey: "vellumTapEnabled") {
             PlaybackTapLog.tap("no-tap track=\(track.id) title=\"\(track.title)\" reason=kill-switch")
-            return (item, nil)
+            return (item, nil, nil)
         }
 
         // Internet radio is HLS-shaped and taps do not work with HLS; those items get no tap at
         // all rather than a silently dead one.
         guard eligibleForEqualizer else {
             PlaybackTapLog.tap("no-tap track=\(track.id) title=\"\(track.title)\" reason=not-eligible")
-            return (item, nil)
+            return (item, nil, nil)
         }
 
         let audioTracks: [AVAssetTrack]
@@ -59,11 +75,11 @@ enum TapPlayerItem {
                 "no-tap track=\(track.id) title=\"\(track.title)\" reason=loadTracks-failed "
                     + "error=\(error.localizedDescription)"
             )
-            return (item, nil)
+            return (item, nil, nil)
         }
         guard let audioTrack = audioTracks.first else {
             PlaybackTapLog.tap("no-tap track=\(track.id) title=\"\(track.title)\" reason=no-audio-track")
-            return (item, nil)
+            return (item, nil, nil)
         }
 
         let tap = EqualizerAudioTap(
@@ -72,14 +88,35 @@ enum TapPlayerItem {
             gains: gains,
             bypassed: bypassed,
         )
-        guard let mix = tap.makeAudioMix(for: audioTrack) else {
+        guard let parameters = tap.makeAudioMixInputParameters(for: audioTrack) else {
             // Mix creation failed, so no tap took ownership and freeing here is safe. Once a tap
             // exists this call refuses — see `disposeBeforeAttachment`.
             tap.disposeBeforeAttachment()
-            return (item, nil)
+            return (item, nil, nil)
         }
+        // The blend's gain curve, sample-accurate in the item's own timeline (T677).
+        var plainMix: AVAudioMix?
+        if keepPlainMix, let copy = parameters.mutableCopy() as? AVMutableAudioMixInputParameters {
+            let plain = AVMutableAudioMix()
+            plain.inputParameters = [copy]
+            plainMix = plain
+        }
+        if !volumeRamps.isEmpty {
+            parameters.setVolume(volumeRamps[0].from, at: .zero)
+            for ramp in volumeRamps {
+                parameters.setVolumeRamp(
+                    fromStartVolume: ramp.from, toEndVolume: ramp.to,
+                    timeRange: CMTimeRange(
+                        start: CMTime(seconds: ramp.start, preferredTimescale: 44_100),
+                        end: CMTime(seconds: ramp.end, preferredTimescale: 44_100),
+                    ),
+                )
+            }
+        }
+        let mix = AVMutableAudioMix()
+        mix.inputParameters = [parameters]
         item.audioMix = mix
         EqualizerTapRegistry.shared.adopt(tap)
-        return (item, tap)
+        return (item, tap, plainMix)
     }
 }

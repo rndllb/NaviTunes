@@ -74,6 +74,38 @@ final class StreamingMediaDiskCache: @unchecked Sendable {
         return components.string ?? url.absoluteString
     }
 
+    /// The container of a cached file, read from its first bytes. Cache files carry no extension,
+    /// so `AVURLAsset` cannot identify them on its own (T665); the result is passed to the asset
+    /// as its out-of-band MIME type. `nil` for anything unrecognised, and the asset is then built
+    /// as before.
+    nonisolated static func sniffedMIMEType(ofFileAt url: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let head = try? handle.read(upToCount: 12) else { return nil }
+        return sniffedMIMEType(head: head)
+    }
+
+    nonisolated static func sniffedMIMEType(head: Data) -> String? {
+        let b = [UInt8](head)
+        guard b.count >= 4 else { return nil }
+        func ascii(_ s: String, at offset: Int) -> Bool {
+            let u = Array(s.utf8)
+            guard b.count >= offset + u.count else { return false }
+            return Array(b[offset ..< offset + u.count]) == u
+        }
+        if ascii("fLaC", at: 0) { return "audio/flac" }
+        if ascii("OggS", at: 0) { return "audio/ogg" }
+        if ascii("ID3", at: 0) { return "audio/mpeg" }
+        if ascii("RIFF", at: 0), ascii("WAVE", at: 8) { return "audio/wav" }
+        if ascii("FORM", at: 0) { return "audio/aiff" }
+        if ascii("ftyp", at: 4) { return "audio/mp4" }
+        // ADTS AAC: sync 0xFFF, layer 00 → second byte 0xF1 / 0xF9. Checked before the MPEG
+        // audio sync below, which it also matches.
+        if b[0] == 0xFF, b[1] & 0xF6 == 0xF0 { return "audio/aac" }
+        if b[0] == 0xFF, b[1] & 0xE0 == 0xE0 { return "audio/mpeg" }
+        return nil
+    }
+
     private func fileURL(forKey key: String) -> URL? {
         directory?.appendingPathComponent(key, isDirectory: false)
     }
@@ -174,7 +206,14 @@ final class StreamingMediaDiskCache: @unchecked Sendable {
             try? FileManager.default.removeItem(at: tempDownloadURL)
             throw URLError(.badServerResponse)
         }
-        try Task.checkCancellation()
+        do {
+            try Task.checkCancellation()
+        } catch {
+            // Cancelled between the download landing and the commit: the temp file is ours to
+            // remove, nobody else will (T643 c3).
+            try? FileManager.default.removeItem(at: tempDownloadURL)
+            throw error
+        }
         commit(temporaryFileURL: tempDownloadURL, forKey: key)
         guard let cached = peekCachedFileURL(forKey: key) else {
             evict(forKey: key)

@@ -860,10 +860,30 @@ final class ArtistViewModel: ObservableObject {
 
     // MARK: - Section composition
 
+    // Top Songs used to *replace* the no-history fallback list with the scrobble-ranked
+    // list the moment any scrobble existed, so a single play collapsed the whole section
+    // down to just that one track. It should be a union: played tracks ranked by play
+    // count, then the remaining originally-listed (fallback) tracks appended afterward in
+    // their existing per-album order, skipping any title already counted on the played
+    // side. Titles (not synthetic ids) are the de-dupe key -- the two sides mint different
+    // ids (`lib-`/`scrobble-` vs `fallback-`) for the same track, so an id-based de-dupe
+    // would silently double rows. Each source keeps its own existing 10-item cap; no
+    // additional cap is applied to the merged result.
     private func rebuildTopSongs(using app: AppModel) {
-        topSongs = scrobbleTopSongs(using: app)
-        if topSongs.isEmpty {
-            topSongs = fallbackTopSongs(from: serverAlbums, tracks: serverTracks)
+        let scrobbled = scrobbleTopSongs(using: app)
+        let fallback = fallbackTopSongs(from: serverAlbums, tracks: serverTracks)
+        if scrobbled.isEmpty {
+            topSongs = fallback
+        } else {
+            var seenKeys = Set(scrobbled.map { LibraryTrackMatcher.normalize($0.title) })
+            var merged = scrobbled
+            for row in fallback {
+                let key = LibraryTrackMatcher.normalize(row.title)
+                guard !seenKeys.contains(key) else { continue }
+                seenKeys.insert(key)
+                merged.append(row)
+            }
+            topSongs = merged
         }
         isLoadingTopSongs = false
     }

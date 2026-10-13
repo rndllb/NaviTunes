@@ -137,7 +137,12 @@ struct PlaylistKillListView: View {
                 Button(role: .destructive) {
                     showRemoveAllConfirm = true
                 } label: {
+                    // Pinned explicitly: with no foreground color set, this read the ambient
+                    // nav-bar tint (blue, the app accent) at the top and the bar's scrolled
+                    // glass-material label color (white) once content scrolled under it --
+                    // `role: .destructive` alone does not keep it red across that transition.
                     Text("Remove All")
+                        .foregroundStyle(Color.red)
                 }
                 .disabled(visibleRows.isEmpty || isRemoving)
             }
@@ -160,7 +165,10 @@ struct PlaylistKillListView: View {
                     }
                     .disabled(app.killModeListenHistoryCount(playlistId: playlistId) == 0)
                 } label: {
+                    // Same fix as "Remove All" above -- pinned so it does not fall back to the
+                    // bar's scrolled-state label color.
                     Image(systemName: "ellipsis.circle")
+                        .foregroundStyle(Color.red)
                 }
                 .disabled(isRemoving)
             }

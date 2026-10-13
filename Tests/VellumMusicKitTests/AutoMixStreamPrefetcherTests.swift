@@ -214,33 +214,18 @@ struct AutoMixStreamPrefetcherTests {
 }
 
 
-@Suite("AutoMix engine position mapping and loader gate")
+@Suite("AutoMix loader gate")
 struct AutoMixEngineMappingTests {
-    @Test("engine frames map to track seconds through the file rate, clamped, never a raw count")
-    @MainActor
-    func filePositionMapping() {
-        // 2.2 s mix-in at 44.1 kHz, 8 s rendered: 10.2 s — the number the screenshot should have shown.
-        let p = AutoMixAudioEnginePlayer.filePosition(startFrame: 97_020, playerSampleTime: 352_800, fileSampleRate: 44_100, fileLength: 9_349_200)
-        #expect(p != nil && abs(p! - 10.2) < 1e-9)
-        // The regression: 230 240 reached the UI as seconds. The mapping can never return a
-        // value above the file's length in seconds.
-        let past = AutoMixAudioEnginePlayer.filePosition(startFrame: 0, playerSampleTime: 230_240 * 44_100, fileSampleRate: 44_100, fileLength: 9_349_200)
-        #expect(past == 212)
-        // 48 kHz file, 1 s rendered from frame 0.
-        #expect(AutoMixAudioEnginePlayer.filePosition(startFrame: 0, playerSampleTime: 48_000, fileSampleRate: 48_000, fileLength: 480_000) == 1)
-        // A rate that cannot be an audio rate, a negative player time, or an empty file: no position.
-        #expect(AutoMixAudioEnginePlayer.filePosition(startFrame: 0, playerSampleTime: 100, fileSampleRate: 1, fileLength: 1000) == nil)
-        #expect(AutoMixAudioEnginePlayer.filePosition(startFrame: 0, playerSampleTime: -5, fileSampleRate: 44_100, fileLength: 1000) == nil)
-        #expect(AutoMixAudioEnginePlayer.filePosition(startFrame: 0, playerSampleTime: 5, fileSampleRate: 44_100, fileLength: 0) == nil)
-    }
-
-    @Test("the caching loader is attached only with AutoMix on, for progressive http(s) streams")
+    @Test("the caching loader is never attached to a remote stream, raw or converted (T662)")
     @MainActor
     func loaderGate() {
-        let stream = URL(string: "https://nd.example/rest/stream.view?id=42&format=mp3&s=a&t=b")!
+        let stream = URL(string: "https://nd.example/rest/stream.view?id=42&s=a&t=b")!
+        let transcoded = URL(string: "https://nd.example/rest/stream.view?id=42&format=mp3&s=a&t=b")!
         let hls = URL(string: "https://jf.example/Audio/42/master.m3u8")!
         let file = URL(fileURLWithPath: "/tmp/x.mp3")
-        #expect(PlaybackEngine.shouldAttachCachingLoader(autoMixEnabled: true, url: stream, isInternetRadio: false))
+        // T643 offered the loader to the raw stream; the device rejected it with -1002 (T662).
+        #expect(!PlaybackEngine.shouldAttachCachingLoader(autoMixEnabled: true, url: stream, isInternetRadio: false))
+        #expect(!PlaybackEngine.shouldAttachCachingLoader(autoMixEnabled: true, url: transcoded, isInternetRadio: false))
         #expect(!PlaybackEngine.shouldAttachCachingLoader(autoMixEnabled: false, url: stream, isInternetRadio: false))
         #expect(!PlaybackEngine.shouldAttachCachingLoader(autoMixEnabled: true, url: hls, isInternetRadio: false))
         #expect(!PlaybackEngine.shouldAttachCachingLoader(autoMixEnabled: true, url: stream, isInternetRadio: true))
@@ -254,19 +239,19 @@ struct AutoMixBlendChromeTests {
     @Test("the host-time overlap clock is signed and exact to the millisecond")
     func hostClock() {
         let start = AVAudioTime.hostTime(forSeconds: 100)
-        let later = AutoMixAudioEnginePlayer.hostTime(adding: 7.5, to: start)
-        #expect(abs(AutoMixAudioEnginePlayer.seconds(from: start, to: later) - 7.5) < 0.001)
-        #expect(abs(AutoMixAudioEnginePlayer.seconds(from: later, to: start) + 7.5) < 0.001)
-        #expect(AutoMixAudioEnginePlayer.hostTime(adding: -3, to: start) == start)
+        let later = AutoMixHostClock.hostTime(adding: 7.5, to: start)
+        #expect(abs(AutoMixHostClock.seconds(from: start, to: later) - 7.5) < 0.001)
+        #expect(abs(AutoMixHostClock.seconds(from: later, to: start) + 7.5) < 0.001)
+        #expect(AutoMixHostClock.hostTime(adding: -3, to: start) == start)
     }
 
-    @Test("crossfade text opacities follow the equal-power curve, and snap at the midpoint under Reduce Motion")
+    @Test("crossfade text opacities follow the equal-power curve, and snap at overlap start under Reduce Motion")
     func textOpacity() {
         #expect(AutoMixCrossfadeText.incomingOpacity(progress: 0, reduceMotion: false) == 0)
         #expect(abs(AutoMixCrossfadeText.incomingOpacity(progress: 0.5, reduceMotion: false) - 0.7071) < 0.001)
         #expect(AutoMixCrossfadeText.incomingOpacity(progress: 1, reduceMotion: false) == 1)
-        #expect(AutoMixCrossfadeText.incomingOpacity(progress: 0.49, reduceMotion: true) == 0)
-        #expect(AutoMixCrossfadeText.incomingOpacity(progress: 0.5, reduceMotion: true) == 1)
+        #expect(AutoMixCrossfadeText.incomingOpacity(progress: 0, reduceMotion: true) == 0)
+        #expect(AutoMixCrossfadeText.incomingOpacity(progress: 0.01, reduceMotion: true) == 1)
     }
 
     /// Renders the shipping crossfade component at five points of a fake overlap and writes PNGs,

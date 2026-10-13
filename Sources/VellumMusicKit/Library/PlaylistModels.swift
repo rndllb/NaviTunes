@@ -14,6 +14,9 @@ struct PlaylistSummary: Identifiable, Hashable, Codable {
     let libraryAddedDate: Date?
     /// Server `changed` (Navidrome) / `DateModified` (Jellyfin), when available.
     let serverUpdatedDate: Date?
+    /// The playlist's description: Subsonic `comment` / Jellyfin `Overview`. Optional so
+    /// snapshots written before it existed still decode (T643 c4).
+    let comment: String?
 
     init(
         id: String,
@@ -23,7 +26,8 @@ struct PlaylistSummary: Identifiable, Hashable, Codable {
         coverArtId: String? = nil,
         isPublic: Bool? = nil,
         libraryAddedDate: Date? = nil,
-        serverUpdatedDate: Date? = nil
+        serverUpdatedDate: Date? = nil,
+        comment: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -33,6 +37,7 @@ struct PlaylistSummary: Identifiable, Hashable, Codable {
         self.isPublic = isPublic
         self.libraryAddedDate = libraryAddedDate
         self.serverUpdatedDate = serverUpdatedDate
+        self.comment = comment
     }
 }
 

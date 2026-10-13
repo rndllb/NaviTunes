@@ -5,7 +5,8 @@ import Foundation
 enum LocalMediaDuration {
     static func seconds(at url: URL) async -> TimeInterval {
         guard url.isFileURL else { return 0 }
-        return await seconds(asset: AVURLAsset(url: url))
+        // Same hint as playback: an extensionless stream-cache file needs its container named (T665).
+        return await seconds(asset: AVURLAsset(url: url, options: PlaybackEngine.localAssetOptions(for: url)))
     }
 
     static func seconds(asset: AVAsset) async -> TimeInterval {
