@@ -239,10 +239,12 @@ final class AutoMixPlayerBlend {
 
     func pause() {
         guard isArmed, !isPaused else { return }
+        // The flag first: pausing the outgoing fires the engine's `timeControlStatus` observer,
+        // which routes an external pause back here (T696) — it must see a blend already paused.
         pausedAtHostTime = mach_absolute_time()
+        isPaused = true
         outgoing?.pause()
         incoming.pause()
-        isPaused = true
     }
 
     /// Both players restart together at one host time a moment from now, from where they stand;
@@ -265,7 +267,14 @@ final class AutoMixPlayerBlend {
             overlapStartHostTime = AutoMixHostClock.resumedAnchor(overlapStartHostTime, pausedAt: pausedAtHostTime, resumedAt: resumeAt)
             incoming.setRate(appliedRate, time: incoming.currentTime(), atHostTime: CMClockMakeHostTimeFromSystemUnits(resumeAt))
         }
-        if let outgoing { outgoing.setRate(1, time: outgoing.currentTime(), atHostTime: CMClockMakeHostTimeFromSystemUnits(resumeAt)) }
+        if let outgoing {
+            // `setRate(_:time:atHostTime:)` raises `NSInvalidArgumentException` on a player whose
+            // `automaticallyWaitsToMinimizeStalling` is true (AVPlayer.h), and a streamed song's
+            // queue player keeps that default. The engine clears it when it arms the blend; this
+            // is the last line of defence for the class on its own (T696).
+            if outgoing.automaticallyWaitsToMinimizeStalling { outgoing.automaticallyWaitsToMinimizeStalling = false }
+            outgoing.setRate(1, time: outgoing.currentTime(), atHostTime: CMClockMakeHostTimeFromSystemUnits(resumeAt))
+        }
         pausedAtHostTime = 0
         lastOutgoingPosition = -1
         isPaused = false
@@ -285,8 +294,12 @@ final class AutoMixPlayerBlend {
         if !incomingAdopted {
             incoming.pause()
             incoming.removeAllItems()
-        } else if incoming.rate != 0, incoming.rate != 1 {
-            incoming.rate = 1
+        } else {
+            if incoming.rate != 0, incoming.rate != 1 { incoming.rate = 1 }
+            // The song the user keeps must not keep the blend's gain curve: its mix is 0 from
+            // time zero to the mix-in, so a later seek back (or "previous") played silence for
+            // the length of the intro — 8–22 s on real songs (T696). Same swap `settle` does.
+            if let incomingPlainMix { incomingItem.audioMix = incomingPlainMix }
         }
         isArmed = false
         isSettled = true

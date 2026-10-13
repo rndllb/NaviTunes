@@ -3439,3 +3439,92 @@ during the transition phase". Trace in the manager's `notes/T681/FINDING.md`.
   after a blend. Measured: **extent 48 pt, darkest 0.690, summed 6.51 in all three** (equal to the pixel; the test
   holds extent equal, darkest within 0.005, sum within 1 %), and the old `.shadow` on the layered view pinned as
   > 4 pt wider, > 0.05 deeper and > 30 % darker in sum mid-blend. Build and counts: see T677 above (same run).
+
+## 2026-10-12 — AutoMix stability audit: four fixes for how a blend meets the outside world (T696)
+
+The owner: "lot of instability with vellum now with automix". Audit of d007856 — the state machine (idle, armed /
+lead-in, overlap, adopt, settle) against every external event (play, pause, seek, skip, queue edit, item end, item
+failure, stall, interruption, route change, background, the toggle) — is in the manager's `notes/T696/FINDINGS.md`.
+Four findings reproduced with tests that fail on d007856 (`AutoMixStabilityTests`), all four fixed; four more
+recorded unconfirmed with the reason.
+
+- **A system pause did not pause the blend (F1).** A phone call, Siri, an alarm, headphones unplugged or a
+  Bluetooth route gone stops both `AVPlayer`s, but the blend ran on the host clock with `isPaused` false: its
+  progress timer forced `isPlaying` back to true within 350 ms (pause glyph over silence, lock screen at rate 1),
+  the automation ran the overlap to its end during the silence and *adopted* an incoming player whose host-time
+  start the system pause had cancelled — a silent song reported as playing, or, when the call ended, only the
+  observed player restarted. After a route change a play tap went to `autoMixHandlesTogglePlayPause` with
+  `blendPaused == false` and **paused** the silent blend: two taps for sound. Fix: `handleTimeControlStatusChange`
+  routes a `.paused` on the transport during an un-paused blend to `autoMixHandlesPause()` (unless the player is
+  parked at its item's end — that is the item ending, `handleEnded`'s business); the interruption handler pauses
+  the blend on `.began` and resumes it through `autoMixHandlesResume()` on `.ended` + `.shouldResume`, so both
+  players restart at one host time; `AutoMixPlayerBlend.pause()` sets `isPaused` before pausing the players so
+  the KVO re-entry is a no-op.
+- **Resume raised an exception on a streamed outgoing (F2, a crash).** `AutoMixPlayerBlend.resume` restarts the
+  outgoing with `setRate(_:time:atHostTime:)`; AVPlayer.h: "invoking setRate:time:atHostTime: when
+  automaticallyWaitsToMinimizeStalling is YES will raise an NSInvalidArgument exception". `loadAVPlayerItem`
+  clears that flag for file URLs only, and a blend *from* a streamed song (its file committed to the stream cache
+  mid-song, the playing item still the network stream) is the normal case on the owner's Navidrome. Pause then
+  play inside the lead-in or the overlap took the process down; the existing tests never saw it because the test
+  seam sets the flag to false. Fix: cleared on the outgoing when the blend is armed (logged), and defensively in
+  `resume`. Trade-off: for the blend's ~15–25 s a buffer underrun on the stream pauses instead of waiting (then
+  F1's route pauses the blend, one tap resumes); the file is fully on disk by then, which is what made the blend
+  plannable.
+- **The blend's gain curve outlived the blend (F3).** The incoming item's mix is 0 from time zero to the mix-in,
+  then the ramps; `settle()` swaps in the plain mix but `abort(incomingAdopted: true)` — a scrub or the toggle
+  during the overlap or settle — did not, so a later seek back before the mix-in ("previous", or a drag) played
+  silence until the mix-in: 8–22 s on the evaluation songs. Fix: `abort` swaps in the plain mix as `settle` does
+  (same tap, no re-prepare).
+- **A queue edit in the lead-in left the armed blend aimed at a row that was no longer next (F4).** Play Next,
+  a reorder or shuffle re-plans but never checked the armed blend; the old song played through the whole overlap,
+  promotion failed on every tick, adoption abandoned it (incoming cut, outgoing's last seconds back to full
+  volume) and the run ended with `isPlaying` false on the simulator. Fix: `scheduleAutoMixPlanning` — the path
+  every edit takes — abandons an un-promoted blend whose target row no longer matches, before any planning
+  guard.
+- **Not fixed, recorded:** the staged incoming item has no end/failure observer until adoption (a decode failure
+  mid-overlap would be adopted dead); 15 s stall recovery during a blend reloads through
+  `detachPlayerKeepingQueueState`, not `teardownPlayer`, so the blend survives it; a playback-rate change after
+  arming de-syncs the two players; `reconcilePlaybackSessionAfterUIMilestone` snaps `volume` to 1 if it reads
+  < 0.001 (the last ~5 ms of a fade). None reproduced; reasons in the finding.
+- **Tests** (`AutoMixStabilityTests`, real audio on the simulator through the real engine paths, on the T677
+  fixture): an interruption in the lead-in (players stopped by hand, the notification posted) pauses the blend
+  and the overlap clock, and `.ended` + `.shouldResume` restarts both players and lands the overlap within 15 ms;
+  a system pause with no notification mid-overlap pauses the blend and one play tap resumes both players; the
+  outgoing player's waits-to-minimize-stalling is off before arming and a pause/resume on a streamed-default
+  player lands the overlap; a scrub to before the mix-in during the overlap leaves a plain mix (no ramp, no
+  volume entry, tap still attached); a reorder during the lead-in abandons the blend at once, leaves the outgoing
+  at volume 1, and the new next song follows at the natural end. Red on d007856: 5 of 5 tests, 25 issues
+  (`t696-red.log`), each on the predicted line. Green after the fixes (`t696-green.log`).
+- **Build.** Unsigned device build (`CODE_SIGNING_ALLOWED=NO`, scratch derived data and module cache) and the
+  serial simulator run: `** BUILD SUCCEEDED **` (0 errors; build.log sha256 dde3f9aa…), `** TEST SUCCEEDED **`, **283 tests in 34 suites, 0 failures** (`t696-full-1.txt`; test.log sha256 3acdd45f…) — 278 at d007856 plus the five new. Note for whoever reads these logs next: the XCTest "Executed 0 tests" line reads 0 in every run on that Mac, the T677 baseline included; the suites are Swift Testing and the "Test run with N tests in M suites" line is the count..
+
+## 2026-10-13 — Open-issue sweep: History clear keeps the playing song (#45), names out of test fixtures (#40) (T720)
+
+Triage of all 32 open GitHub issues and the parked ledger rows is in `docs/OPEN_ISSUES_STATUS.md` (every one with a
+verdict and the evidence). Two were fixable without a product decision or a device; the rest are already in the tree,
+need the owner's ruling, or need his phone. Nothing committed, pushed or installed; the six uncommitted T696 AutoMix
+files were left exactly as they were.
+
+- **Clearing History swallowed the first skip (#45).** History is recorded when a track *starts*
+  (`AppModel.recordRecentTrackPlay`, wired to `PlaybackEngine.onTrackStarted`), so the playing song is already in
+  `recentlyPlayedTracks` and only hidden from the History page by the queue view's `filter { $0.id != track.id }`.
+  "Clear" wiped the whole array, the playing song included; nothing re-records a song when it ends, so after a clear
+  the first skip showed nothing and only the second skipped song ever reached History — the owner's "the clear
+  queue counts the current song". `clearRecentlyPlayedTracks()` now keeps the active track's entry (and persists
+  it) and drops everything else, so the page still reads empty right after the clear and the song that was playing
+  appears once it is skipped. `App/AppModel.swift`, one function. No unit test: nothing in the suite instantiates
+  `AppModel`, and the change is a filter on one array; device check is in the status file.
+- **Personal names in test fixtures (#40).** `148c39e` scrubbed production code on 09-09; three test files added
+  since carried the owner's first name as the Subsonic `u=` user in fixture URLs (`PlaybackCandidateLadderTests`,
+  `AutoMixStreamPrefetcherTests`), as `userKey:` in the Kill Mode scoping tests (`KillModeIndependentFixesTests`;
+  the case-insensitivity case keeps its mixed-case pair), and as a hard-coded `/Users/<name>/agent-scratch/...`
+  output directory in the crossfade frame-rendering test. Fixture users are now `user` / `alice`; the frame
+  directory is read from `AUTOMIX_UI_FRAMES_DIR` (pass `TEST_RUNNER_AUTOMIX_UI_FRAMES_DIR=<path>` to xcodebuild to
+  keep the PNGs) with the sandbox tmp as the default, which is what the test's own comment already described.
+  `README.md`'s author handle and this log's narrative still name people; that is the owner's call, recorded in the
+  status file.
+- **Build.** Unsigned device build of `VellumMusicHost` (`generic/platform=iOS`, `CODE_SIGNING_ALLOWED=NO`,
+  derived data and module cache under `~/agent-scratch/T720/dd`): `** BUILD SUCCEEDED **`, exit 0, 0 `error:` lines
+  (`~/agent-scratch/T720/build-1.log`). The Mac's data volume was at 4 GiB free before and 3 GiB after; the
+  simulator suites for the three edited test files were run against the existing T709 derived data for that reason
+  (result appended below).

@@ -27,7 +27,10 @@ struct AutoMixSingleTransportTests {
 
     /// Two real files on a real tapped queue player, playing `a`, with a crossfade into `b`
     /// pending at `mixOut`. With `thirdSeconds` a third song `c` of that length follows `b`.
-    static func start(mixOut: Double, overlap: Double, gainDB: Float = 0, thirdSeconds: Int? = nil) async throws -> Fixture {
+    /// `waitsToMinimizeStalling` leaves the outgoing player's `automaticallyWaitsToMinimizeStalling`
+    /// at the default a streamed song's queue player keeps (T696: `loadAVPlayerItem` clears it for
+    /// file URLs only).
+    static func start(mixOut: Double, overlap: Double, gainDB: Float = 0, thirdSeconds: Int? = nil, waitsToMinimizeStalling: Bool = false) async throws -> Fixture {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let a = try audioFile(in: dir, name: "a", seconds: 8)
@@ -52,6 +55,7 @@ struct AutoMixSingleTransportTests {
         for _ in 0 ..< 300 where item.status == .unknown { try await Task.sleep(for: .milliseconds(10)) }
         #expect(item.status == .readyToPlay)
         player.installTransportForTesting(outgoing, item: item, track: tracks[0], tap: tap, play: true)
+        if waitsToMinimizeStalling { outgoing.automaticallyWaitsToMinimizeStalling = true }
         for _ in 0 ..< 100 where outgoing.rate == 0 { try await Task.sleep(for: .milliseconds(10)) }
         let plan = CrossfadePlan(outgoingMixOut: mixOut, incomingMixIn: 0.5, duration: overlap, incomingGainDB: gainDB, filterSweep: true, reason: .tempoMismatch)
         player.autoMix.pending = (.crossfade(plan), 1, tracks[1], b)

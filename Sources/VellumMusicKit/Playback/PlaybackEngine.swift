@@ -585,12 +585,19 @@ final class PlaybackEngine: NSObject, ObservableObject {
             // is silently halted.
             // One transport now, so `isPlaying` is the whole answer — the incoming
             // `|| equalizedPlayer?.isPlaying` guard died with the EQ engine.
-            wasPlayingBeforeInterruption = isPlaying
+            // The system stops the players before this notification lands, and the
+            // `timeControlStatus` observer may already have paused a blend and cleared
+            // `isPlaying` — that pause came from outside too, and `.ended` must still resume it.
+            wasPlayingBeforeInterruption = isPlaying || (autoMix.blend != nil && autoMix.pausedFromOutside)
             // The session is no longer ours — a call or Siri has it. The `.ended` branch
             // must be able to re-activate it rather than short-circuit on a stale active
             // flag: anything that skipped reactivating because it looked active would
             // come back to silence.
             isAudioSessionActive = false
+            // A blend in flight stops as a whole — both players and its clock — so the
+            // overlap does not run on through the call (T696). Idempotent with the
+            // `timeControlStatus` route, whichever lands first.
+            if autoMix.blend != nil { _ = autoMixHandlesPause(fromOutside: true) }
             clearPlayIntent()
             isPlaying = false
             refreshNowPlaying()
@@ -600,6 +607,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
             let shouldResume = wasPlayingBeforeInterruption && opts.contains(.shouldResume)
             wasPlayingBeforeInterruption = false
             guard shouldResume else { return }
+            // Both players of a paused blend restart together at one host time; `playImmediately`
+            // on the queue player alone would leave the other where it stopped (T696).
+            if autoMix.blend != nil, autoMix.blendPaused, autoMixHandlesResume() { return }
             markPlayIntent()
             activateAudioSession()
             if let player {
@@ -2218,6 +2228,18 @@ final class PlaybackEngine: NSObject, ObservableObject {
             // Startup/handoff can report `.paused` briefly before `playImmediately` sticks.
             if autoplayVerifyTask != nil { return }
             if shouldIgnoreTransientPausedObservation { return }
+            // A blend is armed and the transport stopped from outside — an interruption, a route
+            // gone, a stall with waits-to-minimize-stalling off. The blend runs on the host clock
+            // and drives a second player nobody else observes: left alone it reported playing
+            // through the silence, finished the overlap during the pause and adopted a player
+            // that had never started (T696). Pause it as a whole; a play tap resumes both players.
+            // A player parked at the end of its item is the item ending, which `handleEnded`
+            // handles, not an external pause.
+            if let blend = autoMix.blend, !blend.isPaused, !Self.isParkedAtItemEnd(player) {
+                logAutoMix("transport paused from outside during the blend; pausing the blend")
+                _ = autoMixHandlesPause(fromOutside: true)
+                return
+            }
             isPlaying = false
             refreshNowPlaying()
         } else if status == .playing, !isPlaying {
@@ -2234,6 +2256,14 @@ final class PlaybackEngine: NSObject, ObservableObject {
             cancelStallRecovery()
             setBuffering(false)
         }
+    }
+
+    /// Whether `player` stopped because its item ran out (no item, or the playhead on its end).
+    nonisolated static func isParkedAtItemEnd(_ player: AVPlayer) -> Bool {
+        guard let item = player.currentItem else { return true }
+        let t = item.currentTime().seconds
+        let d = item.duration.seconds
+        return t.isFinite && d.isFinite && d > 0 && t >= d - 0.25
     }
 
     private func applyPlaybackRateToPlayer() {
@@ -3974,6 +4004,9 @@ struct AutoMixState {
     var pendingPromotion: (index: Int, track: Track, url: URL)?
     /// Whether the user paused during the blend. Mirrors `blend.isPaused` for the UI.
     var blendPaused = false
+    /// The blend was paused by the system (interruption, route change, a transport stall), not by
+    /// the user: the interruption's `.ended` may resume it (T696).
+    var pausedFromOutside = false
 }
 
 extension PlaybackEngine {
@@ -3993,6 +4026,16 @@ extension PlaybackEngine {
     /// decide the upcoming transition. Cheap when nothing changed; a no-op while the toggle is off.
     func scheduleAutoMixPlanning() {
         defer { refreshAutoMixDiagnostic() }
+        // Every queue edit re-plans through here. A blend armed but not yet promoted is aimed at
+        // one row; if that row is no longer next (Play Next, a reorder, shuffle) it is abandoned
+        // now — the incoming player released, the outgoing left at full level — rather than
+        // playing the old song through the overlap, failing to promote and dropping it at
+        // adoption (T696). The gapless staging the same edit refreshed takes the boundary.
+        if autoMix.blend != nil, let promotion = autoMix.pendingPromotion,
+           !Self.pendingTargetMatches(queue: queue, index: promotion.index, trackId: promotion.track.id) {
+            logAutoMix("queue changed under the armed blend into \(promotion.track.title); abandoning it")
+            stopAutoMixBlend()
+        }
         guard autoMixEnabled, let analysis = autoMixAnalysis, analysis.isAvailable else {
             autoMix.pending = nil
             autoMixPrefetcher?.cancelAll()
@@ -4197,6 +4240,15 @@ extension PlaybackEngine {
             guard stillValid() else { abandon("superseded while pre-rolling"); return }
             let position = outgoingPlayer.currentTime().seconds
             guard position.isFinite else { abandon("no outgoing position"); return }
+            // A pause and resume inside the blend restart this player with
+            // `setRate(_:time:atHostTime:)`, which raises `NSInvalidArgumentException` while
+            // `automaticallyWaitsToMinimizeStalling` is true — the default a streamed song's
+            // queue player keeps (`loadAVPlayerItem` clears it for file URLs only). Cleared here,
+            // for the blend's duration; the outgoing is cut at the end of the overlap (T696).
+            if outgoingPlayer.automaticallyWaitsToMinimizeStalling {
+                outgoingPlayer.automaticallyWaitsToMinimizeStalling = false
+                self.logAutoMix("outgoing player: waits-to-minimize-stalling off for the blend")
+            }
             if self.isPlaying == false || outgoingPlayer.rate < 0.01 {
                 // Paused in the lead-in: arm anyway, paused, so resume lands the downbeat.
                 do { try blend.arm(outgoingPosition: position) } catch { abandon("mix-out already passed"); self.autoMix.pending = nil; return }
@@ -4297,6 +4349,7 @@ extension PlaybackEngine {
         autoMix.blend = nil
         autoMix.incomingAdopted = false
         autoMix.blendPaused = false
+        autoMix.pausedFromOutside = false
         autoMix.visualIncoming = nil
         autoMix.visualOutgoing = nil
         if autoMixVisual != nil { autoMixVisual = nil }
@@ -4381,6 +4434,7 @@ extension PlaybackEngine {
         autoMix.blend = nil
         autoMix.incomingAdopted = false
         autoMix.blendPaused = false
+        autoMix.pausedFromOutside = false
         autoMix.visualIncoming = nil
         autoMix.visualOutgoing = nil
         autoMix.pendingPromotion = nil
@@ -4418,11 +4472,13 @@ extension PlaybackEngine {
         autoMixHandlesTogglePlayPause()
     }
 
-    /// Pause both players of an armed blend. Returns false when none is armed.
-    func autoMixHandlesPause() -> Bool {
+    /// Pause both players of an armed blend. Returns false when none is armed. `fromOutside`
+    /// marks a pause the system made (interruption, route change), which `.ended` may undo.
+    func autoMixHandlesPause(fromOutside: Bool = false) -> Bool {
         guard let blend = autoMix.blend else { return false }
         blend.pause()
         autoMix.blendPaused = true
+        autoMix.pausedFromOutside = fromOutside
         isPlaying = false
         clearPlayIntent()
         seekResumeIntent = false
@@ -4440,6 +4496,7 @@ extension PlaybackEngine {
         do {
             try blend.resume()
             autoMix.blendPaused = false
+            autoMix.pausedFromOutside = false
             isPlaying = true
             markPlayIntent()
             revealMiniPlayerChrome()
