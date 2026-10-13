@@ -148,6 +148,29 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// backgrounded (an app-driven teardown/rebuild at a track boundary can't
     /// complete in the background and silently stops playback).
     private var queuePlayer: AVQueuePlayer? { player as? AVQueuePlayer }
+    /// Test seams: what the queue-player transport holds right now.
+    var transportPlayerItem: AVPlayerItem? { player?.currentItem }
+    var transportPlayerTime: TimeInterval? { player?.currentTime().seconds }
+    var transportPlayer: AVPlayer? { player }
+
+    /// Test seam: make a ready, tapped item on `p` the transport for the current track, exactly
+    /// as `loadAVPlayerItem` would, and start it. Tests build the item with `TapPlayerItem.make`
+    /// on a local file; the periodic observer, AutoMix ticks and end-of-item handling are the
+    /// real ones from here.
+    func installTransportForTesting(_ p: AVQueuePlayer, item: AVPlayerItem, track: Track, tap: EqualizerAudioTap?, play: Bool) {
+        detachPlayerKeepingQueueState()
+        if let tap {
+            liveTapTags.append(tap.itemTag)
+            EqualizerTapRegistry.shared.setCurrentItem(tag: tap.itemTag, title: track.title)
+        }
+        p.actionAtItemEnd = .advance
+        p.automaticallyWaitsToMinimizeStalling = false
+        attachPlayer(p, item: item, track: track, initialTime: 0, resolvedDuration: item.duration.seconds.isFinite ? item.duration.seconds : 0)
+        if play {
+            beginPlayback(on: p)
+            isPlaying = true
+        }
+    }
     /// The pre-enqueued next item and the queue index/track it represents, so
     /// ``handleEnded`` can promote bookkeeping in place after the OS auto-advances.
     private var enqueuedNextItem: AVPlayerItem?
@@ -216,9 +239,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
     var autoMixAnalysisAvailable: Bool { autoMixAnalysis?.isAvailable ?? false }
     /// One line for Settings, under the toggle: model, current/next analysis state, last decision.
     @Published private(set) var autoMixDiagnostic: String = "AutoMix idle"
-    /// While a blend is audible: the track coming in and how far through the overlap (0…1), so
-    /// Now Playing can crossfade its artwork, title and backdrop in step with the audio. `nil`
-    /// outside a transition.
+    /// Holds both tracks through a blend; the visual target flips at promotion so Now Playing
+    /// can crossfade its artwork, title and backdrop in half a second.
     @Published private(set) var autoMixVisual: AutoMixVisualState?
 
     /// The periodic time observer and the player that vended it, kept together. Storing the token
@@ -1197,7 +1219,12 @@ final class PlaybackEngine: NSObject, ObservableObject {
         refreshNowPlaying()
     }
 
-    private func resumePlaybackFromRemoteCommand() {
+    /// Lock-screen / Control Center play. Internal so the transport routing is unit-tested.
+    func resumePlaybackFromRemoteCommand() {
+        // While the AutoMix engine owns playback (during a blend and after promotion) the queue
+        // player is nil; falling through to `scheduleAdvance()` here tore the blend down and
+        // restarted the track on the queue player — the lock-screen "play that did nothing".
+        if autoMixHandlesResume() { return }
         if hasPendingRestore {
             schedulePendingRestorePlayback()
             return
@@ -1234,6 +1261,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     func pausePlayback() {
+        // Same routing for pause: with the engine as transport, `guard let player` below only
+        // flipped `isPlaying` to false while the engine kept playing — "showed paused already".
+        if autoMixHandlesPause() { return }
         clearPlayIntent()
         // An in-flight seek must not resume playback the user has just stopped.
         seekResumeIntent = false
@@ -1380,6 +1410,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
         isSeeking = false
         seekSettleDeadline = ContinuousClock.now + .milliseconds(400)
         refreshNowPlaying()
+        // A seek moves the playhead relative to the cue: re-plan from the new position. Before
+        // the cue the blend is re-armed; past it the planner answers with the default transition.
+        scheduleAutoMixPlanning()
         completion?()
     }
 
@@ -1914,6 +1947,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
     }
 
     private var lastFailureReportEpoch: UInt?
+    /// Error-log event of the item that just failed in `waitForPlayerItemReady`, carried to the
+    /// failure line written by `startCurrentItem`'s catch (which has the URL but not the item).
+    private var lastFailedItemErrorLogLine: String?
 
     /// Retry, skip, or stop — in that order of preference.
     private func resolveUnplayableTrack(error: Error?, track: Track?) {
@@ -2028,6 +2064,31 @@ final class PlaybackEngine: NSObject, ObservableObject {
         guard let last = item.errorLog()?.events.last else { return nil }
         let code = last.errorStatusCode
         return code > 0 ? code : nil
+    }
+
+    /// The last error-log event, for the failure line: domain, status and the server's comment.
+    private static func errorLogLine(from item: AVPlayerItem) -> String? {
+        guard let last = item.errorLog()?.events.last else { return nil }
+        return "\(last.errorDomain) \(last.errorStatusCode) \(last.errorComment ?? "")"
+    }
+
+    private static let playbackLogger = Logger(subsystem: "vellum.perf", category: "playback")
+
+    /// One line per rejected candidate, with the real reason: `AVPlayerItem.error`'s domain and
+    /// code with its underlying chain, and the item's last error-log event. Written to the
+    /// unified log (Console.app: subsystem `vellum.perf`, category `playback`), to the DEBUG tap
+    /// log, and — while AutoMix is on — to the Settings diagnostic row, so tomorrow's device test
+    /// reads *why* a loader-fed item was rejected instead of inferring it from the server (T643 c2).
+    private func logCandidateFailure(stage: String, url: URL, viaLoader: Bool, error: Error?, item: AVPlayerItem?) {
+        let identity = StreamingMediaDiskCache.mediaIdentityString(for: url)
+        var line = "candidate failed [\(stage)] loader=\(viaLoader) url=\(identity) error=\(PlaybackFailurePolicy.describe(error ?? item?.error))"
+        if let event = item.flatMap(Self.errorLogLine(from:)) ?? lastFailedItemErrorLogLine {
+            line += " errorLog=\(event)"
+        }
+        lastFailedItemErrorLogLine = nil
+        Self.playbackLogger.error("\(line, privacy: .public)")
+        PlaybackTapLog.eq(line)
+        if autoMixEnabled { logAutoMix(line) }
     }
 
     // `startEqualizedPlayback` was the guard that stopped the audio-engine transport lying about
@@ -2230,6 +2291,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         autoMixLoaderDelegate = nil
         // Removes from the player that vended it, which is not necessarily `self.player` by now.
         timeObserver.remove()
+        timeObserverContext = nil
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         endObserver = nil
         if let failObserver { NotificationCenter.default.removeObserver(failObserver) }
@@ -2345,7 +2407,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         probingLocalFileURL = nil
         setBuffering(false)
         // A skip, jump, or reload supersedes any blend in flight or planned.
-        stopAutoMixEngine()
+        stopAutoMixBlend()
         detachPlayerKeepingQueueState()
         currentTime = 0
         playbackHead = 0
@@ -2357,16 +2419,32 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// feature that needs the playing stream on disk), only for progressive http(s) streams, never
     /// a local file, HLS, or internet radio. With the toggle off this is false for every URL and
     /// the asset is built exactly as before.
-    static func shouldAttachCachingLoader(autoMixEnabled: Bool, url: URL, isInternetRadio: Bool) -> Bool {
-        guard autoMixEnabled, !isInternetRadio, !url.isFileURL else { return false }
-        return CachingResourceLoaderDelegate.isCacheable(url) && CachingResourceLoaderDelegate.customSchemeURL(from: url) != nil
+    /// T643 c2: additionally never for a URL the server will transcode (`servesByteRanges`), and
+    /// only on the attempt the ladder marks `viaLoader` — see `PlaybackCandidateLadder`.
+    nonisolated static func shouldAttachCachingLoader(autoMixEnabled: Bool, url: URL, isInternetRadio: Bool) -> Bool {
+        PlaybackCandidateLadder.mayUseLoader(autoMixEnabled: autoMixEnabled, url: url, isInternetRadio: isInternetRadio)
     }
 
-    private func makePlaybackAsset(url: URL, headers: [String: String], isInternetRadio: Bool = false) -> AVURLAsset {
-        if url.isFileURL {
-            return AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
+    /// Options for a local-file asset. A committed stream-cache file has no extension
+    /// (`StreamingMediaDiskCache` names files by hash) and AVFoundation identifies a file URL by
+    /// its extension alone: without a hint the asset fails with `AVErrorFileFormatNotRecognized`
+    /// (-11828 ← -12847 "Cannot Open") although `AVAudioFile` reads the same file — which is what
+    /// every prefetched song did on the device, with the plain stream then played instead and the
+    /// good file evicted (T665). The container is read from the file's first bytes and passed as
+    /// the out-of-band MIME type; `AVURLAssetOverrideMIMETypeKey` does not do it for a file URL.
+    nonisolated static func localAssetOptions(for url: URL) -> [String: Any] {
+        var options: [String: Any] = [AVURLAssetPreferPreciseDurationAndTimingKey: true]
+        if url.pathExtension.isEmpty, let mime = StreamingMediaDiskCache.sniffedMIMEType(ofFileAt: url) {
+            options[CachingResourceLoaderDelegate.outOfBandMIMETypeOptionKey] = mime
         }
-        if Self.shouldAttachCachingLoader(autoMixEnabled: autoMixEnabled, url: url, isInternetRadio: isInternetRadio),
+        return options
+    }
+
+    private func makePlaybackAsset(url: URL, headers: [String: String], isInternetRadio: Bool = false, viaLoader: Bool = false) -> AVURLAsset {
+        if url.isFileURL {
+            return AVURLAsset(url: url, options: Self.localAssetOptions(for: url))
+        }
+        if viaLoader, Self.shouldAttachCachingLoader(autoMixEnabled: autoMixEnabled, url: url, isInternetRadio: isInternetRadio),
            let custom = CachingResourceLoaderDelegate.customSchemeURL(from: url) {
             // AutoMix on: proxy this stream through the caching loader so the bytes AVPlayer pulls
             // are assembled on disk and committed when the whole file has streamed — no request
@@ -2508,6 +2586,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             case .readyToPlay: return
             case .failed:
                 lastFailedItemHTTPStatus = Self.httpStatus(from: item)
+                lastFailedItemErrorLogLine = Self.errorLogLine(from: item)
                 throw item.error ?? URLError(.badServerResponse)
             // Poll tightly so we resume within ~20ms of the item flipping ready,
             // instead of eating up to a tenth of a second of dead time per play.
@@ -2646,9 +2725,17 @@ final class PlaybackEngine: NSObject, ObservableObject {
         }
 
         var lastError: Error?
-        for candidate in candidates {
+        // Which attempts go through the caching loader is decided here, once, by the ladder: at
+        // most one, immediately followed by the same URL as a plain asset (T643 c2).
+        let attempts = PlaybackCandidateLadder.attempts(
+            candidates: candidates,
+            autoMixEnabled: autoMixEnabled,
+            isInternetRadio: activeTrack.isInternetRadioStream,
+        )
+        for attempt in attempts {
             guard isPlaybackEpochCurrent(epoch) else { return }
             detachPlayerKeepingQueueState()
+            let candidate = (url: attempt.url, headers: attempt.headers)
             do {
                 if try await loadPlayerItem(
                     epoch: epoch,
@@ -2656,12 +2743,14 @@ final class PlaybackEngine: NSObject, ObservableObject {
                     track: activeTrack,
                     startSeconds: startSeconds,
                     autoPlay: autoPlay,
+                    viaLoader: attempt.viaLoader,
                 ) {
                     return
                 }
                 lastError = URLError(.cannotParseResponse)
             } catch {
                 lastError = error
+                logCandidateFailure(stage: "load", url: attempt.url, viaLoader: attempt.viaLoader, error: error, item: nil)
                 if isUnreadableStreamCacheError(error) {
                     evictFailedStreamCacheCandidate(candidate.url)
                 }
@@ -2692,6 +2781,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         track: Track,
         startSeconds: TimeInterval,
         autoPlay: Bool,
+        viaLoader: Bool = false,
     ) async throws -> Bool {
         guard isPlaybackEpochCurrent(epoch) else { return false }
         // One path. There is no "is this file EQ-eligible, and can the other transport decode it"
@@ -2702,6 +2792,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             track: track,
             startSeconds: startSeconds,
             autoPlay: autoPlay,
+            viaLoader: viaLoader,
         )
     }
 
@@ -2712,9 +2803,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
         startSeconds: TimeInterval,
         autoPlay: Bool,
         allowEqualizerHandoff: Bool = true,
+        viaLoader: Bool = false,
     ) async throws -> Bool {
         guard isPlaybackEpochCurrent(epoch) else { return false }
-        let asset = makePlaybackAsset(url: candidate.url, headers: candidate.headers, isInternetRadio: track.isInternetRadioStream)
+        let asset = makePlaybackAsset(url: candidate.url, headers: candidate.headers, isInternetRadio: track.isInternetRadioStream, viaLoader: viaLoader)
         if candidate.url.isFileURL,
            !isCommittedStreamCacheFile(candidate.url),
            let urlAsset = asset as? AVURLAsset {
@@ -2798,6 +2890,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             // survives — the caller otherwise turns this into a bare `.cannotParseResponse`,
             // which would classify every server outage on this path as a bad file.
             lastFailedItemHTTPStatus = Self.httpStatus(from: item)
+            logCandidateFailure(stage: "after-ready", url: candidate.url, viaLoader: viaLoader, error: item.error, item: item)
             detachPlayerKeepingQueueState()
             return false
         }
@@ -3053,9 +3146,11 @@ final class PlaybackEngine: NSObject, ObservableObject {
         track: Track,
         initialTime: TimeInterval = 0,
         resolvedDuration: TimeInterval = 0,
+        silent: Bool = false,
     ) {
         p.isMuted = false
-        p.volume = 1.0
+        // A handback stages the player at volume 0 and ramps it up itself (T673).
+        p.volume = silent ? 0 : 1.0
         player = p
         isSeeking = false
         let head = max(0, initialTime)
@@ -3170,6 +3265,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
         track: Track,
         player p: AVPlayer,
     ) {
+        // Removed observers can still have queued callbacks after a transport handoff.
+        // While a blend is armed its own progress timer publishes the position (the incoming
+        // player's after promotion); the periodic observer takes over again once it has settled.
+        guard player === p, p.currentItem === item, autoMix.blend == nil else { return }
         playbackHead = elapsed
 
         let newDuration = item.duration.seconds.isFinite ? item.duration.seconds : 0
@@ -3184,9 +3283,11 @@ final class PlaybackEngine: NSObject, ObservableObject {
                   probingLocalFileURL != urlAsset.url {
             probingLocalFileURL = urlAsset.url
             let fileURL = urlAsset.url
+            let epoch = playbackEpoch
             Task {
                 let probed = await LocalMediaDuration.seconds(at: fileURL)
-                guard probed > 0 else { return }
+                guard probed > 0, isPlaybackEpochCurrent(epoch),
+                      player === p, p.currentItem === item, autoMix.blend == nil else { return }
                 duration = probed
                 localFileDuration = probed
                 persistOfflineDurationIfNeeded(probed)
@@ -3228,6 +3329,29 @@ final class PlaybackEngine: NSObject, ObservableObject {
 
     /// Internal, not private, so tests can drive a natural end on an engine that has no player.
     func handleEnded(endedItem: AVPlayerItem? = nil) {
+        // An end (or failure) notification for an item that is no longer the transport item is
+        // stale and must not advance the queue. `NotificationCenter` delivers a block observer
+        // through its queue: a notification posted just before `removeObserver` is still
+        // delivered afterwards, with the item it was registered for (or nil once that item has
+        // been released). The case that produced "the automixer kills the song after its
+        // transition" (T677 c5): a crossfade planned to the outgoing song's last sample ends the
+        // outgoing item at the very moment the blend completes the overlap; when the blend's
+        // tick wins, adoption removes this observer and stops the old player, and the already
+        // posted end notification then arrived here with the incoming song as the current track
+        // — read as that song's natural end, so the queue advanced off it (or stopped at the end
+        // of the queue). Notifications for the bound item still take every path below.
+        if let bound = timeObserverContext?.item, endedItem !== bound {
+            logAutoMix("ignored an end notification for an item that is no longer playing")
+            return
+        }
+        // The outgoing item of an armed blend ran out before its overlap completed (its length
+        // was shorter than the plan believed): the incoming song is already playing on its own
+        // player, so this is the adoption, not an advance (T677).
+        if let blend = autoMix.blend, !autoMix.incomingAdopted, let endedItem, endedItem !== blend.incomingItem {
+            logAutoMix("outgoing song ended inside the blend; adopting the incoming player")
+            autoMixAdoptIncoming()
+            return
+        }
         let endedAtLog = endedItem?.currentTime().seconds ?? -1
         let itemDurLog = endedItem?.duration.seconds ?? -1
         // Spurious end: chunked/transcoded streams can't seek past the data
@@ -3439,6 +3563,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
     /// plain asset (never the resource-loader cache) so the OS owns its buffering
     /// — in-process URLSession fetching would stall a background pre-roll.
     private func refreshEnqueuedNextItem() {
+        // Whatever changed the staged next item (a queue edit, a repeat/shuffle change) also
+        // changes what AutoMix must blend into: re-plan on every exit (T643 c3 — a Play Next
+        // insert used to leave `autoMix.pending` aimed at the old index).
+        defer { scheduleAutoMixPlanning() }
         guard let qp = queuePlayer else {
             enqueuedNextItem = nil
             enqueuedNextIndex = nil
@@ -3810,10 +3938,15 @@ struct AutoMixVisualState: Equatable {
     /// currently points at (the cursor moves at the midpoint).
     let outgoing: Track
     let incoming: Track
-    /// 0…1 through the audible overlap.
+    static let crossfadeDuration: TimeInterval = 0.5
+    /// An animation target: outgoing (0) until promotion, then incoming (1).
     let progress: Double
-    /// Seconds of overlap left, so a palette animation can be timed to end with the audio.
-    let remaining: TimeInterval
+
+    /// The visual target flips the moment the incoming deck is audible (overlap start), not at
+    /// the midpoint: the user's call, c18.
+    static func progress(overlapProgress: Double) -> Double {
+        overlapProgress > 0 ? 1 : 0
+    }
 
     func isPartOfBlend(_ id: String) -> Bool { id == outgoing.id || id == incoming.id }
 }
@@ -3821,13 +3954,14 @@ struct AutoMixVisualState: Equatable {
 struct AutoMixState {
     /// The decision for the upcoming boundary, with the queue index and local file it targets.
     var pending: (decision: TransitionDecision, index: Int, track: Track, url: URL)?
-    /// The two-deck transport, alive only from a handoff until the queue player takes over again.
-    var engine: AutoMixAudioEnginePlayer?
-    /// The queue index of the track the engine's live deck is carrying.
-    var engineIndex: Int?
-    /// Local file of the track the engine's live deck is carrying (the outgoing side of the next chain).
-    var engineURL: URL?
-    /// Progress timer while the engine is the transport (the `AVPlayer` periodic observer is gone).
+    /// The transition in flight: two players, no engine (T677). From the moment it is armed
+    /// (the lead-in before the mix-out) until it has settled after the overlap.
+    var blend: AutoMixPlayerBlend?
+    /// The staging of a blend (item load, seek, pre-roll) in flight.
+    var stagingTask: Task<Void, Never>?
+    /// Whether the blend's incoming player has become *the* queue player.
+    var incomingAdopted = false
+    /// Progress timer while a blend is armed (the queue player's periodic observer stands aside).
     var progressTimer: Timer?
     /// Last few decisions, for the debug screen and the signpost log.
     var decisionLog: [String] = []
@@ -3836,11 +3970,10 @@ struct AutoMixState {
     /// The track it is fading out.
     var visualOutgoing: Track?
     /// The promotion the live overlap owes: queue index, track and file of the incoming track.
-    /// Performed by the progress timer at the overlap midpoint (or by the engine's completion
-    /// callback, whichever comes first); `nil` once done.
+    /// Performed by the progress timer the moment the incoming player is audible; `nil` once done.
     var pendingPromotion: (index: Int, track: Track, url: URL)?
-    /// One clock-fault message per engine life.
-    var reportedClockFault = false
+    /// Whether the user paused during the blend. Mirrors `blend.isPaused` for the UI.
+    var blendPaused = false
 }
 
 extension PlaybackEngine {
@@ -3907,7 +4040,7 @@ extension PlaybackEngine {
         analysis.retainOnly(trackIds: [current.id, next.id])
         autoMixPrefetcher?.retainOnly(trackIds: [next.id])
 
-        let position = autoMix.engine?.currentTrackPosition ?? playbackHead
+        let position = autoMixPlaybackPosition ?? playbackHead
         let currentStatus = analysis.ensure(trackId: current.id, fileURL: currentURL, duration: current.duration > 0 ? current.duration : duration)
         let nextStatus = analysis.ensure(trackId: next.id, fileURL: nextURL, duration: next.duration)
 
@@ -3958,8 +4091,21 @@ extension PlaybackEngine {
     }
 
     /// Called from the queue player's periodic tick and from the engine's own progress timer.
+    /// True while the queue still holds `trackId` at `index` — the target a pending blend or
+    /// promotion was planned against. Pure, so a queue edit between planning and the hand-off is
+    /// a tested case rather than a wedge.
+    nonisolated static func pendingTargetMatches(queue: [Track], index: Int, trackId: String) -> Bool {
+        queue.indices.contains(index) && queue[index].id == trackId
+    }
+
     func autoMixTick(outgoingPosition: TimeInterval) {
         guard autoMixEnabled, let pending = autoMix.pending, let mixOut = pending.decision.outgoingMixOut else { return }
+        guard Self.pendingTargetMatches(queue: queue, index: pending.index, trackId: pending.track.id) else {
+            logAutoMix("queue changed under the planned blend into \(pending.track.title); re-planning")
+            autoMix.pending = nil
+            scheduleAutoMixPlanning()
+            return
+        }
         // Arm well ahead of the mix-out: the backgrounded periodic tick is 2.0 s, wider than the
         // planner's 2 s handoff lead minus the 0.25 s cut-off, so a lead that short can be stepped
         // over entirely with the screen locked. Six seconds gives three ticks.
@@ -3971,12 +4117,10 @@ extension PlaybackEngine {
             autoMix.pending = nil
             return
         }
-        if let engine = autoMix.engine {
-            guard engine.isSettled else { return }
-            chainAutoMix(pending, on: engine)
-        } else {
-            beginAutoMixHandoff(pending)
-        }
+        // One blend at a time: the next boundary is planned again from the adopted player once
+        // this one has settled.
+        guard autoMix.blend == nil, autoMix.stagingTask == nil else { return }
+        beginAutoMixBlend(pending)
     }
 
     private func automation(for decision: TransitionDecision) -> AutoMixAutomation? {
@@ -3987,187 +4131,224 @@ extension PlaybackEngine {
         }
     }
 
-    /// Hand the current track from `AVQueuePlayer` to the two-deck engine at the same position,
-    /// with the next track scheduled per the plan. Any failure leaves the queue player untouched.
-    private func beginAutoMixHandoff(_ pending: (decision: TransitionDecision, index: Int, track: Track, url: URL)) {
-        guard let player, let current = activeTrack, let currentURL = autoMixLocalFileURL(for: current),
+    // MARK: - Staging and arming (T677)
+
+    /// Build the incoming song's player — the same item path as any song (`makePlaybackAsset` on
+    /// the same local file, `TapPlayerItem` with the live equalizer) plus the blend's gain curve
+    /// as volume ramps — ready it, seek it to the mix-in, pre-roll it at the opening rate, and
+    /// schedule it to start exactly when the queue player reaches the mix-out. The queue player
+    /// keeps playing the outgoing song throughout: nothing changes hands at the start of a blend.
+    private func beginAutoMixBlend(_ pending: (decision: TransitionDecision, index: Int, track: Track, url: URL)) {
+        guard let outgoingPlayer = player, let current = activeTrack,
               let automation = automation(for: pending.decision) else {
             autoMix.pending = nil
             return
         }
-        let position = player.currentTime().seconds
-        guard position.isFinite else { return }
-        let engine = AutoMixAudioEnginePlayer()
-        do {
-            try engine.prepare(outgoingURL: currentURL, outgoingPosition: position, incomingURL: pending.url, automation: automation)
-        } catch {
-            logAutoMix("handoff prepare failed: \(error); default transition")
+        guard abs(playbackRate - 1) < 0.001 else {
+            logAutoMix("playback rate \(playbackRate): default transition for \(pending.track.title)")
             autoMix.pending = nil
             return
         }
+        let epoch = playbackEpoch
         let index = pending.index
         let track = pending.track
-        engine.onOverlapCompleted = { [weak self] in self?.autoMixOverlapCompleted(index: index, track: track, url: pending.url) }
-        engine.onDeckFinished = { [weak self] in self?.autoMixDeckFinished() }
-
-        // Start the engine first, then silence the queue player, so there is never a hole. The
-        // engine picks up where the player's clock is; a few milliseconds of double audio at unity
-        // is inaudible, a gap is not.
-        do {
-            try engine.start()
-        } catch {
-            logAutoMix("engine start failed: \(error); default transition")
-            engine.stop()
-            autoMix.pending = nil
-            return
-        }
-        PerfLog.event("automix.handoff", details: "\(current.title) → \(track.title)")
-        autoMix.engine = engine
-        autoMix.engineIndex = currentIndex
-        autoMix.engineURL = currentURL
-        autoMix.visualIncoming = track
-        autoMix.visualOutgoing = current
-        autoMix.pendingPromotion = (index, track, pending.url)
-        autoMix.reportedClockFault = false
-        autoMix.pending = nil
-        // Detach the queue player without the teardown that would also stop the engine.
-        timeObserver.remove()
-        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
-        endObserver = nil
-        if let failObserver { NotificationCenter.default.removeObserver(failObserver) }
-        failObserver = nil
-        timeControlStatusObservation?.invalidate()
-        timeControlStatusObservation = nil
-        cancelStallRecovery()
-        stopPlayer(player)
-        self.player = nil
-        autoMixLoaderDelegate?.invalidate()
-        autoMixLoaderDelegate = nil
-        enqueuedNextItem = nil
-        enqueuedNextIndex = nil
-        enqueuedNextTrack = nil
-        retireAllTaps()
-        isPlaying = true
-        startAutoMixProgressTimer()
-    }
-
-    /// The engine already carries the current track; schedule the next transition on it.
-    private func chainAutoMix(_ pending: (decision: TransitionDecision, index: Int, track: Track, url: URL), on engine: AutoMixAudioEnginePlayer) {
-        guard let automation = automation(for: pending.decision) else { autoMix.pending = nil; return }
-        let index = pending.index
-        let track = pending.track
-        do {
-            try engine.chain(incomingURL: pending.url, automation: automation)
-            autoMix.visualIncoming = track
-            autoMix.visualOutgoing = activeTrack
-            autoMix.pendingPromotion = (index, track, pending.url)
-            engine.onOverlapCompleted = { [weak self] in self?.autoMixOverlapCompleted(index: index, track: track, url: pending.url) }
-            PerfLog.event("automix.chain", details: track.title)
-        } catch {
-            logAutoMix("chain failed: \(error); the track plays out on the engine")
-        }
-        autoMix.pending = nil
-    }
-
-    /// The incoming track is now the only thing audible: promote the queue cursor, exactly as the
-    /// gapless promote does for the OS transition.
-    private func autoMixOverlapCompleted(index: Int, track: Track, url: URL) {
-        // The engine's own completion: promote if the midpoint timer has not already. Either way
-        // the next boundary is planned from here.
-        if autoMix.pendingPromotion != nil {
-            autoMixPromote(index: index, track: track, url: url)
-        } else {
-            scheduleAutoMixPlanning()
+        let url = pending.url
+        let outgoingTap = EqualizerTapRegistry.shared.itemTag(forTrackId: current.id).flatMap { EqualizerTapRegistry.shared.tap(forItemTag: $0) }
+        autoMix.stagingTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.autoMix.stagingTask = nil }
+            @MainActor func stillValid() -> Bool {
+                !Task.isCancelled && self.isPlaybackEpochCurrent(epoch) && self.player === outgoingPlayer
+                    && self.autoMix.blend == nil
+                    && Self.pendingTargetMatches(queue: self.queue, index: index, trackId: track.id)
+            }
+            let asset = self.makePlaybackAsset(url: url, headers: [:])
+            let ramps = AutoMixPlayerBlend.incomingVolumeRamps(automation)
+            let (item, tap, plainMix) = await TapPlayerItem.make(
+                asset: asset,
+                track: track,
+                gains: self.equalizerBandGains,
+                bypassed: self.effectiveEqualizerBypass,
+                eligibleForEqualizer: self.isEqualizerEligible(for: track),
+                volumeRamps: ramps,
+                keepPlainMix: true,
+            )
+            if automation.stretchesIncoming { item.audioTimePitchAlgorithm = .spectral }
+            let incoming = AVQueuePlayer(playerItem: item)
+            incoming.actionAtItemEnd = .advance
+            incoming.automaticallyWaitsToMinimizeStalling = false
+            incoming.volume = 1
+            @MainActor func abandon(_ reason: String) {
+                self.stopPlayer(incoming)
+                if let tap { EqualizerTapRegistry.shared.retire(itemTag: tap.itemTag) }
+                self.logAutoMix("blend into \(track.title) not armed: \(reason)")
+            }
+            do { try await self.waitForPlayerItemReady(item, timeout: .seconds(4)) } catch { abandon("item not ready: \(error)"); return }
+            guard stillValid() else { abandon("superseded while loading"); return }
+            let blend = AutoMixPlayerBlend(
+                automation: automation, outgoing: outgoingPlayer, outgoingTap: outgoingTap,
+                incoming: incoming, incomingItem: item, incomingTap: tap, incomingPlainMix: plainMix,
+            )
+            guard await self.awaitPlayerSeek(incoming, to: blend.mixIn) else { abandon("seek to \(blend.mixIn) failed"); return }
+            let prerolled = await withCheckedContinuation { continuation in
+                incoming.preroll(atRate: AutoMixPlayerBlend.initialRate(automation)) { continuation.resume(returning: $0) }
+            }
+            guard prerolled else { abandon("pre-roll failed"); return }
+            guard stillValid() else { abandon("superseded while pre-rolling"); return }
+            let position = outgoingPlayer.currentTime().seconds
+            guard position.isFinite else { abandon("no outgoing position"); return }
+            if self.isPlaying == false || outgoingPlayer.rate < 0.01 {
+                // Paused in the lead-in: arm anyway, paused, so resume lands the downbeat.
+                do { try blend.arm(outgoingPosition: position) } catch { abandon("mix-out already passed"); self.autoMix.pending = nil; return }
+                blend.pause()
+                self.autoMix.blendPaused = true
+            } else {
+                do { try blend.arm(outgoingPosition: position) } catch { abandon("mix-out already passed"); self.autoMix.pending = nil; return }
+                self.autoMix.blendPaused = false
+            }
+            blend.onOverlapCompleted = { [weak self] in self?.autoMixAdoptIncoming() }
+            blend.onSettled = { [weak self] in self?.autoMixSettled() }
+            self.autoMix.blend = blend
+            self.autoMix.incomingAdopted = false
+            self.autoMix.visualIncoming = track
+            self.autoMix.visualOutgoing = current
+            self.autoMix.pendingPromotion = (index, track, url)
+            self.autoMix.pending = nil
+            self.startAutoMixProgressTimer()
+            PerfLog.event("automix.armed", details: "\(current.title) → \(track.title)")
+            self.logAutoMix(String(format: "armed %@ → %@: incoming starts in %.1f s", current.title, track.title, blend.mixOut - position))
         }
     }
 
     /// Move the queue cursor, time, duration and listening bookkeeping to the incoming track.
-    /// Idempotent: runs once per transition.
-    private func autoMixPromote(index: Int, track: Track, url: URL) {
-        guard autoMix.pendingPromotion != nil else { return }
+    /// Idempotent: runs once per transition. Happens the moment the incoming player is audible.
+    func autoMixPromote(index: Int, track: Track, url: URL) {
+        guard autoMix.pendingPromotion != nil,
+              let blend = autoMix.blend, queue.indices.contains(index), queue[index].id == track.id else { return }
         autoMix.pendingPromotion = nil
-        guard autoMix.engine != nil, queue.indices.contains(index), queue[index].id == track.id else { return }
         if queue.indices.contains(currentIndex) {
             let ended = queue[currentIndex]
             onTrackCompleted?(ended, playbackSource, userQueue.wasUserQueuedAtTrackEnd(id: ended.id, index: currentIndex))
         }
         _ = beginPlaybackSession()
         currentIndex = index
-        autoMix.engineIndex = index
-        autoMix.engineURL = url
         scrobbledForCurrentTrack = false
         resetUIProgressForTrackHandoff()
-        duration = track.duration > 0 ? track.duration : duration
-        // The incoming track is already some seconds in (its mix-in cue plus half the overlap).
-        if let position = autoMix.engine?.incomingTrackPosition {
-            playbackHead = position
-            currentTime = position
-        }
+        // The decoded item is authoritative even when server metadata is missing or stale.
+        localFileDuration = blend.incomingDuration
+        probingLocalFileURL = nil
+        duration = localFileDuration > 0 ? localFileDuration : max(0, track.duration)
+        patchActiveQueueTrackDuration(duration)
+        persistOfflineDurationIfNeeded(duration)
+        publishAutoMixPosition(blend.incomingPosition)
         PerfLog.event("automix.promote", details: track.title)
         scheduleLyricsLoad()
         refreshNowPlaying()
         userQueue.trackStarted(id: track.id, index: index)
         onTrackStarted?(track)
-        // Plan the next boundary on the engine's clock.
+        if let label = deliveredFormatLabel(candidateURL: url, track: track) { nowPlayingFormatLabel = label }
+        // Plan the next boundary from here (it is armed from the adopted player once settled).
         scheduleAutoMixPlanning()
     }
 
-    /// The engine's live deck reached the end of its file with nothing chained: hand the queue
-    /// back to the queue player at the next track, which is the ordinary natural-end advance.
-    private func autoMixDeckFinished() {
-        // If the outgoing deck ran out before the midpoint timer promoted, promote first so the
-        // natural-end advance below moves on from the *incoming* track, not back onto it.
+    /// The outgoing song is silent: the incoming player becomes the queue player. The item that
+    /// has been playing since the overlap began simply keeps playing — no restart, no ramp, no
+    /// second transport. The old queue player is stopped and its tap retired.
+    func autoMixAdoptIncoming() {
+        guard let blend = autoMix.blend, !autoMix.incomingAdopted, let track = activeTrack else { return }
         if let promotion = autoMix.pendingPromotion {
             autoMixPromote(index: promotion.index, track: promotion.track, url: promotion.url)
-            return
+            guard autoMix.pendingPromotion == nil else {
+                // The queue no longer holds that track at that index: nothing to adopt into.
+                logAutoMix("promotion target gone; abandoning the blend")
+                stopAutoMixBlend()
+                return
+            }
         }
-        stopAutoMixEngine()
-        if queue.indices.contains(currentIndex) {
-            let ended = queue[currentIndex]
-            onTrackCompleted?(ended, playbackSource, userQueue.wasUserQueuedAtTrackEnd(id: ended.id, index: currentIndex))
+        blend.releaseOutgoing()
+        // Stops the old queue player and retires its taps. The incoming tap is not in
+        // `liveTapTags` yet, so it survives.
+        detachPlayerKeepingQueueState()
+        let wasPaused = blend.isPaused
+        attachPlayer(blend.incoming, item: blend.incomingItem, track: track,
+                     initialTime: blend.incomingPosition ?? 0, resolvedDuration: duration)
+        if let tap = blend.incomingTap {
+            liveTapTags.append(tap.itemTag)
+            EqualizerTapRegistry.shared.setCurrentItem(tag: tap.itemTag, title: track.title)
+            PlaybackCPUSampler.currentItemProvider = { (tag: tap.itemTag, title: track.title) }
         }
-        if let next = nextAdvanceIndex() {
-            shouldAutoPlayAfterAdvance = true
-            currentIndex = next
-            resetUIProgressForTrackHandoff()
-            scheduleAdvance()
-        } else {
-            isPlaying = false
-            refreshNowPlaying()
-        }
+        autoMix.incomingAdopted = true
+        isPlaying = !wasPaused
+        PerfLog.event("automix.adopt", details: track.title)
+        logAutoMix("\(track.title) is the queue player now")
+        refreshNowPlaying()
+        // Stages the gapless next item on the adopted player and re-plans.
+        refreshEnqueuedNextItem()
+    }
+
+    /// Rate back at 1.0, trim at unity, ramps swapped out: the transition is over and the
+    /// adopted player is an ordinary stream from here.
+    private func autoMixSettled() {
+        guard let blend = autoMix.blend else { return }
+        if !autoMix.incomingAdopted { autoMixAdoptIncoming() }
+        guard autoMix.blend === blend else { return }
+        autoMix.progressTimer?.invalidate()
+        autoMix.progressTimer = nil
+        autoMix.blend = nil
+        autoMix.incomingAdopted = false
+        autoMix.blendPaused = false
+        autoMix.visualIncoming = nil
+        autoMix.visualOutgoing = nil
+        if autoMixVisual != nil { autoMixVisual = nil }
+        PerfLog.event("automix.settled", details: activeTrack?.title ?? "")
+        logAutoMix("blend settled")
+        scheduleAutoMixPlanning()
+    }
+
+    /// Promotion happens at the START of the overlap — the first progress-timer tick after the
+    /// incoming player becomes audible — never at the midpoint and never at the outgoing's end.
+    /// `overlapProgress` is 0 until the overlap begins and strictly positive from then on.
+    static func shouldPromote(overlapProgress: Double) -> Bool {
+        overlapProgress > 0
+    }
+
+    /// The position the UI and the planner read while a blend is armed: the outgoing player's
+    /// until promotion, the incoming player's after.
+    private var autoMixPlaybackPosition: TimeInterval? {
+        guard let blend = autoMix.blend else { return nil }
+        return autoMix.pendingPromotion == nil ? blend.incomingPosition : blend.outgoingPosition
+    }
+
+    private func publishAutoMixPosition(_ position: TimeInterval?) {
+        guard let position, position.isFinite, position >= 0 else { return }
+        let bounded = duration > 0 ? min(position, duration) : position
+        playbackHead = bounded
+        currentTime = bounded
+        lastEmittedUIProgress = bounded
     }
 
     private func startAutoMixProgressTimer() {
         autoMix.progressTimer?.invalidate()
         let timer = Timer(timeInterval: 0.35, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, let engine = self.autoMix.engine else { return }
-                let progress = engine.overlapProgress
-                // Promotion never waits for a callback or for the outgoing file to end: at the
-                // overlap midpoint — where the title and cover are half-way across — the queue
-                // cursor, time and progress bar move to the incoming track together.
-                if let progress, progress >= 0.5, let promotion = self.autoMix.pendingPromotion {
+                guard let self, let blend = self.autoMix.blend else { return }
+                let playing = !blend.isPaused
+                if self.isPlaying != playing { self.isPlaying = playing; self.refreshNowPlaying() }
+                guard playing else { return }
+                let progress = blend.overlapProgress
+                // Promotion never waits for a callback: as soon as the incoming player is
+                // audible, the queue cursor, time and progress bar move to the incoming track
+                // together, triggering the short visual crossfade.
+                if let progress, Self.shouldPromote(overlapProgress: progress), let promotion = self.autoMix.pendingPromotion {
                     self.autoMixPromote(index: promotion.index, track: promotion.track, url: promotion.url)
                 }
-                let promoted = self.autoMix.pendingPromotion == nil
-                guard let position = promoted ? engine.incomingTrackPosition : engine.outgoingTrackPosition else { return }
-                // Belt and braces for the UI: a position past the track is a clock fault, not a
-                // playhead. Keep the last good value and say so once.
-                let limit = self.duration > 0 ? self.duration + 1 : .infinity
-                if position > limit {
-                    if !self.autoMix.reportedClockFault {
-                        self.autoMix.reportedClockFault = true
-                        self.logAutoMix("engine clock fault: position \(Int(position))s > duration \(Int(self.duration))s; holding")
-                    }
-                } else {
-                    self.playbackHead = position
-                    self.currentTime = position
-                }
+                guard let position = self.autoMixPlaybackPosition else { return }
+                self.publishAutoMixPosition(position)
                 if let track = self.activeTrack { self.maybeScrobble(track: track, position: self.playbackHead) }
-                // Visual crossfade state for Now Playing, in step with the audio overlap, from
-                // the first second of the overlap to its last — across the promotion.
+                // Hold the outgoing visuals until the incoming song reaches equal prominence.
+                // SwiftUI animates the target change in 0.5 s, independently of audio duration.
                 if let progress, let incoming = self.autoMix.visualIncoming, let outgoing = self.autoMix.visualOutgoing {
-                    self.autoMixVisual = AutoMixVisualState(outgoing: outgoing, incoming: incoming, progress: progress, remaining: engine.overlapSecondsRemaining)
+                    self.autoMixVisual = AutoMixVisualState(outgoing: outgoing, incoming: incoming, progress: AutoMixVisualState.progress(overlapProgress: progress))
                 } else if self.autoMixVisual != nil {
                     self.autoMixVisual = nil
                     self.autoMix.visualIncoming = nil
@@ -4177,81 +4358,109 @@ extension PlaybackEngine {
                     self.lastNowPlayingInfoRefresh = position
                     self.refreshNowPlaying()
                 }
-                self.autoMixTick(outgoingPosition: position)
             }
         }
         RunLoop.main.add(timer, forMode: .common)
         autoMix.progressTimer = timer
     }
 
-    /// Stop the engine transport and its timer. Called from `teardownPlayer`, so every skip, jump,
-    /// reload, and queue clear goes through here.
-    func stopAutoMixEngine() {
+    /// Abandon the blend in flight, if any, and its staging. Called from `teardownPlayer`, so
+    /// every skip, jump, reload and queue clear goes through here. The adopted incoming player,
+    /// when it is the queue player, is the caller's to stop.
+    func stopAutoMixBlend() {
+        autoMix.stagingTask?.cancel()
+        autoMix.stagingTask = nil
         autoMix.progressTimer?.invalidate()
         autoMix.progressTimer = nil
-        autoMix.engine?.stop()
-        autoMix.engine = nil
+        if let blend = autoMix.blend {
+            blend.abort(incomingAdopted: autoMix.incomingAdopted)
+            if !autoMix.incomingAdopted, let tap = blend.incomingTap {
+                EqualizerTapRegistry.shared.retire(itemTag: tap.itemTag)
+            }
+        }
+        autoMix.blend = nil
+        autoMix.incomingAdopted = false
+        autoMix.blendPaused = false
         autoMix.visualIncoming = nil
         autoMix.visualOutgoing = nil
         autoMix.pendingPromotion = nil
         if autoMixVisual != nil { autoMixVisual = nil }
-        autoMix.engineIndex = nil
-        autoMix.engineURL = nil
         autoMix.pending = nil
     }
 
-    /// Turning the toggle off mid-blend, or anything else that must leave the engine transport:
-    /// the queue player takes the current track back at the engine's position.
+    /// Turning the toggle off mid-blend, or anything else that must leave a blend: the outgoing
+    /// song keeps playing on the queue player if the overlap has not promoted; otherwise the
+    /// incoming player is adopted now (the outgoing is cut).
     func cancelAutoMix(resumeOnQueuePlayer: Bool) {
         autoMixAnalysis?.cancelAll()
         autoMixPrefetcher?.cancelAll()
-        guard autoMix.engine != nil else {
+        guard autoMix.blend != nil else {
             autoMix.pending = nil
             return
         }
-        let position = autoMix.engine?.currentTrackPosition ?? playbackHead
-        let wasPlaying = isPlaying && !(autoMix.engine?.isPaused ?? false)
-        stopAutoMixEngine()
-        guard resumeOnQueuePlayer else { return }
-        let epoch = beginPlaybackSession()
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            try? await self.startCurrentItem(epoch: epoch, startSeconds: position, autoPlay: wasPlaying, skipTrackRefresh: true)
+        if autoMix.pendingPromotion == nil, !autoMix.incomingAdopted {
+            autoMixAdoptIncoming()
+        }
+        stopAutoMixBlend()
+        if let player, resumeOnQueuePlayer, isPlaying, player.rate < 0.01 {
+            beginPlayback(on: player)
         }
     }
 
-    /// Play/pause while the engine is the transport. Returns false when it is not.
+    /// Play/pause while a blend is armed. Returns false when none is.
     func autoMixHandlesTogglePlayPause() -> Bool {
-        guard let engine = autoMix.engine else { return false }
-        if engine.isPaused {
-            do {
-                try engine.resume()
-                isPlaying = true
-            } catch {
-                // The engine could not restart (session loss): fall back to the queue player.
-                cancelAutoMix(resumeOnQueuePlayer: true)
-            }
-        } else {
-            engine.pause()
-            isPlaying = false
-            scheduleAudioSessionDeactivation()
+        guard autoMix.blend != nil else { return false }
+        return autoMix.blendPaused ? autoMixHandlesResume() : autoMixHandlesPause()
+    }
+
+    /// Test seam: `togglePlayPause()` with a blend armed, reporting that it took it.
+    func togglePlayPauseRoutesToEngine() -> Bool {
+        autoMixHandlesTogglePlayPause()
+    }
+
+    /// Pause both players of an armed blend. Returns false when none is armed.
+    func autoMixHandlesPause() -> Bool {
+        guard let blend = autoMix.blend else { return false }
+        blend.pause()
+        autoMix.blendPaused = true
+        isPlaying = false
+        clearPlayIntent()
+        seekResumeIntent = false
+        scheduleAudioSessionDeactivation()
+        refreshNowPlaying()
+        return true
+    }
+
+    /// Resume both players of an armed blend together, at one host time. Returns false when
+    /// none is armed. The queue player's own `playImmediately` must not run here: it would start
+    /// the outgoing at once and the incoming 150 ms later.
+    func autoMixHandlesResume() -> Bool {
+        guard let blend = autoMix.blend else { return false }
+        activateAudioSession()
+        do {
+            try blend.resume()
+            autoMix.blendPaused = false
+            isPlaying = true
+            markPlayIntent()
+            revealMiniPlayerChrome()
+        } catch {
+            cancelAutoMix(resumeOnQueuePlayer: true)
         }
         refreshNowPlaying()
         return true
     }
 
-    /// A scrub during a blend: abandon the engine and let the queue player seek. Returns false when
-    /// the engine is not the transport.
+    /// A scrub during a blend: abandon it. Before promotion the queue player is still the
+    /// outgoing song and the ordinary seek applies (returns false); after promotion the current
+    /// track is the incoming song, which is adopted first and then seeks on the queue player.
     func autoMixHandlesSeek(toSeconds target: TimeInterval) -> Bool {
-        guard autoMix.engine != nil else { return false }
-        let wasPlaying = isPlaying
-        stopAutoMixEngine()
-        let epoch = beginPlaybackSession()
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            try? await self.startCurrentItem(epoch: epoch, startSeconds: max(0, target), autoPlay: wasPlaying, skipTrackRefresh: true)
+        guard autoMix.blend != nil else { return false }
+        if autoMix.pendingPromotion == nil, !autoMix.incomingAdopted {
+            autoMixAdoptIncoming()
         }
-        return true
+        stopAutoMixBlend()
+        scheduleAutoMixPlanning()
+        return false
     }
 
     private static let autoMixLogger = Logger(subsystem: "vellum.perf", category: "automix")
@@ -4281,6 +4490,9 @@ extension PlaybackEngine {
         let next = upcomingQueueIndices(limit: 1).first.flatMap { queue.indices.contains($0) ? queue[$0] : nil }
         let model = autoMixAnalysisAvailable ? "model loaded" : "MODEL MISSING"
         let last = lastDecision ?? autoMix.decisionLog.last ?? "no decision yet"
-        autoMixDiagnostic = "\(model) · now: \(state(of: activeTrack)) · next: \(state(of: next)) · last: \(last)"
+        let line = "\(model) · now: \(state(of: activeTrack)) · next: \(state(of: next)) · last: \(last)"
+        // `@Published`: assign only on change, since this runs on every planning pass and every
+        // publish re-runs every visible body.
+        if autoMixDiagnostic != line { autoMixDiagnostic = line }
     }
 }

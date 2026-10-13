@@ -323,8 +323,12 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         ]
     }
 
+    /// Every album, walked with `StartIndex` (`AlbumCatalogPager`) up to `limit`, so a large
+    /// Jellyfin library is neither one giant request nor a single truncated page.
     func albums(limit: Int) async throws -> [AlbumSummary] {
-        try await fetchAlbumSummaries(limit: limit, sortBy: "SortName", sortDescending: false)
+        try await AlbumCatalogPager.fetchAll(maxItems: limit) { offset, size in
+            try await fetchAlbumSummaries(limit: size, sortBy: "SortName", sortDescending: false, startIndex: offset)
+        }
     }
 
     func recentlyAdded(limit: Int) async throws -> [AlbumSummary] {
@@ -335,7 +339,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
         try await fetchAlbumSummaries(limit: limit, sortBy: "DatePlayed", sortDescending: true)
     }
 
-    private func fetchAlbumSummaries(limit: Int, sortBy: String, sortDescending: Bool) async throws -> [AlbumSummary] {
+    private func fetchAlbumSummaries(limit: Int, sortBy: String, sortDescending: Bool, startIndex: Int = 0) async throws -> [AlbumSummary] {
         let itemsURL = apiURL("Users", userId, "Items")
         var comps = URLComponents(url: itemsURL, resolvingAgainstBaseURL: false)!
         comps.queryItems = [
@@ -344,6 +348,7 @@ final class JellyfinMusicClient: MusicLibraryProviding {
             URLQueryItem(name: "SortBy", value: sortBy),
             URLQueryItem(name: "SortOrder", value: sortDescending ? "Descending" : "Ascending"),
             URLQueryItem(name: "Limit", value: "\(limit)"),
+            URLQueryItem(name: "StartIndex", value: "\(max(0, startIndex))"),
             URLQueryItem(name: "Fields", value: Self.jellyfinAlbumListFields),
         ]
         var req = URLRequest(url: comps.url!)
@@ -1457,7 +1462,8 @@ final class JellyfinMusicClient: MusicLibraryProviding {
             artworkURL: art,
             isPublic: isPublic,
             libraryAddedDate: added,
-            serverUpdatedDate: updated
+            serverUpdatedDate: updated,
+            comment: dict["Overview"] as? String
         )
     }
 

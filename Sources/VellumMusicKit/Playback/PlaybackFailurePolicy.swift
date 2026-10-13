@@ -147,6 +147,17 @@ enum PlaybackFailurePolicy {
     /// The error plus everything under `NSUnderlyingErrorKey`, outermost first. AVFoundation
     /// nests two or three deep (`AVFoundationErrorDomain` → `NSURLErrorDomain` /
     /// `NSOSStatusErrorDomain`), and the useful code is always the innermost one.
+    /// One line for the log: every domain and code in the underlying chain, outermost first, with
+    /// the outermost description. This is what the device test reads to learn *why* a candidate
+    /// was rejected — the classification above is too coarse for that question.
+    static func describe(_ error: Error?) -> String {
+        let chain = underlyingChain(of: error).reversed()
+        guard !chain.isEmpty else { return "no error object" }
+        let links = chain.map { "\($0.domain) \($0.code)" }.joined(separator: " ← ")
+        let description = error.map { ($0 as NSError).localizedDescription } ?? ""
+        return description.isEmpty ? links : "\(links) (\(description))"
+    }
+
     private static func underlyingChain(of error: Error?, limit: Int = 5) -> [NSError] {
         guard let error else { return [] }
         var chain: [NSError] = []

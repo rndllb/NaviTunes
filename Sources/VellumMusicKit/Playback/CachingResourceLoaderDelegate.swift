@@ -36,6 +36,32 @@ final class CachingResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
         return true
     }
 
+    /// Query names that ask the server to transcode. Navidrome answers any of these with
+    /// `Accept-Ranges: none`, no `Content-Length` and the file replayed from byte 0 whatever
+    /// `Range` says (`core/stream/media_streamer.go`, `Serve`, non-seekable branch); Jellyfin's
+    /// transcoding paths behave the same. This proxy needs a total length and honoured ranges, so
+    /// such URLs must never be routed through it — T638 issue 2, where the mp3 and aac fallbacks
+    /// were abandoned within the same second they were requested.
+    static let transcodeQueryNames: Set<String> = [
+        "maxbitrate", "audiobitrate", "audiocodec", "audiosamplerate", "maxaudiobitdepth",
+        "transcodingcontainer", "transcodingprotocol", "estimatecontentlength",
+    ]
+
+    /// Whether the server will serve this URL as a plain file with byte ranges. True only when
+    /// no transcode parameter is present: `format` absent or `raw`, no bitrate cap, and (Jellyfin)
+    /// `static` absent or `true`.
+    static func servesByteRanges(_ url: URL) -> Bool {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+        for item in components.queryItems ?? [] {
+            let name = item.name.lowercased()
+            let value = item.value?.lowercased() ?? ""
+            if transcodeQueryNames.contains(name) { return false }
+            if name == "format", !value.isEmpty, value != "raw" { return false }
+            if name == "static", value != "true" { return false }
+        }
+        return true
+    }
+
     /// Rewrite an http(s) URL onto a private scheme so `AVURLAsset` hands loading
     /// to this delegate instead of fetching directly.
     static func customSchemeURL(from url: URL) -> URL? {

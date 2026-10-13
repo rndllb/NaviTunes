@@ -110,7 +110,9 @@ public final class AppModel: ObservableObject {
     public static weak var shared: AppModel?
 
     /// Default album fetch size for library grid / sync (raised for large Jellyfin / Navidrome libraries).
-    public static let defaultLibraryAlbumFetchLimit = 500
+    /// Ceiling on the in-memory server catalog, walked page by page. Not a page size: 500 was
+    /// the whole catalog before T643 (one `getAlbumList2` page against 13,300 albums, T638).
+    public static let defaultLibraryAlbumFetchLimit = 50_000
     @Published var accentPresetId: String = UserDefaults.standard.string(forKey: AppAccentPreset.accentPresetIdKey) ?? AppAccentPreset.defaultId {
         didSet {
             // Accent color and app icon are independent — changing the accent must NOT change
@@ -4888,7 +4890,10 @@ public final class AppModel: ObservableObject {
         return ("cover.jpg", "image/jpeg")
     }
 
-    func renamePlaylist(playlistId: String, name: String, isPublic: Bool? = nil) async throws {
+    /// `comment` is the playlist description: saved on Navidrome through `updatePlaylist`;
+    /// Jellyfin's playlist update has no such field, so it is ignored there (the edit sheet does
+    /// not offer the row on Jellyfin).
+    func renamePlaylist(playlistId: String, name: String, comment: String? = nil, isPublic: Bool? = nil) async throws {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw NSError(domain: "VellumMusic", code: 0, userInfo: [NSLocalizedDescriptionKey: "Playlist name cannot be empty."])
@@ -4903,7 +4908,7 @@ public final class AppModel: ObservableObject {
             guard let client = navidrome else {
                 throw URLError(.userAuthenticationRequired)
             }
-            try await client.renamePlaylist(playlistId: playlistId, name: trimmed, isPublic: isPublic)
+            try await client.renamePlaylist(playlistId: playlistId, name: trimmed, comment: comment, isPublic: isPublic)
         }
         await refreshLibraryPlaylists()
     }

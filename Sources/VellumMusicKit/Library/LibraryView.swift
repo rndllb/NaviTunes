@@ -126,7 +126,12 @@ struct LibraryView: View {
         LibraryPinStore.resolvedItems(raw: pinnedStorage, app: app)
     }
 
-    private var recentItems: [RecentLibraryItem] {
+    /// How many Recently Added items are visible; grows by `LibraryRecentPaging.pageSize` as the
+    /// user scrolls near the end of the grid. The old fixed `.prefix(60)` made every item past
+    /// the 60th unreachable.
+    @State private var recentItemsLimit = LibraryRecentPaging.pageSize
+
+    private var recentItemsAll: [RecentLibraryItem] {
         // Three date sources, all resolved against the in-memory catalogs:
         //   1. Albums explicitly in the magic-playlist comment → per-user add date.
         //   2. Playlists explicitly in the magic-playlist comment → per-user add date.
@@ -162,7 +167,6 @@ struct LibraryView: View {
 
         return dated
             .sorted { $0.added > $1.added }
-            .prefix(60)
             .map(\.item)
     }
 
@@ -385,7 +389,8 @@ struct LibraryView: View {
     /// doesn't shift when the items land.
     @ViewBuilder
     private var recentlyAddedSectionBody: some View {
-        let items = recentItems
+        let all = recentItemsAll
+        let items = Array(all.prefix(recentItemsLimit))
         if items.isEmpty {
             if app.isResolvingLibraryMembership
                 && app.libraryAlbumEntries.isEmpty
@@ -396,8 +401,16 @@ struct LibraryView: View {
             }
         } else {
             LazyVGrid(columns: recentColumns, spacing: 20) {
-                ForEach(items) { item in
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                     recentItemLink(item)
+                        // Infinite scroll (T664): when an item near the end of the visible grid
+                        // appears, the next page is added underneath it. Nothing to tap.
+                        .onAppear {
+                            if LibraryRecentPaging.shouldLoadMore(appearedIndex: index, visible: items.count, total: all.count),
+                               let next = LibraryRecentPaging.nextLimit(current: recentItemsLimit, total: all.count) {
+                                recentItemsLimit = next
+                            }
+                        }
                 }
             }
             .padding(.horizontal, 20)

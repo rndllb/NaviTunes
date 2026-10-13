@@ -235,49 +235,45 @@ struct NowPlayingView: View {
         for track: Track,
         cornerRadius: CGFloat,
         maxDecodePixels: CGFloat = 768,
+        shadow: AutoMixCoverShadow? = nil,
     ) -> some View {
-        AlbumArtworkView(
-            url: artworkURL(for: track),
-            meshArtworkSeed: isLiveRadio(track)
-                ? RadioStationMeshArtwork.seedKey(for: track)
-                : nil,
-            cornerRadius: cornerRadius,
-            maxDecodePixels: maxDecodePixels,
-            showsSubtleBorder: false,
-        )
-        // AutoMix: during the audible overlap the next track's cover fades in over this one, in
-        // step with the audio. With Reduce Motion it switches at the midpoint instead of fading.
-        .overlay {
-            if let visual = player.autoMixVisual, visual.isPartOfBlend(track.id) {
-                // Whichever side the cursor is on, the base shows the outgoing cover and this
-                // overlay the incoming one, so the cover never jumps at the promotion.
-                AlbumArtworkView(
-                    url: artworkURL(for: visual.outgoing),
-                    meshArtworkSeed: nil,
-                    cornerRadius: cornerRadius,
-                    maxDecodePixels: maxDecodePixels,
-                    showsSubtleBorder: false,
-                )
-                .allowsHitTesting(false)
-                AlbumArtworkView(
-                    url: artworkURL(for: visual.incoming),
-                    meshArtworkSeed: nil,
-                    cornerRadius: cornerRadius,
-                    maxDecodePixels: maxDecodePixels,
-                    showsSubtleBorder: false,
-                )
-                .opacity(autoMixVisualOpacity(visual.progress))
-                .animation(reduceMotion ? nil : .linear(duration: 0.35), value: visual.progress)
-                .allowsHitTesting(false)
-            }
+        // During a blend the base shows the outgoing cover with the incoming one fading in on
+        // top (held until the incoming song takes over, then half a second). The drop shadow is
+        // cast by the base cover alone, under those layers, so it is one and the same before,
+        // during and after a blend (T681).
+        let visual = player.autoMixVisual.flatMap { $0.isPartOfBlend(track.id) ? $0 : nil }
+        return AutoMixCoverCrossfade(
+            isBlending: visual != nil,
+            progress: visual?.progress ?? 0,
+            reduceMotion: reduceMotion,
+            shadow: shadow,
+        ) {
+            AlbumArtworkView(
+                url: artworkURL(for: track),
+                meshArtworkSeed: isLiveRadio(track)
+                    ? RadioStationMeshArtwork.seedKey(for: track)
+                    : nil,
+                cornerRadius: cornerRadius,
+                maxDecodePixels: maxDecodePixels,
+                showsSubtleBorder: false,
+            )
+        } outgoing: {
+            AlbumArtworkView(
+                url: visual.flatMap { artworkURL(for: $0.outgoing) },
+                meshArtworkSeed: nil,
+                cornerRadius: cornerRadius,
+                maxDecodePixels: maxDecodePixels,
+                showsSubtleBorder: false,
+            )
+        } incoming: {
+            AlbumArtworkView(
+                url: visual.flatMap { artworkURL(for: $0.incoming) },
+                meshArtworkSeed: nil,
+                cornerRadius: cornerRadius,
+                maxDecodePixels: maxDecodePixels,
+                showsSubtleBorder: false,
+            )
         }
-    }
-
-    /// 0…1 opacity for the incoming track's chrome during a blend: the audio's own equal-power
-    /// curve so picture and sound cross at the same moment; a snap at the midpoint under Reduce Motion.
-    private func autoMixVisualOpacity(_ progress: Double) -> Double {
-        if reduceMotion { return progress >= 0.5 ? 1 : 0 }
-        return sin(min(1, max(0, progress)) * .pi / 2)
     }
 
     /// The artist region (a menu button, or plain text) fading out while the incoming track's
@@ -298,7 +294,7 @@ struct NowPlayingView: View {
                     .lineLimit(1)
                     .opacity(p)
             }
-            .animation(reduceMotion ? nil : .linear(duration: 0.35), value: visual.progress)
+            .animation(reduceMotion ? nil : .linear(duration: AutoMixVisualState.crossfadeDuration), value: visual.progress)
         } else {
             content()
         }
@@ -553,19 +549,26 @@ struct NowPlayingView: View {
             #if os(iOS)
             .toolbar(.hidden, for: .navigationBar)
             #endif
+            .task(id: player.autoMixVisual?.incoming.id) {
+                // Decode the incoming palette while the outgoing visuals are still on screen.
+                guard app.playerBackdropEnabled,
+                      let incoming = player.autoMixVisual?.incoming,
+                      let url = artworkURL(for: incoming) else { return }
+                _ = await ArtworkDynamicGradient.analyzeBackdrop(from: url)
+            }
             .task(id: nowPlayingBackdropTaskKey) {
                 guard app.playerBackdropEnabled else {
                     await MainActor.run { backdropPalette = .listSurface(colorScheme: colorScheme) }
                     return
                 }
-                // During a blend: the incoming track's palette, animated over the overlap that is
-                // left so the colours finish crossing when the audio does. Reduce Motion: no animation.
                 let blend = player.autoMixVisual
-                let paletteTrack = blend?.incoming ?? player.activeTrack
-                let fade: Animation? = (blend != nil && !reduceMotion) ? .linear(duration: max(0.3, blend!.remaining)) : nil
+                let paletteTrack = autoMixBackdropTrack
+                let fade: Animation? = (blend?.progress == 1 && !reduceMotion)
+                    ? .linear(duration: AutoMixVisualState.crossfadeDuration) : nil
                 if let url = artworkURL(for: paletteTrack) {
                     let p: ArtworkDynamicGradient.BackdropPalette
                     if let cached = ArtworkDynamicGradient.cachedBackdrop(for: url) { p = cached } else { p = await ArtworkDynamicGradient.analyzeBackdrop(from: url) }
+                    guard !Task.isCancelled else { return }
                     await MainActor.run {
                         if let fade { withAnimation(fade) { backdropPalette = p } } else { backdropPalette = p }
                     }
@@ -597,14 +600,15 @@ struct NowPlayingView: View {
         }
     }
 
+    private var autoMixBackdropTrack: Track? {
+        guard let visual = player.autoMixVisual else { return player.activeTrack }
+        return visual.progress == 1 ? visual.incoming : visual.outgoing
+    }
+
     private var nowPlayingBackdropTaskKey: String {
-        // Includes the blend's incoming track: without it this task only re-ran when the active
-        // track changed, i.e. after the audio overlap had ended, so the backdrop never faded
-        // during the blend (device report, 2026-10-09).
-        if let visual = player.autoMixVisual {
-            return "blend-\(visual.incoming.id)-\(app.playerBackdropEnabled)-\(colorScheme)"
-        }
-        guard let track = player.activeTrack else { return "none-\(colorScheme)" }
+        // Stay on the outgoing palette until promotion, then animate once. Using the same key
+        // after the overlap avoids restarting the palette task when the visual pair is cleared.
+        guard let track = autoMixBackdropTrack else { return "none-\(colorScheme)" }
         if let url = artworkURL(for: track) {
             return "url-\(url.absoluteString)-\(app.playerBackdropEnabled)-\(colorScheme)"
         }
@@ -770,15 +774,15 @@ struct NowPlayingView: View {
                     for: track,
                     cornerRadius: 6,
                     maxDecodePixels: Self.rowArtworkDecodePixels,
+                    shadow: AutoMixCoverShadow(
+                        color: .black.opacity(backdropPalette.prefersDarkHeroChrome ? 0.22 : 0.45),
+                        radius: 6,
+                        y: 4,
+                    ),
                 )
                     .frame(width: 56, height: 56)
                     .coverZoomHeroAnchor(id: NowPlayingCoverZoom.id, cornerRadius: 6)
                     .nowPlayingHeroFlightHiding()
-                    .shadow(
-                        color: .black.opacity(backdropPalette.prefersDarkHeroChrome ? 0.22 : 0.45),
-                        radius: 6,
-                        y: 4,
-                    )
                     .transition(.identity)
                 }
             }
@@ -1487,13 +1491,16 @@ struct NowPlayingView: View {
 
         return HStack {
             Spacer(minLength: 0)
-            artworkView(for: track, cornerRadius: 12)
+            artworkView(
+                for: track,
+                cornerRadius: 12,
+                shadow: AutoMixCoverShadow(color: .black.opacity(backdropPalette.prefersDarkHeroChrome ? 0.22 : 0.45), radius: 20, y: 12),
+            )
                 .frame(width: base, height: base)
                 .matchedGeometryEffect(id: "nowPlayingArtwork", in: artworkNamespace)
                 .scaleEffect(player.isPlaying ? playingScale : pausedScale, anchor: .center)
                 .animation(.smooth(duration: 0.5), value: player.isPlaying)
                 .frame(width: maxSide, height: maxSide)
-                .shadow(color: .black.opacity(backdropPalette.prefersDarkHeroChrome ? 0.22 : 0.45), radius: 20, y: 12)
             Spacer(minLength: 0)
         }
         .padding(.top, 14)
@@ -1574,7 +1581,15 @@ struct NowPlayingView: View {
                 // .animation(value: isPlaying) context only sees the scale,
                 // not the morph's frame/position/shadow changes.
                 if !inQueue || !queueArtworkHandedOff || holdsChrome {
-                    artworkView(for: track, cornerRadius: cornerRadius)
+                    artworkView(
+                        for: track,
+                        cornerRadius: cornerRadius,
+                        shadow: AutoMixCoverShadow(
+                            color: .black.opacity(backdropPalette.prefersDarkHeroChrome ? 0.22 : 0.45),
+                            radius: compact ? 6 : 20,
+                            y: compact ? 4 : 12,
+                        ),
+                    )
                     .frame(width: artworkSize, height: artworkSize)
                     // Destination rect for the mini-player cover zoom. The shared header is the
                     // one artwork that is on screen when the player opens and closes.
@@ -1583,11 +1598,6 @@ struct NowPlayingView: View {
                     // ever on screen. Observes a single small object — not the player's state.
                     .nowPlayingHeroFlightHiding()
                     .modifier(PlayPulseScale(scale: playPulseScale, isPlaying: app.player.isPlaying))
-                    .shadow(
-                        color: .black.opacity(backdropPalette.prefersDarkHeroChrome ? 0.22 : 0.45),
-                        radius: compact ? 6 : 20,
-                        y: compact ? 4 : 12,
-                    )
                     .transition(.asymmetric(
                         insertion: .modifier(active: arrival, identity: NowPlayingArtworkArrival())
                             .animation(queueArtworkGeometry.exitRow == nil && !compact
