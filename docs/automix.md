@@ -86,6 +86,16 @@ notification for any item that is not the bound transport item, instead of readi
 incoming song's natural end and advancing off it (T677 c5, "sometimes the automixer kills the
 song stream after its transition is over").
 
+The blend's clock is coupled to the players (T696). A pause that does not come through the engine — an
+interruption, headphones unplugged, a Bluetooth route gone — stops the players but used to leave the blend
+running on the host clock, reporting playing, finishing the overlap in silence and adopting a player that had
+never started. Now a `.paused` on the transport during an un-paused blend, and the interruption's `.began`,
+pause the blend as a whole; `.ended` with `.shouldResume` resumes both players together. The outgoing player's
+`automaticallyWaitsToMinimizeStalling` is cleared when the blend is armed, because `setRate(_:time:atHostTime:)`
+raises on a player that has it set and a streamed song's queue player keeps that default. An abort that keeps the
+incoming (a scrub or the toggle after promotion) swaps in the plain mix exactly as settling does, and a queue edit
+that moves the blend's target out of the next slot abandons an un-promoted blend at once.
+
 While the toggle is off, `PlaybackEngine` does not touch any of this: no coordinator calls, no
 planning, no second transport. The `AVQueuePlayer` path costs exactly what it did before.
 
