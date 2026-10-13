@@ -270,13 +270,20 @@ enum TransitionPlanner {
               let ib = b.beats.firstIndex(where: { $0 >= mixIn - 0.001 }), abs(b.beats[ib] - mixIn) <= 0.05
         else { return [] }
         let bpb = a.beatsPerBar
+        // B beats per A bar. `octave` is B's grid relative to A's after the ½/×1/×2 fold: 2 when
+        // B's tracker counted double time (one A bar spans two B bars, 2·bpb beats), 0.5 when it
+        // counted half time (one A bar spans half a B bar, bpb/2 beats), 1 otherwise. The old
+        // `stepB = octave == 0.5 ? 2 : 1` had both octave cases inverted, so every half/double-time
+        // pair fell back to the constant rate — the drift this lock exists to remove (T643 c3).
         let octave = (meanRate * b.tempo / a.tempo * 2).rounded() / 2
-        let stepB = octave == 0.5 ? 2 : 1
+        let stepBeats = Double(bpb) * octave
+        guard octave > 0, stepBeats >= 1, stepBeats == stepBeats.rounded() else { return [] }
+        let stepB = Int(stepBeats)
         let cap = thresholds.maxTempoDeviation
         var schedule: [RateSegment] = []
         for k in 0 ..< bars {
             let a0 = ia + k * bpb, a1 = ia + (k + 1) * bpb
-            let b0 = ib + k * bpb * stepB, b1 = ib + (k + 1) * bpb * stepB
+            let b0 = ib + k * stepB, b1 = ib + (k + 1) * stepB
             guard a1 < a.beats.count, b1 < b.beats.count else { return [] }
             let la = a.beats[a1] - a.beats[a0], lb = b.beats[b1] - b.beats[b0]
             guard la > 0, lb > 0 else { return [] }

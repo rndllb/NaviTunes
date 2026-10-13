@@ -47,6 +47,7 @@ final class CoreMLBeatAnalyzer: TransitionAnalyzing, @unchecked Sendable {
     func analyze(fileURL: URL, trackId: String) async throws -> TransitionMetadata {
         guard let modelURL else { throw TransitionAnalysisError.modelUnavailable }
         let decoded = try BeatThisFeatures.decodeMono(fileURL: fileURL, targetRate: Self.sampleRate)
+        guard !decoded.samples.isEmpty else { throw TransitionAnalysisError.unreadableAudio }
         try Task.checkCancellation()
         let mel = BeatThisFeatures.logMel(samples: decoded.samples, sampleRate: Self.sampleRate)
         try Task.checkCancellation()

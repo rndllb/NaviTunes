@@ -221,6 +221,25 @@ struct TransitionPlannerTests {
         #expect(lateCross == .defaultTransition(.analysisLate))
     }
 
+    // MARK: Seeking (T633 c2)
+
+    @Test("a seek to before the cue still blends; a seek past the cue gets the default transition")
+    func seekRePlans() throws {
+        let a = Self.dance123
+        let plan = try #require(TransitionPlanner.plan(from: a, to: Self.dance128).blendPlan)
+        // Dragged back to 30 s: well before the cue, the same blend is armed again.
+        let early = TransitionPlanner.plan(from: a, to: Self.dance128, pending: nil, outgoingPosition: 30)
+        #expect(early.blendPlan == plan)
+        // Dragged to 10 s before the cue: still inside the plannable window.
+        let close = TransitionPlanner.plan(from: a, to: Self.dance128, pending: nil, outgoingPosition: plan.outgoingMixOut - 10)
+        #expect(close.blendPlan == plan)
+        // Dragged past the cue (or inside the 2 s handoff lead): the default transition, no blend.
+        for position in [plan.outgoingMixOut - 1, plan.outgoingMixOut + 3, a.duration - 1] {
+            let late = TransitionPlanner.plan(from: a, to: Self.dance128, pending: nil, outgoingPosition: position)
+            #expect(late == .defaultTransition(.analysisLate), "position \(position)")
+        }
+    }
+
     // MARK: Thresholds and trims
 
     @Test("stretch budget is a threshold, not a constant")
@@ -326,8 +345,12 @@ struct AutoMixAutomationTests {
     @Test("crossfade style: no stretch, no bass swap, filter sweep closes on A and opens on B")
     func crossfadeFrames() {
         let a = AutoMixAutomation(crossfade: Self.crossfade)
-        #expect(a.settleDuration == 0)
-        #expect(a.totalDuration == 8)
+        // +2 dB of loudness trim: the settle is the 2 s trim glide (T673); untrimmed it is 0.
+        #expect(a.settleDuration == 2)
+        #expect(a.totalDuration == 10)
+        let flat = CrossfadePlan(outgoingMixOut: 200, incomingMixIn: 4, duration: 8, incomingGainDB: 0, filterSweep: true, reason: .tempoMismatch)
+        #expect(AutoMixAutomation(crossfade: flat).settleDuration == 0)
+        #expect(AutoMixAutomation(crossfade: flat).totalDuration == 8)
         let start = a.frame(at: 0)
         let mid = a.frame(at: 4)
         let end = a.frame(at: 8)
@@ -353,6 +376,31 @@ struct AutoMixAutomationTests {
     @Test("incoming trim converts dB to linear")
     func trim() {
         #expect(abs(AutoMixAutomation(plan: Self.plan).incomingTrimLinear - 0.7079) < 0.001)
+    }
+
+    /// T673: the loudness-match trim held the incoming track below (or above) its own level for
+    /// the rest of the song. It now rides the frame: the match gain through the overlap, then a
+    /// glide, linear in dB, back to unity over the settle, so the handback to the queue player
+    /// (which plays at unity) is a level the ear has already arrived at.
+    @Test("the trim is the match gain through the overlap and glides to unity over the settle")
+    func trimGlide() {
+        // Beat-matched, −3 dB, 16 s overlap, 8 s rate glide: the trim glides over the same 8 s.
+        let a = AutoMixAutomation(plan: Self.plan)
+        #expect(abs(a.frame(at: -1).incomingTrim - 0.7079) < 0.001)
+        #expect(abs(a.frame(at: 8).incomingTrim - 0.7079) < 0.001)
+        #expect(abs(a.frame(at: 16).incomingTrim - 0.7079) < 0.001)
+        #expect(abs(a.frame(at: 20).incomingTrim - 0.8414) < 0.001)   // −1.5 dB, halfway in dB
+        #expect(a.frame(at: 24).incomingTrim == 1)
+        #expect(a.frame(at: 60).incomingTrim == 1)
+        // Crossfade, +2 dB, 8 s fade: a 2 s glide after it.
+        let c = AutoMixAutomation(crossfade: Self.crossfade)
+        #expect(abs(c.frame(at: 8).incomingTrim - 1.2589) < 0.001)
+        #expect(abs(c.frame(at: 9).incomingTrim - 1.1220) < 0.001)    // +1 dB
+        #expect(c.frame(at: 10).incomingTrim == 1)
+        // Untrimmed: unity throughout, and the rate glide alone decides the settle.
+        let flat = CrossfadePlan(outgoingMixOut: 200, incomingMixIn: 4, duration: 8, incomingGainDB: 0, filterSweep: false, reason: .tempoMismatch)
+        #expect(AutoMixAutomation(crossfade: flat).frame(at: 4).incomingTrim == 1)
+        #expect(AutoMixAutomation(crossfade: flat).frame(at: 8.5).incomingTrim == 1)
     }
 }
 

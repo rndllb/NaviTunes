@@ -37,6 +37,9 @@ struct MelSpectrogram {
 
     /// `[frame][melBands]`, one frame per `hop` samples, centred like torchaudio (`center=True`).
     func logMelFrames(_ samples: [Float], logMultiplier: Float) -> [[Float]] {
+        // The reflect padding below reads `samples[count - 1]`; an empty decode (a file that opens
+        // but has no frames) indexed -1 and crashed the analysis task (T643 c3).
+        guard !samples.isEmpty else { return [] }
         let half = fftSize / 2
         let bins = half + 1
         // Reflect-pad by fftSize/2 on both sides.

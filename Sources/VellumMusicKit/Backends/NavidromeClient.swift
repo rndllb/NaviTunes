@@ -88,8 +88,12 @@ final class NavidromeClient: MusicLibraryProviding {
 
     func httpHeadersForMediaRequests() -> [String: String] { [:] }
 
+    /// Every album on the server in title order, walked page by page (`AlbumCatalogPager`) up
+    /// to `limit`. One page of 500 used to be the whole in-memory catalog — T638 issue 1.
     func albums(limit: Int) async throws -> [AlbumSummary] {
-        try await fetchAlbumList2(limit: limit, listType: "alphabeticalByName")
+        try await AlbumCatalogPager.fetchAll(maxItems: limit) { offset, size in
+            try await fetchAlbumList2Page(limit: size, offset: offset, listType: "alphabeticalByName").albums
+        }
     }
 
     func recentlyAdded(limit: Int) async throws -> [AlbumSummary] {
@@ -1371,15 +1375,21 @@ final class NavidromeClient: MusicLibraryProviding {
     /// URL limit while still collapsing a 150-song purge into three requests.
     static let playlistRemovalChunkSize = 50
 
-    func renamePlaylist(playlistId: String, name: String, isPublic: Bool? = nil) async throws {
-        var query: [String: String] = [
-            "playlistId": playlistId,
-            "name": name,
-        ]
-        if let isPublic {
-            query["public"] = isPublic ? "true" : "false"
-        }
-        _ = try await subsonicRequest(path: "updatePlaylist", query: query)
+    /// The `updatePlaylist` query for a metadata edit. `comment` nil leaves the server's comment
+    /// untouched; an empty string clears it. No length limit is applied — Navidrome has none in
+    /// its handler, core, persistence or schema (T638 issue 3; a 9,667-char comment exists).
+    static func updatePlaylistQuery(playlistId: String, name: String, comment: String?, isPublic: Bool?) -> [String: String] {
+        var query: [String: String] = ["playlistId": playlistId, "name": name]
+        if let comment { query["comment"] = comment }
+        if let isPublic { query["public"] = isPublic ? "true" : "false" }
+        return query
+    }
+
+    func renamePlaylist(playlistId: String, name: String, comment: String? = nil, isPublic: Bool? = nil) async throws {
+        _ = try await subsonicRequest(
+            path: "updatePlaylist",
+            query: Self.updatePlaylistQuery(playlistId: playlistId, name: name, comment: comment, isPublic: isPublic),
+        )
     }
 
     func deletePlaylist(playlistId: String) async throws {
@@ -1681,6 +1691,7 @@ final class NavidromeClient: MusicLibraryProviding {
             isPublic: isPublic,
             libraryAddedDate: created,
             serverUpdatedDate: updated,
+            comment: navidromeCoerceString(dict["comment"]),
         )
     }
 
@@ -1694,6 +1705,7 @@ final class NavidromeClient: MusicLibraryProviding {
             isPublic: isPublic,
             libraryAddedDate: summary.libraryAddedDate,
             serverUpdatedDate: summary.serverUpdatedDate,
+            comment: summary.comment,
         )
     }
 

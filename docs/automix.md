@@ -49,13 +49,42 @@ fade fits inside both tracks.
 
 ### Playback
 
-`AutoMixAudioEnginePlayer` is a two-deck `AVAudioEngine` graph, per deck
-`AVAudioPlayerNode → AVAudioUnitTimePitch → AVAudioUnitEQ(lowShelf, lowPass) → mainMixer`. It
-exists only from the handoff (2 s before the mix-out) until the queue player takes over again — a
-skip, a seek, the toggle going off, or the last blended track ending. Consecutive blends chain on
-the same engine (the incoming deck becomes the outgoing deck once the rate has settled). The
-incoming file is scheduled with an `AVAudioTime` on the outgoing node's render clock, so the
-downbeat lands where the planner said; the knobs are driven from `AutoMixAutomation` at 50 Hz.
+`AutoMixPlayerBlend` plays one transition on two `AVPlayer`s and no audio engine (T677). The
+outgoing song stays on the queue player it has been playing on; its equal-power fade is the
+player's `volume` and its bass hand-over and filter sweep are two extra biquads in its equalizer
+tap (`EqualizerAudioTap.setTransition`). The incoming song is built through the ordinary item
+path (`makePlaybackAsset` on its local file, `TapPlayerItem` with the live EQ), with its whole
+gain curve — equal-power fade × loudness trim, then the trim glide — baked into its audio mix as
+sample-accurate volume ramps, its time-stretch as the player's `rate` on a `.spectral` item, and
+its bass/filter on its own tap. It is readied, seeked to the mix-in, pre-rolled at the opening
+rate, and started with `setRate(_:time:atHostTime:)` at the host time the queue player reaches
+the mix-out (measured on the simulator: starts within 2–4 ms, two players agree to 0.0 ms). The
+automation runs at 50 Hz on the host clock, as before. When the overlap has completed the
+outgoing is silent and `PlaybackEngine` **adopts** the incoming player as the queue player — the
+item that started the overlap simply keeps playing; once the rate is back at 1.0 and the trim at
+unity the ramped mix is swapped for the plain one (same tap, not re-prepared) and the blend is
+over. There is no transport crossing at either end: the previous design's two 80 ms ramps
+(queue player → engine at the handoff, engine → queue player at the handback) were each a
+measurable gap, and the engine's cold start alone put its deck 47 ms behind the player.
+
+The overlap start is computed once, from where the outgoing stood when the blend was armed, and
+then checked: every tick of the lead-in, once the outgoing player is seen advancing, its position
+is compared with the one the plan implies and the incoming start is re-scheduled on any drift
+beyond 5 ms (a buffering stall, or the few hundred ms right after `play()` in which `AVPlayer`
+reports rate 1 before its timebase moves — measured as a constant 300 ms offset through the whole
+overlap before this). A pause stops both players and the overlap clock with them; `resume`
+restarts them together at one host time (a pause in the lead-in re-schedules the incoming start
+against the outgoing's position). A seek, a skip or the toggle going off abandons the blend;
+after promotion the incoming player is adopted first, so the song the user is looking at is the
+one that seeks.
+
+A crossfade planned to a short outro runs to the outgoing song's last sample, so the outgoing
+item ends at the very moment the overlap completes. Its end notification can then be delivered
+*after* the adoption removed its observer and stopped its player (`NotificationCenter` delivers a
+queued block observer even after `removeObserver`); `handleEnded` ignores an end or failure
+notification for any item that is not the bound transport item, instead of reading it as the
+incoming song's natural end and advancing off it (T677 c5, "sometimes the automixer kills the
+song stream after its transition is over").
 
 While the toggle is off, `PlaybackEngine` does not touch any of this: no coordinator calls, no
 planning, no second transport. The `AVQueuePlayer` path costs exactly what it did before.
@@ -73,7 +102,7 @@ planning, no second transport. The `AVQueuePlayer` path costs exactly what it di
 | `Playback/AutoMix/MelSpectrogram.swift` | log-mel front end (vDSP) matching the training preprocessing; BS.1770 meter |
 | `Playback/AutoMix/CoreMLChunkRunner.swift` | chunked inference with the reference border handling |
 | `Playback/AutoMix/IntroOutroHeuristic.swift` | the phone-side section rule — pure |
-| `Playback/AutoMix/AutoMixAudioEnginePlayer.swift` | the two-deck transport |
+| `Playback/AutoMix/AutoMixPlayerBlend.swift` | one transition on two `AVPlayer`s (T677; replaced the two-deck `AVAudioEngine` transport) |
 | `Playback/AutoMix/AutoMixStreamPrefetcher.swift` | early fetch of the next queued stream into the stream cache (AutoMix on only) |
 | `Playback/PlaybackEngine.swift` (AutoMix extension at the end) | planning hook, handoff, promote, hand-back |
 | `Resources/BeatThisSmall.mlpackage` | the converted model (SwiftPM compiles it to `BeatThisSmall.mlmodelc`) |
@@ -137,12 +166,12 @@ plus ~1.2 GB for All-In-One.
   (≈ 15 s at 125 BPM) before the end. With the 14 s seed estimate, a 4-min song queued later than
   about 31 s before the end of the current one gets the default transition; with the projected
   A15 figure (≈ 10 s) that becomes ≈ 27 s. Songs queued earlier than that, or already cached, blend.
-- **The engine exists only for the window.** Per transition: overlap + rate glide. 8 bars at
-  125 BPM = 15.4 s, plus a 4-bar glide = 7.7 s → **23 s** of two-deck time; a crossfade is 8 s.
-  After the glide the outgoing deck is stopped and its file released; the incoming deck is the only
-  work until the next boundary.
+- **The second player exists only for the window.** Per transition: overlap + settle. 8 bars at
+  125 BPM = 15.4 s, plus a 4-bar glide = 7.7 s → **23 s** of two-player time; a crossfade is 8 s
+  plus a 2 s trim glide when the pair was loudness-matched. After the settle the incoming player
+  *is* the queue player (T677); nothing extra runs until the next boundary.
 - **CPU cost of one blend, operation count** (44.1 kHz stereo): two decoders (what the queue player
-  already runs for gapless pre-roll, so one is new), one `AVAudioUnitTimePitch` on the incoming deck
+  already runs for gapless pre-roll, so one is new), the incoming player's `.spectral` time-pitch (T677: the player's own `rate`, the same unit the engine used) on the incoming song
   (the only new DSP of any weight: an STFT-domain stretch, ~2 FFTs of 1024 per 256-sample hop per
   channel ≈ 9 k FFT/s), two 2-band biquad EQs (10 MAC/sample/channel ≈ 0.9 M MAC/s), the mixer, and
   a 50 Hz main-actor timer setting five parameters. For a 23 s window that is ~200 k FFTs and ~20 M
@@ -168,7 +197,7 @@ every analysis, `automix.handoff` and `automix.chain` (events) at every transiti
    one inference — read its duration (the seconds per track on this phone) and the CPU spike
    under it in Time Profiler. Second pass (warm cache): there should be **no** `automix.analyze`
    intervals, only `automix.handoff`/`chain` events, each followed by ~23 s where the audio
-   thread's CPU rises by the two-deck cost.
+   thread's CPU rises by the second player's cost.
 4. Compare Energy Log averages between 2 and 3 (warm). The bar is "not worse than Apple Music's
    AutoMix", which cannot be profiled, so use the by-hand A/B below for that.
 
@@ -225,7 +254,7 @@ pairs: median beat-alignment error 5 ms (constant-stretch beat-matching 90 ms, p
 166 ms and a mean of 768 ms because two baselines landed a whole beat out), the full 8 bars of
 overlap on every pair, the same stretch budget (0–6.1 %, mean 1.7 %), and a loudness jump of
 3.2 LU median with the smallest 1 s step (1.2 LU). The constant-stretch variant is what a single
-`AVAudioUnitTimePitch.rate` gives; the lock is the same unit with its rate set once per bar from
+`AVPlayer.rate` (spectral) gives; the lock is the same unit with its rate set once per bar from
 the two beat grids, which is why it costs nothing extra on the phone. On the six incompatible
 pairs the smooth crossfade halves the loudness jump of the plain fade (3.4 vs 5.8 LU median) and
 its worst step (2.8 vs 4.2 LU); River Man into HUMBLE goes from a 22 LU jump to 4.9 LU.

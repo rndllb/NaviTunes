@@ -9,7 +9,7 @@ import MediaToolbox
 // exclusivity check, and never allocates. That constraint is the reason this file looks like C.
 
 /// Direct-form-I biquad coefficients for one band, normalised by a0.
-struct TapBiquadCoefficients {
+struct TapBiquadCoefficients: Equatable {
     var b0: Float = 1
     var b1: Float = 0
     var b2: Float = 0
@@ -136,6 +136,56 @@ enum TapBiquad {
             a2: Float(a2 / a0),
         )
     }
+
+    /// RBJ low shelf, slope 1. The AutoMix bass swap (T677): the deck that does not own the low
+    /// end is shelved down below `frequency`.
+    static func lowShelf(frequency: Double, gainDB: Float, sampleRate: Double) -> TapBiquadCoefficients {
+        guard sampleRate > 0, frequency > 0, frequency < sampleRate / 2 else { return .identity }
+        if abs(gainDB) < 0.01 { return .identity }
+        let a = pow(10.0, Double(gainDB) / 40.0)
+        let omega = 2.0 * Double.pi * frequency / sampleRate
+        let cosOmega = cos(omega)
+        let sinOmega = sin(omega)
+        let alpha = sinOmega / 2.0 * sqrt(2.0)
+        let twoRootAAlpha = 2.0 * sqrt(a) * alpha
+        let b0 = a * ((a + 1) - (a - 1) * cosOmega + twoRootAAlpha)
+        let b1 = 2 * a * ((a - 1) - (a + 1) * cosOmega)
+        let b2 = a * ((a + 1) - (a - 1) * cosOmega - twoRootAAlpha)
+        let a0 = (a + 1) + (a - 1) * cosOmega + twoRootAAlpha
+        let a1 = -2 * ((a - 1) + (a + 1) * cosOmega)
+        let a2 = (a + 1) + (a - 1) * cosOmega - twoRootAAlpha
+        guard a0 != 0 else { return .identity }
+        return TapBiquadCoefficients(b0: Float(b0 / a0), b1: Float(b1 / a0), b2: Float(b2 / a0), a1: Float(a1 / a0), a2: Float(a2 / a0))
+    }
+
+    /// RBJ low-pass, Q 0.707. The AutoMix crossfade's filter sweep (T677). Identity at or above
+    /// 20 kHz, which is how "no filter" is expressed.
+    static func lowPass(frequency: Double, sampleRate: Double) -> TapBiquadCoefficients {
+        guard sampleRate > 0, frequency > 0, frequency < 20_000, frequency < sampleRate / 2 else { return .identity }
+        let omega = 2.0 * Double.pi * frequency / sampleRate
+        let cosOmega = cos(omega)
+        let alpha = sin(omega) / (2.0 * 0.7071)
+        let b0 = (1 - cosOmega) / 2
+        let b1 = 1 - cosOmega
+        let b2 = (1 - cosOmega) / 2
+        let a0 = 1 + alpha
+        let a1 = -2 * cosOmega
+        let a2 = 1 - alpha
+        return TapBiquadCoefficients(b0: Float(b0 / a0), b1: Float(b1 / a0), b2: Float(b2 / a0), a1: Float(a1 / a0), a2: Float(a2 / a0))
+    }
+
+    /// Magnitude response of one biquad at `frequency`, dB. For tests.
+    static func gainDB(_ c: TapBiquadCoefficients, frequency: Double, sampleRate: Double) -> Double {
+        let w = 2.0 * Double.pi * frequency / sampleRate
+        func mag(_ x0: Double, _ x1: Double, _ x2: Double) -> Double {
+            let re = x0 + x1 * cos(w) + x2 * cos(2 * w)
+            let im = -(x1 * sin(w) + x2 * sin(2 * w))
+            return sqrt(re * re + im * im)
+        }
+        let num = mag(Double(c.b0), Double(c.b1), Double(c.b2))
+        let den = mag(1, Double(c.a1), Double(c.a2))
+        return 20 * log10(max(num / max(den, 1e-12), 1e-12))
+    }
 }
 
 // MARK: - The tap
@@ -175,6 +225,13 @@ final class EqualizerAudioTap {
     /// never re-plans the filter bank.
     private static let bandQ = 1.414
 
+    /// Two bands after the equalizer's ten, driven by `AutoMixPlayerBlend` (T677): the bass-swap
+    /// low shelf at 150 Hz and the crossfade's low-pass sweep. Identity whenever no blend is on.
+    static let transitionBandCount = 2
+    static let transitionShelfHz = 150.0
+    private var transitionBassDB: Float = 0
+    private var transitionLowPassHz: Float?
+
     private static var nextTag: UInt64 = 0
     private static let tagLock = NSLock()
 
@@ -191,7 +248,9 @@ final class EqualizerAudioTap {
         self.trackTitle = trackTitle
         self.gains = EqualizerPreset.normalizedGains(gains)
         self.bypassed = bypassed
-        self.bandCount = EqualizerBand.count
+        // The app's bands, then the two AutoMix transition bands (low shelf, low-pass), identity
+        // outside a blend.
+        self.bandCount = EqualizerBand.count + Self.transitionBandCount
 
         state = UnsafeMutablePointer<TapRenderState>.allocate(capacity: 1)
         state.initialize(to: TapRenderState())
@@ -267,6 +326,19 @@ final class EqualizerAudioTap {
         publishCoefficients()
     }
 
+    /// The AutoMix transition bands: shelf gain on the low end (0 = bass present, negative = bass
+    /// handed to the other song) and the low-pass cutoff (`nil` = open). Independent of the
+    /// equalizer's own bypass: a blend shapes the audio whether the EQ is on or not. Publishing
+    /// is the same lock-free slot flip as a gain change; nothing is heard but the curve.
+    func setTransition(bassDB: Float, lowPassHz: Float?) {
+        guard bassDB != transitionBassDB || lowPassHz != transitionLowPassHz else { return }
+        transitionBassDB = bassDB
+        transitionLowPassHz = lowPassHz
+        publishCoefficients()
+    }
+
+    var transition: (bassDB: Float, lowPassHz: Float?) { (transitionBassDB, transitionLowPassHz) }
+
     /// Recomputes from the sample rate the tap is currently prepared at. A no-op before the first
     /// `prepare`, because there is no format to compute against yet.
     private func publishCoefficients() {
@@ -275,7 +347,7 @@ final class EqualizerAudioTap {
 
         let inactive = state.pointee.activeCoefficientSet == 0 ? 1 : 0
         let base = inactive * bandCount
-        for index in 0 ..< bandCount {
+        for index in 0 ..< EqualizerBand.count {
             coefficients[base + index] = bypassed
                 ? .identity
                 : TapBiquad.peaking(
@@ -285,6 +357,8 @@ final class EqualizerAudioTap {
                     sampleRate: sampleRate,
                 )
         }
+        coefficients[base + EqualizerBand.count] = TapBiquad.lowShelf(frequency: Self.transitionShelfHz, gainDB: transitionBassDB, sampleRate: sampleRate)
+        coefficients[base + EqualizerBand.count + 1] = transitionLowPassHz.map { TapBiquad.lowPass(frequency: Double($0), sampleRate: sampleRate) } ?? .identity
         // The publish. Everything above wrote to the slot the render thread is not reading.
         state.pointee.activeCoefficientSet = Int32(inactive)
     }
@@ -305,6 +379,15 @@ final class EqualizerAudioTap {
     /// tap and nothing reports an error. That is why the caller awaits `loadTracks` first, and why
     /// the mix is attached **before** the item is inserted into the queue player.
     func makeAudioMix(for track: AVAssetTrack) -> AVAudioMix? {
+        guard let parameters = makeAudioMixInputParameters(for: track) else { return nil }
+        let mix = AVMutableAudioMix()
+        mix.inputParameters = [parameters]
+        return mix
+    }
+
+    /// The input parameters carrying this tap, for a caller that adds volume ramps of its own
+    /// before building the mix (`AutoMixPlayerBlend`, T677).
+    func makeAudioMixInputParameters(for track: AVAssetTrack) -> AVMutableAudioMixInputParameters? {
         var callbacks = MTAudioProcessingTapCallbacks(
             version: kMTAudioProcessingTapCallbacksVersion_0,
             clientInfo: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque()),
@@ -332,14 +415,11 @@ final class EqualizerAudioTap {
 
         let parameters = AVMutableAudioMixInputParameters(track: track)
         parameters.audioTapProcessor = tap
-
-        let mix = AVMutableAudioMix()
-        mix.inputParameters = [parameters]
         PlaybackTapLog.tap(
             "mix-attached item=\(itemTag) track=\(trackId) title=\"\(trackTitle)\" "
                 + "trackID=\(track.trackID) bypassed=\(bypassed) audibleCurve=\(hasAudibleCurve)"
         )
-        return mix
+        return parameters
     }
 
     // MARK: Called from the tap callbacks (not the render thread)

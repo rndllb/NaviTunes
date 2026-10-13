@@ -20,6 +20,11 @@ struct AutoMixAutomation: Equatable {
         let outgoingLowPassHz: Float?
         /// Low-pass cutoff on the incoming deck, Hz (`nil` = filter bypassed).
         let incomingLowPassHz: Float?
+        /// Linear loudness-match trim on the incoming deck: the plan's match gain through the
+        /// overlap, then a glide (linear in dB) back to unity over the settle, so that by the time
+        /// the queue player takes the track back it plays at its own level, exactly as the first
+        /// song did (T673). Multiplied with `incomingGain`.
+        var incomingTrim: Float = 1
     }
 
     enum Style: Equatable {
@@ -48,15 +53,38 @@ struct AutoMixAutomation: Equatable {
         }
     }
 
-    /// Seconds after the overlap ends until the incoming deck is back at rate 1.0 and the outgoing
-    /// deck can be released. Zero for a crossfade, which never leaves 1.0.
+    /// Seconds after the overlap ends until the incoming deck is back at rate 1.0 **and** at unity
+    /// trim, so the outgoing deck can be released and the track handed back to the queue player:
+    /// the rate glide of a beat-matched blend, and at least `trimGlideDuration` whenever the
+    /// incoming track was loudness-trimmed (T673). Zero for an untrimmed crossfade.
     var settleDuration: TimeInterval {
-        if case let .beatMatched(p) = style { return p.rateGlideDuration }
-        return 0
+        var settle: TimeInterval = 0
+        if case let .beatMatched(p) = style { settle = p.rateGlideDuration }
+        if abs(incomingGainDB) >= 0.05 { settle = max(settle, trimGlideDuration) }
+        return settle
+    }
+
+    /// Shortest glide from the loudness-match trim back to 0 dB after the overlap.
+    var trimGlideDuration: TimeInterval = 2
+
+    /// The incoming deck's trim at output time `t`: the plan's match gain through the overlap,
+    /// then linear in dB back to unity across the settle.
+    func incomingTrim(at t: TimeInterval) -> Float {
+        guard t > overlapDuration else { return incomingTrimLinear }
+        let settle = settleDuration
+        guard settle > 0 else { return 1 }
+        let g = min(1, max(0, (t - overlapDuration) / settle))
+        return pow(10, incomingGainDB * Float(1 - g) / 20)
     }
 
     /// Total time this automation is live: overlap plus the rate glide.
     var totalDuration: TimeInterval { overlapDuration + settleDuration }
+
+    /// Whether the incoming deck ever runs at a rate other than 1.0 — only a beat-matched blend.
+    var stretchesIncoming: Bool {
+        if case .beatMatched = style { return true }
+        return false
+    }
 
     var incomingGainDB: Float {
         switch style {
@@ -78,10 +106,13 @@ struct AutoMixAutomation: Equatable {
     /// `t` is output seconds since the overlap began (negative before it, past `overlapDuration`
     /// during the settle).
     func frame(at t: TimeInterval) -> Frame {
+        var frame: Frame
         switch style {
-        case let .beatMatched(plan): return blendFrame(at: t, plan: plan)
-        case let .crossfade(plan): return crossfadeFrame(at: t, plan: plan)
+        case let .beatMatched(plan): frame = blendFrame(at: t, plan: plan)
+        case let .crossfade(plan): frame = crossfadeFrame(at: t, plan: plan)
         }
+        frame.incomingTrim = incomingTrim(at: t)
+        return frame
     }
 
     private func blendFrame(at t: TimeInterval, plan: BlendPlan) -> Frame {

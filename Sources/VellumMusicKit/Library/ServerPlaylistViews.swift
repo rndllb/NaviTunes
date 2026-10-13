@@ -1498,7 +1498,10 @@ struct ServerPlaylistDetailView: View {
                     .foregroundStyle(count > 0 ? AnyShapeStyle(Color.red) : AnyShapeStyle(backdropPalette.heroChromePrimary))
                     .overlay(alignment: .topTrailing) {
                         if count > 0 {
-                            Text("\(count)")
+                            // Display-only cap. The stored count (`killModePendingCount`) is
+                            // never touched here -- past 99 the badge just stops growing digits,
+                            // since a 4-digit count (1000+) made the capsule wrap on this tiny frame.
+                            Text(count > 99 ? "99+" : "\(count)")
                                 .font(.system(size: 10, weight: .bold))
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 4)
@@ -2952,6 +2955,8 @@ private struct PlaylistEditSheet: View {
             _artworkURL = State(initialValue: nil)
         case .edit(let playlist, let rows, _):
             _title = State(initialValue: playlist.name)
+            // The current description, so the field opens populated instead of empty (T643 c4).
+            _description = State(initialValue: playlist.comment ?? "")
             _visibleToAll = State(initialValue: playlist.isPublic ?? false)
             _editableRows = State(initialValue: rows)
             _artworkURL = State(initialValue: playlist.artworkURL)
@@ -3260,12 +3265,18 @@ private struct PlaylistEditSheet: View {
 
             Divider().background(MusicDesign.separator)
 
-            TextField("Description", text: $description, axis: .vertical)
-                .font(.body)
-                .lineLimit(1...4)
-                .padding(.vertical, 12)
+            if app.backendKind == .navidrome {
+                // Saved through Subsonic `updatePlaylist`'s `comment` (no length limit: Navidrome
+                // has none). Jellyfin's playlist update has no description field, so the row is
+                // not offered there rather than shown and silently dropped — which is what this
+                // field did on every backend before T643.
+                TextField("Description", text: $description, axis: .vertical)
+                    .font(.body)
+                    .lineLimit(1...4)
+                    .padding(.vertical, 12)
 
-            Divider().background(MusicDesign.separator)
+                Divider().background(MusicDesign.separator)
+            }
 
             PlaylistVisibilityFields(isPublic: $visibleToAll)
                 .padding(.vertical, 12)
@@ -3367,6 +3378,7 @@ private struct PlaylistEditSheet: View {
                 try await app.renamePlaylist(
                     playlistId: playlist.id,
                     name: trimmedTitle,
+                    comment: app.backendKind == .navidrome ? description : nil,
                     isPublic: visibleToAll,
                 )
                 onSaved?(trimmedTitle)

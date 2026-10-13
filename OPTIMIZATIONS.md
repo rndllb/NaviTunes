@@ -3219,3 +3219,223 @@ four conditions that now also know about the held header. Nothing else in the tr
 - **c16 (2026-10-09, device feedback after the rebuild).** Root cause of (b) "still shows the previous song's time" and of the overlap never completing: `AutoMixAudioEnginePlayer` read the outgoing node's clock (`lastRenderTime` → `playerTime(forNodeTime:)`) synchronously right after `play()`, before the first render cycle, when that time carries no valid sample time; the overlap was scheduled against it and the overlap clock measured from it, so `t` never reached the overlap length, `onOverlapCompleted` never fired, the queue cursor never moved, and the UI kept the outgoing track's clock. The transition clock now runs on host time (`mach_absolute_time`, valid from the first call): the incoming deck is scheduled with `AVAudioTime(hostTime:)`, progress and completion are measured on host time, and the outgoing position falls back to "start position + host seconds since" until its node clock is valid. Root cause of (a) "backdrop didn't crossfade": the backdrop palette `.task` was keyed on the active track only, which changes only after the overlap, so nothing recomputed during the blend; the key now includes the blend's incoming track and the palette change is animated over the overlap that remains (Reduce Motion: no animation). (c): title and artist use `AutoMixCrossfadeText`, two strings crossfading on the equal-power curve, in the compact and full headers (midpoint switch removed). Proof: `AutoMixBlendChromeTests` renders the shipping component at progress 0/0.25/0.5/0.75/1 to PNGs (copied to `/mnt/smalls/vellum-automix-work/samples/ui/`), and tests the signed host clock and the opacity curve.
 - **Title/artist crossfade, second pass (device: "doesn't crossfade the title and artist"):** the c16 change was applied to three header sites (the compact lyrics/queue header, and two album-style headers) but not to `metadataRow(track:)` — the function that draws the full Now Playing sheet's big title, grey artist, star and "…" row (called from the main body at `NowPlayingView.swift:625`). Its title is now `autoMixCrossfadeText(for: track, \.title)` (`.title2`), and its whole artist region — the `ArtistNowPlayingMenuButton` or the plain/“Live stream” text — is wrapped in `autoMixCrossfadeArtist(for:font:)`, which fades that content out while the incoming track's artist name fades in on the same curve; the compact header's `compactArtistMenu` gets the same wrapper. Nothing in Now Playing uses `.id(track.id)`, so no view is torn down mid-blend.
 - **"Only changed song when the old file ran out" (device, c16 rebuild).** The queue cursor, time and progress were moved only by the engine's completion callback — `onOverlapCompleted` fired from inside `AutoMixAudioEnginePlayer.armTick`'s 20 ms timer — and otherwise by `onDeckFinished`, which fires when the *outgoing file* ends; on device the first never reached promotion and the second did, several seconds after the fade. Promotion no longer depends on either: `PlaybackEngine`'s own progress timer reads the engine's host-clock `overlapProgress` and at the **midpoint** calls `autoMixPromote` (cursor, duration, `currentTime` from `incomingTrackPosition`, scrobble bookkeeping, `onTrackStarted`); the engine callback and the deck-finished path call the same idempotent function if it has not run. The visual state now carries the outgoing *and* incoming tracks for the whole overlap, so the cover, title and artist keep crossfading across the promotion without a jump.
+- **c17 (2026-10-09): Codex's round-7 follow-ups merged.** Codex (session 01a12215, on the Mac) committed the scratch tree as 2cf2cc7 on `feature/automix` and pushed it at the owner's request, then left two uncommitted fixes which are now in both the Mac scratch tree and this clone (its base was byte-identical to the scratch tree, so no conflicts): (1) duration after promotion — "1:28 out of -0:00" — because `localFileDuration` probed for the previous song survived the promotion and the duration getter preferred it; promotion now takes the duration from the incoming deck's decoded file (`incomingTrackDuration`), resets the probe state, patches and persists it, and the AVPlayer periodic tick ignores stale callbacks while the engine is the transport; the frame→seconds mapping takes the node clock's own rate for the elapsed part. (2) The visual crossfade is now a 0.5 s fade that starts at the audio midpoint (promotion) rather than spanning the overlap, with the backdrop palette held on the outgoing track until then and the incoming palette decoded in advance. Codex's new `AutoMixPlaybackHandoffTests` needed one edit to compile (literal arithmetic inside `#require` overran the type checker; arguments are now pre-typed constants).
+- **c18 (2026-10-09):** promotion and the 0.5 s visual fade now happen at the **start** of the overlap — the first progress-timer tick (≤ 0.35 s) after the incoming deck becomes audible (`PlaybackEngine.shouldPromote(overlapProgress:)` is `> 0`; the visual target flips the same way) — not at the midpoint. After promotion the time shows the incoming track from its mix-in position (`incomingTrackPosition`) and the outgoing song keeps fading underneath. The outgoing-file-end path (`autoMixDeckFinished`) still promotes only as a last resort: it can win only if the progress timer never fires during the whole overlap (main thread starved) or the engine has already settled, which for a crossfade is the overlap's end.
+
+## 2026-10-09 — three AutoMix device bugs (T633)
+
+- **c1, audible cut at the handoff.** Root cause in `beginAutoMixHandoff`: `let position = player.currentTime().seconds` was read *before* `engine.start()`, the outgoing deck was scheduled from that position in `prepare`, and after the engine's start-up latency the player was stopped — so the deck began tens of milliseconds behind the player (a repeat) and the switch was a hard cut. Offline render on We Found Love (10 ms RMS windows around the switch): reference `-9.9 -8.2 -9.0 -8.6` dBFS; old cut with a 60 ms repeat `-10.2 -9.3 -10.1 -9.1` and a 0.303 sample step (reference 0.066, a click); new path identical to the reference, max |difference| 0. Fix: `start(livePosition:)` reads the player's position once the engine is running and adds `outputNode.presentationLatency`, and the two transports cross on an 80 ms **sum-to-one** ramp (`player.volume` 1→0, engine `handoffGain` 0→1; linear, because both carry the same samples — an equal-power ramp would bump +3 dB). The player, its tap and loader are released only when silent. Renders: `samples/handoff-old-hard-cut.flac`, `samples/handoff-new-aligned-ramp.flac`.
+- **c2, a seek cancels AutoMix.** Root cause: planning ran only when a track started or was promoted; `autoMixHandlesSeek` called `stopAutoMixEngine()`, which clears `autoMix.pending`, and `autoMixTick`'s "missed window" also cleared it — nothing re-planned afterwards, so after any drag the boundary was the default. `performSeek` and the engine-abandoning seek now call `scheduleAutoMixPlanning()` when the seek lands; the planner's deadline rule does the rest: before the cue the same blend is re-armed, inside the 2 s lead or past the cue it answers `.defaultTransition(.analysisLate)`. Test `seekRePlans` pins 30 s, cue−10 s (blend) and cue−1 s, cue+3 s, end−1 s (default).
+- **c3, EQ missing on the blended-into track.** Root cause: the equalizer lives in `EqualizerAudioTap` on `AVPlayerItem`s; the two-deck `AVAudioEngine` graph had no equalizer at all, so a blended-into song played flat until a seek handed it back to the queue player, where the tap applied the preset — with Metal that is a **+3.19 LU** jump (We Found Love, 30 s: −7.68 LUFS flat, −4.49 LUFS with Metal; the preset's curve at the band centres is 5.8/5.3/2.9/0.4/−0.8/0.3/2.6/3.8/3.6/2.2 dB). Each deck now carries ten `AVAudioUnitEQ` parametric bands at the tap's centre frequencies and one-octave width (its Q 1.414), set from `equalizerBandGains` before the first render and on every live change (`applyLiveEqualizerGains`), bypassed exactly when the tap is. Renders: `samples/eq-metal-off.flac` / `eq-metal-on.flac`. Test `engineEqualizerBands` pins centres, gains, width, bypass and the ±12 dB clamp.
+- **c5 (T633, lock-screen pause/play during AutoMix).** Root cause: the remote command handlers call `resumePlaybackFromRemoteCommand()` and `pausePlayback()`, and both branch on the queue player — `if player == nil { … scheduleAdvance() }` on play, `guard let player else { isPlaying = false … }` on pause — while the engine, which is the transport from the handoff on, is not `player`; so lock-screen play tore the blend down and restarted the track on the queue player, pause only flipped `isPlaying` (and with it the now-playing rate the lock screen shows) while the engine kept playing, and only the in-app toggle knew about the engine. Both entry points now route through `autoMixHandlesPause` / `autoMixHandlesResume` first; the engine's pause intent lives in `autoMix.enginePaused`, `isPlaying` follows it from the progress timer, and `MPNowPlayingInfoPropertyPlaybackRate` (derived from `isPlaying`) therefore reports the engine's true state. `AutoMixTransportControlTests`: during a blend, after promotion (toggle twice), and after handback (commands fall through to the queue-player path, no engine call).
+
+## 2026-10-11 — diagnosis of three device reports (T638, no code changed)
+
+Full write-up with file:line quotes, measurements and controls: `docs/FINDINGS-2026-10-11.md`.
+
+- **Library "only shows up to N … by add date".** Three caps, none paginated: the Library tab's Recently Added grid is `.prefix(60)` over add date (`LibraryView.swift:163-166`; 90 eligible items, 60 shown, the 05-19 playlist import is what falls off); the in-memory server catalog is one `getAlbumList2?type=alphabeticalByName&size=500&offset=0` page (`AppModel.swift:113`, `NavidromeClient.swift:91-118`) against 13,300 albums — everything after *Vansire — After Fillmore County* is absent; Library → Albums renders a personal album only if that page or the per-id backfill (`AppModel.swift:2488`, `try?`) knows it — 27 of his 29 are outside the page. Home's Recently Added shelf is `type=newest&size=60`; #61 (*Third Eye Blind — Everything Is Easy*) is dropped.
+- **Songs failing with AutoMix on.** Navidrome's log: 10-10 00:35:07–00:40:58 UTC, 22 of 22 streamed songs failed (mp3 and FLAC alike), 50 transcoded fallbacks requested, 37 "Error sending transcoded file … broken pipe" against a ≤2/day baseline (and 88 clean transcodes on 10-05 before the build existed); from 00:41:23 (toggle off) 0 transcodes, 0 errors, and the same four songs played clean. The only playing-item behaviour gated on the toggle is the custom-scheme `CachingResourceLoaderDelegate` attached in `makePlaybackAsset` (`PlaybackEngine.swift:2372-2398`, uncommitted 10-09 "c15"); every candidate in the ladder (`:2650-2653`, raw → mp3 → aac) goes through it and was abandoned within the same second, so AVFoundation rejects the loader-fed item at load, not on a timeout. The transcoded fallbacks cannot work through it in principle (Navidrome sends `Accept-Ranges: none` and no `Content-Length`, so `info.contentLength` is never set while byte-range support is claimed, `CachingResourceLoaderDelegate.swift:194-195, 263-271`). **The on-device reason the raw candidate is rejected is not pinned down** — the server saw nothing wrong — and needs `AVPlayerItem.error` from the phone (the `autoMixLogger` Console lines or the Settings diagnostic row) or a simulator run against this server.
+- **Playlist description limit / "can't edit".** No length limit anywhere in Navidrome 0.61.2 (Subsonic handler, core, persistence, web form); SQLite ignores `varchar(255)`; a 9,667-char comment already exists on his server. He can't edit it because Vellum's edit sheet shows a Description field that is never loaded from the server and never sent — `save()` calls `renamePlaylist(name:isPublic:)` only (`ServerPlaylistViews.swift:2898, 3263, 3367-3371`); `PlaylistSummary` has no comment field. Ownership and smart-playlist status were checked and ruled out (all 61 playlists owned by `ethan`, none smart).
+- Method: read-only. Navidrome DB read from a `docker cp` copy (with WAL), container log grepped, two unauthenticated GETs to confirm the URL, no login, no writes, no commit (standing rule 2026-10-11). The credential lookup the brief asked for was blocked by the permission classifier, so the Subsonic request was replicated on the DB's own sort column rather than re-sent.
+
+## 2026-10-11/12 — fixes for the three T638 reports, and the AutoMix audit (T643; uncompiled)
+
+Full detail per criterion in `docs/FINDINGS-2026-10-11.md` → "Fixes"; the device checklist is `docs/DEVICE-TEST-2026-10-12.md`. **No compiler was available** (no Swift on this box; the Mac timed out all session), so every change was written test-first and awaits its red/green run on the Mac. No commit, no push.
+
+- **Library (c1).** `AlbumCatalogPager.fetchAll` walks `getAlbumList2` / Jellyfin `StartIndex` by offset until a short page; `albums(limit:)` on both clients uses it and `defaultLibraryAlbumFetchLimit` is a 50,000 ceiling, not a 500 page. Library → Recently Added keeps its first 60 and grows by 60 per "Show More" tap (`LibraryRecentPaging`). Tests: exact multiple, short last page, empty, ceiling, error; paging steps.
+- **AutoMix streaming (c2).** `PlaybackCandidateLadder` owns the rule: the custom-scheme loader only while AutoMix is on, only for a range-servable raw stream (`CachingResourceLoaderDelegate.servesByteRanges`: no `format≠raw`, `maxBitRate`, Jellyfin transcode params), only on the first eligible URL, and always followed by the same URL as a plain asset; transcoded fallbacks are always plain; toggle off is byte-for-byte the old ladder. `PlaybackEngine.logCandidateFailure` writes `AVPlayerItem.error` (domain/code chain + description) and the last error-log event for every rejected candidate to the unified log (`vellum.perf`/`playback`), the tap log and the AutoMix diagnostic row. Tests: the rule, the gate, five ladders, `PlaybackFailurePolicy.describe`.
+- **Playlist description (c4).** `PlaylistSummary.comment` (Subsonic `comment` / Jellyfin `Overview`), the edit sheet seeds and saves it through `updatePlaylist`'s `comment` (`NavidromeClient.updatePlaylistQuery`, tested: full, nil omitted, empty clears, 10,000 chars untouched); hidden on Jellyfin rather than dropped. Snapshot compatibility tested.
+- **Audit (c3), eight fixes:** pause during a blend desynced the host-time transition clock (anchors shifted on resume, incoming deck re-scheduled); a queue edit left `autoMix.pending` aimed at a stale index (validated before hand-off; `refreshEnqueuedNextItem` re-plans; refused promotion hands back instead of wedging); the hand-off ramp tore down a newer item's loader/taps (scoped to its own); the per-bar rate lock was inverted for half/double-time pairs (`stepBeats = bpb × octave`); empty decodes crashed the mel front end; the analysis coordinator re-ran a failed track and starved the next; a cancelled prefetch leaked its temp file; the diagnostic published unchanged strings. Left unfixed with reasons: the pending-analysis deadline using the unplaced cue (planner refactor), a suspected aliased in-place FFT (needs the Mac parity measurement), and the hand-off ramp's 8-step granularity (a measurement, not a reading).
+- Snapshot-verified (c5): his 10-09 diff re-applies cleanly onto HEAD and every pre-existing hunk is present; the file-by-file list is in the findings doc.
+
+## 2026-10-12 — one combined tree, compiled and tested on the Mac (T659)
+
+The Kill Mode / Top Songs fixes that existed only in the owner's Mac tree, and the AutoMix and T643 work that existed only in this clone, are now in one tree. That tree built and passed its tests on the Mac, so a single Xcode install delivers all of it. No commit, no push.
+
+- **Combined.** `git diff` of `~/Lyra-Music` (sha256 `a7199ff5…`, 3 files) applied cleanly here: the badge stops at **99+** (T456, `ServerPlaylistViews.swift:1504`), Remove All and ⋯ stay red under the scrolled bar (T507, `PlaylistKillListView.swift:145/171`), and Top Songs is played tracks first, then the other albums' leadoff tracks (T461, `ArtistViewModel.swift:875`). The Codex follow-ups in the Mac's `/private/tmp/vellum-automix-publish` were already here (c17 above). The only lines that differ are the midpoint switch, which c18 replaced on purpose.
+- **Built and tested** in `~/agent-scratch/T659/vellum`: an unsigned device build (`** BUILD SUCCEEDED **`, 0 errors), then `VellumMusicKitTests` with 265 tests in 30 suites, all passing (224 in 24 at T633).
+- **Three test fixes, no product code.** The first run failed 3 tests, all of them T643 tests that had never been compiled. Each one was wrong about the code, not the other way round:
+  - The loader-gate test still expected the caching loader on an mp3-converted stream. Refusing those is the T643 fix itself, so the "attach" case now uses a raw stream, and the converted stream is asserted as refused.
+  - The 85 → 170 BPM bar-lock fixture drifted 1 % per incoming bar. One outgoing bar spans two incoming bars, so that is 2 % per outgoing bar, and by bar 6 it is past the 8 % stretch cap. The planner clamps there by design, and the error was exactly the clamped amount. The drift is now 0.5 % per incoming bar.
+  - The analysis-queue test slept a fixed 400 ms while another test held the main actor for about 10 s. It now polls for up to 10 s.
+- The device checklist `docs/DEVICE-TEST-2026-10-12.md` now says where to install from and has a section 6 for the three Kill Mode / Top Songs fixes.
+
+## 2026-10-12 — AutoMix: the caching loader is off for streams, and Recently Added scrolls instead of a button (T662, T664)
+
+Built and tested on the Mac in one go: unsigned device build `** BUILD SUCCEEDED **`, 0 errors; `VellumMusicKitTests` 269 tests in 30 suites, all passing (265 before). No commit, no push.
+
+### T662 — songs still stalled with AutoMix on, on the T659 build
+
+- **What the phone said.** The AutoMix diagnostic row's `last:` read `candidate failed [load] loader=true url=http://…:4533/rest/stream?id=… error=NSURLErrorDomain -1002 ← CoreMediaErrorDomain -1002`. That URL is a raw stream exactly as `NavidromeClient.buildStreamURL` builds it for the "Original" format: no `format`, no `maxBitRate`, plain `http` to the server's Tailscale address. Navidrome's own log for those requests says `format=raw transcoding=false`, i.e. the byte-range path. So the T643 gate (`servesByteRanges`) let it through, as designed, and AVFoundation rejected it anyway.
+- **Reproduced without the server.** On the iOS 26 simulator, a `CachingResourceLoaderDelegate` asset against a loopback server that answers `206` + `Content-Range` + `Accept-Ranges: bytes` + `Content-Length` fails with the same `-1002` for FLAC and M4A, with or without the MIME hint, while the delegate's requests do reach the server and a plain `AVURLAsset` on the same URL loads. The loader path is dead on this OS whatever the server does; the T643 reading ("only transcoded streams are rejected") was wrong.
+- **The plain retry did work — that part of T643 held.** Navidrome's database shows two completion scrobbles from the T659 build with AutoMix on: "Maybe Then Someday" and "Goodbye Song" (Abandoned Pools), each stamped exactly half the track after its plain-stream requests began. What the loader attempt cost was the wait before them: Goodbye Song's loader request hit the server at 17:21:30 UTC and the plain attempt's only at 17:21:40, so the song started about ten seconds after the tap; the first song after the install was re-tapped 50 s later before it got going. With the loader also pulling the whole file before failing, every streamed song paid that wait.
+- **Fix.** `PlaybackCandidateLadder.mayUseLoader` is now `false` for every remote stream; the ladder is one plain attempt per URL with AutoMix on or off. The loader class stays (nothing else uses it on the playing stream). Cost: the very first boundary out of a freshly started streamed song cannot blend, because its file is never assembled on the phone; every later boundary still can, since `AutoMixStreamPrefetcher` fetches the next queued stream whole. Tests: the gate and ladder tests now assert plain-only, and `ownersRawStreamIsPlain` uses the owner's URL shape (range-servable, `http`, raw) and fails on the T643 gate.
+- Not done: a `curl -I` of an authenticated stream URL — no Navidrome credentials exist on this box and I did not go looking for them in the database. The phone's unified log needs root on the Mac (`log collect --device` refuses otherwise) and its tap log is 379 MB, which `devicectl` will not copy whole; the server log and database stood in for both.
+
+### T664 — Recently Added: infinite scroll, no "Show More"
+
+The owner: "don't do the show more, it should just infinite scroll paginate". The button under the grid is gone; each grid item's `.onAppear` asks `LibraryRecentPaging.shouldLoadMore(appearedIndex:visible:total:)`, which is true when an item within the last 12 visible (six rows of the two-column grid, about two screens on an iPhone) appears and more remains, and then `recentItemsLimit` grows by `nextLimit` — still 60 per page, first page still 60. The items are `all.prefix(limit)`, so pages are contiguous by construction; the test walks a scroll to the end for 0, 12, 60, 61, 90, 400 and 1,186 items and checks every index is revealed exactly once, the page sequence is strictly increasing and ends at the total (400 → 60, 120, 180, 240, 300, 360, 400; 1,186 → 20 pages), and the trigger is false once everything is visible.
+
+## 2026-10-12 — the prefetched song now plays from its file (T665)
+
+On the 13:42 build (loader already off, T662) the owner still saw songs stall. His console had the answer: `candidate failed [load] loader=false url=file:///…/Library/Caches/VellumMusic/stream-cache/c0c2d9ef… error=AVFoundationErrorDomain -11828 ← NSOSStatusErrorDomain -12847 (Cannot Open)`, twice. With AutoMix on, the next queued song is fetched whole into the stream cache, and that file is the first candidate when the song starts (the cache is preferred whenever the EQ or the stream cache is on). The file was complete and valid — `AVAudioFile` reads it, which is why the blend decks never complained — but it is named by its SHA-256 with **no extension**, and AVFoundation identifies a file URL by its extension alone. So the candidate failed, the engine evicted the good file as "unreadable", played the plain stream instead (which is why Navidrome shows the song playing a few seconds later), and the prefetcher fetched the same file again for the next attempt. Every prefetched song: a late start, no blend into it, one wasted download.
+
+- **Proof on the simulator** (`notes` probe): an extensionless FLAC written by AVFoundation itself fails `AVURLAsset` with the device's -11828/-12847; `AVURLAssetOverrideMIMETypeKey` does not help a file URL; `AVURLAssetOutOfBandMIMETypeKey: audio/flac` makes it load, and an `AVPlayerItem` on it is ready in 52 ms and plays.
+- **Fix.** `StreamingMediaDiskCache.sniffedMIMEType(ofFileAt:)` reads the container from the first bytes (FLAC, Ogg, MP3 with or without ID3, ADTS AAC, WAV, AIFF, MP4/M4A). `PlaybackEngine.localAssetOptions(for:)` adds it as the out-of-band MIME type for any extensionless local file; `makePlaybackAsset` and `LocalMediaDuration` use it. Files with an extension (downloads) are untouched.
+- **Test** `StreamCacheFileIdentityTests`: the bare asset fails with exactly -11828; with the options it loads, has one track and the player item reaches `readyToPlay`; the sniffer table; the decks read the same file.
+- Built unsigned on the Mac: `** BUILD SUCCEEDED **`, 0 errors; `VellumMusicKitTests` 273 tests in 31 suites, all passing.
+- **Seen, not fixed:** launch now rebuilds the catalog indexes for 13,304 albums on the main actor (`applyRestoredSnapshot.light 2056 ms HANG`, `mergeOfflineCatalog 560 ms HANG`, bootstrap 12.1 s) since T643 fetches the whole catalog. The first play after launch competes with it.
+
+## 2026-10-12 — AutoMix: the blend goes back to the normal stream once it has faded (T673)
+
+The owner, on the T665 build: the transition was "really good" but "so compressed", and it stayed that way for the
+rest of the incoming song until he paused and dragged it, which "triggered its regular stream refresh" and then it
+"started streaming from the eq". Measurements and the full trace are in the manager's `notes/T673/FINDING.md`.
+
+- **What was happening.** From the handoff on, the two-deck `AVAudioEngine` was the only transport, and it kept the
+  incoming song until the file ended: `armTick` stopped the outgoing deck at the end of the settle and left the
+  incoming deck running through `AVAudioPlayerNode → AVAudioUnitTimePitch → AVAudioUnitEQ → mainMixer`. The only ways
+  back to the `AVQueuePlayer` path were a skip, a seek (`autoMixHandlesSeek`, the drag he did), the toggle, or the end
+  of the song. The deck reads the same file the queue player would (the committed stream-cache copy or the download,
+  same bytes, same sample rate), and since T633 c3 it carries the app's ten EQ bands.
+- **What "compressed" was, measured** (iOS 26 simulator, one deck rendered offline on a 110 Hz harmonic signal gated
+  into 120-BPM hits plus 12 kHz at −30 dB, window 0.5–2.5 s): the time-pitch unit at exactly rate 1.0 is
+  bit-transparent (correlation 1.0 with the bypassed chain, crest 13.78 dB both, and the rate glide lands on exactly
+  1.0 for every float32 rate in 0.90…1.10); the deck EQ is within 0.2 dB of the tap's biquads at the band centres
+  up to 2 kHz, +0.5 dB at 2 kHz, +1.6 dB at 4 kHz and +3.5 dB at 8 kHz (brighter, not duller; r = 0.996 on music);
+  there is no compressor or limiter in the graph. What was left were two level mechanisms that the queue-player
+  path does not have: the **loudness-match trim** — `AVAudioPlayerNode.volume` is real gain (2.0 measured +6.02 dB)
+  and the planner's `matchGain` (±6 dB) stayed on the incoming deck for the whole rest of the song, into an output with
+  no headroom, so a positive trim clipped every peak of a loud master and a negative one played the song several dB
+  under its own level — and, during a beat-matched overlap only, the **stretch overshoot**: at +3 % the time-pitch unit
+  puts out transient peaks 2.4–2.7× the clean chain's (+7.5 … +8.7 dB, crest 21–23 dB against 13.8) at every
+  `overlap` setting (3, 8, 16, 32), on top of the outgoing deck and the trim. Slowing down is mild (0.97: +1.1 dB).
+- **Fix.** (1) **Handback.** When a transition has settled (outgoing silent, rate 1.0, trim at unity) the engine
+  fires `onTransitionSettled` and `PlaybackEngine.beginAutoMixHandback` builds the incoming song's `AVPlayerItem`
+  through the same path as any song — `makePlaybackAsset` on the same local file, `TapPlayerItem` with the live EQ —
+  stages it at volume 0, seeks it 0.6 s ahead of the deck, pre-rolls, starts it with `setRate(_:time:atHostTime:)` at
+  the host time the deck reaches that sample (plus the engine's output latency) and runs the same 8 × 10 ms
+  sum-to-one ramp as the handoff, then stops the engine and stages the gapless next item. From then on the song is an
+  ordinary stream: same EQ, same bytes, same level, and the next boundary hands off from the queue player again.
+  Pause during the handback abandons it and resume retries; seek, skip, toggle and end-of-file abort it; a failed
+  handback is logged and the song plays out on the deck as before (`handbackFailed`, no retry loop). (2) **Trim
+  glide.** The trim now rides the automation frame (`Frame.incomingTrim`): the match gain through the overlap, then
+  linear in dB back to 0 dB over the settle, which is now at least 2 s whenever the pair was trimmed, so the handback
+  lands at a level the ear has already reached. (3) **Time-pitch out of the path** on every deck that never stretches
+  (the outgoing deck; a crossfade's incoming deck): `timePitch.bypass`, set before the deck is scheduled, never
+  flipped on a running node. The stretch overshoot inside a beat-matched overlap is inherent to the stretch and is
+  **not** changed here; the numbers are in the finding for a decision on headroom.
+- **Tests** (fail on the old code): `AutoMixHandbackTests` — real audio on the simulator, a 0.5 s crossfade, then
+  within 8 s the engine is gone, the queue player holds the incoming file with its tap near the deck's position and
+  `currentIndex` is the incoming track; the paused-at-settle case defers the handback to resume.
+  `AutoMixBlendPathTests` — a crossfade engine has both time-pitch units bypassed and a beat-matched one only the
+  incoming active; the unit at 1.0 is transparent and at 1.03 overshoots by > 6 dB; the deck EQ lands on the tap's
+  biquads within the measured tolerances. `AutoMixAutomationTests.trimGlide` — the trim through the overlap, halfway
+  in dB mid-settle, unity after; the trimmed crossfade's settle is 2 s (the existing `crossfadeFrames` expectation
+  moved from 0 to 2 for the +2 dB fixture).
+- **Found by the test run, fixed.** In the first full run the handback tests failed while passing alone: another
+  suite's `pausePlayback` deactivates the process-wide audio session five seconds later, which stops a running
+  `AVAudioEngine`; the stop fired the decks' `.dataPlayedBack` completion handlers and `autoMixDeckFinished` read it
+  as the song ending — on a phone that is a route change or an interruption mid-blend skipping to the next track.
+  The engine now observes `AVAudioEngineConfigurationChange` on its own instance and reports `onEngineStopped`
+  (the queue player takes the track at the engine's last position via `cancelAutoMix(resumeOnQueuePlayer:)`), and a
+  completion while the engine is not running is ignored. The full suite is run with `-parallel-testing-enabled NO`
+  (`~/agent-scratch/T659/build-and-test-serial.sh`): the real-audio tests share one audio session.
+- Built unsigned on the Mac: `** BUILD SUCCEEDED **`, 0 errors; `VellumMusicKitTests` serial run `** TEST SUCCEEDED **`,
+  279 tests in 33 suites, all passing (273 in 31 at T665).
+- **Not done.** No device: the handback's sample alignment (`setRate(_:time:atHostTime:)` against the deck's render
+  clock plus `outputNode.presentationLatency`) is the mirror of the handoff's and is exercised on the simulator, but
+  only the phone can say whether the 80 ms cross is inaudible. The beat-matched overlap's overshoot stays.
+
+## 2026-10-12 — AutoMix: one transport through the boundary, no engine (T677)
+
+The owner on the T673 build: "i can still slightly hear the pause when transitioning from the automix transition to the
+new song and same when transitioning from the first song to the transition mix". Two crossings, each the 80 ms,
+8 × 10 ms ramp: queue player → two-deck engine six seconds before the blend, engine → queue player a few seconds after
+it. Measurements and the trace are in the manager's `notes/T677/FINDING.md`.
+
+- **Measured (iOS 26 simulator).** Handoff side: after `engine.prepare()`, `engine.start()` and a deck scheduled "as
+  soon as possible", the first rendered audio appears **47 ms after `play()`** (3 of 3 rounds: 47.2, 47.3, 46.9 ms; the
+  first output buffer at +12 ms with the audio 35 ms into it, output at 48 kHz) — while `beginAutoMixHandoff` read the
+  player position and started the fade-out ramp at once. So the ramp's first half played against a silent deck (a dip),
+  and the deck then ran ~47 ms behind the player it was continuing: a 47 ms repeat, "a slight pause". Handback side:
+  `AVPlayer.setRate(_:time:atHostTime:)` starts within **2–4 ms** of the requested host time and holds +0.1 ms after
+  half a second; two players started for one host time agree to **0.0 ms**; but the handback's ramp was 8 steps of
+  `AVPlayer.volume` (an XPC round trip each, applied in mediaserverd) against `AVAudioPlayerNode.volume` (next render
+  cycle), two different latencies on a sum-to-one ramp, so the two halves never summed to one — a dip. A `rate` change
+  on a `.spectral` item lands after ~170 ms; a tap and audio-mix volume ramps coexist on one item.
+- **Fix: no crossings.** `AutoMixAudioEnginePlayer` is gone. `AutoMixPlayerBlend` runs a transition on two `AVPlayer`s:
+  the outgoing song stays on the queue player it was already on (its fade is the player's `volume`; bass hand-over and
+  filter sweep are two extra biquads in its equalizer tap, `EqualizerAudioTap.setTransition`); the incoming song is
+  built through the ordinary item path (`makePlaybackAsset`, `TapPlayerItem` with the live EQ) with its gain curve —
+  equal-power × trim, then the trim glide — baked into its audio mix as sample-accurate volume ramps, its stretch as the
+  player's `rate`, readied, seeked to the mix-in, pre-rolled and started with `setRate(_:time:atHostTime:)` at the host
+  time the outgoing reaches the mix-out. When the overlap completes the outgoing is silent and the incoming player
+  **is adopted as the queue player**: the item that started the overlap keeps playing, nothing restarts. At settle
+  the ramped mix is swapped for the plain one (same tap) and the blend object goes away. Pause stops both players and
+  the overlap clock; resume restarts them at one host time (a lead-in pause re-schedules the incoming start against
+  the outgoing's position); seek, skip and the toggle abandon the blend, adopting the incoming first when it has been
+  promoted; an outgoing item that ends early adopts rather than advances. The T673 trim glide and automation are
+  unchanged.
+- **Lead-in drift correction** (found by the first simulator run: a constant **+299.6 ms** offset through the whole
+  overlap when the blend was armed from a player that had just been started — `AVPlayer` reports rate 1 for ~300 ms
+  before its timebase advances, and the overlap start was computed once from that position; a buffering stall in the
+  6 s lead-in does the same). Every lead-in tick, once the outgoing is seen advancing, its position is checked against
+  the one the plan implies and the incoming start is re-scheduled on any drift beyond 5 ms. Measured after: one
+  correction of −303.5 ms, then the two players agree to **0.0–0.1 ms** through the overlap; a pause in the lead-in
+  leaves the restart within ±10 ms (−9.4 ms in the run quoted; the restart of a paused, re-scheduled player, not
+  corrected further — it is inside the 15 ms bound, noted as the residual).
+- **Measured dip after the fix: none to measure.** There is no crossing; the two players' positions against their cue
+  points are printed by the test and agree to 0.1 ms.
+- **c5 — "sometimes the automixer kills the song stream after its transition is over"** (owner, on this build). The
+  path after the outgoing fades was audited for every way the adopted player can be stopped (the old player's
+  teardown, gapless staging on the adopted player, stream-cache commit re-planning and the prefetcher's pruning, the
+  settle path); the cause is an **end notification from the outgoing item delivered after adoption**.
+  `TransitionPlanner.crossfade` caps the overlap at what the outgoing has left, so for a song whose outro cue sits
+  within one fade of its end the overlap ends on its last sample — the item's `AVPlayerItemDidPlayToEndTime` and the
+  blend's overlap-completed tick land at the same instant. When the notification wins, `handleEnded`'s blend guard
+  adopts (correct). When the tick wins, adoption removes the end observer and stops the old player, but a block
+  observer with a delivery queue that has already been posted is still delivered after `removeObserver`, with the old
+  item (or nil once it is released); it reached `handleEnded` with the incoming song now the current track and the
+  adoption done, so the blend guard did not apply and it ran the natural-end path: `onTrackCompleted` for the song that
+  had just blended in, no staged next item yet, slow-path advance → `teardownPlayer` on the adopted player → the next
+  song, or silence at the end of the queue. Fix: `handleEnded` ignores an end or failure notification whose item is
+  not the bound transport item (`timeObserverContext.item`), with a log line.
+- **Tests** (fail on the old code, which had no `AutoMixPlayerBlend`): `AutoMixSingleTransportTests` — real audio
+  through the real `PlaybackEngine` paths: the item that starts the overlap is the transport item after the blend,
+  the two players' positions against their cue points agree within 15 ms through the overlap (printed: 0.0–0.1 ms),
+  the old player is stopped, the ramped mix is replaced by the plain one (checked by content — `AVPlayerItem.audioMix`
+  copies on assignment) without a tap re-prepare (1 → 1); pause in the lead-in and in the overlap (the clock stands
+  still through the pause); a seek during the overlap; and for c5 `staleEndAndChain` — two crossfades planned to the
+  outgoing's last sample, the stale end notifications delivered by hand after each adoption in both forms, three songs
+  chained, the third sampled every second for 30 s after the second settle on the same item and player at rate 1
+  (printed: 3.6 → 33.4 s). `AutoMixTransitionBandsTests` — the shelf and low-pass responses, the tap's band layout, the
+  ramp table, the overlap-start arithmetic. Removed with the engine: `AutoMixHandbackTests`, `AutoMixBlendPathTests`,
+  `AutoMixTransportControlTests`, the deck-EQ and frame-mapping tests.
+- **Build.** Unsigned device build (`CODE_SIGNING_ALLOWED=NO`, `-derivedDataPath` and `MODULE_CACHE_DIR` in the
+  agent's scratch directory) BUILD SUCCEEDED; simulator tests run serially: TEST SUCCEEDED, **278 tests in 33 suites**, 0 failures (`t679-full-3.txt`; build.log sha256 8929878c…, test.log sha256 7b5fed0f…).
+
+## 2026-10-12 — Now Playing: one shadow under the cover through a blend (T681)
+
+The owner: "vellum has some weird visual anomalies with the transition, most notably the covers drop shadow gets bigger
+during the transition phase". Trace in the manager's `notes/T681/FINDING.md`.
+
+- **Cause.** `NowPlayingView.artworkView` stacks three covers during a blend — the current track's `AlbumArtworkView`,
+  the outgoing cover held opaque on top of it and the incoming cover fading in — and the callers put `.shadow(…)` on
+  that view (hero: radius 20 / y 12; queue row: 6 / 4). SwiftUI draws a `.shadow` per layer of a layered view, not
+  one for the flattened result, so for the length of the crossfade three shadows at the same offset summed into one
+  darker, wider shadow, snapping back at settle. Measured (simulator, `ImageRenderer`, the shadow read down the
+  cover's centre column): extent **48 → 56 pt**, darkest row **0.690 → 0.325** luminance, summed darkness **6.51 →
+  15.95** mid-blend. The title and artist crossfade (`AutoMixCrossfadeText`) carries no shadow or scale; the play-pulse
+  scale follows `isPlaying`, which the blend keeps true.
+- **Fix.** The cover stack is `AutoMixCoverCrossfade` (generic over its three artwork views) and the shadow is cast by
+  the **base cover alone**, inside it, before the blend layers are laid over it (`AutoMixCoverShadow`, passed into
+  `artworkView` at the three sites). The overlay therefore cannot change it, by construction. The first version
+  flattened the stack with `compositingGroup()` before `.shadow`; that removed the stacking but still left the shadow
+  5 % denser whenever an overlay existed (same with a square cover, same with the incoming fully transparent — the
+  renderer's group path, not the layers), so it was replaced. Side effect of the modifier order: on the play-side hero
+  the shadow now scales with the cover's play/pause pulse instead of keeping radius 20 while the cover shrinks.
+- **Test** `AutoMixCoverShadowTests`: the shipping cover view with plain shapes through `ImageRenderer`, before / mid /
+  after a blend. Measured: **extent 48 pt, darkest 0.690, summed 6.51 in all three** (equal to the pixel; the test
+  holds extent equal, darkest within 0.005, sum within 1 %), and the old `.shadow` on the layered view pinned as
+  > 4 pt wider, > 0.05 deeper and > 30 % darker in sum mid-blend. Build and counts: see T677 above (same run).

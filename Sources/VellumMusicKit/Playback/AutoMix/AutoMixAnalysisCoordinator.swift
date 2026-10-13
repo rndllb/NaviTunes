@@ -98,7 +98,10 @@ final class AutoMixAnalysisCoordinator {
         if !queued.contains(where: { $0.trackId == trackId }) {
             queued.append((trackId, fileURL, duration))
         }
-        let ahead = inFlight.values.map(\.expected).reduce(0, +)
+        // What is still ahead of this track: the running analysis' *remaining* time, not its
+        // whole estimate (that overstated the wait by up to one analysis and read as "late").
+        let now = ContinuousClock.now
+        let ahead = inFlight.values.map { max(0, $0.expected - (now - $0.startedAt).seconds) }.reduce(0, +)
         return .inFlight(expectedRemaining: ahead + expected)
     }
 
@@ -135,6 +138,9 @@ final class AutoMixAnalysisCoordinator {
             await self?.finish(trackId: trackId, fileURL: fileURL, duration: duration, startedAt: startedAt, result: result)
         }
         inFlight[trackId] = InFlight(task: task, startedAt: startedAt, expected: expected)
+        // A started track is no longer waiting; leaving it in `queued` re-ran it after a failure
+        // while the track behind it sat waiting (T643 c3).
+        queued.removeAll { $0.trackId == trackId }
         log.append("started \(trackId) expected \(Int(expected))s")
     }
 
@@ -160,7 +166,9 @@ final class AutoMixAnalysisCoordinator {
         case let .failure(error):
             log.append("failed \(trackId): \(error)")
         }
-        if let next = queued.first {
+        // Start the next waiting track; skip past any that are already cached or no longer need
+        // work, so one finish never strands the rest of the queue.
+        while inFlight.isEmpty, let next = queued.first {
             queued.removeFirst()
             _ = ensure(trackId: next.trackId, fileURL: next.fileURL, duration: next.duration)
         }
