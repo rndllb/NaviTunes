@@ -67,6 +67,9 @@ final class AutoMixPlayerBlend {
     var onOverlapCompleted: (() -> Void)?
     /// Fired once when the transition has settled (rate back at 1.0, trim at unity).
     var onSettled: (() -> Void)?
+    /// Fired once, instead of everything above, when the incoming player was due to start and
+    /// made no sound within ``incomingStartGrace``: the blend cannot run (T960).
+    var onIncomingFailedToStart: (() -> Void)?
 
     private var tick: Timer?
     /// Host time at which the overlap starts: the incoming player's scheduled start.
@@ -76,6 +79,10 @@ final class AutoMixPlayerBlend {
     private(set) var isPaused = false
     private(set) var overlapCompleted = false
     private(set) var isSettled = false
+    /// The incoming player has been heard from: its item time moved past the mix-in after its
+    /// scheduled start. Promotion and the overlap's completion wait for this (T960).
+    private(set) var incomingConfirmed = false
+    private var startFailureReported = false
     private var appliedRate: Float = 0
     private var appliedOutgoingVolume: Float = 1
     private var incomingStarted = false
@@ -121,6 +128,22 @@ final class AutoMixPlayerBlend {
         }
     }
 
+    /// How long after its scheduled start the incoming player has to be heard from before the
+    /// blend is given up. The start itself is measured at 2–4 ms and the tick is 20 ms, so a
+    /// player that has not moved by then is stalled or failed; and the outgoing has barely begun
+    /// its fade, so restoring it is not a cut (T960).
+    nonisolated static let incomingStartGrace: TimeInterval = 0.4
+
+    /// The incoming item's time has moved past the mix-in: the player is producing audio.
+    nonisolated static func incomingHasStarted(itemTime: TimeInterval, mixIn: TimeInterval) -> Bool {
+        itemTime.isFinite && itemTime > mixIn + 0.02
+    }
+
+    /// The incoming player has had its grace and still has not been heard from.
+    nonisolated static func incomingFailedToStart(secondsSinceOverlap t: TimeInterval, confirmed: Bool) -> Bool {
+        !confirmed && t >= incomingStartGrace
+    }
+
     /// The incoming player's rate at the overlap start.
     nonisolated static func initialRate(_ automation: AutoMixAutomation) -> Float {
         automation.frame(at: 0).incomingRate
@@ -151,7 +174,11 @@ final class AutoMixPlayerBlend {
             let g = gain(automation, at: t)
             let start = incomingItemTime(automation, at: tPrev)
             let end = incomingItemTime(automation, at: t)
-            if end > start { ramps.append(AutoMixVolumeRamp(start: start, end: end, from: gPrev, to: g)) }
+            // AVFoundation raises on a ramp that overlaps an earlier one, so a ramp that would start
+            // before the last one ends is dropped rather than handed to `setVolumeRamp`.
+            if end > start, start >= (ramps.last?.end ?? start) {
+                ramps.append(AutoMixVolumeRamp(start: start, end: end, from: gPrev, to: g))
+            }
             tPrev = t
             gPrev = g
         }
@@ -315,12 +342,20 @@ final class AutoMixPlayerBlend {
                 let now = mach_absolute_time()
                 if self.outputSecondsSinceOverlap(now: now) < 0 { self.correctLeadIn(now: now) }
                 let t = self.outputSecondsSinceOverlap(now: now)
+                if t >= 0, !self.incomingConfirmed {
+                    if Self.incomingHasStarted(itemTime: self.incoming.currentTime().seconds, mixIn: self.mixIn) {
+                        self.incomingConfirmed = true
+                    } else if Self.incomingFailedToStart(secondsSinceOverlap: t, confirmed: false) {
+                        self.reportIncomingFailedToStart()
+                        return
+                    }
+                }
                 self.apply(self.automation.frame(at: t))
-                if !self.overlapCompleted, t >= self.automation.overlapDuration {
+                if !self.overlapCompleted, self.incomingConfirmed, t >= self.automation.overlapDuration {
                     self.overlapCompleted = true
                     self.onOverlapCompleted?()
                 }
-                if t >= self.automation.totalDuration {
+                if self.incomingConfirmed, t >= self.automation.totalDuration {
                     self.settle()
                 }
             }
@@ -350,6 +385,14 @@ final class AutoMixPlayerBlend {
         overlapStartHostTime = start
         incoming.setRate(appliedRate, time: CMTime(seconds: mixIn, preferredTimescale: 44_100), atHostTime: CMClockMakeHostTimeFromSystemUnits(start))
         leadInCorrections.append(drift)
+    }
+
+    private func reportIncomingFailedToStart() {
+        guard !startFailureReported else { return }
+        startFailureReported = true
+        tick?.invalidate()
+        tick = nil
+        onIncomingFailedToStart?()
     }
 
     private func settle() {

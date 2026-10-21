@@ -227,15 +227,19 @@ enum AutoMixScheduler {
             if t <= overlap { return plan.incomingMixIn + max(0, t) * rate }
             fileAtOverlapEnd += overlap * rate
         } else {
+            // The schedule's bars are the beat grid's real spans and need not add up to the overlap
+            // (median bar × bars): integrate them only up to the overlap and run any remainder at the
+            // last rate, as `scheduledRate` does, so item time never steps backwards at the glide.
             var start: TimeInterval = 0
-            for segment in plan.rateSchedule {
-                let end = start + segment.outputDuration
+            for segment in plan.rateSchedule where start < overlap {
+                let end = min(start + segment.outputDuration, overlap)
                 if t <= end { return fileAtOverlapEnd + max(0, t - start) * Double(segment.rate) }
-                fileAtOverlapEnd += segment.outputDuration * Double(segment.rate)
+                fileAtOverlapEnd += (end - start) * Double(segment.rate)
                 start = end
             }
             rate = Double(plan.rateSchedule[plan.rateSchedule.count - 1].rate)
             if t <= overlap { return fileAtOverlapEnd + (t - start) * rate }
+            fileAtOverlapEnd += (overlap - start) * rate
         }
         // Linear glide from `rate` to 1 over `rateGlideDuration`: integrate the ramp.
         let glide = plan.rateGlideDuration

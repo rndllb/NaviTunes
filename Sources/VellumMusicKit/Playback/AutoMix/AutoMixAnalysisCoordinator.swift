@@ -21,6 +21,10 @@ final class AutoMixAnalysisCoordinator {
         /// Nothing cached and nothing running: either the analyzer is unavailable (no model in the
         /// bundle) or the caller has not asked for this track yet.
         case unavailable
+        /// The analysis of this file already failed (no beats found, undecodable). It is not run
+        /// again for the same file: retrying on every re-plan — every seek — only burned CPU while
+        /// the planner kept "waiting" for a result that could not come (T791).
+        case failed
     }
 
     /// Throughput model: analysis seconds per second of audio, learned on the device as an
@@ -55,6 +59,9 @@ final class AutoMixAnalysisCoordinator {
     private var memory: [TransitionAnalysisStore.Key: TransitionMetadata] = [:]
     private var inFlight: [String: InFlight] = [:]
     private var queued: [(trackId: String, fileURL: URL, duration: TimeInterval)] = []
+    /// Files whose analysis failed, by track id and file fingerprint, so a changed file (a new
+    /// download of the same track) is tried afresh.
+    private var failedKeys: Set<String> = []
     /// Fires on the main actor when an analysis lands, so the engine can re-plan.
     var onAnalysisCompleted: ((String) -> Void)?
     /// Last few decisions, for the debug UI and for tests.
@@ -85,6 +92,7 @@ final class AutoMixAnalysisCoordinator {
     func ensure(trackId: String, fileURL: URL, duration: TimeInterval) -> Status {
         if let hit = cached(trackId: trackId, fileURL: fileURL) { return .ready(hit) }
         guard analyzer.isAvailable else { return .unavailable }
+        if failedKeys.contains(Self.failureKey(trackId: trackId, fileURL: fileURL)) { return .failed }
         if let running = inFlight[trackId] {
             let elapsed = (ContinuousClock.now - running.startedAt).seconds
             return .inFlight(expectedRemaining: max(0, running.expected - elapsed))
@@ -103,6 +111,28 @@ final class AutoMixAnalysisCoordinator {
         let now = ContinuousClock.now
         let ahead = inFlight.values.map { max(0, $0.expected - (now - $0.startedAt).seconds) }.reduce(0, +)
         return .inFlight(expectedRemaining: ahead + expected)
+    }
+
+    /// Where a track's analysis stands, without starting anything: `nil` when nothing has been
+    /// asked for it.
+    func status(trackId: String, fileURL: URL) -> Status? {
+        if let hit = cached(trackId: trackId, fileURL: fileURL) { return .ready(hit) }
+        if failedKeys.contains(Self.failureKey(trackId: trackId, fileURL: fileURL)) { return .failed }
+        if let running = inFlight[trackId] {
+            let elapsed = (ContinuousClock.now - running.startedAt).seconds
+            return .inFlight(expectedRemaining: max(0, running.expected - elapsed))
+        }
+        if let waiting = queued.first(where: { $0.trackId == trackId }) {
+            let now = ContinuousClock.now
+            let ahead = inFlight.values.map { max(0, $0.expected - (now - $0.startedAt).seconds) }.reduce(0, +)
+            return .inFlight(expectedRemaining: ahead + estimate.expectedSeconds(forAudioSeconds: waiting.duration))
+        }
+        return nil
+    }
+
+    private static func failureKey(trackId: String, fileURL: URL) -> String {
+        let fingerprint = TransitionAnalysisStore.Fingerprint.of(fileURL: fileURL).map { "\($0)" } ?? fileURL.path
+        return "\(trackId)|\(fingerprint)"
     }
 
     /// Drop every analysis (running or queued) for tracks not in `trackIds` — the queue changed
@@ -164,6 +194,7 @@ final class AutoMixAnalysisCoordinator {
             log.append("finished \(trackId) in \(String(format: "%.1f", elapsed))s")
             onAnalysisCompleted?(trackId)
         case let .failure(error):
+            failedKeys.insert(Self.failureKey(trackId: trackId, fileURL: fileURL))
             log.append("failed \(trackId): \(error)")
         }
         // Start the next waiting track; skip past any that are already cached or no longer need

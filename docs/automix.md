@@ -132,6 +132,28 @@ must beat the cue point ~15 s before the end, and starting immediately leaves mi
 an ordinary song. Covered by `AutoMixStreamPrefetcherTests` with a counting `URLProtocol`: one
 request, the stream's bytes, no second fetch.
 
+**T791 (2026-10-13): early, whatever the timeline does, and never silent.** What to prepare and
+what plays is decided by `AutoMixPreparation` (pure, `AutoMixPreparationTests`):
+
+- The next stream is fetched once the playing song **plays steadily** (playing, not buffering;
+  `noteAutoMixSteadinessChanged` re-plans on that change), not at the first planning pass, which
+  ran before audio had started and competed with it on a slow link. Never over cellular while
+  "No streaming over cellular" applies.
+- The next song is analysed as soon as it is a file, even while the playing song is still a
+  stream; it used to wait until it became the playing song.
+- A failed analysis is remembered per file (`AutoMixAnalysisCoordinator.Status.failed`) and never
+  re-run; it used to restart on every re-plan, i.e. on every seek, while the planner logged
+  "waiting for analysis" until the boundary went by with no transition.
+- When the beat-matched blend is not possible (the playing song is streamed, an analysis failed or
+  is not in yet, or the playhead is past the analysed cue), the boundary is a **plain crossfade**
+  of up to 8 s ending a second before the song does (`AutoMixPreparation.plainCrossfade`, durations
+  only). Only when even that cannot be staged — the playhead within ~11 s of the end — is it the
+  normal transition (`TransitionStyleReason.noTimeToPrepare`). Every fallback is one line in the
+  perf log (`vellum.perf`, category `automix`, plus a `automix.fallback` event) with the playhead,
+  e.g. "plain crossfade: the analysis of the playing song failed (at 183 s of 234 s)".
+- Planning reads the player's live clock (`autoMixPlanningPosition`), not `playbackHead`, which the
+  periodic observer had not yet refreshed when the steady-playback re-plan ran.
+
 ## Model delivery
 
 Measured: `BeatThis-small0.mlpackage` is **4,642,069 bytes** (2,099,960 parameters, fp16 weights,
