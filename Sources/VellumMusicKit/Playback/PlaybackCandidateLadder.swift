@@ -38,6 +38,17 @@ enum PlaybackCandidateLadder {
         false
     }
 
+    /// The candidates that may be tried right now. With streaming blocked ("No streaming over
+    /// cellular" on a cellular connection) only files already on the phone remain — offline
+    /// downloads and committed stream-cache files — in their original order.
+    static func allowedCandidates(
+        _ candidates: [(url: URL, headers: [String: String])],
+        streamingBlocked: Bool,
+    ) -> [(url: URL, headers: [String: String])] {
+        guard streamingBlocked else { return candidates }
+        return candidates.filter { $0.url.isFileURL }
+    }
+
     /// Expands the candidate URLs into attempts, in order.
     static func attempts(
         candidates: [(url: URL, headers: [String: String])],

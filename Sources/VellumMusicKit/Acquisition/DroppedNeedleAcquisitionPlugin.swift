@@ -57,16 +57,15 @@ struct DroppedNeedleAcquisitionPlugin: AcquisitionProviding {
             displayName: "DroppedNeedle",
             iconName: "arrow.down.circle",
             blurb: "A self-hosted music request engine. Sign in with your DroppedNeedle account, an imported Jellyfin user, or Plex — then Vellum sends album requests through the native API.",
-            requirementsSummary: "DroppedNeedle needs its server address and an account sign-in. No API key — app passwords from Connect Apps won't work here.",
+            requirementsSummary: "Use the address you open DroppedNeedle with, including the port, and your DroppedNeedle account (or an imported Jellyfin user). App passwords from Connect Apps won't work.",
             granularity: .album,
             supportsTrackSearch: false,
             configFields: [
                 AcquisitionConfigField(
                     id: "baseURL",
                     kind: .url,
-                    label: "Server Address",
-                    placeholder: "http://192.168.1.10:8688",
-                    helpText: "The same address you use to open DroppedNeedle in a browser, including the port."
+                    label: "Server",
+                    placeholder: "192.168.1.10:8688"
                 ),
                 AcquisitionConfigField(
                     id: "loginMethod",
@@ -83,14 +82,13 @@ struct DroppedNeedleAcquisitionPlugin: AcquisitionProviding {
                     id: "username",
                     kind: .username,
                     label: "Username",
-                    placeholder: "Account username",
-                    helpText: "The account you sign in to DroppedNeedle with, not your Vellum server login."
+                    placeholder: "username"
                 ),
                 AcquisitionConfigField(
                     id: "password",
                     kind: .password,
                     label: "Password",
-                    placeholder: "Account password"
+                    placeholder: "password"
                 ),
                 AcquisitionConfigField(
                     id: "sessionToken",
@@ -137,12 +135,12 @@ struct DroppedNeedleAcquisitionPlugin: AcquisitionProviding {
         return "droppedneedle:rg:\(mbid)"
     }
 
-    func activeJobs() async -> [AcquisitionJob] {
+    func activeJobs() async throws -> [AcquisitionJob] {
         guard isConfigured else { return [] }
-        guard let data = try? await send(
+        let data = try await send(
             path: "/downloads",
             query: ["page": "1", "page_size": "100"],
-        ) else { return [] }
+        )
         guard let page = data as? [String: Any],
               let items = page["items"] as? [[String: Any]] else { return [] }
         return items.compactMap(mapDownloadTask)
@@ -319,9 +317,9 @@ struct DroppedNeedleAcquisitionPlugin: AcquisitionProviding {
     private func login() async throws -> String {
         switch loginMethod {
         case .local:
-            return try await loginPOST(path: "/auth/login", failureHint: "Invalid username or password.")
+            return try await loginPOST(path: "/auth/login", failureHint: "DroppedNeedle rejected the username or password.")
         case .jellyfin:
-            return try await loginPOST(path: "/auth/jellyfin/login", failureHint: "Invalid Jellyfin credentials or Jellyfin sign-in is not enabled on this server.")
+            return try await loginPOST(path: "/auth/jellyfin/login", failureHint: "DroppedNeedle rejected the Jellyfin username or password, or Jellyfin sign-in isn't enabled on this server.")
         case .plex:
             let token = storedSessionToken
             guard !token.isEmpty else {
@@ -340,8 +338,12 @@ struct DroppedNeedleAcquisitionPlugin: AcquisitionProviding {
                 method: "POST",
                 jsonBody: ["username": username, "password": password],
             )
+        } catch let error as AcquisitionError where Self.isLoginRejection(error) {
+            throw AcquisitionError(failureHint, statusCode: error.statusCode)
         } catch {
-            throw Self.mapHTTPError(error) ?? AcquisitionError(failureHint)
+            // Not a refusal: the server is down, the address is wrong, or it answered with
+            // something else. Saying "wrong password" here sent people to retype a correct one.
+            throw Self.mapHTTPError(error) ?? error
         }
         guard let dict = response as? [String: Any],
               let token = AcquisitionHTTP.string(dict["token"]),
@@ -446,7 +448,17 @@ struct DroppedNeedleAcquisitionPlugin: AcquisitionProviding {
         return nil
     }
 
+    /// A login POST that the server answered with a refusal of the credentials themselves.
+    private static func isLoginRejection(_ error: AcquisitionError) -> Bool {
+        guard let code = error.statusCode else { return false }
+        return code == 400 || code == 401 || code == 403 || code == 422
+    }
+
     private static func isAuthFailure(_ error: Error) -> Bool {
+        // By status first. The shared HTTP helper no longer puts the response body in the error
+        // (it writes a sentence for people instead), so the message checks below stopped matching
+        // a 401 and an expired session was never renewed: every call failed until relaunch.
+        if (error as? AcquisitionError)?.statusCode == 401 { return true }
         guard let message = (error as? AcquisitionError)?.errorDescription?.lowercased() else { return false }
         return message.contains("unauthorized")
             || message.contains("invalid or expired token")

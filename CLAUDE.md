@@ -245,19 +245,18 @@ Vellum submits **server** scrobbles separately from local Recently Played shelve
 - `PlaybackEngine.maybeScrobble` → `AppModel.recordRecentPlay` (local) **and** `ScrobbleService.recordCompletedScrobble` (server queue).
 - `PlaybackEngine.onTrackStarted` → `ScrobbleService.sendNowPlaying` (Subsonic `scrobble?submission=false`; Jellyfin `Sessions/Playing`).
 - Pending scrobbles persist in `ScrobbleStore`; `ScrobbleService.processPendingScrobbles()` drains on submit, periodic timer, and network restore. Failures skip individual items (queue continues). Blocked when `AppModel.effectiveOfflineMode`.
-- Exclusions: album/artist/playlist ids in `ScrobbleStore.exclusions`; manage under Library & Data or via Now Playing track menu.
+- Every completed track is scrobbled; there is no exclusion list (the unfinished Exclusions feature was removed in #7; its stored list is deleted on load). Play counts stay on the phone.
 - **My Listening** (`MyListeningView`) — analytics from completed scrobbles only.
 
 ## Offline modes
 
-- **Manual offline** (`AppModel.offlineMode`) — user toggle.
-- **Auto-offline** (`AppModel.autoOfflineActive`) — non-Wi‑Fi and/or away from configured home SSID (`AutoOfflineHelper`, may need location for SSID).
-- **`effectiveOfflineMode`** — union of both; used for Discovery search gating and scrobble suppression.
-- Auto-offline Settings copy: limits Discovery search to downloaded content; Home/Library browsing and streaming are not fully offline-gated.
+- **Manual offline** (`AppModel.offlineMode`) — user toggle. `effectiveOfflineMode` is the name Discovery search gating and scrobble suppression read; it is just the manual toggle now.
+- **No streaming over cellular** (`AppModel.noStreamingOverCellular`, Settings → Sound & Playback) — on a working cellular path (`CellularStreamingPolicy`), `PlaybackEngine.cellularStreamingBlocked` drops every network candidate (`PlaybackCandidateLadder.allowedCandidates`), so only downloads and stream-cache files play; other tracks are skipped with reason `.cellularStreamingOff`, which never counts towards the halt guard. Nothing is pre-warmed, staged or prefetched over the network while blocked.
+- Auto-offline (Wi‑Fi-only / home-SSID with a location prompt) was removed in #12; its two defaults keys are deleted on launch. Home Wi‑Fi SSIDs remain for server failover (`HomePresenceHelper`).
 
 ## Client backup
 
-`VellumClientBackup` / `ClientBackupControlsView` — export/import scrobbles, scrobble exclusions, playback preferences. Does **not** include credentials, downloaded audio, or server magic-playlist contents.
+`VellumClientBackup` / `ClientBackupControlsView` — export/import scrobbles, playback preferences, the signed-in account's Kill Mode history (`KillModeStore`) and library pins (`LibraryPinStore`), via `VellumClientBackupLocalState`. Both sections are optional in the file: a backup without them leaves this phone's Kill Mode and pins alone, even on Replace. Does **not** include credentials, downloaded audio, or server magic-playlist contents.
 
 ## Navidrome shares
 
@@ -312,7 +311,7 @@ Document for contributors — not an exhaustive bug list:
 | `MusicBrainz/` | Client, service, models, query, search feed, caches, discography mapping |
 | `Playback/` | `PlaybackEngine`, failure policy, queue store, stream cache, `StaleSongRecovery` |
 | `Equalizer/` | The EQ model, curve maths, profiles, and its own settings UI |
-| `Offline/` | `OfflineDownloadManager` (+ extensions), download queue, storage browser, auto-offline |
+| `Offline/` | `OfflineDownloadManager` (+ extensions), download queue, storage browser |
 | `Scrobbling/` | `ScrobbleService`, listening analytics, My Listening, ListenBrainz |
 | `Library/` | Library tab, membership, matching, genres, playlists, Kill Mode |
 | `AlbumDetail/` | Browse/library album detail, related shelves, hero backdrop, track caches |

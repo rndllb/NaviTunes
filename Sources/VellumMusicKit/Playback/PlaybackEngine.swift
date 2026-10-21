@@ -194,7 +194,10 @@ final class PlaybackEngine: NSObject, ObservableObject {
     private var eqCacheHandoffTask: Task<Void, Never>?
 
     var equalizerEnabled = false
-    var equalizerBypass = false
+    /// "No streaming over cellular" is on and the phone is on cellular (`AppModel` decides, via
+    /// ``CellularStreamingPolicy``). Nothing is opened over the network while it is true: only
+    /// downloads and stream-cache files play, and nothing is pre-warmed or prefetched.
+    var cellularStreamingBlocked = false
     var equalizerBandGains: [Float] = EqualizerBand.flatGains
 
     // MARK: AutoMix (song-to-song blending)
@@ -2275,7 +2278,9 @@ final class PlaybackEngine: NSObject, ObservableObject {
         refreshNowPlaying()
     }
 
-    private var effectiveEqualizerBypass: Bool { equalizerBypass || !equalizerEnabled }
+    /// The equalizer's only switch is ``equalizerEnabled``; the separate Bypass toggle was
+    /// removed (#14) because it was a second off switch with a different name.
+    private var effectiveEqualizerBypass: Bool { !equalizerEnabled }
 
     /// Live gain changes, e.g. dragging a slider in the equalizer UI.
     ///
@@ -2587,6 +2592,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
             let track = queue[idx]
             if track.isInternetRadioStream { continue }
             if offline?.localFile(for: track.id) != nil { continue }
+            if cellularStreamingBlocked { continue }
             guard let candidate = primaryRemoteCandidate(for: track) else { continue }
             let key = candidate.url.absoluteString
             if staged[key] != nil { continue }
@@ -2767,6 +2773,8 @@ final class PlaybackEngine: NSObject, ObservableObject {
         guard !candidates.isEmpty else {
             throw library == nil ? PlaybackEngineError.missingLibrary : URLError(.cannotLoadFromNetwork)
         }
+        candidates = PlaybackCandidateLadder.allowedCandidates(candidates, streamingBlocked: cellularStreamingBlocked)
+        guard !candidates.isEmpty else { throw CellularStreamingBlockedError() }
 
         var lastError: Error?
         // Which attempts go through the caching loader is decided here, once, by the ladder: at
@@ -3654,7 +3662,7 @@ final class PlaybackEngine: NSObject, ObservableObject {
         let asset: AVURLAsset
         if let saved = offline?.localFile(for: track.id) {
             asset = AVURLAsset(url: saved, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
-        } else if let candidate = primaryRemoteCandidate(for: track) {
+        } else if !cellularStreamingBlocked, let candidate = primaryRemoteCandidate(for: track) {
             asset = candidate.headers.isEmpty
                 ? AVURLAsset(url: candidate.url)
                 : AVURLAsset(url: candidate.url, options: ["AVURLAssetHTTPHeaderFieldsKey": candidate.headers])
@@ -4112,7 +4120,7 @@ extension PlaybackEngine {
             currentIsLocal: currentURL != nil,
             nextIsLocal: nextURL != nil,
             playingSteadily: autoMixPlayingSteadily,
-            streamingAllowed: true,
+            streamingAllowed: !cellularStreamingBlocked,
             current: analysisState(current, currentURL),
             next: analysisState(next, nextURL)
         )

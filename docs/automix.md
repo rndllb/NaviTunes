@@ -274,7 +274,7 @@ included (it is one inference per song, then never again).
 43 tracks copied read-only from Navidrome's music root; analysis with Beat This `final0` on GPU
 (the shipping model is `small0`; `final0` was used here as the stronger reference), sections from
 the shipping heuristic and, separately, from All-In-One. Rendered with `scripts/automix/render.py`
-into `/mnt/smalls/vellum-automix-work/samples/`.
+into `<automix-workdir>/samples/`.
 
 Scores: beat-alignment error = median |nearest A beat − B beat| over the overlap, in the output
 timeline (ms); tempo stretch = |rate − 1| × 100; loudness jump = |short-term LUFS 3 s after the
@@ -293,9 +293,9 @@ its worst step (2.8 vs 4.2 LU); River Man into HUMBLE goes from a 22 LU jump to 
 
 Three files to listen to:
 
-- baseline, a whole beat out: `/mnt/smalls/vellum-automix-work/samples/calvinharris-we-found-love__dualipa-dont-start-now__1-baseline-crossfade.flac`
-- recommended blend, same pair, 5 ms: `/mnt/smalls/vellum-automix-work/samples/calvinharris-we-found-love__dualipa-dont-start-now__3-section-bass-swap.flac`
-- smooth crossfade for an incompatible pair: `/mnt/smalls/vellum-automix-work/samples/nickdrake-river-man__kendrick-humble__4-smooth-crossfade-tempoMismatch.flac`
+- baseline, a whole beat out: `<automix-workdir>/samples/calvinharris-we-found-love__dualipa-dont-start-now__1-baseline-crossfade.flac`
+- recommended blend, same pair, 5 ms: `<automix-workdir>/samples/calvinharris-we-found-love__dualipa-dont-start-now__3-section-bass-swap.flac`
+- smooth crossfade for an incompatible pair: `<automix-workdir>/samples/nickdrake-river-man__kendrick-humble__4-smooth-crossfade-tempoMismatch.flac`
 
 ### Per pair (heuristic sections = the shipping rule)
 

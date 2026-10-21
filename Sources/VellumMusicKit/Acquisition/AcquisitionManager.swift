@@ -18,6 +18,9 @@ final class AcquisitionManager: ObservableObject {
     }
     /// Server-side queue snapshot from the active plugin (includes items started elsewhere).
     @Published private(set) var serverJobs: [AcquisitionJob] = []
+    /// Why the last read of the server's queue failed, or nil when it succeeded. Settings shows
+    /// this instead of "No Activity", which is what a refused read used to look like.
+    @Published private(set) var activityError: String?
     /// The currently selected backend; persisted.
     @Published var activePlugin: AcquisitionPluginKind {
         didSet {
@@ -25,6 +28,7 @@ final class AcquisitionManager: ObservableObject {
             UserDefaults.standard.set(activePlugin.rawValue, forKey: Self.activeKey)
             jobs.removeAll()
             serverJobs = []
+            activityError = nil
             finishedNotified.removeAll()
             objectWillChange.send()
         }
@@ -429,9 +433,21 @@ final class AcquisitionManager: ObservableObject {
         let provider = self.provider
         guard provider.isConfigured else {
             if !serverJobs.isEmpty { serverJobs = [] }
+            if activityError != nil { activityError = nil }
             return
         }
-        let snapshot = await provider.activeJobs()
+        let snapshot: [AcquisitionJob]
+        do {
+            snapshot = try await provider.activeJobs()
+        } catch {
+            // Keep the last snapshot and our own jobs exactly as they were. Reconciling against
+            // an empty list here is what used to count a refused read as every request having
+            // left the queue — two of those in a row and the request was declared finished.
+            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            if activityError != message { activityError = message }
+            return
+        }
+        if activityError != nil { activityError = nil }
         // This loop runs at 1 Hz while the Activity list is open. Reassigning unconditionally
         // republished the manager (and every view observing it) on every idle poll.
         if snapshot != serverJobs { serverJobs = snapshot }

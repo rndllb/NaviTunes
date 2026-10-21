@@ -545,7 +545,7 @@ step forward came from a log line. Add `DebugUIRemote.log` (DEBUG-only), build, 
 exercise it, and **read the log before concluding anything.**
 
 ```bash
-xcrun devicectl device copy from --device 00008150-001A43E10C63401C \
+xcrun devicectl device copy from --device <device-udid> \
   --domain-type appDataContainer --domain-identifier com.randll.vellum --user mobile \
   --source Documents/vellum-hangwatch.log --destination ./hw.log
 ```

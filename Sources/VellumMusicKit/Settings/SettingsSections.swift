@@ -87,28 +87,13 @@ struct SettingsOfflineSectionView: View {
             Section {
                 Toggle("Offline mode", isOn: $app.offlineMode)
                     .tint(MusicDesign.accent)
-                Toggle("Auto offline", isOn: $app.autoOfflineEnabled)
-                    .tint(MusicDesign.accent)
-                if app.autoOfflineEnabled {
-                    Picker("Auto offline when", selection: $app.autoOfflineMode) {
-                        ForEach(AutoOfflineMode.allCases) { mode in
-                            Text(mode.title).tag(mode)
-                        }
-                    }
-                    .tint(MusicDesign.accent)
-                    if app.autoOfflineMode == .homeWifi, app.homeWifiSSIDs.isEmpty {
-                        Text("Add your home Wi‑Fi network in Account (Home Wi‑Fi, under Fallback).")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
                 if app.effectiveOfflineMode {
                     Label("Browsing downloaded content only", systemImage: "wifi.slash")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             } footer: {
-                Text("Offline mode limits Discovery search and server catalog browsing to downloaded content.")
+                Text("Offline mode limits Discovery search and server catalog browsing to downloaded content. To save cellular data instead, turn on No streaming over cellular in Sound & Playback.")
             }
         }
         .navigationTitle("Offline")
@@ -386,16 +371,4 @@ struct SettingsPluginRow: View {
 
 // MARK: - About
 
-struct SettingsAboutView: View {
-    var body: some View {
-        Form {
-            Section {
-                Text("Vellum Music streams from your Jellyfin or Navidrome server. Offline cache stores encrypted-at-rest copies in Application Support.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .navigationTitle("About")
-        .settingsSubpageChrome()
-    }
-}
+// `SettingsAboutView` lives in `SettingsAboutView.swift`.

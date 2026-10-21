@@ -351,9 +351,6 @@ struct AcquisitionConfigField: Identifiable, Hashable, Sendable {
     let kind: Kind
     let label: String
     let placeholder: String
-    /// Where the value comes from, shown under the field. Placeholders are examples,
-    /// not instructions — anything the user has to go find belongs here.
-    let helpText: String?
     /// Whether ``AcquisitionProviding/isConfigured`` requires this field.
     let required: Bool
     /// When set, Settings renders a picker instead of a free-text field.
@@ -364,7 +361,6 @@ struct AcquisitionConfigField: Identifiable, Hashable, Sendable {
         kind: Kind,
         label: String,
         placeholder: String,
-        helpText: String? = nil,
         required: Bool = true,
         pickerOptions: [PickerOption]? = nil,
     ) {
@@ -372,7 +368,6 @@ struct AcquisitionConfigField: Identifiable, Hashable, Sendable {
         self.kind = kind
         self.label = label
         self.placeholder = placeholder
-        self.helpText = helpText
         self.required = required
         self.pickerOptions = pickerOptions
     }
@@ -388,8 +383,9 @@ struct AcquisitionCapabilities: Sendable {
     let displayName: String
     let iconName: String
     let blurb: String
-    /// One line naming the credentials this plugin needs, shown above its fields so
-    /// "does this want an API key?" is answered before the user starts typing.
+    /// The setup form's one footer: what the plugin needs and where each value comes from
+    /// (naming the service), short enough to read at a glance. Per-field paragraphs made the
+    /// form twice as long as its fields (c5), so field rows carry only a label and an example.
     let requirementsSummary: String
     let granularity: Granularity
     /// True when the plugin can return concrete ``AcquisitionResult`` rows for a query.
@@ -602,7 +598,12 @@ protocol AcquisitionProviding: Sendable {
 
     /// Snapshot of the plugin's server-side queue/activity, including items started
     /// outside this app. Default: empty.
-    func activeJobs() async -> [AcquisitionJob]
+    ///
+    /// **Throws when the server could not be read.** It used to return `[]` for that too, which
+    /// made "nothing is downloading" and "Vellum couldn't ask" the same answer: Settings showed
+    /// "No Activity" over a queue it had been refused, and the manager reconciled its own jobs
+    /// against an empty snapshot as though they had left the queue.
+    func activeJobs() async throws -> [AcquisitionJob]
 
     /// Did this request actually land — files on disk, not merely gone from the queue?
     ///
@@ -646,7 +647,7 @@ protocol AcquisitionProviding: Sendable {
 extension AcquisitionProviding {
     func search(query: String) async throws -> [AcquisitionResult] { [] }
     func searchAlbums(query: String) async -> [AcquisitionRelease] { [] }
-    func activeJobs() async -> [AcquisitionJob] { [] }
+    func activeJobs() async throws -> [AcquisitionJob] { [] }
     func isRequestSatisfied(nativeId: String) async -> Bool? { nil }
     func requestState(for nativeId: String) async -> AcquisitionBackendState? { nil }
     /// Whether the active plugin's catalog (Lidarr → MusicBrainz) knows this artist.
@@ -660,9 +661,20 @@ extension AcquisitionProviding {
 }
 
 /// Generic LocalizedError carrying a user-facing message.
+///
+/// `statusCode` is the HTTP status when the failure was an HTTP answer, so a plugin can tell
+/// "the server rejected the credentials" (401/403) from every other failure by the number rather
+/// than by reading the sentence, which is written for people and changes.
 struct AcquisitionError: LocalizedError {
     let errorDescription: String?
-    init(_ message: String) { errorDescription = message }
+    let statusCode: Int?
+    init(_ message: String, statusCode: Int? = nil) {
+        errorDescription = message
+        self.statusCode = statusCode
+    }
+
+    /// The server answered and refused the credentials.
+    var isCredentialRejection: Bool { statusCode == 401 || statusCode == 403 }
 }
 
 // MARK: - Config storage
@@ -696,6 +708,11 @@ enum AcquisitionConfigStore {
 // MARK: - Shared HTTP helpers for REST plugins (Lidarr, …)
 
 enum AcquisitionHTTP {
+    /// The session every acquisition request goes through, Downtify's included. A seam for the
+    /// plugin tests, which swap in a stubbed `URLProtocol` so Test Connection can be exercised
+    /// against a fake server; the app never reassigns it.
+    nonisolated(unsafe) static var session: URLSession = .vellum
+
     /// Normalizes a user-entered base URL: adds `http://` when no scheme, drops a trailing slash.
     static func normalizedBase(_ raw: String) -> String? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -734,7 +751,7 @@ enum AcquisitionHTTP {
         let data: Data
         let resp: URLResponse
         do {
-            (data, resp) = try await URLSession.vellum.data(for: req)
+            (data, resp) = try await session.data(for: req)
         } catch {
             throw AcquisitionError(userFacingMessage(for: error))
         }
@@ -748,7 +765,7 @@ enum AcquisitionHTTP {
             if !body.isEmpty {
                 print("[Acquisition] HTTP \(http.statusCode) from \(path): \(body)")
             }
-            throw AcquisitionError(Self.userFacingMessage(statusCode: http.statusCode, body: body))
+            throw AcquisitionError(Self.userFacingMessage(statusCode: http.statusCode, body: body), statusCode: http.statusCode)
         }
         guard !data.isEmpty else { return [:] }
         return (try? JSONSerialization.jsonObject(with: data)) ?? [:]
