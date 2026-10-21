@@ -73,22 +73,31 @@ struct SettingsPlaybackView: View {
                 }
             }
             .tint(MusicDesign.accent)
-            Picker("Cellular max bitrate", selection: $app.cellularStreamBitRate) {
-                ForEach(StreamBitRateOption.allCases) { tier in
-                    Text(tier.title).tag(tier)
+            Toggle("No streaming over cellular", isOn: $app.noStreamingOverCellular)
+                .tint(MusicDesign.accent)
+            // The cellular quality pickers describe streams that can no longer happen.
+            if !app.noStreamingOverCellular {
+                Picker("Cellular max bitrate", selection: $app.cellularStreamBitRate) {
+                    ForEach(StreamBitRateOption.allCases) { tier in
+                        Text(tier.title).tag(tier)
+                    }
                 }
-            }
-            .tint(MusicDesign.accent)
-            Picker("Cellular format", selection: $app.cellularStreamFormat) {
-                ForEach(app.availableStreamFormats) { format in
-                    Text(format.title).tag(format)
+                .tint(MusicDesign.accent)
+                Picker("Cellular format", selection: $app.cellularStreamFormat) {
+                    ForEach(app.availableStreamFormats) { format in
+                        Text(format.title).tag(format)
+                    }
                 }
+                .tint(MusicDesign.accent)
             }
-            .tint(MusicDesign.accent)
         } header: {
             Text("Streaming")
         } footer: {
-            Text("Active tier follows the network (Wi‑Fi vs cellular). Some formats may not work on every server.")
+            if app.noStreamingOverCellular {
+                Text("On cellular, only downloaded songs and songs already cached on this iPhone play; others are skipped. Streaming quality follows the Wi‑Fi settings. Some formats may not work on every server.")
+            } else {
+                Text("Active tier follows the network (Wi‑Fi vs cellular). Some formats may not work on every server.")
+            }
         }
     }
 

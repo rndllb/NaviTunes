@@ -98,10 +98,6 @@ struct SettingsEqualizerView: View {
         Section {
             Toggle("Enable equalizer", isOn: $app.equalizerEnabled)
                 .tint(MusicDesign.accent)
-            if app.equalizerEnabled {
-                Toggle("Bypass", isOn: $app.equalizerBypass)
-                    .tint(MusicDesign.accent)
-            }
         } footer: {
             Text("EQ applies to downloads and cached streams. Enabling EQ turns on stream caching — new streams play immediately and switch to EQ once cached. Internet radio always bypasses EQ.")
         }
@@ -158,7 +154,7 @@ struct SettingsEqualizerView: View {
             } else if app.equalizerHistory.canUndo {
                 Text("Use the toolbar buttons to undo or redo curve edits. \(app.equalizerHistory.undoStepCount) edit\(app.equalizerHistory.undoStepCount == 1 ? "" : "s") can be undone.")
             } else {
-                Text("Use Bypass to A/B against your curve. EQ only affects downloaded tracks and cached streams — live streams and radio use normal playback until cached.")
+                Text("Turn the equalizer off and on to compare against your curve. EQ only affects downloaded tracks and cached streams — live streams and radio use normal playback until cached.")
             }
         }
     }

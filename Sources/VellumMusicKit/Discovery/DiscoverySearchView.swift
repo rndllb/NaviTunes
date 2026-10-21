@@ -26,7 +26,6 @@ enum SearchNavTarget: Hashable {
     /// An artist known only by MBID and name — the shape a request-candidate row can offer,
     /// since it carries the id but not the artist's own metadata.
     case musicBrainzArtistId(id: String, name: String)
-    case genre(LibraryGenreSummary)
     case acquire(AcquisitionResult)
 }
 
@@ -63,61 +62,18 @@ extension SearchNavTarget {
     }
 }
 
-/// Colorful genre tile for the Discover idle grid (no heading — tiles only).
-private struct SearchGenreTile: View {
-    let title: String
-    @Environment(\.colorScheme) private var colorScheme
+/// What the Discover search area shows.
+///
+/// With no query it is always what you searched recently. The idle state used to be a grid of
+/// server genre tiles (#8), a second and worse way in once the MusicBrainz entity tabs existed;
+/// it is gone, and with it the genre fetch that ran every time the tab opened.
+enum DiscoverSearchBody: Equatable {
+    case recentlySearched
+    case results
 
-    var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            LinearGradient(
-                colors: SearchGenrePalette.gradient(for: title),
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing,
-            )
-            Text(title)
-                .font(.headline.weight(.semibold))
-                .foregroundStyle(.white)
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
-                .padding(12)
-                .shadow(color: .black.opacity(0.35), radius: 4, x: 0, y: 1)
-        }
-        .frame(maxWidth: .infinity)
-        .aspectRatio(16.0 / 8.0, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay {
-            MusicDesign.artworkSubtleBorderOverlay(cornerRadius: 10, colorScheme: colorScheme)
-        }
-        .contentShape(Rectangle())
-    }
-}
-
-private enum SearchGenrePalette {
-    private static let pairs: [(Color, Color)] = [
-        (.init(red: 0.93, green: 0.27, blue: 0.45), .init(red: 0.58, green: 0.13, blue: 0.42)),
-        (.init(red: 0.98, green: 0.62, blue: 0.22), .init(red: 0.74, green: 0.31, blue: 0.10)),
-        (.init(red: 0.16, green: 0.69, blue: 0.55), .init(red: 0.06, green: 0.36, blue: 0.40)),
-        (.init(red: 0.28, green: 0.49, blue: 0.91), .init(red: 0.13, green: 0.20, blue: 0.55)),
-        (.init(red: 0.69, green: 0.32, blue: 0.87), .init(red: 0.35, green: 0.13, blue: 0.55)),
-        (.init(red: 0.93, green: 0.41, blue: 0.36), .init(red: 0.50, green: 0.14, blue: 0.18)),
-        (.init(red: 0.42, green: 0.72, blue: 0.29), .init(red: 0.16, green: 0.39, blue: 0.18)),
-        (.init(red: 0.95, green: 0.78, blue: 0.27), .init(red: 0.62, green: 0.42, blue: 0.05)),
-        (.init(red: 0.18, green: 0.55, blue: 0.79), .init(red: 0.08, green: 0.27, blue: 0.45)),
-        (.init(red: 0.86, green: 0.30, blue: 0.65), .init(red: 0.48, green: 0.10, blue: 0.40)),
-        (.init(red: 0.49, green: 0.36, blue: 0.84), .init(red: 0.22, green: 0.15, blue: 0.51)),
-        (.init(red: 0.21, green: 0.66, blue: 0.78), .init(red: 0.06, green: 0.30, blue: 0.42)),
-    ]
-
-    static func gradient(for key: String) -> [Color] {
-        let normalized = key.lowercased()
-        var hash: UInt64 = 14_695_981_039_346_656_037
-        for byte in normalized.utf8 {
-            hash ^= UInt64(byte)
-            hash &*= 1_099_511_628_211
-        }
-        let pair = pairs[Int(hash % UInt64(pairs.count))]
-        return [pair.0, pair.1]
+    static func state(sessionActive: Bool, query: String) -> DiscoverSearchBody {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? .recentlySearched : .results
     }
 }
 
@@ -371,11 +327,6 @@ struct DiscoverySearchView: View {
         }
     }
 
-    // Idle-state genre tiles (Discover tab).
-    @State private var serverGenres: [LibraryGenreSummary] = []
-    @State private var isLoadingGenres = false
-    @State private var genresLoadError: String?
-    @State private var genresLoadedForKey: String?
 
     // Library-tab server catalog search.
     @State private var libraryServerResults: CatalogSearchResults = .empty
@@ -393,12 +344,6 @@ struct DiscoverySearchView: View {
     /// breaks them in practice — one combined modifier off a single binding
     /// avoids the issue entirely.
     private var trimmedQuery: String { searchText.trimmingCharacters(in: .whitespacesAndNewlines) }
-
-    /// Re-run genre fetch when sign-in completes or the active server client is replaced.
-    private var genreLoadTaskKey: String {
-        let clientKey = app.activeLibrary.map { "\(ObjectIdentifier($0))" } ?? "none"
-        return "\(app.isSignedIn)-\(app.backendKind)-\(clientKey)"
-    }
 
     // Single source of truth for row metrics across every Discovery search row
     // (Top Results, Library results, Recently Searched, per-genre shelves).
@@ -766,9 +711,6 @@ struct DiscoverySearchView: View {
             guard scope == .discover, app.isSignedIn else { return }
             app.scheduleDiscoveryTrackIndexRefreshIfNeeded()
         }
-        .task(id: genreLoadTaskKey) {
-            await loadServerGenresIfNeeded()
-        }
     }
 
     // MARK: - Content
@@ -786,74 +728,11 @@ struct DiscoverySearchView: View {
 
     private var hybridContent: some View {
         Group {
-            // Three-state body matching Apple Music's search:
-            //   * idle (search not focused, no query) → genre-tile grid
-            //   * focused, no query → Recently Searched
-            //   * has query → live hybrid results
-            if !isSearchSessionActive && trimmedQuery.isEmpty {
-                discoverIdleGrid
-            } else if trimmedQuery.isEmpty {
-                hybridRecentlySearchedList
-            } else {
-                hybridResultsList
+            switch DiscoverSearchBody.state(sessionActive: isSearchSessionActive, query: trimmedQuery) {
+            case .recentlySearched: hybridRecentlySearchedList
+            case .results: hybridResultsList
             }
         }
-    }
-
-    private var discoverIdleGrid: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                if !app.acquisitionConfigured {
-                    Text("Set up a download plugin in Settings to enable requests. Server search still works.")
-                        .font(.subheadline)
-                        .foregroundStyle(MusicDesign.secondaryLabel)
-                        .padding(.horizontal, 16)
-                }
-
-                VStack(alignment: .leading, spacing: 16) {
-                    if isLoadingGenres {
-                        HStack {
-                            ProgressView().tint(MusicDesign.accent)
-                            Text("Loading categories…")
-                                .font(.subheadline)
-                                .foregroundStyle(MusicDesign.secondaryLabel)
-                        }
-                        .padding(.horizontal, 16)
-                    } else if let genresLoadError {
-                        Text(genresLoadError)
-                            .font(.subheadline)
-                            .foregroundStyle(MusicDesign.secondaryLabel)
-                            .padding(.horizontal, 16)
-                    } else if serverGenres.isEmpty {
-                        Text("No genres returned from your server.")
-                            .font(.subheadline)
-                            .foregroundStyle(MusicDesign.secondaryLabel)
-                            .padding(.horizontal, 16)
-                    } else {
-                        LazyVGrid(
-                            columns: [
-                                GridItem(.flexible(), spacing: 12),
-                                GridItem(.flexible(), spacing: 12),
-                            ],
-                            spacing: 12,
-                        ) {
-                            ForEach(serverGenres) { genre in
-                                Button {
-                                    navigationPath.append(SearchNavTarget.genre(genre))
-                                } label: {
-                                    SearchGenreTile(title: genre.name)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                    }
-                }
-            }
-            .padding(.vertical, 12)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private var hybridRecentlySearchedList: some View {
@@ -861,7 +740,7 @@ struct DiscoverySearchView: View {
             Section {
                 recentHeader
                 if recent.isEmpty {
-                    Text("Search your server or Apple Music for songs, albums, and artists.")
+                    Text("Search your server for songs, albums, and artists.")
                         .font(.subheadline)
                         .foregroundStyle(MusicDesign.secondaryLabel)
                         .listRowBackground(Color.clear)
@@ -1048,43 +927,6 @@ struct DiscoverySearchView: View {
                 .font(.subheadline)
                 .foregroundStyle(MusicDesign.secondaryLabel)
                 .listRowBackground(Color.clear)
-        }
-    }
-
-    private func loadServerGenresIfNeeded() async {
-        let key = genreLoadTaskKey
-        if genresLoadedForKey == key, !serverGenres.isEmpty {
-            return
-        }
-
-        guard !app.effectiveOfflineMode else {
-            serverGenres = []
-            genresLoadError = nil
-            isLoadingGenres = false
-            genresLoadedForKey = nil
-            return
-        }
-        guard let lib = app.activeLibrary else {
-            serverGenres = []
-            genresLoadError = nil
-            isLoadingGenres = false
-            genresLoadedForKey = nil
-            return
-        }
-
-        isLoadingGenres = true
-        genresLoadError = nil
-        defer { isLoadingGenres = false }
-
-        do {
-            serverGenres = try await lib.browseGenreCategories(limit: 60)
-            genresLoadedForKey = key
-        } catch is CancellationError {
-            return
-        } catch {
-            genresLoadError = error.localizedDescription
-            serverGenres = []
-            genresLoadedForKey = nil
         }
     }
 

@@ -29,7 +29,7 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
             displayName: "Lidarr",
             iconName: "square.stack.3d.up",
             blurb: "A music collection manager. Vellum sends album requests to Lidarr, which adds them to your collection and keeps them monitored and complete.",
-            requirementsSummary: "Lidarr needs its server address and an API key.",
+            requirementsSummary: "Use the address you open Lidarr with, including the port. The API key is in Lidarr under Settings → General → Security.",
             granularity: .album,
             supportsTrackSearch: false,
             supportsReleaseCatalog: true,
@@ -37,26 +37,42 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
                 AcquisitionConfigField(
                     id: "baseURL",
                     kind: .url,
-                    label: "Server Address",
-                    placeholder: "http://192.168.1.10:8686",
-                    helpText: "The same address you use to open Lidarr in a browser, including the port."
+                    label: "Server",
+                    placeholder: "192.168.1.10:8686"
                 ),
                 AcquisitionConfigField(
                     id: "apiKey",
                     kind: .apiKey,
                     label: "API Key",
-                    placeholder: "32-character key",
-                    helpText: "In Lidarr, go to Settings → General → Security and copy the API Key."
+                    placeholder: "32-character key"
                 ),
             ]
         )
     }
 
+    /// Test Connection. An authenticated read of `system/status`, which Lidarr refuses without a
+    /// valid key, and which must come back **as Lidarr**: any web server at the wrong port answers
+    /// 200 with an HTML page, and that used to read as "Connected" because an unparseable body
+    /// decoded to an empty object.
     func validate() async -> Result<String, Error> {
         guard isConfigured else { return .failure(AcquisitionError("Enter your Lidarr URL and API key.")) }
         do {
-            _ = try await send(path: "system/status")
+            let status = try await send(path: "system/status")
+            guard let dict = status as? [String: Any],
+                  let appName = AcquisitionHTTP.string(dict["appName"]),
+                  appName.caseInsensitiveCompare("Lidarr") == .orderedSame
+            else {
+                return .failure(AcquisitionError("That address answered, but not as Lidarr. Check the Server Address and port."))
+            }
+            if let version = AcquisitionHTTP.string(dict["version"]), !version.isEmpty {
+                return .success("Connected to Lidarr \(version).")
+            }
             return .success("Connected to Lidarr.")
+        } catch let error as AcquisitionError where error.isCredentialRejection {
+            return .failure(AcquisitionError(
+                "Lidarr rejected the API key. Copy it again from Lidarr → Settings → General → Security.",
+                statusCode: error.statusCode
+            ))
         } catch {
             return .failure(error)
         }
@@ -105,12 +121,12 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
         return "\(Self.nativeIdPrefix)\(foreignId)"
     }
 
-    func activeJobs() async -> [AcquisitionJob] {
+    func activeJobs() async throws -> [AcquisitionJob] {
         guard isConfigured else { return [] }
         async let queueRecords = downloadQueueRecords()
         async let commandRows = activeCommands()
         var out: [AcquisitionJob] = []
-        for row in await queueRecords {
+        for row in try await queueRecords {
             guard let qid = AcquisitionHTTP.int(row["id"]) else { continue }
             let size = AcquisitionHTTP.double(row["size"]) ?? 0
             let left = AcquisitionHTTP.double(row["sizeleft"]) ?? 0
@@ -300,7 +316,7 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
     /// of them, which is one of the ways a request could be downloading in plain sight and still
     /// look stalled to the app.
     private func queueRecord(forAlbumId albumId: Int) async -> [String: Any]? {
-        for row in await allQueueRecords() {
+        for row in (try? await allQueueRecords()) ?? [] {
             let nested = AcquisitionHTTP.int((row["album"] as? [String: Any])?["id"])
             if nested == albumId || AcquisitionHTTP.int(row["albumId"]) == albumId { return row }
         }
@@ -636,8 +652,8 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
         return (data as? [[String: Any]])?.first
     }
 
-    private func downloadQueueRecords() async -> [[String: Any]] {
-        await allQueueRecords()
+    private func downloadQueueRecords() async throws -> [[String: Any]] {
+        try await allQueueRecords()
     }
 
     /// Every queue record, following `totalRecords` across pages.
@@ -646,17 +662,27 @@ struct LidarrAcquisitionPlugin: AcquisitionProviding {
     /// records were invisible to the app — and a request sitting in that tail looked, to the UI,
     /// exactly like one that had vanished. Bounded at five pages so a pathological queue cannot
     /// turn one poll into an unbounded crawl.
-    private func allQueueRecords() async -> [[String: Any]] {
+    ///
+    /// The first page throws: if Lidarr cannot be read at all, the caller has to know that rather
+    /// than see an empty queue. A later page failing keeps what was already read.
+    private func allQueueRecords() async throws -> [[String: Any]] {
         var out: [[String: Any]] = []
         for page in 1 ... 5 {
             // `includeAlbum` / `includeArtist` are what put the real album title and its
             // `foreignAlbumId` on each row — see the note in `activeJobs()`.
-            guard let data = try? await send(path: "queue", query: [
+            let query = [
                 "page": String(page),
                 "pageSize": "100",
                 "includeAlbum": "true",
                 "includeArtist": "true",
-            ]) else { break }
+            ]
+            let data: Any
+            if page == 1 {
+                data = try await send(path: "queue", query: query)
+            } else {
+                guard let next = try? await send(path: "queue", query: query) else { break }
+                data = next
+            }
             guard let payload = data as? [String: Any],
                   let records = payload["records"] as? [[String: Any]]
             else {
