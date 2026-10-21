@@ -68,6 +68,26 @@ struct AutoMixTransitionBandsTests {
         #expect(AutoMixPlayerBlend.initialRate(automation) == 1)
     }
 
+    @Test("a rate schedule shorter than the overlap never moves the incoming song backwards, so its ramps never overlap")
+    func scheduleShorterThanOverlap() {
+        // The schedule's bars are the beat grid's real spans; the overlap is the median bar × bars. When the
+        // spans add up to less, item time stepped back at the end of the overlap, the next ramp landed on an
+        // earlier one, and AVFoundation raised "must not overlap" mid-blend (phone crashes, 2026-10-16/17).
+        let plan = BlendPlan(outgoingMixOut: 200, incomingMixIn: 8, overlapDuration: 16, overlapBars: 8, incomingRate: 0.96,
+                             rateSchedule: Array(repeating: RateSegment(outputDuration: 1.9, rate: 0.96), count: 8),
+                             rateGlideDuration: 8, incomingGainDB: -3, bassSwapFraction: 0.5, sectionAligned: true)
+        var previous = -Double.infinity
+        for k in 0 ... 2600 {
+            let position = AutoMixScheduler.incomingFilePosition(plan: plan, outputSecondsSinceOverlap: Double(k) * 0.01)
+            #expect(position >= previous - 1e-9, "item time went backwards at t = \(Double(k) * 0.01) s")
+            previous = position
+        }
+        let ramps = AutoMixPlayerBlend.incomingVolumeRamps(AutoMixAutomation(plan: plan))
+        for (a, b) in zip(ramps, ramps.dropFirst()) {
+            #expect(b.start >= a.end - 1e-9, "ramp [\(b.start), \(b.end)] starts before [\(a.start), \(a.end)] ends")
+        }
+    }
+
     @Test("the overlap start is the host time the outgoing reaches its mix-out, or nil when that is behind")
     func overlapStart() {
         let now: UInt64 = 1_000_000_000
