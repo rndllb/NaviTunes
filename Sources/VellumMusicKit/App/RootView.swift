@@ -199,6 +199,7 @@ private struct MainShellView: View {
                 // Settings → Music Requests. A download that finished while the app was closed
                 // went unnoticed until then.
                 app.acquisition.refreshOnForeground()
+                await app.refreshSubscriptionsIfStale()
             }
         }
         .onChange(of: app.isSignedIn) { _, signedIn in
@@ -206,10 +207,12 @@ private struct MainShellView: View {
             // misses: at that point `isSignedIn` was still false and there was no backend to ask.
             guard signedIn else { return }
             app.acquisition.refreshOnForeground()
+            Task { await app.refreshSubscriptionsIfStale() }
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active, app.isSignedIn else { return }
             Task { await app.refreshLibraryMembershipIfStale() }
+            Task { await app.refreshSubscriptionsIfStale() }
             // Unattended download polling is deliberately time-boxed, so coming back to the app
             // is when a request that finished while it was away gets noticed.
             app.acquisition.refreshOnForeground()

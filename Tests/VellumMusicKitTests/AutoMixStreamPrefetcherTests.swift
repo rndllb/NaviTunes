@@ -145,11 +145,11 @@ struct AutoMixStreamPrefetcherTests {
 
     @Test("the cache key ignores the per-request Subsonic salt and token, and Jellyfin's api_key")
     func keyIgnoresVolatileAuth() {
-        let a = URL(string: "https://nd.example/rest/stream.view?id=42&format=mp3&maxBitRate=320&u=ethan&s=abc123&t=0a1b&v=1.16&c=vellum&f=json")!
-        let b = URL(string: "https://nd.example/rest/stream.view?id=42&format=mp3&maxBitRate=320&u=ethan&s=zzz999&t=ffff&v=1.16&c=vellum&f=json")!
+        let a = URL(string: "https://nd.example/rest/stream.view?id=42&format=mp3&maxBitRate=320&u=user&s=abc123&t=0a1b&v=1.16&c=vellum&f=json")!
+        let b = URL(string: "https://nd.example/rest/stream.view?id=42&format=mp3&maxBitRate=320&u=user&s=zzz999&t=ffff&v=1.16&c=vellum&f=json")!
         #expect(StreamingMediaDiskCache.key(for: a) == StreamingMediaDiskCache.key(for: b))
         // A different format is a different file.
-        let c = URL(string: "https://nd.example/rest/stream.view?id=42&format=raw&u=ethan&s=abc123&t=0a1b")!
+        let c = URL(string: "https://nd.example/rest/stream.view?id=42&format=raw&u=user&s=abc123&t=0a1b")!
         #expect(StreamingMediaDiskCache.key(for: a) != StreamingMediaDiskCache.key(for: c))
         let j1 = URL(string: "https://jf.example/Audio/42/stream.mp3?static=true&api_key=AAA")!
         let j2 = URL(string: "https://jf.example/Audio/42/stream.mp3?static=true&api_key=BBB")!
@@ -261,13 +261,11 @@ struct AutoMixBlendChromeTests {
     @MainActor
     func frameSequence() throws {
         // `TEST_RUNNER_AUTOMIX_UI_FRAMES_DIR=<path>` on the xcodebuild command line lands here as
-        // `AUTOMIX_UI_FRAMES_DIR`; the simulator can write host paths. Default: the sandbox tmp.
-        // The simulator can write host paths. If the T630 scratch directory exists on this Mac the
-        // frames go there (the sandbox tmp is purged when the test host exits); otherwise to tmp.
-        let scratch = URL(fileURLWithPath: "/Users/ethan/agent-scratch/T630/ui-frames", isDirectory: true)
-        let dir = FileManager.default.fileExists(atPath: scratch.deletingLastPathComponent().path)
-            ? scratch
-            : FileManager.default.temporaryDirectory.appendingPathComponent("automix-ui", isDirectory: true)
+        // `AUTOMIX_UI_FRAMES_DIR`; the simulator can write host paths, so pass one to keep the
+        // frames. Default: the sandbox tmp, which is purged when the test host exits.
+        let dir = ProcessInfo.processInfo.environment["AUTOMIX_UI_FRAMES_DIR"]
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("automix-ui", isDirectory: true)
         try? FileManager.default.removeItem(at: dir)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         var sizes: [Int] = []

@@ -526,8 +526,9 @@ public final class AppModel: ObservableObject {
     private static let playlistBackdropEnabledKey = "vellumPlaylistBackdropEnabled"
     private static let playerBackdropEnabledKey = "vellumPlayerBackdropEnabled"
     private static let offlineModeKey = "vellumOfflineMode"
-    private static let autoOfflineEnabledKey = "vellumAutoOfflineEnabled"
-    private static let autoOfflineModeKey = "vellumAutoOfflineMode"
+    /// Settings of the auto-offline feature removed in #12; deleted from defaults on launch.
+    private static let legacyAutoOfflineKeys = ["vellumAutoOfflineEnabled", "vellumAutoOfflineMode"]
+    private static let noStreamingOverCellularKey = "vellumNoStreamingOverCellular"
     private static let homeWifiSSIDsKey = "vellumHomeWifiSSIDs"
     private static let wifiOnlyDownloadsKey = "vellumWifiOnlyDownloads"
     private static let maxConcurrentDownloadsKey = "vellumMaxConcurrentDownloads"
@@ -681,17 +682,13 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    @Published var autoOfflineEnabled = false {
+    /// Settings → Sound & Playback → "No streaming over cellular". On cellular, only downloads
+    /// and stream-cache files play; everything else is skipped with a reason. Replaces the
+    /// auto-offline feature (#12), whose real want was "don't burn cellular data".
+    @Published var noStreamingOverCellular = false {
         didSet {
-            UserDefaults.standard.set(autoOfflineEnabled, forKey: Self.autoOfflineEnabledKey)
-            Task { await evaluateAutoOfflineMode() }
-        }
-    }
-
-    @Published var autoOfflineMode: AutoOfflineMode = .wifiOnly {
-        didSet {
-            UserDefaults.standard.set(autoOfflineMode.rawValue, forKey: Self.autoOfflineModeKey)
-            Task { await evaluateAutoOfflineMode() }
+            UserDefaults.standard.set(noStreamingOverCellular, forKey: Self.noStreamingOverCellularKey)
+            syncCellularStreamingPolicy()
         }
     }
 
@@ -735,9 +732,9 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    /// Manual offline toggle or auto-offline policy (Wi‑Fi / home SSID).
-    var effectiveOfflineMode: Bool { offlineMode || autoOfflineActive }
-    private var autoOfflineActive = false
+    /// The manual offline toggle. (Auto-offline was removed in #12; this name stays because
+    /// Discovery search and scrobbling gate on it.)
+    var effectiveOfflineMode: Bool { offlineMode }
     private var prefersWifiLikePath = true
 
     @Published var songListItemSize: SongListItemSize = .medium {
@@ -761,7 +758,7 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    @Published var equalizerEnabled: Bool = UserDefaults.standard.bool(forKey: EqualizerStorage.enabledKey) {
+    @Published var equalizerEnabled: Bool = EqualizerStorage.loadEnabledMigratingBypass() {
         didSet {
             UserDefaults.standard.set(equalizerEnabled, forKey: EqualizerStorage.enabledKey)
             if equalizerEnabled {
@@ -769,13 +766,6 @@ public final class AppModel: ObservableObject {
             }
             syncEqualizerToEngine()
             Task { await player.reloadForEqualizerSettingsChange() }
-        }
-    }
-
-    @Published var equalizerBypass: Bool = UserDefaults.standard.bool(forKey: EqualizerStorage.bypassKey) {
-        didSet {
-            UserDefaults.standard.set(equalizerBypass, forKey: EqualizerStorage.bypassKey)
-            syncEqualizerToEngine()
         }
     }
 
@@ -2704,7 +2694,6 @@ public final class AppModel: ObservableObject {
 
     public func handleAppBecameActive() {
         offline.handleAppBecameActive()
-        Task { await evaluateAutoOfflineMode() }
         writeWidgetData()
         // Pick up any widget command that fired while the app wasn't running
         handleWidgetCommandFromNotification()
@@ -2803,13 +2792,11 @@ public final class AppModel: ObservableObject {
         guard !trimmed.isEmpty, !homeWifiSSIDs.contains(trimmed) else { return }
         homeWifiSSIDs.append(trimmed)
         UserDefaults.standard.set(homeWifiSSIDs, forKey: Self.homeWifiSSIDsKey)
-        Task { await evaluateAutoOfflineMode() }
     }
 
     func removeHomeWifiSSID(_ ssid: String) {
         homeWifiSSIDs.removeAll { $0 == ssid }
         UserDefaults.standard.set(homeWifiSSIDs, forKey: Self.homeWifiSSIDsKey)
-        Task { await evaluateAutoOfflineMode() }
     }
 
     func searchOfflineCatalog(query: String, limit: Int = 30) -> CatalogSearchResults {
@@ -4368,7 +4355,8 @@ public final class AppModel: ObservableObject {
     /// Loads Kill Mode state for the signed-in account (backend + server + user), or clears it when
     /// no account is resolvable. Playlist ids are only unique per server, so marks from one server
     /// must never be read against another's playlists.
-    private func reloadKillModeStateForAccount() {
+    /// Also called after a backup restore wrote this account's Kill Mode state.
+    func reloadKillModeStateForAccount() {
         let scope = isSignedIn
             ? KillModeStore.scope(backend: backendKind, baseURLString: baseURLString, userKey: libraryMagicPlaylistUserKey)
             : nil
@@ -5755,9 +5743,21 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    /// Re-run the follow-artist completeness pass (foreground / manual "Check now").
+    /// Re-run the follow-artist completeness pass for every followed artist (manual refresh,
+    /// opening Following).
     func refreshSubscriptions() async {
         await subscriptions.checkAll()
+    }
+
+    /// How long a followed artist's last check stays fresh for the automatic pass.
+    static let subscriptionAutoCheckInterval: TimeInterval = 12 * 60 * 60
+
+    /// The automatic pass on launch and foreground: only artists not checked in the last
+    /// ``subscriptionAutoCheckInterval``. Without this nothing ran unless Following was opened,
+    /// so a followed artist's new album was never noticed by itself.
+    func refreshSubscriptionsIfStale() async {
+        guard isSignedIn, !effectiveOfflineMode else { return }
+        await subscriptions.checkStale(olderThan: Self.subscriptionAutoCheckInterval)
     }
 
     /// Persists a config field for a plugin and nudges observers (gating recomputes).
@@ -6272,9 +6272,22 @@ public final class AppModel: ObservableObject {
     }
 
     /// Wipes the track-level Now Playing → Queue → History list (Clear button).
+    ///
+    /// Keeps the playing track's entry. History is recorded when a track *starts*
+    /// (`recordRecentTrackPlay`, wired to `onTrackStarted`), so the current song is already in
+    /// this list and only hidden from the History page by the queue view's filter. Wiping it
+    /// too meant the first skip after a clear showed nothing: the song's entry was gone and
+    /// nothing re-records a song at its end, so only the second skipped song ever reached
+    /// History (#45). Everything that has actually finished playing is still cleared.
     func clearRecentlyPlayedTracks() {
-        recentlyPlayedTracks = []
-        UserDefaults.standard.removeObject(forKey: Self.recentlyPlayedTracksKey)
+        let activeId = player.activeTrack?.id
+        let kept = recentlyPlayedTracks.filter { $0.id == activeId }
+        recentlyPlayedTracks = kept
+        if kept.isEmpty {
+            UserDefaults.standard.removeObject(forKey: Self.recentlyPlayedTracksKey)
+        } else {
+            saveRecentlyPlayedTracksToDefaults()
+        }
     }
 
     /// Wipes the local recently-played history (Now Playing → Queue → History "Clear" button).
@@ -6408,12 +6421,9 @@ public final class AppModel: ObservableObject {
         if UserDefaults.standard.object(forKey: Self.offlineModeKey) != nil {
             offlineMode = UserDefaults.standard.bool(forKey: Self.offlineModeKey)
         }
-        if UserDefaults.standard.object(forKey: Self.autoOfflineEnabledKey) != nil {
-            autoOfflineEnabled = UserDefaults.standard.bool(forKey: Self.autoOfflineEnabledKey)
-        }
-        if let raw = UserDefaults.standard.string(forKey: Self.autoOfflineModeKey),
-           let mode = AutoOfflineMode(rawValue: raw) {
-            autoOfflineMode = mode
+        for key in Self.legacyAutoOfflineKeys { UserDefaults.standard.removeObject(forKey: key) }
+        if UserDefaults.standard.object(forKey: Self.noStreamingOverCellularKey) != nil {
+            noStreamingOverCellular = UserDefaults.standard.bool(forKey: Self.noStreamingOverCellularKey)
         }
         homeWifiSSIDs = UserDefaults.standard.stringArray(forKey: Self.homeWifiSSIDsKey) ?? []
         if UserDefaults.standard.object(forKey: Self.wifiOnlyDownloadsKey) != nil {
@@ -6461,30 +6471,16 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    private func evaluateAutoOfflineMode() async {
-        guard autoOfflineEnabled else {
-            autoOfflineActive = false
-            applyEffectiveOfflinePresentation()
-            return
-        }
-        switch autoOfflineMode {
-        case .wifiOnly:
-            autoOfflineActive = !prefersWifiLikePath || !hasInternetPath
-        case .homeWifi:
-            if !prefersWifiLikePath || !hasInternetPath {
-                autoOfflineActive = true
-            } else if homeWifiSSIDs.isEmpty {
-                autoOfflineActive = false
-            } else {
-                await HomePresenceHelper.ensureLocationAccessForHomeDetection()
-                if let ssid = await AutoOfflineHelper.fetchCurrentSSID() {
-                    autoOfflineActive = !homeWifiSSIDs.contains(ssid)
-                } else {
-                    autoOfflineActive = false
-                }
-            }
-        }
-        applyEffectiveOfflinePresentation()
+    /// Tells the engine whether streams are allowed right now. Called when the setting changes
+    /// and on every network path change, so walking out of Wi-Fi takes effect from the next song
+    /// (the song already playing keeps its connection).
+    private func syncCellularStreamingPolicy() {
+        let blocked = CellularStreamingPolicy.blocksStreaming(
+            settingOn: noStreamingOverCellular,
+            online: hasInternetPath,
+            wifiLike: prefersWifiLikePath,
+        )
+        if player.cellularStreamingBlocked != blocked { player.cellularStreamingBlocked = blocked }
     }
 
     private func startNetworkMonitor() {
@@ -6506,17 +6502,14 @@ public final class AppModel: ObservableObject {
                     self.prefetchAccountAvatar()
                     Task { await self.refreshServerConnectionHealth() }
                 }
-                guard online else {
-                    await self.evaluateAutoOfflineMode()
-                    return
-                }
+                self.syncCellularStreamingPolicy()
+                guard online else { return }
                 let cellularNow = !wifiLike
                 if cellularNow != self.prefersCellularStreamingQuality {
                     self.prefersCellularStreamingQuality = cellularNow
                     self.pushQualitySettingsToClients()
                 }
                 self.offline.kickQueueWorker()
-                await self.evaluateAutoOfflineMode()
                 await self.reconcileLocalNetworkFallbackIfNeeded()
                 if online {
                     self.scrobbleService.onNetworkRestored()
@@ -6559,7 +6552,6 @@ public final class AppModel: ObservableObject {
 
     func syncEqualizerToEngine() {
         player.equalizerEnabled = equalizerEnabled
-        player.equalizerBypass = equalizerBypass
         player.equalizerBandGains = effectiveEqualizerBandGains(for: player.activeTrack)
         player.applyLiveEqualizerGains()
     }

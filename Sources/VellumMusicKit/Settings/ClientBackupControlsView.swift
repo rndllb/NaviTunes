@@ -51,7 +51,7 @@ struct ClientBackupControlsView: View {
         } header: {
             Text("Backup & Restore")
         } footer: {
-            Text("Exports scrobbles, listening exclusions, and playback preferences. Does not include downloaded audio or server credentials.")
+            Text("Exports scrobbles, playback preferences, Kill Mode history for this account, and your library pins. Does not include downloaded audio or server credentials.")
         }
         .fileExporter(
             isPresented: $showingExporter,
@@ -86,7 +86,7 @@ struct ClientBackupControlsView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Choose whether imported scrobbles and exclusions merge with or replace local data.")
+            Text("Choose whether imported scrobbles, Kill Mode history and pins merge with or replace what's on this iPhone.")
         }
     }
 
@@ -105,12 +105,23 @@ struct ClientBackupControlsView: View {
         showingExporter = true
     }
 
+    static func summary(for result: VellumClientBackupRestoreResult) -> String {
+        var parts = ["\(result.scrobbleCount) scrobble\(result.scrobbleCount == 1 ? "" : "s")"]
+        if let count = result.killModePlaylistCount {
+            parts.append("Kill Mode for \(count) playlist\(count == 1 ? "" : "s")")
+        }
+        if let count = result.pinCount {
+            parts.append("\(count) pin\(count == 1 ? "" : "s")")
+        }
+        return "Restored " + parts.formatted(.list(type: .and)) + "."
+    }
+
     private func restore(mode: VellumClientBackupRestoreMode) {
         guard let data = pendingImportData else { return }
         do {
             let payload = try VellumClientBackupService.decode(data)
             let result = VellumClientBackupService.restore(payload: payload, into: app, mode: mode)
-            restoreSummary = "Restored \(result.scrobbleCount) scrobbles, \(result.exclusionCount) exclusions."
+            restoreSummary = Self.summary(for: result)
             app.showTransientToast("Backup restored")
         } catch {
             app.showTransientToast("Invalid backup file")

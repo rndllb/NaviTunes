@@ -27,32 +27,53 @@ final class MusicSubscriptionEngine: ObservableObject {
     @Published private(set) var isChecking = false
 
     private let env: Environment
+    private let persistence: MusicSubscriptionPersistence
+    /// Artists with a pass running, so a follow's first pass and a "check now" can't both
+    /// request the same missing album.
+    private var checking: Set<String> = []
 
-    init(env: Environment) {
+    init(env: Environment, persistence: MusicSubscriptionPersistence = .disk) {
         self.env = env
-        followed = MusicSubscriptionStore.load()
+        self.persistence = persistence
+        followed = persistence.load()
+        for artist in followed {
+            if let statuses = artist.lastStatuses { statusByArtist[artist.id] = statuses }
+        }
     }
 
     // MARK: Follow / unfollow
 
     func isFollowing(name: String, mbid: String? = nil) -> Bool {
-        let probe = FollowedArtist(name: name, artistMBID: mbid)
-        return followed.contains { $0.id == probe.id }
+        followed.contains { $0.matches(name: name, mbid: mbid) }
     }
 
-    /// Follow an artist and immediately run a first completeness pass for them.
-    func follow(name: String, mbid: String? = nil, coverURL: URL? = nil) {
-        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    /// Follow an artist and immediately run a first completeness pass for them. Returns that
+    /// pass, so a caller that needs it finished can await it; `nil` when nothing was started.
+    ///
+    /// Following an artist already followed by name, now with their MBID, records the MBID on
+    /// the existing follow instead of adding a second one.
+    @discardableResult
+    func follow(name: String, mbid: String? = nil, coverURL: URL? = nil) -> Task<Void, Never>? {
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        if let index = followed.firstIndex(where: { $0.matches(name: name, mbid: mbid) }) {
+            guard let mbid, followed[index].artistMBID == nil else { return nil }
+            let oldId = followed[index].id
+            followed[index].artistMBID = mbid
+            if followed[index].coverURL == nil { followed[index].coverURL = coverURL }
+            statusByArtist[followed[index].id] = statusByArtist.removeValue(forKey: oldId)
+            persist()
+            return nil
+        }
         let artist = FollowedArtist(name: name, artistMBID: mbid, coverURL: coverURL)
-        guard !followed.contains(where: { $0.id == artist.id }) else { return }
         followed.append(artist)
         persist()
-        Task { await check(artistId: artist.id) }
+        return Task { await check(artistId: artist.id) }
     }
 
     func unfollow(name: String, mbid: String? = nil) {
-        let probe = FollowedArtist(name: name, artistMBID: mbid)
-        unfollow(id: probe.id)
+        for artist in followed where artist.matches(name: name, mbid: mbid) {
+            unfollow(id: artist.id)
+        }
     }
 
     func unfollow(id: String) {
@@ -73,18 +94,36 @@ final class MusicSubscriptionEngine: ObservableObject {
 
     /// Re-check every followed artist. Safe to call on foreground / library refresh / manually.
     func checkAll() async {
-        guard !isChecking, !followed.isEmpty else { return }
+        await check(followed.map(\.id))
+    }
+
+    /// The automatic pass: re-check only artists not checked within `interval`, so coming back
+    /// to the app notices a followed artist's new release without re-asking about everyone on
+    /// every foreground.
+    func checkStale(olderThan interval: TimeInterval, now: Date = Date()) async {
+        let due = followed.filter { artist in
+            guard let last = artist.lastChecked else { return true }
+            return now.timeIntervalSince(last) >= interval
+        }
+        await check(due.map(\.id))
+    }
+
+    private func check(_ ids: [String]) async {
+        guard !isChecking, !ids.isEmpty else { return }
         isChecking = true
         defer { isChecking = false }
-        for artist in followed {
-            await check(artistId: artist.id)
-            try? await Task.sleep(for: .milliseconds(150))
+        for (index, id) in ids.enumerated() {
+            if index > 0 { try? await Task.sleep(for: .milliseconds(150)) }
+            await check(artistId: id)
         }
     }
 
     /// One artist: canonical discography → diff against the server → request what's missing.
     private func check(artistId: String) async {
-        guard let artist = followed.first(where: { $0.id == artistId }) else { return }
+        guard let artist = followed.first(where: { $0.id == artistId }),
+              checking.insert(artistId).inserted
+        else { return }
+        defer { checking.remove(artistId) }
 
         // 1. Canonical discography — from the active plugin (Lidarr / DroppedNeedle).
         let releases = await env.artistReleases(artist.name)
@@ -151,13 +190,15 @@ final class MusicSubscriptionEngine: ObservableObject {
             }
         }
 
-        // 4. Persist what we requested + when, publish status for the UI.
+        // 4. Persist what we requested, when, and what we found; publish status for the UI.
+        let sorted = statuses.sorted { ($0.year ?? 0) > ($1.year ?? 0) }
         if let idx = followed.firstIndex(where: { $0.id == artistId }) {
             followed[idx].requestedReleaseIds = requested
             followed[idx].lastChecked = Date()
+            followed[idx].lastStatuses = sorted
             persist()
         }
-        statusByArtist[artistId] = statuses.sorted { ($0.year ?? 0) > ($1.year ?? 0) }
+        statusByArtist[artistId] = sorted
     }
 
     // MARK: Summary helpers for the UI
@@ -167,6 +208,6 @@ final class MusicSubscriptionEngine: ObservableObject {
     }
 
     private func persist() {
-        MusicSubscriptionStore.save(followed)
+        persistence.save(followed)
     }
 }

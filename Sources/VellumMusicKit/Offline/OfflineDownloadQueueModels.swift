@@ -92,16 +92,3 @@ enum OfflineStorageLimitMode: String, CaseIterable, Identifiable {
     }
 }
 
-enum AutoOfflineMode: String, CaseIterable, Identifiable {
-    case wifiOnly = "wifi-only"
-    case homeWifi = "home-wifi"
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .wifiOnly: return "When not on Wi‑Fi"
-        case .homeWifi: return "When away from home Wi‑Fi"
-        }
-    }
-}

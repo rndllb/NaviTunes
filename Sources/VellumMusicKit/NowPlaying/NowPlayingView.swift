@@ -1395,14 +1395,6 @@ struct NowPlayingView: View {
             } label: {
                 Label("Add to Playlist", systemImage: "rectangle.stack.badge.plus")
             }
-            if let album = albumForNav {
-                Button {
-                    app.scrobbleService.excludeAlbum(album)
-                    app.showTransientToast("Excluded from listening history")
-                } label: {
-                    Label("Exclude from Listening History", systemImage: "eye.slash")
-                }
-            }
         }
         .tint(Color.primary)
 

@@ -48,7 +48,9 @@ struct EqualizerPreset: Identifiable, Equatable, Codable {
 
 enum EqualizerStorage {
     static let enabledKey = "vellumEqualizerEnabled"
-    static let bypassKey = "vellumEqualizerBypass"
+    /// Where the removed Bypass toggle (#14) was stored; read once by
+    /// ``loadEnabledMigratingBypass(_:)`` and then deleted.
+    static let legacyBypassKey = "vellumEqualizerBypass"
     static let presetIdKey = "vellumEqualizerPresetId"
     static let gainsKey = "vellumEqualizerBandGains"
     static let autoProfilesKey = "vellumEqualizerAutoProfiles"
@@ -65,6 +67,21 @@ enum EqualizerStorage {
     static let bassEnhancementKey = "vellumEqualizerBassEnhancement"
     static let vocalEnhancementKey = "vellumEqualizerVocalEnhancement"
     static let loudnessCompensationKey = "vellumEqualizerLoudnessCompensation"
+
+    /// Whether the equalizer is on, for `AppModel` to start from.
+    ///
+    /// The Bypass toggle is gone (#14): it was a second off switch, since the EQ path is already
+    /// gated on ``enabledKey``. Someone who left Bypass on was hearing no EQ, so they come back
+    /// with the EQ off rather than suddenly hearing their curve again. The old key is removed.
+    static func loadEnabledMigratingBypass(_ defaults: UserDefaults = .standard) -> Bool {
+        if defaults.object(forKey: legacyBypassKey) != nil {
+            if defaults.bool(forKey: legacyBypassKey) {
+                defaults.set(false, forKey: enabledKey)
+            }
+            defaults.removeObject(forKey: legacyBypassKey)
+        }
+        return defaults.bool(forKey: enabledKey)
+    }
 
     static func loadGains() -> [Float] {
         if let raw = UserDefaults.standard.array(forKey: gainsKey) as? [Double] {

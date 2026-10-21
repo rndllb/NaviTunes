@@ -3,20 +3,19 @@ import SwiftUI
 /// Settings → **History**: everything about listening history, in one place.
 ///
 /// This was the "Listening History" section of Settings → Library. It is a top-level concern —
-/// scrobble state, the listening analytics, and the exclusion list — rather than something about
+/// scrobble state and the listening analytics — rather than something about
 /// the music library itself, so it earns its own row rather than sitting four sections down
 /// inside another page.
 ///
-/// **Grouping is deliberate and was specified.** Four groups, not one list of six rows:
-/// the two scrobble counts; My Listening on its own; the scrobble browser on its own; and
-/// the exclusions count with its Manage button **directly beneath it**, as one connected set —
-/// the count and the screen that edits it belong together, unlike the other two buttons.
+/// **Grouping is deliberate and was specified.** Three groups: the two scrobble counts; My
+/// Listening on its own; the scrobble browser on its own. (A fourth, the Exclusions count and its
+/// Manage screen, went with the Exclusions feature in #7.)
 struct SettingsHistoryView: View {
     @EnvironmentObject private var app: AppModel
 
     /// Breathing room for a screen that used to be a cramped section inside Library and now has
     /// the whole view. `rowPadding` is added above and below each row's content; `sectionSpacing`
-    /// is the gap between the four groups.
+    /// is the gap between the groups.
     private static let rowPadding: CGFloat = 6
     private static let sectionSpacing: CGFloat = 28
 
@@ -45,19 +44,6 @@ struct SettingsHistoryView: View {
                     Label("Browse scrobbles", systemImage: "list.bullet")
                         .padding(.vertical, Self.rowPadding)
                 }
-            }
-
-            // The connected set: the count, and directly below it the screen that edits it.
-            Section {
-                countRow("Exclusions", app.scrobbleService.store.exclusions.count)
-                NavigationLink {
-                    ScrobbleExclusionBrowserView()
-                } label: {
-                    Label("Manage exclusions", systemImage: "eye.slash")
-                        .padding(.vertical, Self.rowPadding)
-                }
-            } footer: {
-                Text("Excluded albums, artists and playlists are never scrobbled to your server.")
             }
         }
         .listSectionSpacing(Self.sectionSpacing)

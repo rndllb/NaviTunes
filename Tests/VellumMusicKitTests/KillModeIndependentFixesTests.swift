@@ -222,8 +222,8 @@ struct KillModeIndependentFixesTests {
     @Test("K15: one server's marks are invisible on another server")
     func storeIsScopedPerServer() {
         let box = Defaults()
-        let serverA = KillModeStore.scope(backend: .navidrome, baseURLString: "https://a.example.com", userKey: "ethan")!
-        let serverB = KillModeStore.scope(backend: .navidrome, baseURLString: "https://b.example.com", userKey: "ethan")!
+        let serverA = KillModeStore.scope(backend: .navidrome, baseURLString: "https://a.example.com", userKey: "alice")!
+        let serverB = KillModeStore.scope(backend: .navidrome, baseURLString: "https://b.example.com", userKey: "alice")!
 
         KillModeStore.saveEnabled(["1"], scope: serverA, defaults: box.defaults)
         KillModeStore.savePending(["1": ["X"]], scope: serverA, defaults: box.defaults)
@@ -236,12 +236,12 @@ struct KillModeIndependentFixesTests {
     @Test("K15: signing back in to the same server restores progress")
     func sameServerRestoresProgress() {
         let box = Defaults()
-        let scope = KillModeStore.scope(backend: .navidrome, baseURLString: "https://a.example.com", userKey: "ethan")!
+        let scope = KillModeStore.scope(backend: .navidrome, baseURLString: "https://a.example.com", userKey: "alice")!
         KillModeStore.saveEnabled(["1"], scope: scope, defaults: box.defaults)
         KillModeStore.savePending(["1": ["X", "W"]], scope: scope, defaults: box.defaults)
         KillModeStore.savePassed(["1": ["Y"]], scope: scope, defaults: box.defaults)
 
-        let again = KillModeStore.scope(backend: .navidrome, baseURLString: "https://A.example.com/", userKey: "Ethan")!
+        let again = KillModeStore.scope(backend: .navidrome, baseURLString: "https://A.example.com/", userKey: "Alice")!
         #expect(again == scope)
         #expect(KillModeStore.load(scope: again, defaults: box.defaults) == KillModeStore.Snapshot(
             enabled: ["1"],
@@ -252,12 +252,12 @@ struct KillModeIndependentFixesTests {
 
     @Test("K15: a different user on the same server gets a different scope")
     func scopeIncludesUser() {
-        let a = KillModeStore.scope(backend: .navidrome, baseURLString: "https://a.example.com", userKey: "ethan")
+        let a = KillModeStore.scope(backend: .navidrome, baseURLString: "https://a.example.com", userKey: "alice")
         let b = KillModeStore.scope(backend: .navidrome, baseURLString: "https://a.example.com", userKey: "guest")
-        let c = KillModeStore.scope(backend: .jellyfin, baseURLString: "https://a.example.com", userKey: "ethan")
+        let c = KillModeStore.scope(backend: .jellyfin, baseURLString: "https://a.example.com", userKey: "alice")
         #expect(a != b)
         #expect(a != c)
-        #expect(KillModeStore.scope(backend: .navidrome, baseURLString: "", userKey: "ethan") == nil)
+        #expect(KillModeStore.scope(backend: .navidrome, baseURLString: "", userKey: "alice") == nil)
         #expect(KillModeStore.scope(backend: .navidrome, baseURLString: "https://a.example.com", userKey: nil) == nil)
     }
 
@@ -271,8 +271,8 @@ struct KillModeIndependentFixesTests {
         box.defaults.set(try encoder.encode(["1": ["X"]]), forKey: "vellum.killMode.pendingRemovals")
         box.defaults.set(try encoder.encode(["1": ["Y"]]), forKey: "vellum.killMode.passed")
 
-        let first = KillModeStore.scope(backend: .navidrome, baseURLString: "https://a.example.com", userKey: "ethan")!
-        let second = KillModeStore.scope(backend: .navidrome, baseURLString: "https://b.example.com", userKey: "ethan")!
+        let first = KillModeStore.scope(backend: .navidrome, baseURLString: "https://a.example.com", userKey: "alice")!
+        let second = KillModeStore.scope(backend: .navidrome, baseURLString: "https://b.example.com", userKey: "alice")!
 
         let adopted = KillModeStore.Snapshot(enabled: ["1"], pending: ["1": ["X"]], passed: ["1": ["Y"]])
         #expect(KillModeStore.load(scope: first, defaults: box.defaults) == adopted)

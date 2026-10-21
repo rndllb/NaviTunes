@@ -181,9 +181,7 @@ struct SettingsView: View {
     }
 
     private var offlineSubtitle: String? {
-        if app.effectiveOfflineMode { return "Active" }
-        if app.autoOfflineEnabled { return "Auto offline on" }
-        return nil
+        app.effectiveOfflineMode ? "Active" : nil
     }
 
     private var downloadsSubtitle: String? {
@@ -294,8 +292,12 @@ struct AcquisitionPluginSettingsView: View {
             saveDrafts()
             acquisition.endLiveRefresh()
         }
-        .onChange(of: acquisition.activePlugin) { _, _ in
-            saveDrafts()
+        .onChange(of: acquisition.activePlugin) { oldKind, _ in
+            // Save under the plugin the drafts were typed for. By the time this runs the active
+            // plugin is already the new one, so a plain `saveDrafts()` here wrote the old
+            // plugin's server address into the new plugin's settings — switching Lidarr →
+            // Downtify left Downtify "Set up" with Lidarr's URL and polling it.
+            saveDrafts(as: oldKind)
             reloadDrafts()
             validateMessage = nil
             validateSucceeded = false
@@ -318,6 +320,8 @@ struct AcquisitionPluginSettingsView: View {
                 plexSignInMessage = nil
             }
         }
+        // The last rows used to finish under the mini player and tab bar.
+        .contentMargins(.bottom, 120, for: .scrollContent)
         .navigationTitle("Music Requests")
         .settingsSubpageChrome()
         .toolbar {
@@ -508,8 +512,20 @@ struct AcquisitionPluginSettingsView: View {
     @ViewBuilder
     private var activitySection: some View {
         let jobs = acquisition.displayJobs
+        if let error = acquisition.activityError, app.acquisitionConfigured {
+            // Shown above whatever is listed: an unreadable queue must not look like an empty one.
+            Section {
+                Label {
+                    Text("Couldn't read \(capabilities.displayName)'s activity: \(error)")
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+                .font(.footnote)
+            }
+        }
         if jobs.isEmpty {
-            if app.acquisitionConfigured {
+            if app.acquisitionConfigured, acquisition.activityError == nil {
                 Section {
                     ContentUnavailableView(
                         "No Activity",
@@ -634,6 +650,10 @@ struct AcquisitionPluginSettingsView: View {
         .padding(.vertical, 2)
     }
 
+    /// One standard form row per field: a fixed-width label, a visible input box (so an example
+    /// in the placeholder can't be mistaken for a filled value), and — inline at the trailing
+    /// edge — the show/hide button for secrets and a tick once the field has a value. What each
+    /// value is and where it comes from is said once, in the section footer.
     @ViewBuilder
     private func configField(_ field: AcquisitionConfigField) -> some View {
         if let options = field.pickerOptions, !options.isEmpty {
@@ -645,61 +665,61 @@ struct AcquisitionPluginSettingsView: View {
             .pickerStyle(.navigationLink)
         } else {
             let isFilled = !(drafts[field.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Text(field.label)
-                        .font(.subheadline.weight(.semibold))
-                    if field.required, !isFilled {
-                        Text("Required")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.orange)
-                    }
-                    Spacer(minLength: 8)
-                    if isFilled {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.footnote)
-                            .foregroundStyle(.green)
-                    }
-                }
+            let isSecret = field.kind == .apiKey || field.kind == .password
+            HStack(spacing: 10) {
+                Text(field.label)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .frame(width: Self.fieldLabelWidth, alignment: .leading)
                 configFieldInput(field)
-                if let help = field.helpText {
-                    Text(help)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(MusicDesign.tertiarySurfaceFill)
+                    )
+                if isSecret {
+                    let isRevealed = revealedFieldIds.contains(field.id)
+                    Button {
+                        if isRevealed {
+                            revealedFieldIds.remove(field.id)
+                        } else {
+                            revealedFieldIds.insert(field.id)
+                        }
+                    } label: {
+                        Image(systemName: isRevealed ? "eye.slash" : "eye")
+                            .foregroundStyle(.secondary)
+                            .frame(width: 24)
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel(isRevealed ? "Hide \(field.label)" : "Show \(field.label)")
                 }
+                // Space is kept whether or not the tick shows, so typing doesn't shift the box.
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.green)
+                    .opacity(isFilled ? 1 : 0)
+                    .accessibilityHidden(!isFilled)
+                    .accessibilityLabel("\(field.label) entered")
             }
-            .padding(.vertical, 4)
         }
     }
+
+    /// Wide enough for "Username" and "Password" at the default text size.
+    private static let fieldLabelWidth: CGFloat = 88
 
     @ViewBuilder
     private func configFieldInput(_ field: AcquisitionConfigField) -> some View {
         switch field.kind {
         case .apiKey, .password:
-            let isRevealed = revealedFieldIds.contains(field.id)
-            HStack(spacing: 10) {
-                if isRevealed {
-                    TextField(field.label, text: binding(for: field), prompt: Text(field.placeholder))
-                        .musicTextInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                } else {
-                    SecureField(field.label, text: binding(for: field), prompt: Text(field.placeholder))
-                        .musicTextInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                }
-                Button {
-                    if isRevealed {
-                        revealedFieldIds.remove(field.id)
-                    } else {
-                        revealedFieldIds.insert(field.id)
-                    }
-                } label: {
-                    Image(systemName: isRevealed ? "eye.slash" : "eye")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel(isRevealed ? "Hide \(field.label)" : "Show \(field.label)")
+            if revealedFieldIds.contains(field.id) {
+                TextField(field.label, text: binding(for: field), prompt: Text(field.placeholder))
+                    .musicTextInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            } else {
+                SecureField(field.label, text: binding(for: field), prompt: Text(field.placeholder))
+                    .musicTextInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
             }
         default:
             TextField(field.label, text: binding(for: field), prompt: Text(field.placeholder))
@@ -741,11 +761,15 @@ struct AcquisitionPluginSettingsView: View {
     }
 
     private func saveDrafts() {
-        if activeKind == .droppedNeedle {
+        saveDrafts(as: activeKind)
+    }
+
+    private func saveDrafts(as kind: AcquisitionPluginKind) {
+        if kind == .droppedNeedle {
             drafts["loginMethod"] = loginMethodSelection
         }
-        for field in capabilities.configFields {
-            app.setAcquisitionConfig(drafts[field.id] ?? "", for: activeKind, field: field.id)
+        for field in AcquisitionManager.capabilities(for: kind).configFields {
+            app.setAcquisitionConfig(drafts[field.id] ?? "", for: kind, field: field.id)
         }
         refreshConfiguredKinds()
     }

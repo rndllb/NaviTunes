@@ -24,6 +24,9 @@ enum PlaybackFailureReason: Equatable, Sendable {
     case unauthorized
     /// No cause could be recovered from the error chain.
     case unknown
+    /// Not a failure of the track: "No streaming over cellular" is on, the phone is on
+    /// cellular, and this track has no offline copy.
+    case cellularStreamingOff
 
     /// Transient failures get one retry before the track is given up on. Permanent ones do
     /// not: re-requesting bytes a decoder already rejected is theatre that costs the listener
@@ -35,7 +38,7 @@ enum PlaybackFailureReason: Equatable, Sendable {
     var isTransient: Bool {
         switch self {
         case .unreachable, .serverError, .unknown: return true
-        case .missingOnServer, .undecodable, .unauthorized: return false
+        case .missingOnServer, .undecodable, .unauthorized, .cellularStreamingOff: return false
         }
     }
 
@@ -44,7 +47,7 @@ enum PlaybackFailureReason: Equatable, Sendable {
     var isServerSide: Bool {
         switch self {
         case .unreachable, .serverError, .unauthorized: return true
-        case .missingOnServer, .undecodable, .unknown: return false
+        case .missingOnServer, .undecodable, .unknown, .cellularStreamingOff: return false
         }
     }
 
@@ -57,7 +60,23 @@ enum PlaybackFailureReason: Equatable, Sendable {
         case .serverError: return "the server returned an error"
         case .unauthorized: return "the server refused access"
         case .unknown: return "it wouldn't load"
+        case .cellularStreamingOff: return "it isn't downloaded and streaming over cellular is off"
         }
+    }
+}
+
+/// Thrown by the playback engine instead of opening a stream while "No streaming over cellular"
+/// is on and the phone is on cellular.
+struct CellularStreamingBlockedError: LocalizedError {
+    var errorDescription: String? { "Streaming over cellular is off, and this song isn't downloaded." }
+}
+
+/// Whether "No streaming over cellular" stops streams right now. Only on a working cellular
+/// path: with no network at all nothing streams anyway, and saying "cellular is off" then
+/// would name the wrong cause.
+enum CellularStreamingPolicy {
+    static func blocksStreaming(settingOn: Bool, online: Bool, wifiLike: Bool) -> Bool {
+        settingOn && online && !wifiLike
     }
 }
 
@@ -121,6 +140,7 @@ enum PlaybackFailurePolicy {
     ///     track is gone — permanent) from a 503 (the server is sick — transient), which
     ///     `NSURLErrorDomain` collapses into a single `.badServerResponse`.
     static func classify(_ error: Error?, httpStatus: Int? = nil) -> PlaybackFailureReason {
+        if error is CellularStreamingBlockedError { return .cellularStreamingOff }
         if let httpStatus, httpStatus > 0, let fromStatus = reason(forHTTPStatus: httpStatus) {
             return fromStatus
         }
@@ -252,6 +272,10 @@ struct PlaybackFailureStreak {
     /// Records a track the engine has given up on.
     /// - Returns: a summary when the streak has hit the halt threshold, otherwise nil.
     mutating func recordFailure(_ reason: PlaybackFailureReason) -> PlaybackHaltSummary? {
+        // A song skipped because cellular streaming is off is the setting working, not a
+        // failure: a queue of streamed songs on cellular must skip to the downloaded ones, not
+        // stop with "3 songs in a row couldn't be played".
+        guard reason != .cellularStreamingOff else { return nil }
         count += 1
         lastReason = reason
         if reason.isServerSide { serverSideCount += 1 }

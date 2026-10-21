@@ -51,7 +51,7 @@ struct SubscriptionsView: View {
                 if !app.acquisitionConfigured {
                     Section {
                         Label(
-                            "No download plugin is configured, so missing albums are saved as a wishlist. Set one up in Plugins → Downloads to fetch them automatically.",
+                            "No request source is set up, so missing albums are saved as a wishlist. Set one up in Plugins → Music Requests to fetch them automatically.",
                             systemImage: "info.circle"
                         )
                         .font(.footnote)
@@ -63,7 +63,12 @@ struct SubscriptionsView: View {
                     Section {
                         let statuses = subscriptions.statusByArtist[artist.id] ?? []
                         if statuses.isEmpty {
-                            Text(artist.lastChecked == nil ? "Not checked yet" : "Nothing missing")
+                            // With no request source the pass can only list what the server
+                            // has, so an empty result there means "none on the server", not
+                            // "nothing missing".
+                            Text(artist.lastChecked == nil
+                                ? "Not checked yet"
+                                : (app.acquisitionConfigured ? "Nothing missing" : "No albums on your server yet"))
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         } else {
@@ -94,6 +99,7 @@ struct SubscriptionsView: View {
             }
         }
         .navigationTitle("Following")
+        .settingsSubpageChrome()
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button {

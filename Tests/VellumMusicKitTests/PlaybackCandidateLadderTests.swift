@@ -10,11 +10,11 @@ import Testing
 /// streams answer `Accept-Ranges: none` with no `Content-Length`, which the loader cannot serve.
 @Suite("Playback candidate ladder")
 struct PlaybackCandidateLadderTests {
-    static let raw = URL(string: "https://nd.example/rest/stream.view?id=abc&u=ethan&t=tok&s=salt&v=1.16.1&c=vellum&f=json")!
-    static let rawExplicit = URL(string: "https://nd.example/rest/stream.view?id=abc&format=raw&u=ethan&t=tok&s=salt")!
-    static let mp3 = URL(string: "https://nd.example/rest/stream.view?id=abc&format=mp3&maxBitRate=320&u=ethan&t=tok&s=salt")!
-    static let aac = URL(string: "https://nd.example/rest/stream.view?id=abc&format=aac&maxBitRate=320&u=ethan&t=tok&s=salt")!
-    static let capped = URL(string: "https://nd.example/rest/stream.view?id=abc&maxBitRate=128&u=ethan")!
+    static let raw = URL(string: "https://nd.example/rest/stream.view?id=abc&u=user&t=tok&s=salt&v=1.16.1&c=vellum&f=json")!
+    static let rawExplicit = URL(string: "https://nd.example/rest/stream.view?id=abc&format=raw&u=user&t=tok&s=salt")!
+    static let mp3 = URL(string: "https://nd.example/rest/stream.view?id=abc&format=mp3&maxBitRate=320&u=user&t=tok&s=salt")!
+    static let aac = URL(string: "https://nd.example/rest/stream.view?id=abc&format=aac&maxBitRate=320&u=user&t=tok&s=salt")!
+    static let capped = URL(string: "https://nd.example/rest/stream.view?id=abc&maxBitRate=128&u=user")!
     static let jellyfinStatic = URL(string: "https://jf.example/Audio/abc/stream?static=true&api_key=k")!
     static let jellyfinTranscode = URL(string: "https://jf.example/Audio/abc/stream?audioCodec=aac&audioBitRate=256000&api_key=k")!
     static let hls = URL(string: "https://nd.example/rest/hls.view?id=abc")!
@@ -75,7 +75,7 @@ struct PlaybackCandidateLadderTests {
     /// test fails; the loader must not be offered to it.
     @Test("the owner's raw http Navidrome stream is never proxied, even though it serves ranges (T662)")
     func ownersRawStreamIsPlain() {
-        let owners = URL(string: "http://100.127.122.120:4533/rest/stream?id=TRACKID&u=ethan&v=1.16.1&c=VellumMusicKit&t=TOKEN&s=SALT")!
+        let owners = URL(string: "http://203.0.113.10:4533/rest/stream?id=TRACKID&u=user&v=1.16.1&c=VellumMusicKit&t=TOKEN&s=SALT")!
         #expect(CachingResourceLoaderDelegate.servesByteRanges(owners))
         #expect(CachingResourceLoaderDelegate.isCacheable(owners))
         #expect(!PlaybackCandidateLadder.mayUseLoader(autoMixEnabled: true, url: owners, isInternetRadio: false))

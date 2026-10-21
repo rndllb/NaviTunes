@@ -49,23 +49,10 @@ struct CompletedScrobble: Identifiable, Codable, Equatable {
     }
 }
 
-struct ScrobbleExclusion: Identifiable, Codable, Equatable {
-    enum Kind: String, Codable {
-        case album
-        case artist
-        case playlist
-    }
-
-    var id: String
-    var kind: Kind
-    var name: String
-}
-
 @MainActor
 final class ScrobbleStore: ObservableObject {
     @Published private(set) var pending: [PendingScrobble] = []
     @Published private(set) var completed: [CompletedScrobble] = []
-    @Published private(set) var exclusions: [ScrobbleExclusion] = []
 
     /// Every completed scrobble ever recorded, counted rather than stored.
     ///
@@ -82,14 +69,16 @@ final class ScrobbleStore: ObservableObject {
 
     private static let pendingKey = "vellumPendingScrobbles"
     private static let completedKey = "vellumCompletedScrobbles"
-    private static let exclusionsKey = "vellumScrobbleExclusions"
+    /// Where the removed Exclusions feature (#7) kept its list; deleted on load. It was never
+    /// finished — artist exclusions were stored but never checked — so the owner chose to drop it.
+    private static let legacyExclusionsKey = "vellumScrobbleExclusions"
     private static let lifetimeCompletedKey = "vellumLifetimeCompletedScrobbleCount"
     private static let completedCap = 500
 
     init() {
         pending = Self.load(Self.pendingKey, as: [PendingScrobble].self) ?? []
         completed = Self.load(Self.completedKey, as: [CompletedScrobble].self) ?? []
-        exclusions = Self.load(Self.exclusionsKey, as: [ScrobbleExclusion].self) ?? []
+        UserDefaults.standard.removeObject(forKey: Self.legacyExclusionsKey)
         // `object(forKey:)` rather than `integer(forKey:)` — the latter cannot tell "absent"
         // from a stored 0, and absent is what the seed-from-array case has to detect.
         if let stored = UserDefaults.standard.object(forKey: Self.lifetimeCompletedKey) as? Int {
@@ -124,17 +113,6 @@ final class ScrobbleStore: ObservableObject {
         persistCompleted()
     }
 
-    func addExclusion(_ exclusion: ScrobbleExclusion) {
-        guard !exclusions.contains(where: { $0.id == exclusion.id && $0.kind == exclusion.kind }) else { return }
-        exclusions.append(exclusion)
-        persistExclusions()
-    }
-
-    func removeExclusion(id: String, kind: ScrobbleExclusion.Kind) {
-        exclusions.removeAll { $0.id == id && $0.kind == kind }
-        persistExclusions()
-    }
-
     /// Restore-from-backup. The imported array is the only evidence of its own size, so the
     /// lifetime count is raised to it where it is larger — never lowered, since a restore must
     /// not erase plays this install already counted past the cap.
@@ -143,11 +121,6 @@ final class ScrobbleStore: ObservableObject {
         lifetimeCompletedCount = max(lifetimeCompletedCount, items.count)
         persistLifetimeCompletedCount()
         persistCompleted()
-    }
-
-    func replaceExclusions(_ items: [ScrobbleExclusion]) {
-        exclusions = items
-        persistExclusions()
     }
 
     func mergeCompleted(_ items: [CompletedScrobble]) -> (inserted: Int, skipped: Int) {
@@ -172,41 +145,12 @@ final class ScrobbleStore: ObservableObject {
         return (inserted, skipped)
     }
 
-    func mergeExclusions(_ items: [ScrobbleExclusion]) -> (inserted: Int, skipped: Int) {
-        var inserted = 0
-        var skipped = 0
-        for item in items {
-            if exclusions.contains(where: { $0.id == item.id && $0.kind == item.kind }) {
-                skipped += 1
-                continue
-            }
-            exclusions.append(item)
-            inserted += 1
-        }
-        persistExclusions()
-        return (inserted, skipped)
-    }
-
-    func isExcluded(track: Track, playlistId: String?) -> Bool {
-        if !track.albumId.isEmpty, exclusions.contains(where: { $0.kind == .album && $0.id == track.albumId }) {
-            return true
-        }
-        if let playlistId, exclusions.contains(where: { $0.kind == .playlist && $0.id == playlistId }) {
-            return true
-        }
-        return false
-    }
-
     private func persistPending() {
         Self.save(pending, key: Self.pendingKey)
     }
 
     private func persistCompleted() {
         Self.save(completed, key: Self.completedKey)
-    }
-
-    private func persistExclusions() {
-        Self.save(exclusions, key: Self.exclusionsKey)
     }
 
     private static func load<T: Decodable>(_ key: String, as: T.Type) -> T? {
@@ -235,8 +179,6 @@ final class ScrobbleService {
 
     func sendNowPlaying(track: Track, source: PlaybackSource?) {
         guard let app, !app.effectiveOfflineMode, !track.isInternetRadioStream else { return }
-        let playlistId = sourcePlaylistId(source)
-        guard !store.isExcluded(track: track, playlistId: playlistId) else { return }
         guard let lib = app.activeLibrary else { return }
         Task {
             try? await lib.reportNowPlaying(trackId: track.id)
@@ -246,22 +188,9 @@ final class ScrobbleService {
     func recordCompletedScrobble(track: Track, source: PlaybackSource?) {
         guard let app, !track.isInternetRadioStream else { return }
         let playlistId = sourcePlaylistId(source)
-        guard !store.isExcluded(track: track, playlistId: playlistId) else { return }
         let pending = PendingScrobble(track: track, playlistId: playlistId)
         store.addPending(pending)
         Task { await processPendingScrobbles() }
-    }
-
-    func excludeAlbum(_ album: AlbumSummary) {
-        store.addExclusion(ScrobbleExclusion(id: album.id, kind: .album, name: album.title))
-    }
-
-    func excludeArtist(_ artist: LibraryArtistSummary) {
-        store.addExclusion(ScrobbleExclusion(id: artist.id, kind: .artist, name: artist.name))
-    }
-
-    func excludePlaylist(_ playlist: PlaylistSummary) {
-        store.addExclusion(ScrobbleExclusion(id: playlist.id, kind: .playlist, name: playlist.name))
     }
 
     func onNetworkRestored() {
