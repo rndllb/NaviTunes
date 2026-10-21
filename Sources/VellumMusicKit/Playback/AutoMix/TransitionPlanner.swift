@@ -20,6 +20,12 @@ enum TransitionStyleReason: String, Codable, Equatable {
     case insufficientMaterial
     /// Either track is too short for a bar-aligned overlap (interludes, skits).
     case trackTooShort
+    /// The analysis of one of the tracks failed (the model found no beats, the file would not
+    /// decode). Not retried for that file; the transition is a plain crossfade instead.
+    case analysisFailed
+    /// Too little of the outgoing song is left to stage even a plain crossfade (a seek landed
+    /// right at the end): the normal transition plays, and the log says so.
+    case noTimeToPrepare
 }
 
 /// Guard thresholds. Defaults are what the evaluation in T630 settled on; they are a struct so a
