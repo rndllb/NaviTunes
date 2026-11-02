@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src=".github/assets/navitunes-logo.png" width="140" alt="NaviTunes logo" />
+
 # NaviTunes
 
 **Apple Music for your own server, on iPhone and iPad.**  
