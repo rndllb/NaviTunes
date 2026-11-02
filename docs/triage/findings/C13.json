@@ -1,0 +1,24 @@
+{
+  "id": "C13",
+  "source": "CODE_SWEEP.md",
+  "source_verdict": "CONFIRMED",
+  "title": "Acquisition API keys, passwords and session tokens are stored in plaintext `UserDefaults`",
+  "claim": "`AcquisitionConfigStore` persists every plugin credential through `UserDefaults.standard` under `acquisition.<kind>.<field>` keys — including the Lidarr API key, the DroppedNeedle account password, and the DroppedNeedle/Plex session token — so they land in the app's plist in plaintext, while `KeychainStore` already exists and is used for the Navidrome/Jellyfin credentials.",
+  "class": "systemic",
+  "status": "confirmed",
+  "video": null,
+  "no_video_reason": "Where a secret is stored has no screen behaviour: the Settings form looks identical whether the key goes to the keychain or to a plist. The runtime evidence is the app container's preferences file read back after entering a sentinel key through the real UI, quoted verbatim in steps.",
+  "description": "When you connect a download service (Lidarr, DroppedNeedle, Downtify), the app saves its API key or password as ordinary readable text in its settings file, instead of in the iOS keychain where it already keeps your music-server password.",
+  "issue": "A Lidarr API key grants full admin access to the user's Lidarr instance, and the DroppedNeedle field is an account password. Stored in `UserDefaults` they are written to the app's preferences plist in cleartext — included in unencrypted device backups and readable by anything that can reach the app container. The same app already routes its Navidrome/Jellyfin credentials through `KeychainStore`, so the acquisition layer is the one place secrets bypass the secure path.",
+  "proposed_fix": "Branch on the field's `Kind` inside `AcquisitionConfigStore.set/value/clear`: route `.apiKey`, `.password` and the DroppedNeedle `sessionToken` through `KeychainStore`, leaving `.url`/`.text` in `UserDefaults`. `AcquisitionConfigField.Kind` already distinguishes these (it drives the reveal toggle), so no new metadata is needed. Migrate by reading any existing plaintext value once, writing it to the keychain, then removing the `UserDefaults` key so it does not linger in backups.",
+  "steps": [
+    "Source: AcquisitionCore.swift:666-690 — the doc comment says 'Per-plugin credential storage in `UserDefaults`'; `value` reads `UserDefaults.standard.string(forKey:)` (674), `set` writes `UserDefaults.standard.set` (679), `clear` removes (687); key shape `acquisition.<kind>.<fieldId>`; no `Keychain` reference in the file. `KeychainStore` exists at App/KeychainStore.swift and holds the server credentials.",
+    "Before: the container plist contains no `acquisition.lidarr.*` keys (only `vellumAcquisitionJobs`).",
+    "Drive through the real UI: Library → Settings → Plugins → 'Music Requests, Set up Lidarr'. The form shows 'Server Address' (TextField) and 'API Key' (SecureTextField, placeholder '32-character key', with a 'Show API Key' reveal button).",
+    "Type the sentinel `t344SENTINELnotARealKey000000000` into the API Key field; navigate back to Plugins. No server address was entered, so no connection to any Lidarr instance was attempted.",
+    "Terminate the app and read Library/Preferences/com.randll.vellum.plist in the app's data container: `\"acquisition.lidarr.apiKey\" => \"t344SENTINELnotARealKey000000000\"` and `\"acquisition.lidarr.baseURL\" => \"\"` — the secret in cleartext.",
+    "Cleanup: `plutil -remove` both keys from the container plist with the app terminated; re-read the file (0 matching keys), and re-read again after the next app launch (still 0), so the removal was not undone by a cached preferences copy."
+  ],
+  "tested_at": "2026-09-16T14:41:00Z",
+  "notes": "Upgraded from a source-only confirmation to runtime evidence. An earlier cleanup attempt via `simctl spawn ... defaults delete` reported 'Domain not found' and changed nothing — it runs outside the app's container — so it is NOT the cleanup that worked; the plutil removal plus a post-relaunch read-back is. The sweep header cites 668-690; the accessors sit at 666-690, a one-line drift recorded so a reader checking the citation is not confused."
+}

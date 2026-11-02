@@ -24,6 +24,10 @@ struct VellumMusicHostApp: App {
                     case .inactive, .background:
                         appModel.syncHomeScreenIconIfNeeded()
                         appModel.persistPlaybackQueue()
+                        // Stop the library-membership network poll while
+                        // backgrounded so it can't keep waking the radio during
+                        // background audio. Resumed in handleAppBecameActive().
+                        appModel.stopLibraryMembershipAutoSync()
                     case .active:
                         appModel.handleAppBecameActive()
                     @unknown default:

@@ -1,0 +1,24 @@
+{
+  "id": "P06",
+  "source": "CODE_SWEEP.md",
+  "source_verdict": "REINFORCED",
+  "title": "Play and Shuffle swap positions between Favorites and other lists — but only while searching",
+  "claim": "`AlbumHeroPlayShuffleCluster` renders Shuffle | Play and is used by `FavoritePlaylistView`; `LibraryPlayShuffleRow` renders Play | Shuffle and is used by Songs, Albums and every playlist detail. They also differ in height, font and fill, and the hero triplet under every hero is hand-copied per screen with drifting spacing.",
+  "class": "visual",
+  "status": "confirmed",
+  "video": "videos/P06.mp4",
+  "description": "The Play and Shuffle buttons sit in opposite order in Favorite Songs compared with a normal playlist, but only in the compact button pair that replaces the header while you are searching the list.",
+  "issue": "A user who searches inside a playlist learns \"Play is on the left\", then searches inside Favorite Songs and hits Shuffle instead. The two pairs are also different heights (54 pt vs 46.3 pt). In the normal, non-search header both screens show the same arrangement — shuffle circle, then a Play capsule — so the swap is narrower than the entry's headline suggests.",
+  "proposed_fix": "Pick one order — Apple Music is Play | Shuffle — and make `AlbumHeroPlayShuffleCluster` emit `onPlay` first, then collapse it and `LibraryPlayShuffleRow` into one component so the two cannot drift again. Separately, extract the hand-built hero triplet (LibraryView.swift:1281-1306, ServerPlaylistViews.swift:1895-1928, BrowseAlbumDetailView.swift:563-576) into one view using `MusicDesign.albumHeroPlayLabelSpacing`.",
+  "steps": [
+    "Seed inside the account's own data via Subsonic: create playlist \"T344 Scroll Probe\" (60 random songs) and `star` five songs, so both Favorite Songs and a user playlist have rows.",
+    "Read the code paths: in both FavoritePlaylistView (LibraryView.swift:1142-1151) and playlist detail (ServerPlaylistViews.swift:1243-1249) the Play/Shuffle pair is the `pills` branch of `PlaylistHeroOrPillsHeader`, which renders only while `isSearching`; outside search both show a hand-built hero triplet.",
+    "Drive and record: Library → Playlists → Favorite Songs; dump; pull down; tap the search field (prompt \"Songs\"); dump. Back, back. Open T344 Scroll Probe; dump; pull down; tap the search field (prompt \"Search\"); dump.",
+    "Favorite Songs, default header: Button 'Shuffle' at x=56 (54×54 circle), Button 'Play' at x=122 (158×54).",
+    "Favorite Songs, searching: Button 'Shuffle' at x=20, Button 'Play' at x=207 — Shuffle | Play, each 175×54.",
+    "T344 Scroll Probe, default header: Button 'Shuffle' at x=56, Button 'Play' at x=122 — identical to Favorites.",
+    "T344 Scroll Probe, searching: Button 'Play' at x=20, Button 'Shuffle' at x=207 — Play | Shuffle, each 175×46.3."
+  ],
+  "tested_at": "2026-09-16T14:32:00Z",
+  "notes": "Confirmed on runtime geometry, with the scope corrected. The entry reads as if Favorites always differs from every other list; on this build the order only diverges in the search-time pills, because both screens' default headers use the same shuffle-circle-then-Play triplet. The height difference (54 vs 46.3 pt) reproduces as claimed. Filed as video because the defect is a comparison across two screens and a state change (entering search) — no single frame holds it. The duplication half (three hand-built triplets) is a source-structure claim with no screen behaviour of its own; it was checked in source only. Seeded state left in place: the T344 Scroll Probe playlist and the five stars belong to vellum-test."
+}

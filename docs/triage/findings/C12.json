@@ -1,0 +1,24 @@
+{
+  "id": "C12",
+  "source": "CODE_SWEEP.md",
+  "source_verdict": "CONFIRMED",
+  "title": "Navidrome sends the membership payload as a GET query string, capping the library at ~100 albums behind a stock reverse proxy",
+  "claim": "`setPlaylistComment` calls `subsonicRequest(path: \"updatePlaylist\", ...)`, which issues a plain GET via `URLSession.vellum.data(from: url)`, so the whole `LibraryMembershipPayload` JSON rides in the request line at ~94-98 bytes per album. Behind nginx's default 8 KB request-line buffer that returns 414 at roughly 80-85 albums (Cloudflare 16 KB: ~165-170); past that every album add/remove fails to persist and the album half of the library silently stops syncing across devices.",
+  "class": "systemic",
+  "status": "cannot_test",
+  "video": null,
+  "no_video_reason": "The failure needs a reverse proxy between the app and Navidrome, and this rig has none: the app talks to bare Navidrome over Tailscale, which accepted a 475 KB request line. With no 414 possible there is no failure to film, and filming a successful add would evidence nothing.",
+  "description": "The app saves which albums you have added by stuffing that whole list into a web address. Web servers placed in front of Navidrome commonly refuse addresses longer than about 8 KB, which this list passes at roughly 80-100 albums.",
+  "issue": "For a Navidrome user behind a typical nginx or Cloudflare setup, once they have added ~80-170 albums every further album add or remove fails to save to the server. The only sign is a brief \"Couldn't sync library to server\" toast; the album list then diverges between devices while songs keep syncing.",
+  "proposed_fix": "Send `updatePlaylist` as `POST /rest/updatePlaylist.view` with `Content-Type: application/x-www-form-urlencoded` and the auth, `playlistId` and `comment` fields in the body, via a `subsonicPostRequest(path:form:)` helper beside `subsonicRequest`; state a minimum Navidrome version for form-POST support. Do NOT ship the paired payload-shrinking change (epoch dates, short keys) independently: older builds would fail to decode it; sequence it after C15's decode handling and bump `v`.",
+  "steps": [
+    "CLOSES THE OPEN CAVEAT from the previous session, which had reasoned the cap from the title plus CLAUDE.md rather than the verbatim excerpt. Excerpt read: NavidromeClient.swift:1639-1644 `setPlaylistComment` → `subsonicRequest(path: \"updatePlaylist\", query: [\"playlistId\": ..., \"comment\": comment])`, and :1814 `URLSession.vellum.data(from: url)` — a GET. The cap arises from the comment payload in the query string, as reasoned — BUT the excerpt adds a precondition the earlier reasoning dropped: it only bites behind a reverse proxy.",
+    "Measure the payload on the wire: build membership payloads in the app's own shape ({\"albums\":[{\"added\":ISO-8601,\"id\":22-char}],\"playlists\":[],\"v\":1}) and send them as updatePlaylist GETs to vellum-test's own scratch playlist \"T344 Scroll Probe\" (not the magic playlist).",
+    "100 albums → 9,753-byte request URL → HTTP 200, subsonic ok.",
+    "200 albums → 19,253 bytes → HTTP 200, ok. 1,000 albums → 95,253 bytes → HTTP 200, ok. 5,000 albums → 475,253 bytes → HTTP 200, ok; stored comment read back at 315,033 characters.",
+    "Restore the scratch playlist comment to empty (ok).",
+    "Check for a proxy: the response carries no Server/Via headers and the app's configured URL is the bare Navidrome port 4533 — there is nothing between client and Go's net/http, whose header limit is 1 MB."
+  ],
+  "tested_at": "2026-09-16T14:53:00Z",
+  "notes": "Status reasoning, stated plainly because the previous session's framing was wrong: the earlier cannot_test said this needed ~100 albums of seeding. It does not reproduce on this rig with ANY amount of seeding — the precondition is network topology, not data. The measured ~95 bytes/album (9,753 B per 100 albums, 22-char Navidrome ids) agrees with the first verify pass (9,357-9,757 B) and puts nginx's default cap at ~84 albums. To test for real: put a stock nginx (large_client_header_buffers 4 8k) in front of Navidrome, point a fresh sign-in at it, and add ~85 albums. The GET mechanism itself is confirmed in source; only the user-facing failure is untested."
+}

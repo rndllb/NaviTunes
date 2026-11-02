@@ -1,0 +1,23 @@
+{
+  "id": "P04",
+  "source": "CODE_SWEEP.md",
+  "source_verdict": "CONFIRMED",
+  "title": "The New tab labels an album shelf \"Trending Songs\", and its first two shelves show the same tracks",
+  "claim": "(a) The shelf headed \"Trending Songs\" is `albumShelf(app.newTabFromYourArtists)` — album cards by taste artists, with no song and no trending signal. (b) The hero carousel shows `newTabTopTracks.prefix(6)` and the \"Best New Songs\" carousel directly under it shows `newTabTopTracks.prefix(10)`, so the second shelf opens with the tracks the user just scrolled past.",
+  "class": "visual",
+  "status": "confirmed",
+  "video": "videos/P04.mp4",
+  "description": "Two labels on the New tab do not match what they show. A row called \"Trending Songs\" is a row of albums from an artist you follow, and the song list right under the big hero card starts with the same song the hero card is showing.",
+  "issue": "A user reading \"Trending Songs\" expects popular tracks and gets album covers by artists they already follow. And the first entry of \"Best New Songs\" repeats the hero directly above it, so the screen looks like it has more to offer than it does.",
+  "proposed_fix": "Rename `NewTabSectionDestination.trendingSongs` to `.fromYourArtists` and title it \"From Artists You Follow\" at MusicNewTabView.swift:191 and NewTabSectionViews.swift:23. Feed the hero `newTabTopTracks.prefix(6)` and \"Best New Songs\" `newTabTopTracks.dropFirst(6).prefix(10)`, keeping the `.bestNewSongs` detail on the full list — and, per the second verifier, gate the \"Best New Songs\" section on `newTabTopTracks.count > 6` (or fall back to the full list) so a light listener does not get a header over an empty carousel.",
+  "steps": [
+    "Confirm current source: MusicNewTabView.swift:168 `heroCarousel(Array(app.newTabTopTracks.prefix(6)))`, :174 `trendingSongsCarousel(Array(app.newTabTopTracks.prefix(10)))`, :191 `sectionHeader(\"Trending Songs\", destination: .trendingSongs)`; NewTabSectionViews.swift:23 routes it to `NewTabChartAlbumsGridView(title: \"Trending Songs\", ...)`.",
+    "On a fresh vellum-test account the New tab showed only \"New This Week\" and \"Recent Releases\": both shelves under test are gated on listening signal (`hasNewTabTracks`, `hasFromYourArtists`).",
+    "Create that signal inside the account's own data: follow Interpol from its artist page (local subscription, during P13) and play one track, Toni by Interpol (during P01/P08).",
+    "Drive (XCUITest testDriveSurface): tab New, wait 6 s, accessibility dump, swipe up twice, dump, swipe up twice, dump, swipe back down — recorded.",
+    "Dump shows the order: \"New For You\" hero = Toni / Interpol; \"Best New Songs\" first row = Toni / Interpol (same track); then New This Week, Recent Releases, then \"Trending Songs\".",
+    "The \"Trending Songs\" items are 168×212 pt album cards — the same element geometry as the \"New This Week\" album cards — labelled The Other Side of Make‐Believe, If You Really Love Nothing, Fables, Toni, Mind Over Time, all Interpol (the followed artist)."
+  ],
+  "tested_at": "2026-09-16T14:49:00Z",
+  "notes": "Both halves reproduce. Half (b) reproduced with exactly one listened track, which is the sub-6-track case the T238 re-verifier flagged: newTabTopTracks held one item, so the hero and \"Best New Songs\" rendered the same single song. Recorded as video because reaching \"Trending Songs\" requires scrolling past the hero — the two defects never share one frame. Note the \"Trending Songs\" shelf also includes single-track releases (Toni, Fables) that the server catalog stores as albums, which makes the label read even less like songs-by-popularity."
+}

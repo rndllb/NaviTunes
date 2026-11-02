@@ -1,0 +1,24 @@
+{
+  "id": "C16",
+  "source": "CODE_SWEEP.md",
+  "source_verdict": "CONFIRMED",
+  "title": "The membership poll clobbers an in-flight add, then persists the reverted payload; a failed write is never retried",
+  "claim": "(a) `refreshLibraryMembership()` awaits the magic-playlist fetch, then `applyMagicPlaylistFetch` unconditionally assigns `librarySongIds` / `libraryAlbumEntries`; a fetch issued before a user's add that lands while `addAlbumToLibrary` is suspended reverts the add, and the next persist writes the old comment. (b) There is no retry when the payload write fails, and because the write is a blind whole-list replace rather than a merge, two devices adding at once lose whichever wrote first — the album disappears from Recently Added with no message.",
+  "class": "systemic",
+  "status": "confirmed",
+  "video": "videos/C16.mp4",
+  "description": "The list of albums you have added is saved as one whole block on the server, and every sync simply replaces your phone's copy with the server's. If another device saves its own older copy, your addition is overwritten and quietly vanishes.",
+  "issue": "Reproduced: an album added on this device showed in Library → Recently Added; a second client holding an older copy of the list then added a different album; on the app's next refresh the first album disappeared from Recently Added and only the second remained. No error or message appeared. The songs of the lost album stayed in the server playlist, so the song half of the library kept them while the album half forgot the album.",
+  "proposed_fix": "Add `libraryMembershipMutationGeneration` bumped by every mutating path and captured by `refreshLibraryMembership()`, dropping the fetch result when it moved; serialize the mutators. For the write, keep a persisted `pendingMembershipPayload` cleared on success, and in `applyMagicPlaylistFetch` union it with the server payload by id (earliest `added` wins) instead of replacing, then re-run the write; retry from the auto-sync loop and escalate to a persistent error only after N failures. The union-merge is what closes the reproduced cross-device loss.",
+  "steps": [
+    "Confirm source: `addAlbumToLibrary` mutates before `await addTracksToServerMagicPlaylist`; `applyMagicPlaylistFetch` replaces `libraryAlbumEntries` from the server payload; `persistLibraryMembershipPayload` catch is a toast only; `refreshLibraryMembershipIfStale` (AppModel.swift:2165) refreshes on foreground when the last refresh is ≥ 8 s old; auto-sync sleeps 60 s.",
+    "Measure the race window for half (a): getPlaylist on the magic playlist takes 9-32 ms over Tailscale (three samples).",
+    "Start a scripted second client (~/agent-scratch/T344/c16_second_device.py) that waits for a drive-log marker, then acts on vellum-test's own magic playlist only.",
+    "Drive and record: Home → first Top Pick (The Other Side of Make‐Believe) → tap 'Add to library' → back → Library tab → dump. Dump: Recently Added contains 'The Other Side of Make‐Believe, Interpol'. Server: songs=11, comment {\"albums\":[{\"added\":\"2026-09-16T14:51:08Z\",\"id\":\"25AhONV1v0Hp4NQa8ky12e\"}],\"playlists\":[],\"v\":1}.",
+    "At the marker, the second client — whose last-read payload had no albums — adds its own album B (Our Love to Admire, 13 tracks) and writes its whole payload: {\"albums\":[{\"id\":\"6PmVeVkITtxE2S5QtDaTc8\",...}],\"playlists\":[],\"v\":1}. Server now: songs=24.",
+    "App: press Home, wait 9 s, activate (triggers refreshLibraryMembershipIfStale), wait 8 s, dump. Recently Added now contains 'Our Love to Admire, Interpol' and NOT 'The Other Side of Make‐Believe'. No error, toast or sync-failure text in the dump.",
+    "Server end state after the app's refresh: songs=24 (A's 11 tracks still present), comment lists only album B."
+  ],
+  "tested_at": "2026-09-16T14:52:00Z",
+  "notes": "SCOPE, stated precisely. Reproduced: the blind whole-list replace in half (b) — a concurrent add from another client silently erases this device's album entry while its tracks remain. NOT reproduced: the single-device in-flight interleave in half (a), because the magic-playlist fetch completes in 9-32 ms on this rig and a UI-driven add cannot be timed into that window; reproducing (a) needs added latency (e.g. a throttling proxy in front of Navidrome) so the fetch outlasts the add's own server round-trip. Also NOT tested: the no-retry-after-failed-write path, which needs a forced write failure (C12's proxy would supply one). Filed confirmed rather than not_reproduced because the defect the headline names — membership replaced wholesale by a stale copy, losing an add with no message — did occur on screen; the untested sub-paths are recorded here rather than claimed. All writes were to vellum-test's own magic playlist, now holding 24 songs and one album entry."
+}
