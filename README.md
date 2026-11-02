@@ -1,113 +1,232 @@
-# Vellum Music
+<div align="center">
 
-Vellum Music is an iPhone app that looks and feels like Apple Music, but plays music from your own server.
+# NaviTunes
 
-Sign in with Jellyfin or Navidrome. Browse, search, queue, download, and listen the way you would in Apple Music. The difference is simple: the library is yours. It lives on hardware you control, not on a streaming subscription.
+**Apple Music for your own server, on iPhone and iPad.**  
+Jellyfin or Navidrome. Your files, your library, no streaming subscription.
 
-## What it is
+<img src="https://img.shields.io/badge/iOS-26+-111111?style=for-the-badge&logo=apple&logoColor=white" alt="iOS 26+" />
+<img src="https://img.shields.io/badge/iPadOS-26+-111111?style=for-the-badge&logo=apple&logoColor=white" alt="iPadOS 26+" />
+<img src="https://img.shields.io/badge/Jellyfin-ready-00A4DC?style=for-the-badge&logoColor=white" alt="Jellyfin ready" />
+<img src="https://img.shields.io/badge/Navidrome-ready-2ad4fc?style=for-the-badge&labelColor=111111&color=2ad4fc" alt="Navidrome ready" />
 
-If you already run a home music server, Vellum gives you the Apple Music experience on top of it. Same kind of tabs, same kind of player, same kind of library screens. Your files, your server, your rules.
+<img src="https://img.shields.io/badge/Equalizer-10%20band-7c5cff?style=flat-square&labelColor=111111" alt="10 band equalizer" />
+<img src="https://img.shields.io/badge/Lyrics-synced-ff6b4a?style=flat-square&labelColor=111111" alt="Synced lyrics" />
+<img src="https://img.shields.io/badge/Offline-downloads-22c55e?style=flat-square&labelColor=111111" alt="Offline downloads" />
+<img src="https://img.shields.io/badge/Lidarr%20·%20Downtify%20·%20DroppedNeedle-requests-2ad4fc?style=flat-square&labelColor=111111" alt="Request plugins" />
 
-## The Magic Playlist
+[Jump](#what-you-get) · [Servers](#servers) · [Magic playlist](#the-magic-playlist) · [iPad](#iphone-and-ipad) · [Run](#run-it)
 
-This is the part that makes Vellum different from a normal server client.
+</div>
 
-When you add a song or album in Vellum, it goes into a hidden playlist on your server. That playlist is your personal library. It syncs across your devices, keeps track of what you actually added (not just everything sitting on the server), and remembers when you added each item.
-
-On a shared Jellyfin or Navidrome box, your library stays separate from everyone else's. Your phone, your iPad, and your Mac all see the same "my library" list because the server holds it for you.
-
-You never manage that playlist by hand. Vellum creates it, updates it, and keeps it out of your normal playlist list. You just tap Add to Library and it works.
-
-## What you get
-
-### Home
-
-A personalized home screen with shelves like Top Picks, New Releases, Recently Played, Made for You mixes, playlists, and genre rows. Home helps you discover music on the server that you have not added yet.
-
-### New
-
-A browse tab for new releases and artist pages, built from your own server catalog and ranked against your listening. If you connect Lidarr, it also folds in upcoming and wanted releases. Good for finding albums you might want to request or add later.
-
-### Radio
-
-A live station directory backed by [Radio Browser](https://www.radio-browser.info) — roughly 57,000 community-maintained stations, about 7,800 of them in the US, across 238 countries. Browse what's popular where you are, dig in by genre or country, or search by name. Save anything you like to Your Stations.
-
-It needs no server sign-in, only a network connection. Alongside the directory you also get internet radio stations configured on your Navidrome server, plus your own custom stream URLs.
-
-### Library
-
-Albums, songs, playlists, artists, genres, favorites, and downloads. Album and artist pages use big artwork, dynamic colors, and the same kind of layout Apple Music users already know. This is where the app opens by default — you can change that under Settings → Appearance.
-
-### Search
-
-Two modes:
-
-- **Library** searches your personal library: the songs, albums, and playlists you have actually added.
-- **Discover** searches the whole server catalog, plus music that is not on your server yet when a request plugin is connected, plus artists you can follow or request.
-
-### Playback
-
-Full queue, shuffle, repeat, play next, lyrics, sleep timer, playback speed, lock screen controls, and a mini player that opens into full Now Playing.
-
-There is also a 10-band equalizer. It needs a local copy of the audio to work, so it applies to downloads and to streams that have been cached. Caching streamed songs is **off** by default; turning the equalizer on enables it for you, or you can flip it yourself under Settings → Sound & Playback.
-
-### Offline
-
-Download albums, playlists, or favorites. Turn on offline mode manually, or let the app switch when you leave Wi-Fi or your home network.
-
-### Widgets
-
-Home screen widgets for recently played music and Made for You mixes.
-
-### Settings
-
-Account, library stats, streaming and download quality, the equalizer, appearance, accent color, app icon, which tab the app opens to, scrobbling to your server, and optional plugins for requesting missing music.
-
-## Request missing music
-
-If something is not on your server yet, Vellum can help you ask for it. Pick one request plugin in Settings → Plugins → Music Requests (only one is active at a time):
-
-- **Lidarr** for full albums
-- **Downtify** for individual tracks
-- **DroppedNeedle** for album requests through its own service
-
-You can also follow an artist to keep an eye on their discography. Vellum compares what the plugin knows about that artist against what is on your server and can request whatever is missing. Following works without a plugin too — it just becomes a wishlist.
+---
 
 ## Servers
 
-Works with:
+<table>
+<tr>
+<td width="50%" valign="top">
 
-- **Jellyfin**
-- **Navidrome** (Subsonic API)
+**🪼 Jellyfin** · ready
 
-Credentials stay in the Keychain. HTTP works for local networks. HTTPS is recommended when you can use it.
+Sign in with URL, username, and password. Favorites, playlists, lyrics, and downloads all use the Jellyfin API directly. Your library syncs through a hidden playlist on the server.
 
-## Build and run
+</td>
+<td width="50%" valign="top">
 
-Requirements:
+**🎵 Navidrome** · ready
 
-- Xcode 16 or later
-- iOS 26
+Speaks the Subsonic API with salted-token auth. Adds per-item favorite dates, share links, internet radio stations from your server, and scan control.
 
-Open the project:
+</td>
+</tr>
+</table>
+
+Credentials stay in the Keychain. HTTP works on a local network; HTTPS is recommended anywhere else.
+
+---
+
+## The magic playlist
+
+This is what makes NaviTunes different from a normal server client.
+
+When you add a song or album, it goes into a hidden playlist on your server. That playlist is your personal library. It syncs across your devices, keeps track of what you actually added (not just everything sitting on the server), and remembers when you added each item.
+
+On a shared box your library stays separate from everyone else's. You never manage the playlist by hand: NaviTunes creates it, keeps it out of your playlist list, and updates it when you tap **Add to Library**.
+
+---
+
+## What you get
+
+<table>
+<tr>
+<td width="33%" valign="top">
+
+### 🏠 Home
+
+Top Picks, New Releases, Recently Played, Made for You mixes, and genre rows. Built to surface music on your server that you have not added yet. Pull to refresh re-ranks it.
+
+</td>
+<td width="33%" valign="top">
+
+### ✨ New
+
+A browse tab for new releases and artist pages, ranked against your listening. With Lidarr connected it also folds in upcoming and wanted releases.
+
+</td>
+<td width="33%" valign="top">
+
+### 📻 Radio
+
+About 57,000 community stations from [Radio Browser](https://www.radio-browser.info), by genre, country, or search. Save favorites to Your Stations. Also your own stream URLs and the stations on your Navidrome server. No sign-in needed.
+
+</td>
+</tr>
+<tr>
+<td width="33%" valign="top">
+
+### 📚 Library
+
+Recently Added, artists, albums, songs, genres, playlists, favorites, and downloads. Big artwork, colors taken from the cover, and the layouts Apple Music users already know.
+
+</td>
+<td width="33%" valign="top">
+
+### 🔎 Search
+
+**Library** searches what you added. **Discover** searches the whole server, plus music not on it yet when a request plugin is connected, plus artists you can follow or request.
+
+</td>
+<td width="33%" valign="top">
+
+### ▶️ Playback
+
+Queue, shuffle, repeat, play next, synced lyrics, sleep timer, speed, lock-screen controls, and a mini player that opens into Now Playing. AutoMix crossfades between tracks.
+
+</td>
+</tr>
+<tr>
+<td width="33%" valign="top">
+
+### 🎚️ Equalizer
+
+Ten bands with presets. It works on downloads and cached streams, so turning it on also turns on stream caching.
+
+</td>
+<td width="33%" valign="top">
+
+### ⬇️ Offline
+
+Download albums, playlists, or favorites. Switch offline mode on by hand. Cellular streaming can be switched off, so only downloads and cached songs play.
+
+</td>
+<td width="33%" valign="top">
+
+### 🧩 Widgets
+
+Home screen widgets for recently played music and Made for You mixes.
+
+</td>
+</tr>
+<tr>
+<td width="33%" valign="top">
+
+### 📥 Requests
+
+Ask for missing music through **Lidarr** (albums), **Downtify** (single tracks), or **DroppedNeedle** (albums). One plugin is active at a time.
+
+</td>
+<td width="33%" valign="top">
+
+### 🔔 Following
+
+Follow an artist to keep their discography complete. NaviTunes compares the plugin's catalog with your server and requests what is missing. Without a plugin it works as a wishlist.
+
+</td>
+<td width="33%" valign="top">
+
+### ⚙️ Settings
+
+Account, library stats, streaming and download quality, equalizer, accent color, app icon, which tabs sit in the dock and the page the app opens to, scrobbling to your server, and plugins.
+
+</td>
+</tr>
+</table>
+
+---
+
+## iPhone and iPad
+
+| | iPhone | iPad |
+| :--- | :---: | :---: |
+| Home, New, Radio, Library, Search | ✅ | ✅ |
+| Magic playlist and Add to Library | ✅ | ✅ |
+| Downloads and offline mode | ✅ | ✅ |
+| Equalizer, lyrics, AutoMix | ✅ | ✅ |
+| Widgets | ✅ | ✅ |
+| Tab bar at the bottom | ✅ | — |
+| Tabs in a capsule at the top | — | ✅ |
+| Sidebar with Library and Playlists | — | ✅ |
+| Edit to reorder and hide tabs | ✅ | ✅ |
+| Two-pane Now Playing with queue or lyrics | — | ✅ |
+| Floating mini player | — | ✅ |
+
+On iPad the tabs sit in a capsule at the top, and a liquid glass sidebar holds your Library pages and playlists, with **Edit** to reorder and hide them. The sidebar tints with your accent color. Grids fit the width of the page, so the sidebar opening gives you a column fewer. Now Playing keeps the player in the center, or moves it to the left with the queue or lyrics beside it. The mini player is a floating capsule with full transport controls. Artist pages put the latest release next to Top Songs, and album pages put the cover on the left with details and buttons beside it.
+
+---
+
+## Run it
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### 🍎 Xcode
+
+1. Open `NaviTunesHost/NaviTunesHost.xcodeproj`
+2. Pick a simulator or a signed-in device
+3. Run
+
+Open the Xcode project, not `Package.swift` on its own. Running both at once can confuse Swift Package Manager.
+
+</td>
+<td width="50%" valign="top">
+
+### ⌨️ Command line
 
 ```bash
-open VellumMusicHost/VellumMusicHost.xcodeproj
+xcodebuild \
+  -workspace NaviTunesHost/NaviTunesHost.xcodeproj/project.xcworkspace \
+  -scheme NaviTunesHost \
+  -destination 'generic/platform=iOS Simulator' build
 ```
 
-Or build from the command line:
+Tests run on a simulator through the `NaviTunesKitTests` scheme; see [CONTRIBUTING](CONTRIBUTING.md).
 
-```bash
-xcodebuild -workspace VellumMusicHost/VellumMusicHost.xcodeproj/project.xcworkspace \
-  -scheme VellumMusicHost -destination 'generic/platform=iOS Simulator' build
-```
+</td>
+</tr>
+</table>
 
-Open the Xcode project file, not `Package.swift` on its own. Running both at once can confuse Swift Package Manager.
+**Needs:** Xcode 16 or later, iOS 26, and a Jellyfin or Navidrome server the device can reach.
 
-## Author
+**Bundle ID:** the app keeps the bundle ID and app group from before the rename (`com.randll.vellum`), so an existing install and its data carry over. Sign with your own team and set `NAVITUNES_BUNDLE_ID` in `NaviTunesHost/Config/Signing.xcconfig` if you need a different ID.
 
-rndllb
+---
+
+## Not in this build
+
+🛒 **App Store** — build it from source in Xcode for now.
+
+---
 
 ## License
 
 No license file yet. All rights reserved unless stated otherwise.
+
+---
+
+<div align="center">
+
+Made by [rndllb](https://github.com/rndllb) · [Contributing](CONTRIBUTING.md)
+
+</div>

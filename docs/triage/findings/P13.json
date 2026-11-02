@@ -14,7 +14,7 @@
     "Confirm both literals are current: DiscoverySearchView.swift:864 and SubscriptionsView.swift:54.",
     "Drive and record: Search tab → tap the \"Artists, Songs, and More\" field (focused, empty query → Recently Searched state).",
     "Dump shows StaticText 'Recently Searched' and StaticText 'Search your server or Apple Music for songs, albums, and artists.'",
-    "Tap Close to dismiss the search keyboard (tab-bar taps are swallowed while it is up), then Home → Interpol → tap 'Follow Interpol' (local subscription on vellum-test) → back.",
+    "Tap Close to dismiss the search keyboard (tab-bar taps are swallowed while it is up), then Home → Interpol → tap 'Follow Interpol' (local subscription on navitunes-test) → back.",
     "Library → Settings → Plugins. Dump: Button 'Music Requests, Set up Lidarr' and Button 'Following, 1 artist' — there is no 'Downloads' entry under Plugins.",
     "Tap Following. Dump shows the banner verbatim: 'No download plugin is configured, so missing albums are saved as a wishlist. Set one up in Plugins → Downloads to fetch them automatically.'",
     "Settings hub dump (earlier probe) shows the separate top-level 'Downloads' row — the offline-media page the stale instruction now points at."

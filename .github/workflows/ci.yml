@@ -52,16 +52,16 @@ jobs:
           key: spm-${{ runner.os }}-${{ hashFiles('Package.swift') }}
           restore-keys: spm-${{ runner.os }}-
 
-      # Compiles the host app and the package, then runs the VellumMusicKit unit tests.
+      # Compiles the host app and the package, then runs the NaviTunesKit unit tests.
       # Code signing is off because a Simulator build needs no certificate or profile.
-      # VellumMusicUITests is deliberately not in this scheme: it needs a signed-in
+      # NaviTunesUITests is deliberately not in this scheme: it needs a signed-in
       # Navidrome/Jellyfin server and would be flaky here.
       - name: Build and test
         run: |
           set -o pipefail
           xcodebuild test \
-            -workspace VellumMusic.xcworkspace \
-            -scheme VellumMusicKitTests \
+            -workspace NaviTunes.xcworkspace \
+            -scheme NaviTunesKitTests \
             -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
             -resultBundlePath TestResults.xcresult \
             CODE_SIGNING_ALLOWED=NO

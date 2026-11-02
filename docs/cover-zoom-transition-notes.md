@@ -7,7 +7,7 @@ eliminated below, on device, with logs.
 **Branch:** this WIP lives on `cover-zoom-transition`, branched from `162e98b` on `dev`, so `dev`
 keeps only the committed, known-good state.
 
-**Files:** `Sources/VellumMusicKit/CoverZoomCustomTransition.swift` (the whole thing),
+**Files:** `Sources/NaviTunesKit/CoverZoomCustomTransition.swift` (the whole thing),
 `CoverZoomSource` / `CoverZoomDestination` in `CoverZoomTransition.swift`, the call sites and
 artwork anchors in `LibraryView.swift`, `heroArtwork` in `ServerPlaylistViews.swift`.
 
@@ -28,7 +28,7 @@ made the playlists list itself zoom.
 
 SwiftUI's `.navigationTransition(.zoom)` gets the motion broadly right but exposes none of the
 three things that were wrong. Measured frame by frame against Apple Music
-(`docs/reference-apple-music-vs-vellum-dismiss.MP4`):
+(`docs/reference-apple-music-vs-navitunes-dismiss.MP4`):
 
 - **The source cell stays visible**, so two copies of the artwork are on screen and the cover
   appears to swap identity mid-flight. Apple Music empties the row for the whole transition.
@@ -70,7 +70,7 @@ From reading the reference video at 20fps. That document is wrong on both counts
 ## 4. Open problems
 
 > **Update, 2026-08-21 (second session).** The device log was pulled off the phone before anything
-> was changed (`Documents/vellum-hangwatch.log`, 20 403 lines, spanning several builds). Reading it
+> was changed (`Documents/navitunes-hangwatch.log`, 20 403 lines, spanning several builds). Reading it
 > settled four of the five items below and corrected one claim that this document asserted as
 > measured. Each subsection now records what the log actually showed and what changed. **Read the
 > "what the log showed" paragraphs before re-opening any of these** — several earlier conclusions
@@ -547,7 +547,7 @@ exercise it, and **read the log before concluding anything.**
 ```bash
 xcrun devicectl device copy from --device <device-udid> \
   --domain-type appDataContainer --domain-identifier com.randll.vellum --user mobile \
-  --source Documents/vellum-hangwatch.log --destination ./hw.log
+  --source Documents/navitunes-hangwatch.log --destination ./hw.log
 ```
 
 Lines: `COVERZOOM ask` (push/pop decisions, nav identity, preferredTransition), `run` / `fallback`
@@ -567,10 +567,10 @@ easiest anchor is the first line carrying a field only this build emits — and 
 
 ## 8. Working constraints
 
-- Build: `~/.claude/scripts/build-to-phone.sh VellumMusicHost VellumMusicHost`, **from the repo
+- Build: `~/.claude/scripts/build-to-phone.sh NaviTunesHost NaviTunesHost`, **from the repo
   root**. The script computes its derived-data path *after* `cd`-ing, so it writes to
-  `VellumMusicHost/VellumMusicHost/.build-to-phone/…` while printing
-  `VellumMusicHost/.build-to-phone/…`, which holds a stale decoy bundle. **Verify the real
+  `NaviTunesHost/NaviTunesHost/.build-to-phone/…` while printing
+  `NaviTunesHost/.build-to-phone/…`, which holds a stale decoy bundle. **Verify the real
   binary's timestamp after every build** — a stale install cost real time here. If the shell has
   drifted out of the repo root the script fails silently.
 - A locked phone fails only the launch step; the install still succeeds.

@@ -5,9 +5,9 @@ Kill Mode / Top Songs fixes from `~/Lyra-Music` (T456, T461, T507, section 6), p
 removal (T662), the Recently Added infinite scroll (T664), the prefetched-file fix (T665), the
 blend-path fix (T673) and the two-player blend (T677). The combined tree was compiled unsigned and tested on the Mac (T659,
 rebuilt for each). Install it from Xcode on the Mac: open
-`~/agent-scratch/T659/vellum/VellumMusicHost/VellumMusicHost.xcodeproj`, scheme **VellumMusicHost**,
+`~/agent-scratch/T659/navitunes/NaviTunesHost/NaviTunesHost.xcodeproj`, scheme **NaviTunesHost**,
 pick the iPhone as the run destination, Run. Signing comes from that folder's
-`VellumMusicHost/Config/Local.xcconfig` (identical to the one in `~/Lyra-Music`; do not edit it, the
+`NaviTunesHost/Config/Local.xcconfig` (identical to the one in `~/Lyra-Music`; do not edit it, the
 bundle id stays `com.randll.vellum`). Nothing here writes to Navidrome except the one playlist edit
 in step 4.
 
@@ -35,7 +35,7 @@ in step 4.
   wouldn't load" toast. The caching loader is no longer used for streams (T662), so the AutoMix
   diagnostic row must show **no** `candidate failed … loader=true` line at all; if any
   `candidate failed` line appears, copy it (the row is selectable). The same line is in Console.app
-  under subsystem **vellum.perf**, category **playback**.
+  under subsystem **navitunes.perf**, category **playback**.
 - The first boundary out of a freshly started streamed song does not blend (its file was never
   assembled on the phone); every boundary after that should, because the next song is fetched
   whole in the background. Expect `stream cache commit for a queued track; re-planning` in the

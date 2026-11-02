@@ -13,7 +13,7 @@
   "proposed_fix": "No code change. Fixed by commit f39eae7, which adds `decodeOutcome(_:)` returning `.absent` / `.malformed` / `.valid`, demotes the old lossy `decode(_:)` to read-only display callers with an explicit warning, and ships LibraryMembershipDecodeTests.swift (103 lines).",
   "steps": [
     "Read the claim: an unreadable payload decodes to `.empty` and the next write persists it.",
-    "Read current source at Sources/VellumMusicKit/Library/LibraryMembership.swift:180-205.",
+    "Read current source at Sources/NaviTunesKit/Library/LibraryMembership.swift:180-205.",
     "Confirm `decodeOutcome(_:)` exists and returns `.absent` for nil/empty input, `.malformed` for non-UTF8 or non-decodable JSON, and `.valid(payload)` otherwise — the three-way split the fix requires.",
     "Confirm the lossy `decode(_:)` survives only for read-only callers and carries the warning: 'Do not use this to decide what to persist. It cannot distinguish an absent payload from an unreadable one, which is exactly the confusion that made a truncated read wipe a library.'",
     "Check provenance: `git log` shows commit f39eae7 'Refuse to write library membership we could not read (C15, C78)', naming this finding id.",

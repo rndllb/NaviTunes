@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "VellumMusic",
+    name: "NaviTunes",
     defaultLocalization: "en",
     platforms: [
         .iOS("26.1"),
@@ -10,26 +10,26 @@ let package = Package(
         .macOS(.v15),
     ],
     products: [
-        .library(name: "VellumMusicKit", targets: ["VellumMusicKit"]),
-        .executable(name: "VellumMusic", targets: ["VellumMusic"]),
+        .library(name: "NaviTunesKit", targets: ["NaviTunesKit"]),
+        .executable(name: "NaviTunes", targets: ["NaviTunes"]),
     ],
     targets: [
         .target(
-            name: "VellumMusicKit",
-            path: "Sources/VellumMusicKit",
+            name: "NaviTunesKit",
+            path: "Sources/NaviTunesKit",
             resources: [.process("Resources")],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .executableTarget(
-            name: "VellumMusic",
-            dependencies: ["VellumMusicKit"],
-            path: "Sources/VellumMusic",
+            name: "NaviTunes",
+            dependencies: ["NaviTunesKit"],
+            path: "Sources/NaviTunes",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .testTarget(
-            name: "VellumMusicKitTests",
-            dependencies: ["VellumMusicKit"],
-            path: "Tests/VellumMusicKitTests",
+            name: "NaviTunesKitTests",
+            dependencies: ["NaviTunesKit"],
+            path: "Tests/NaviTunesKitTests",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
     ]

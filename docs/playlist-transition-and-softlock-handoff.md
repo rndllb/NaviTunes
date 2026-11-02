@@ -78,20 +78,20 @@ Each of these was built, shipped to device, and tested.
 
 XCUITest synchronises on app quiescence before every interaction, so its tap lands ~3.3s after
 the swipe — well clear of the ~1s window. `-UIAnimationDragCoefficient` does not help. **There
-is no automated test for this bug.** A UI test target exists (`VellumMusicUITests`, with a
+is no automated test for this bug.** A UI test target exists (`NaviTunesUITests`, with a
 demo-server sign-in helper and screenshot capture) but it cannot gate this. Verify by hand.
 
 ## 4. Problem B: the transition, frame by frame
 
-Reference video: **`docs/reference-apple-music-vs-vellum-dismiss.MP4`** (14.3s, 26 MB —
+Reference video: **`docs/reference-apple-music-vs-navitunes-dismiss.MP4`** (14.3s, 26 MB —
 deliberately **untracked**, too large to commit; also at
 `~/Downloads/ScreenRecording_08-20-2026 22-47-43_1.MP4`). First half is Apple Music, second
-half is Vellum, same gesture. It cannot be viewed directly — extract frames and read them as
+half is NaviTunes, same gesture. It cannot be viewed directly — extract frames and read them as
 images:
 
 ```bash
 ffmpeg -ss 3.0 -to 6.2 -i "$V" -vf "fps=8,scale=210:-1,tile=5x5" -frames:v 1 am_dismiss.png
-ffmpeg -ss 10.8 -to 14.0 -i "$V" -vf "fps=8,scale=210:-1,tile=5x5" -frames:v 1 vellum_dismiss.png
+ffmpeg -ss 10.8 -to 14.0 -i "$V" -vf "fps=8,scale=210:-1,tile=5x5" -frames:v 1 navitunes_dismiss.png
 ```
 
 ### Apple Music dismiss (playlist "grady"), ~3.0–6.2s
@@ -109,7 +109,7 @@ ffmpeg -ss 10.8 -to 14.0 -i "$V" -vf "fps=8,scale=210:-1,tile=5x5" -frames:v 1 v
 - **Top bar:** the detail's chevron/share/⋯ hand over to the list's own bar items. Both screens
   have real navigation bars, so there is something to hand over *to*.
 
-### Vellum dismiss (playlist "metal v2"), ~10.8–14.0s
+### NaviTunes dismiss (playlist "metal v2"), ~10.8–14.0s
 
 - **Start:** full-screen detail — cover, "metal v2", "1000 songs", shuffle/Play/download row,
   track list.
@@ -209,7 +209,7 @@ navigator, and 31 converted call sites are all there.
 
 ## 9. Working constraints
 
-- **Build:** `~/.claude/scripts/build-to-phone.sh VellumMusicHost VellumMusicHost`. Do not
+- **Build:** `~/.claude/scripts/build-to-phone.sh NaviTunesHost NaviTunesHost`. Do not
   hand-roll xcodebuild/devicectl. Phone must be plugged in and unlocked.
 - **The user tests on device.** Simulator has no signed-in account; never look for their real
   server credentials — use `demo.navidrome.org` (demo/demo) if a simulator run is needed.

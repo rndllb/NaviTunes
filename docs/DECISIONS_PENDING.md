@@ -1,6 +1,6 @@
 # Decisions pending
 
-Everything on the `Vellums release` board that I could not close without you, in one place. Each
+Everything on the `NaviTuness release` board that I could not close without you, in one place. Each
 entry: what is actually wrong, the options, and what I would do. Reply "yes" or pick a letter.
 
 Nothing here is pushed. `origin/dev` is at `83eb50b`; there are 23 local commits on `dev`.
@@ -90,7 +90,7 @@ prompts. Manual offline is a plain toggle.
 setting delivers that directly without asking for location permission or an SSID.
 
 ### #5 — Backup & Restore, and the library counts
-Confirmed by reading: `VellumClientBackup` carries completed scrobbles, scrobble exclusions and
+Confirmed by reading: `NaviTunesClientBackup` carries completed scrobbles, scrobble exclusions and
 playback settings. It does **not** reference `KillModeStore` or `LibraryPinStore` — so your Kill
 Mode history and pinned items really are lost on a clean install, exactly as you found.
 
@@ -209,7 +209,7 @@ None of this is in git. I have not moved or deleted any of it.
 | `LyraMusic.xcworkspace/` | 0 B | Empty pre-rename workspace. It is one of the two workspaces that makes bare `xcodebuild` ambiguous at the repo root. |
 | `addtoplaylistinterface.MP4` | 114 MB | Reference recording. |
 | `watchthis.MP4` | 20 MB | Reference recording. |
-| `docs/reference-apple-music-vs-vellum-dismiss.MP4` | 25 MB | Reference recording. |
+| `docs/reference-apple-music-vs-navitunes-dismiss.MP4` | 25 MB | Reference recording. |
 | `apple-player.png`, `asdf.png`, `lyra-player.png` | 4.5 MB | Reference screenshots. |
 
 **≈138 MB at the repo root, ≈163 MB including the `docs/` video.** If any of it is worth keeping,

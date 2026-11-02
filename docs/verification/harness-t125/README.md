@@ -7,8 +7,8 @@ Symlink the shipping sources in before running, so it exercises the real code:
 
     cd harness-t125
     for f in MusicBrainzModels MusicBrainzClient MusicBrainzCacheStore MusicBrainzService \
-             MusicBrainzQuery VellumNetworking; do
-      t=$(cd ../../.. && git ls-files "Sources/VellumMusicKit/**/$f.swift")
+             MusicBrainzQuery NaviTunesNetworking; do
+      t=$(cd ../../.. && git ls-files "Sources/NaviTunesKit/**/$f.swift")
       ln -sfn "../../../../../$t" "Sources/mb3/$f.swift"
     done
     swift run mb3

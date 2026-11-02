@@ -40,7 +40,7 @@ Carthage/Build/
 !.env.example
 
 # Per-developer code-signing team (each dev sets their own; never commit)
-VellumMusicHost/Config/Local.xcconfig
+NaviTunesHost/Config/Local.xcconfig
 
 # DerivedData written by ~/.claude/scripts/build-to-phone.sh (device builds)
 .build-to-phone/

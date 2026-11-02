@@ -15,14 +15,14 @@ own, so that we control the three things the stock transition will not expose:
 
 ## Corrections to the handoff document
 
-Both were established by reading `docs/reference-apple-music-vs-vellum-dismiss.MP4` frame by
+Both were established by reading `docs/reference-apple-music-vs-navitunes-dismiss.MP4` frame by
 frame at 20 fps. Re-extract with:
 
 ```bash
-V=docs/reference-apple-music-vs-vellum-dismiss.MP4
+V=docs/reference-apple-music-vs-navitunes-dismiss.MP4
 ffmpeg -ss 4.30 -to 4.95 -i "$V" -vf "fps=20,scale=300:-1,tile=4x3" -frames:v 1 am_push.png
 ffmpeg -ss 3.40 -to 3.95 -i "$V" -vf "fps=20,scale=300:-1,tile=4x3" -frames:v 1 am_dismiss.png
-ffmpeg -ss 12.75 -to 13.35 -i "$V" -vf "fps=20,scale=300:-1,tile=4x3" -frames:v 1 vellum_bar.png
+ffmpeg -ss 12.75 -to 13.35 -i "$V" -vf "fps=20,scale=300:-1,tile=4x3" -frames:v 1 navitunes_bar.png
 ```
 
 **Correction 1 — Apple Music does not move "only the cover and title".** The handoff doc §4
@@ -40,7 +40,7 @@ for the whole transition, in both directions.
 
 ## What actually differs
 
-| | Apple Music | Vellum today |
+| | Apple Music | NaviTunes today |
 |---|---|---|
 | Source cell during flight | Row is **completely empty** — no thumbnail, no title, only its chevron — for the whole flight, repopulating in the final ~50 ms | Cell artwork stays visible, so the eye catches one cover being replaced by another: the reported "cover swaps objects" |
 | Navigation bar | Hands over cleanly | **Strands**: at 12.75–13.35 s the Library is fully settled while the bar still reads "‹ rary" with the detail's scissors / ⋯ items, for ~600 ms |
@@ -52,7 +52,7 @@ which is that two covers are on screen at once.
 
 ## Architecture
 
-Six pieces. All new code lands in `Sources/VellumMusicKit/CoverZoomTransition.swift` unless
+Six pieces. All new code lands in `Sources/NaviTunesKit/CoverZoomTransition.swift` unless
 noted.
 
 ### 1. `CoverZoomRegistry`
@@ -167,7 +167,7 @@ Acceptance, in the user's own formulation:
    the mini player still floats. (These regressed in the abandoned UIKit port; nothing here
    touches the shell, so they must not move.)
 
-Build with `~/.claude/scripts/build-to-phone.sh VellumMusicHost VellumMusicHost`.
+Build with `~/.claude/scripts/build-to-phone.sh NaviTunesHost NaviTunesHost`.
 
 ## Risks
 

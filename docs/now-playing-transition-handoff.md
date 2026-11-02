@@ -116,11 +116,11 @@ unanimated dismiss. Both are answerable with the instrumentation below.
 
 ## 5. Instrumentation (DEBUG only)
 
-All of it writes to `Documents/vellum-hangwatch.log`, readable with:
+All of it writes to `Documents/navitunes-hangwatch.log`, readable with:
 
 ```bash
 xcrun devicectl device copy from --device <UDID> --domain-type appDataContainer \
-  --domain-identifier com.randll.vellum --source Documents/vellum-hangwatch.log --destination ./hw.log
+  --domain-identifier com.randll.vellum --source Documents/navitunes-hangwatch.log --destination ./hw.log
 grep -n "===== LAUNCH" hw.log | tail -1   # read only past the last launch marker
 ```
 

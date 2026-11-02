@@ -118,7 +118,7 @@ ArtistNameButton(
 
 ## After applying
 
-`grep -n "SearchNavTarget.namedArtist" Sources/VellumMusicKit/DiscoverySearchView.swift` should show
+`grep -n "SearchNavTarget.namedArtist" Sources/NaviTunesKit/DiscoverySearchView.swift` should show
 only fallback branches — every remaining occurrence should sit in the `else` of an id check.
 
 **Run 2026-09-03, after Site 1 landed and T148 replaced Site 2 — criterion met, four occurrences,

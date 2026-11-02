@@ -1,0 +1,738 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		02E1B2612FB8DE7B006F4370 /* NaviTunesKit in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000014 /* NaviTunesKit */; };
+		A00000000000000000000011 /* NaviTunesHostApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000006 /* NaviTunesHostApp.swift */; };
+		BB0000000000000000000011 /* NaviTunesWidgetsBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000003 /* NaviTunesWidgetsBundle.swift */; };
+		BB0000000000000000000012 /* NaviTunesRecentlyPlayedWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000004 /* NaviTunesRecentlyPlayedWidget.swift */; };
+		BB0000000000000000000013 /* NaviTunesNowPlayingWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000005 /* NaviTunesNowPlayingWidget.swift */; };
+		BB0000000000000000000014 /* NaviTunesWidgets.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000006 /* NaviTunesWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		BB0000000000000000000070 /* NaviTunesKit in Frameworks */ = {isa = PBXBuildFile; productRef = BB0000000000000000000071 /* NaviTunesKit */; };
+		CC0000000000000000000011 /* NaviTunesUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000003 /* NaviTunesUITests.swift */; };
+		CC0000000000000000000012 /* SimulatorSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000004 /* SimulatorSignIn.swift */; };
+		CC0000000000000000000013 /* ScreenshotCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000005 /* ScreenshotCapture.swift */; };
+		CC0000000000000000000014 /* NaviTunesTestSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000006 /* NaviTunesTestSignIn.swift */; };
+		CC0000000000000000000015 /* QueueHistorySwipe.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000008 /* QueueHistorySwipe.swift */; };
+		CC0000000000000000000016 /* HistoryPlaybackLyrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000009 /* HistoryPlaybackLyrics.swift */; };
+		CC0000000000000000000091 /* DiscoverAlbumSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000090 /* DiscoverAlbumSearch.swift */; };
+		IC0000000000000000000020 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000010 /* AppIcon.icon */; };
+		IC0000000000000000000021 /* NaviTunesIcon-blue.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000011 /* NaviTunesIcon-blue.icon */; };
+		IC0000000000000000000022 /* NaviTunesIcon-green.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000012 /* NaviTunesIcon-green.icon */; };
+		IC0000000000000000000023 /* NaviTunesIcon-orange.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000013 /* NaviTunesIcon-orange.icon */; };
+		IC0000000000000000000024 /* NaviTunesIcon-pink.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000014 /* NaviTunesIcon-pink.icon */; };
+		IC0000000000000000000025 /* NaviTunesIcon-indigo.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000015 /* NaviTunesIcon-indigo.icon */; };
+		IC0000000000000000000026 /* NaviTunesIcon-teal.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000016 /* NaviTunesIcon-teal.icon */; };
+		IC0000000000000000000027 /* NaviTunesIcon-yellow.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000017 /* NaviTunesIcon-yellow.icon */; };
+		IC0000000000000000000028 /* NaviTunesIcon-purple.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000018 /* NaviTunesIcon-purple.icon */; };
+		IC0000000000000000000029 /* NaviTunesIcon-lightgray.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000019 /* NaviTunesIcon-lightgray.icon */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		BB0000000000000000000061 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BB0000000000000000000040;
+			remoteInfo = NaviTunesWidgets;
+		};
+		CC0000000000000000000061 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A00000000000000000000010;
+			remoteInfo = NaviTunesHost;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		BB0000000000000000000033 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				BB0000000000000000000014 /* NaviTunesWidgets.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		A00000000000000000000002 /* NaviTunesHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NaviTunesHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000006 /* NaviTunesHostApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NaviTunesHostApp.swift; sourceTree = "<group>"; };
+		A00000000000000000000007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A000000000000000000000CF /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
+		A000000000000000000000D0 /* Local.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Local.xcconfig.example; sourceTree = "<group>"; };
+		BB0000000000000000000001 /* NaviTunesWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NaviTunesWidgets.entitlements; sourceTree = "<group>"; };
+		BB0000000000000000000002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		BB0000000000000000000003 /* NaviTunesWidgetsBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NaviTunesWidgetsBundle.swift; sourceTree = "<group>"; };
+		BB0000000000000000000004 /* NaviTunesRecentlyPlayedWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NaviTunesRecentlyPlayedWidget.swift; sourceTree = "<group>"; };
+		BB0000000000000000000005 /* NaviTunesNowPlayingWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NaviTunesNowPlayingWidget.swift; sourceTree = "<group>"; };
+		BB0000000000000000000006 /* NaviTunesWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NaviTunesWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		BB0000000000000000000007 /* NaviTunesHost.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NaviTunesHost.entitlements; sourceTree = "<group>"; };
+		CC0000000000000000000002 /* NaviTunesUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NaviTunesUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		CC0000000000000000000003 /* NaviTunesUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NaviTunesUITests.swift; sourceTree = "<group>"; };
+		CC0000000000000000000004 /* SimulatorSignIn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimulatorSignIn.swift; sourceTree = "<group>"; };
+		CC0000000000000000000005 /* ScreenshotCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotCapture.swift; sourceTree = "<group>"; };
+		CC0000000000000000000006 /* NaviTunesTestSignIn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NaviTunesTestSignIn.swift; sourceTree = "<group>"; };
+		CC0000000000000000000008 /* QueueHistorySwipe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueHistorySwipe.swift; sourceTree = "<group>"; };
+		CC0000000000000000000009 /* HistoryPlaybackLyrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryPlaybackLyrics.swift; sourceTree = "<group>"; };
+		CC0000000000000000000090 /* DiscoverAlbumSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoverAlbumSearch.swift; sourceTree = "<group>"; };
+		IC0000000000000000000010 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
+		IC0000000000000000000011 /* NaviTunesIcon-blue.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "NaviTunesIcon-blue.icon"; sourceTree = "<group>"; };
+		IC0000000000000000000012 /* NaviTunesIcon-green.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "NaviTunesIcon-green.icon"; sourceTree = "<group>"; };
+		IC0000000000000000000013 /* NaviTunesIcon-orange.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "NaviTunesIcon-orange.icon"; sourceTree = "<group>"; };
+		IC0000000000000000000014 /* NaviTunesIcon-pink.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "NaviTunesIcon-pink.icon"; sourceTree = "<group>"; };
+		IC0000000000000000000015 /* NaviTunesIcon-indigo.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "NaviTunesIcon-indigo.icon"; sourceTree = "<group>"; };
+		IC0000000000000000000016 /* NaviTunesIcon-teal.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "NaviTunesIcon-teal.icon"; sourceTree = "<group>"; };
+		IC0000000000000000000017 /* NaviTunesIcon-yellow.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "NaviTunesIcon-yellow.icon"; sourceTree = "<group>"; };
+		IC0000000000000000000018 /* NaviTunesIcon-purple.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "NaviTunesIcon-purple.icon"; sourceTree = "<group>"; };
+		IC0000000000000000000019 /* NaviTunesIcon-lightgray.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "NaviTunesIcon-lightgray.icon"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A00000000000000000000009 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				02E1B2612FB8DE7B006F4370 /* NaviTunesKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB0000000000000000000031 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BB0000000000000000000070 /* NaviTunesKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		CC0000000000000000000031 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A00000000000000000000003 /* NaviTunesHost */ = {
+			isa = PBXGroup;
+			children = (
+				IC0000000000000000000001 /* AppIcons */,
+				A00000000000000000000006 /* NaviTunesHostApp.swift */,
+				A00000000000000000000007 /* Info.plist */,
+				BB0000000000000000000007 /* NaviTunesHost.entitlements */,
+			);
+			path = NaviTunesHost;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000004 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000002 /* NaviTunesHost.app */,
+				BB0000000000000000000006 /* NaviTunesWidgets.appex */,
+				CC0000000000000000000002 /* NaviTunesUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000005 = {
+			isa = PBXGroup;
+			children = (
+				A000000000000000000000D1 /* Config */,
+				A00000000000000000000003 /* NaviTunesHost */,
+				BB0000000000000000000020 /* NaviTunesWidgets */,
+				CC0000000000000000000020 /* NaviTunesUITests */,
+				AA9E8B822FBCB48C006C70DB /* Frameworks */,
+				A00000000000000000000004 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A000000000000000000000D1 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				A000000000000000000000CF /* Signing.xcconfig */,
+				A000000000000000000000D0 /* Local.xcconfig.example */,
+			);
+			path = Config;
+			sourceTree = "<group>";
+		};
+		AA9E8B822FBCB48C006C70DB /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		BB0000000000000000000020 /* NaviTunesWidgets */ = {
+			isa = PBXGroup;
+			children = (
+				BB0000000000000000000003 /* NaviTunesWidgetsBundle.swift */,
+				BB0000000000000000000004 /* NaviTunesRecentlyPlayedWidget.swift */,
+				BB0000000000000000000005 /* NaviTunesNowPlayingWidget.swift */,
+				BB0000000000000000000001 /* NaviTunesWidgets.entitlements */,
+				BB0000000000000000000002 /* Info.plist */,
+			);
+			path = NaviTunesWidgets;
+			sourceTree = "<group>";
+		};
+		CC0000000000000000000020 /* NaviTunesUITests */ = {
+			isa = PBXGroup;
+			children = (
+				CC0000000000000000000003 /* NaviTunesUITests.swift */,
+				CC0000000000000000000004 /* SimulatorSignIn.swift */,
+				CC0000000000000000000005 /* ScreenshotCapture.swift */,
+				CC0000000000000000000008 /* QueueHistorySwipe.swift */,
+				CC0000000000000000000090 /* DiscoverAlbumSearch.swift */,
+				CC0000000000000000000009 /* HistoryPlaybackLyrics.swift */,
+				CC0000000000000000000006 /* NaviTunesTestSignIn.swift */,
+			);
+			path = NaviTunesUITests;
+			sourceTree = "<group>";
+		};
+		IC0000000000000000000001 /* AppIcons */ = {
+			isa = PBXGroup;
+			children = (
+				IC0000000000000000000010 /* AppIcon.icon */,
+				IC0000000000000000000011 /* NaviTunesIcon-blue.icon */,
+				IC0000000000000000000012 /* NaviTunesIcon-green.icon */,
+				IC0000000000000000000013 /* NaviTunesIcon-orange.icon */,
+				IC0000000000000000000014 /* NaviTunesIcon-pink.icon */,
+				IC0000000000000000000015 /* NaviTunesIcon-indigo.icon */,
+				IC0000000000000000000016 /* NaviTunesIcon-teal.icon */,
+				IC0000000000000000000017 /* NaviTunesIcon-yellow.icon */,
+				IC0000000000000000000018 /* NaviTunesIcon-purple.icon */,
+				IC0000000000000000000019 /* NaviTunesIcon-lightgray.icon */,
+			);
+			path = AppIcons;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A00000000000000000000010 /* NaviTunesHost */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A00000000000000000000015 /* Build configuration list for PBXNativeTarget "NaviTunesHost" */;
+			buildPhases = (
+				A00000000000000000000008 /* Sources */,
+				A00000000000000000000009 /* Frameworks */,
+				IC0000000000000000000002 /* Resources */,
+				BB0000000000000000000033 /* Embed App Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BB0000000000000000000062 /* PBXTargetDependency */,
+			);
+			name = NaviTunesHost;
+			packageProductDependencies = (
+				A00000000000000000000014 /* NaviTunesKit */,
+			);
+			productName = NaviTunesHost;
+			productReference = A00000000000000000000002 /* NaviTunesHost.app */;
+			productType = "com.apple.product-type.application";
+		};
+		BB0000000000000000000040 /* NaviTunesWidgets */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BB0000000000000000000052 /* Build configuration list for PBXNativeTarget "NaviTunesWidgets" */;
+			buildPhases = (
+				BB0000000000000000000030 /* Sources */,
+				BB0000000000000000000031 /* Frameworks */,
+				BB0000000000000000000032 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = NaviTunesWidgets;
+			packageProductDependencies = (
+				BB0000000000000000000071 /* NaviTunesKit */,
+			);
+			productName = NaviTunesWidgets;
+			productReference = BB0000000000000000000006 /* NaviTunesWidgets.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		CC0000000000000000000040 /* NaviTunesUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CC0000000000000000000052 /* Build configuration list for PBXNativeTarget "NaviTunesUITests" */;
+			buildPhases = (
+				CC0000000000000000000030 /* Sources */,
+				CC0000000000000000000031 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				CC0000000000000000000062 /* PBXTargetDependency */,
+			);
+			name = NaviTunesUITests;
+			productName = NaviTunesUITests;
+			productReference = CC0000000000000000000002 /* NaviTunesUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A00000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 2650;
+				TargetAttributes = {
+					A00000000000000000000010 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					BB0000000000000000000040 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					CC0000000000000000000040 = {
+						CreatedOnToolsVersion = 26.0;
+						TestTargetID = A00000000000000000000010;
+					};
+				};
+			};
+			buildConfigurationList = A00000000000000000000016 /* Build configuration list for PBXProject "NaviTunesHost" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A00000000000000000000005;
+			packageReferences = (
+				A00000000000000000000013 /* XCLocalSwiftPackageReference ".." */,
+			);
+			productRefGroup = A00000000000000000000004 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A00000000000000000000010 /* NaviTunesHost */,
+				BB0000000000000000000040 /* NaviTunesWidgets */,
+				CC0000000000000000000040 /* NaviTunesUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		BB0000000000000000000032 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		IC0000000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				IC0000000000000000000020 /* AppIcon.icon in Resources */,
+				IC0000000000000000000021 /* NaviTunesIcon-blue.icon in Resources */,
+				IC0000000000000000000022 /* NaviTunesIcon-green.icon in Resources */,
+				IC0000000000000000000023 /* NaviTunesIcon-orange.icon in Resources */,
+				IC0000000000000000000024 /* NaviTunesIcon-pink.icon in Resources */,
+				IC0000000000000000000025 /* NaviTunesIcon-indigo.icon in Resources */,
+				IC0000000000000000000026 /* NaviTunesIcon-teal.icon in Resources */,
+				IC0000000000000000000027 /* NaviTunesIcon-yellow.icon in Resources */,
+				IC0000000000000000000028 /* NaviTunesIcon-purple.icon in Resources */,
+				IC0000000000000000000029 /* NaviTunesIcon-lightgray.icon in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A00000000000000000000008 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A00000000000000000000011 /* NaviTunesHostApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB0000000000000000000030 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BB0000000000000000000011 /* NaviTunesWidgetsBundle.swift in Sources */,
+				BB0000000000000000000012 /* NaviTunesRecentlyPlayedWidget.swift in Sources */,
+				BB0000000000000000000013 /* NaviTunesNowPlayingWidget.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		CC0000000000000000000030 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CC0000000000000000000011 /* NaviTunesUITests.swift in Sources */,
+				CC0000000000000000000012 /* SimulatorSignIn.swift in Sources */,
+				CC0000000000000000000013 /* ScreenshotCapture.swift in Sources */,
+				CC0000000000000000000015 /* QueueHistorySwipe.swift in Sources */,
+				CC0000000000000000000091 /* DiscoverAlbumSearch.swift in Sources */,
+				CC0000000000000000000016 /* HistoryPlaybackLyrics.swift in Sources */,
+				CC0000000000000000000014 /* NaviTunesTestSignIn.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		BB0000000000000000000062 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = BB0000000000000000000040 /* NaviTunesWidgets */;
+			targetProxy = BB0000000000000000000061 /* PBXContainerItemProxy */;
+		};
+		CC0000000000000000000062 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A00000000000000000000010 /* NaviTunesHost */;
+			targetProxy = CC0000000000000000000061 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		A00000000000000000000100 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A000000000000000000000CF /* Signing.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				DEVELOPMENT_TEAM = F7YZT72GUX;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		A00000000000000000000101 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A000000000000000000000CF /* Signing.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				DEVELOPMENT_TEAM = F7YZT72GUX;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		A00000000000000000000200 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A000000000000000000000CF /* Signing.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "NaviTunesIcon-pink NaviTunesIcon-orange NaviTunesIcon-yellow NaviTunesIcon-green NaviTunesIcon-teal NaviTunesIcon-blue NaviTunesIcon-indigo NaviTunesIcon-purple NaviTunesIcon-lightgray";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CODE_SIGN_ENTITLEMENTS = "$(NAVITUNES_HOST_ENTITLEMENTS)";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 5;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = F7YZT72GUX;
+				ENABLE_PREVIEWS = YES;
+				GCC_GENERATE_DEBUGGING_SYMBOLS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = NaviTunesHost/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = NaviTunes;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.music";
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(NAVITUNES_BUNDLE_ID)";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = YES;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,6";
+			};
+			name = Debug;
+		};
+		A00000000000000000000201 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A000000000000000000000CF /* Signing.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "NaviTunesIcon-pink NaviTunesIcon-orange NaviTunesIcon-yellow NaviTunesIcon-green NaviTunesIcon-teal NaviTunesIcon-blue NaviTunesIcon-indigo NaviTunesIcon-purple NaviTunesIcon-lightgray";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CODE_SIGN_ENTITLEMENTS = "$(NAVITUNES_HOST_ENTITLEMENTS)";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 5;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = F7YZT72GUX;
+				ENABLE_PREVIEWS = YES;
+				GCC_GENERATE_DEBUGGING_SYMBOLS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = NaviTunesHost/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = NaviTunes;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.music";
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(NAVITUNES_BUNDLE_ID)";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = YES;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,6";
+			};
+			name = Release;
+		};
+		BB0000000000000000000050 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A000000000000000000000CF /* Signing.xcconfig */;
+			buildSettings = {
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CODE_SIGN_ENTITLEMENTS = "$(NAVITUNES_WIDGET_ENTITLEMENTS)";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = NaviTunesWidgets/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(NAVITUNES_BUNDLE_ID).widgets";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		BB0000000000000000000051 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A000000000000000000000CF /* Signing.xcconfig */;
+			buildSettings = {
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CODE_SIGN_ENTITLEMENTS = "$(NAVITUNES_WIDGET_ENTITLEMENTS)";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = NaviTunesWidgets/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(NAVITUNES_BUNDLE_ID).widgets";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		CC0000000000000000000050 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A000000000000000000000CF /* Signing.xcconfig */;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ARCHS = arm64;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(NAVITUNES_BUNDLE_ID).uitests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = NaviTunesHost;
+			};
+			name = Debug;
+		};
+		CC0000000000000000000051 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = A000000000000000000000CF /* Signing.xcconfig */;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ARCHS = arm64;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(NAVITUNES_BUNDLE_ID).uitests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = NaviTunesHost;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A00000000000000000000015 /* Build configuration list for PBXNativeTarget "NaviTunesHost" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A00000000000000000000200 /* Debug */,
+				A00000000000000000000201 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A00000000000000000000016 /* Build configuration list for PBXProject "NaviTunesHost" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A00000000000000000000100 /* Debug */,
+				A00000000000000000000101 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BB0000000000000000000052 /* Build configuration list for PBXNativeTarget "NaviTunesWidgets" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BB0000000000000000000050 /* Debug */,
+				BB0000000000000000000051 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		CC0000000000000000000052 /* Build configuration list for PBXNativeTarget "NaviTunesUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CC0000000000000000000050 /* Debug */,
+				CC0000000000000000000051 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		A00000000000000000000013 /* XCLocalSwiftPackageReference ".." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ..;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A00000000000000000000014 /* NaviTunesKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A00000000000000000000013 /* XCLocalSwiftPackageReference ".." */;
+			productName = NaviTunesKit;
+		};
+		BB0000000000000000000071 /* NaviTunesKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A00000000000000000000013 /* XCLocalSwiftPackageReference ".." */;
+			productName = NaviTunesKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = A00000000000000000000001 /* Project object */;
+}

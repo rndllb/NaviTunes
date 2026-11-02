@@ -13,8 +13,8 @@ restructure:
     for f in MusicBrainzModels MusicBrainzClient MusicBrainzCacheStore MusicBrainzService \
              MusicBrainzQuery MusicBrainzDiscographyMapping MusicBrainzSearchFeed \
              AcquisitionCore LidarrAcquisitionPlugin AcquisitionTrackListCache \
-             BrowseAlbumPreviewTrack VellumNetworking; do
-      t=$(cd ../../.. && git ls-files "Sources/VellumMusicKit/**/$f.swift")
+             BrowseAlbumPreviewTrack NaviTunesNetworking; do
+      t=$(cd ../../.. && git ls-files "Sources/NaviTunesKit/**/$f.swift")
       ln -sfn "../../../../../$t" "Sources/t128/$f.swift"
     done
     python3 stub_lidarr_count.py 8787 &      # for the call-cost section

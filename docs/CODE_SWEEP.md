@@ -1,4 +1,4 @@
-# Vellum — recursive code sweep (T237)
+# NaviTunes — recursive code sweep (T237)
 
 **Audited:** branch `dev`, starting HEAD `2811ee7` ("Document the new source layout (#31)").
 Terminal 20 committed three times during the run, so the tree finished at `7b154a6`; the three commits
@@ -9,7 +9,7 @@ the entry says so (see **C08**, **L27**).
 stop condition: this sweep is a large verified sample, not a complete inventory.**
 
 **Scope:** the source tree *after* the five-commit restructure (`a16a812`, `7ebbbdf`, `9e15963`,
-`6bae915`, `534f7af`) — 162 Swift files, 74,275 lines, 21 folders under `Sources/VellumMusicKit/`.
+`6bae915`, `534f7af`) — 162 Swift files, 74,275 lines, 21 folders under `Sources/NaviTunesKit/`.
 
 This document exists to be **implemented from later**, not read as a transcript. Each entry carries a
 stable id, the round it was raised in, the file and line, a verbatim excerpt (a bare `file:line` goes
@@ -41,7 +41,7 @@ that makes ordinary work expensive. **medium** = real and worth doing. **low** =
 
 ## L01 — `AppModel` is a 7,004-line class with 141 `@Published` properties and zero extensions
 - **Round:** 1 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift`
 - **Line:** class at 108; MARK regions at 435, 477, 2057, 3849, 4953, 5008, 5114, 5469, 5980
 
 ```swift
@@ -82,14 +82,14 @@ inside one module. One MARK region per commit, build after each, pure moves. The
 **Re-verified (T238) —** independent second pass, agent 04, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `wc -l Sources/VellumMusicKit/App/AppModel.swift` → 7004; `grep -c '@Published' ...AppModel.swift` → 141; `grep -rln 'extension AppModel' Sources` returns nothing. MARK headers land exactly where cited: `3849:    // MARK: - Kill Mode`, `4953:    // MARK: - Playback helpers`, etc. `Rules/swiftui-body-cost.md` line 6 literally says "`AppModel` has ~100 `@Published` properties", confirming the stale-count claim.
+- **Evidence:** `wc -l Sources/NaviTunesKit/App/AppModel.swift` → 7004; `grep -c '@Published' ...AppModel.swift` → 141; `grep -rln 'extension AppModel' Sources` returns nothing. MARK headers land exactly where cited: `3849:    // MARK: - Kill Mode`, `4953:    // MARK: - Playback helpers`, etc. `Rules/swiftui-body-cost.md` line 6 literally says "`AppModel` has ~100 `@Published` properties", confirming the stale-count claim.
 - **Better approach:** The proposed ranges are wrong in a way that matters for a "one MARK region per commit" plan: the "Kill Mode" MARK (3849) does not hold Kill Mode logic all the way to 4953 as the fix's `Library/AppModel+KillMode.swift (3849–4953)` claims. Function-boundary grep shows real Kill Mode functions end around 4277, then 4300–4570 is unrelated playlist-cover/rename/delete/favorites-refresh/track-match-index code, then `refreshNewTabBrowse` (4600), `listeningTopGenres` (4666), `applyPersonalizedNewTabFeed` (4905) run to 4952 with no MARK of their own. So the fix's `Home/AppModel+DiscoveryShelves.swift (4666–4919)` both double-claims territory already assigned to the Kill Mode file and mis-bounds the actual discovery code (starts at 4600, ends at 4952, and 4666–4919 excludes `applyPersonalizedNewTabFeed`). Audit real `func` boundaries with `grep -n '^    func \|^    private func \|^    public func '` before assigning file destinations rather than trusting the MARK spans as coherent units — several MARK regions here contain multiple unrelated feature areas.
 - **Versus the first pass:** AGREE — the recorded verdict is CONFIRMED with the identical correction (Kill Mode ≈ 3849–4389, not 4953; 4600–4952 is unmarked New tab/Home discovery code), which I reproduced independently via the same grep before reading the prior pass.
 
 ---
 ## L02 — `AlbumDetail/` does not contain the album detail screen
 - **Round:** 1 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/ServerPlaylistViews.swift`
+- **File:** `Sources/NaviTunesKit/Library/ServerPlaylistViews.swift`
 - **Line:** 563 (`LibraryDetailSource`), 623 (`ServerPlaylistDetailView`), file is 3,617 lines
 
 ```swift
@@ -137,7 +137,7 @@ CLAUDE.md `AlbumDetail/` row to name both files.
 ---
 ## L03 — `NowPlayingView.swift` is 3,107 lines holding ten unrelated private types
 - **Round:** 1 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/NowPlaying/NowPlayingView.swift`
+- **File:** `Sources/NaviTunesKit/NowPlaying/NowPlayingView.swift`
 - **Line:** 2123, 2216, 2259, 2275, 2375, 2400, 2476, 2605, 3013, 3025, 3054
 
 ```swift
@@ -174,14 +174,14 @@ value struct computed once per body and passed down — that is what lets the su
 **Re-verified (T238) —** independent second pass, agent 15, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `wc -l` gives `3107 Sources/VellumMusicKit/NowPlaying/NowPlayingView.swift`. My grep of top-level declarations lands every cited type on its cited line: `2123:private struct ScrubberBlock: View`, `2216:private struct NowPlayingMatchedTrackBar: View`, `2259:private struct NowPlayingVolumeRow: View`, `2275:private struct NowPlayingQueueListTableChrome: UIViewRepresentable`, `2375:private struct AirPlayRoutePickerView: UIViewRepresentable`, `2400:private struct VolumeScrubberBlock: View`, `2476:private struct HiddenSystemVolumeBridge: UIViewRepresentable`, `2605:private struct LyricsFocusScrollView: View`, `3025:private struct QueuePagingScroll<History: View, NowPlaying: View>: View`, `3054:private struct SilenceBreathingDots: View`. There is also `2363:private extension UIView` (file-scoped helper) that the fix's list omits. No `#Preview`/`PreviewProvider` exists in the file, consistent with the "cannot be previewed" claim.
-- **Better approach:** The pure moves are correct and safe (pbxproj lists zero Kit sources: `grep -c "Sources/VellumMusicKit" project.pbxproj` = 0, so SPM's recursive glob picks up new files). Two corrections: (1) `private extension UIView` at 2363–2372 must travel with `NowPlayingQueueListTableChrome`; (2) the claim that the `fg*` accessors must become a `NowPlayingChrome` struct "that is what lets the sub-views leave the file" is overstated — the already-separate structs never read `fg*` (`ScrubberBlock` takes `let backdropPalette: ArtworkDynamicGradient.BackdropPalette`, `LyricsFocusScrollView` takes `let primaryColor: Color` / `let secondaryColor: Color`; the only `fg*` uses after line 2100 are 2107/2111 inside `NowPlayingView.queueRow`). Only extracting the *methods* `transportRow`/`transportButton` (1746–1870, 3 `fg*` uses) and the queue methods (600–900, 9 `fg*` uses) needs chrome passed down. So do it in two commits: first the zero-risk `private`→`internal` file moves of the ten structs, then, separately with E13, the transport/queue method extraction with a chrome value struct. `TransportPressButtonStyle` is already `internal` and used by `MiniPlayerView.swift:164/235/247`, so it can move without a visibility change.
+- **Evidence:** `wc -l` gives `3107 Sources/NaviTunesKit/NowPlaying/NowPlayingView.swift`. My grep of top-level declarations lands every cited type on its cited line: `2123:private struct ScrubberBlock: View`, `2216:private struct NowPlayingMatchedTrackBar: View`, `2259:private struct NowPlayingVolumeRow: View`, `2275:private struct NowPlayingQueueListTableChrome: UIViewRepresentable`, `2375:private struct AirPlayRoutePickerView: UIViewRepresentable`, `2400:private struct VolumeScrubberBlock: View`, `2476:private struct HiddenSystemVolumeBridge: UIViewRepresentable`, `2605:private struct LyricsFocusScrollView: View`, `3025:private struct QueuePagingScroll<History: View, NowPlaying: View>: View`, `3054:private struct SilenceBreathingDots: View`. There is also `2363:private extension UIView` (file-scoped helper) that the fix's list omits. No `#Preview`/`PreviewProvider` exists in the file, consistent with the "cannot be previewed" claim.
+- **Better approach:** The pure moves are correct and safe (pbxproj lists zero Kit sources: `grep -c "Sources/NaviTunesKit" project.pbxproj` = 0, so SPM's recursive glob picks up new files). Two corrections: (1) `private extension UIView` at 2363–2372 must travel with `NowPlayingQueueListTableChrome`; (2) the claim that the `fg*` accessors must become a `NowPlayingChrome` struct "that is what lets the sub-views leave the file" is overstated — the already-separate structs never read `fg*` (`ScrubberBlock` takes `let backdropPalette: ArtworkDynamicGradient.BackdropPalette`, `LyricsFocusScrollView` takes `let primaryColor: Color` / `let secondaryColor: Color`; the only `fg*` uses after line 2100 are 2107/2111 inside `NowPlayingView.queueRow`). Only extracting the *methods* `transportRow`/`transportButton` (1746–1870, 3 `fg*` uses) and the queue methods (600–900, 9 `fg*` uses) needs chrome passed down. So do it in two commits: first the zero-risk `private`→`internal` file moves of the ten structs, then, separately with E13, the transport/queue method extraction with a chrome value struct. `TransportPressButtonStyle` is already `internal` and used by `MiniPlayerView.swift:164/235/247`, so it can move without a visibility change.
 - **Versus the first pass:** AGREE — the prior pass confirmed the same eleven lines and independently flagged the `private extension UIView` move; it did not scrutinise the `fg*`→struct precondition, which I rate as unnecessary for the struct moves.
 
 ---
 ## L04 — `PlaybackEngine` is 3,555 lines with two MARKs and six separable concerns
 - **Round:** 1 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Playback/PlaybackEngine.swift`
+- **File:** `Sources/NaviTunesKit/Playback/PlaybackEngine.swift`
 - **Line:** class at 43; function map spans 311–3517
 
 ```swift
@@ -214,32 +214,32 @@ delivered-format probing (2625–2733) as a standalone `enum DeliveredFormatProb
 **Re-verified (T238) —** independent second pass, agent 15, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `wc -l` = `3555 Sources/VellumMusicKit/Playback/PlaybackEngine.swift`; `grep -n MARK` returns only `2620:    // MARK: - Delivered format badge` and `2792:    // MARK: - The mid-track EQ handoff, and why it is gone`. Spot-checks of the cited ranges land: `321:     private func installAudioSessionObserversIfNeeded() {`, `1382:     func startSleepTimer(minutes: Int) {`, `1693:     private func reportPlaybackFailure(_ error: Error?, track: Track?, context: String) {`, `2815:     private func attachPlayer(`, `3296:     private func scheduleLyricsLoad() {`, `3341:     private func resolvedArtworkURL(for track: Track) -> URL? {`, `3517:     private func configureRemoteCommandsIfNeeded() {`. Concerns are interleaved as claimed.
+- **Evidence:** `wc -l` = `3555 Sources/NaviTunesKit/Playback/PlaybackEngine.swift`; `grep -n MARK` returns only `2620:    // MARK: - Delivered format badge` and `2792:    // MARK: - The mid-track EQ handoff, and why it is gone`. Spot-checks of the cited ranges land: `321:     private func installAudioSessionObserversIfNeeded() {`, `1382:     func startSleepTimer(minutes: Int) {`, `1693:     private func reportPlaybackFailure(_ error: Error?, track: Track?, context: String) {`, `2815:     private func attachPlayer(`, `3296:     private func scheduleLyricsLoad() {`, `3341:     private func resolvedArtworkURL(for track: Track) -> URL? {`, `3517:     private func configureRemoteCommandsIfNeeded() {`. Concerns are interleaved as claimed.
 - **Better approach:** Extensions in other files are viable (no `override`/subclass), but two things the fix glosses over: (a) the class has 175 `private` members (`grep -c "^    private var\|^    private let\|^    private func\|^    private(set)"` = 175), and Swift `private` is file-scoped, so every cross-file extension forces the members it touches to `internal` — plus stored properties sit inside the proposed cut ranges (`1444: private var lastRemoteNextEnabled: Bool?`, `1445: private var lastRemoteSeekEnabled: Bool?`, `1453: private var seekResumeIntent = false`, `1710: private var lastFailureReportEpoch: UInt?`) and cannot live in an extension, so those ranges are not clean cuts. (b) The "easiest first cut" is not fully pure: `probeDeliveredFormat(asset:epoch:)` (2682) does `guard let self, self.isPlaybackEpochCurrent(epoch), self.nowPlayingFormatLabel == nil` and assigns `self.nowPlayingFormatLabel`. Better first cut: move only the stateless label functions (`formatLabel(remoteURL:track:)`, `private static func formatLabel(audioSubtype:kbps:)`, `formatLabel(codec:transcodeKbps:track:)`, `isOfflineDownloadFile`) into `enum DeliveredFormatProbe`, keep `probeDeliveredFormat` in the engine calling them; then take `+NowPlayingInfo` (3341–3507) and `+Lyrics` (3296–3340) next, since those regions hold no stored state.
 - **Versus the first pass:** AGREE — the prior pass confirmed the same numbers and caught the stored-property caveat on the same four lines; I add the 175-private-member widening cost and the impurity of the "easiest first cut".
 
 ---
 ## L05 — `Deprecated/` compiles into the shipping binary
 - **Round:** 1 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Package.swift` (target at 17–22) and `Sources/VellumMusicKit/Deprecated/`
+- **File:** `Package.swift` (target at 17–22) and `Sources/NaviTunesKit/Deprecated/`
 - **Line:** Package.swift 17–22
 
 ```swift
         .target(
-            name: "VellumMusicKit",
-            path: "Sources/VellumMusicKit",
+            name: "NaviTunesKit",
+            path: "Sources/NaviTunesKit",
             resources: [.process("Resources")],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
 ```
 
 ```
-     289 Sources/VellumMusicKit/Deprecated/TheAudioDBClient.swift
-     252 Sources/VellumMusicKit/Deprecated/ITunesNewReleasesClient.swift
-     242 Sources/VellumMusicKit/Deprecated/ITunesArtistClient.swift
-     224 Sources/VellumMusicKit/Deprecated/LastFmClient.swift
-     125 Sources/VellumMusicKit/Deprecated/ITunesSearchClient.swift
-      82 Sources/VellumMusicKit/Deprecated/ITunesTracklistClient.swift
+     289 Sources/NaviTunesKit/Deprecated/TheAudioDBClient.swift
+     252 Sources/NaviTunesKit/Deprecated/ITunesNewReleasesClient.swift
+     242 Sources/NaviTunesKit/Deprecated/ITunesArtistClient.swift
+     224 Sources/NaviTunesKit/Deprecated/LastFmClient.swift
+     125 Sources/NaviTunesKit/Deprecated/ITunesSearchClient.swift
+      82 Sources/NaviTunesKit/Deprecated/ITunesTracklistClient.swift
 ```
 
 **Problem.** SPM compiles every `.swift` under the target path, so a folder named `Deprecated/` is a
@@ -253,8 +253,8 @@ behaviour — line 272 "External (iTunes) browse shelves", line 281 "Set when iT
 ("there is no iTunes/TheAudioDB floor"). **Deletion is blocked by L06** — see that entry first.
 
 **Fix.** After **L06** removes the last inbound reference, either `git rm -r
-Sources/VellumMusicKit/Deprecated/` (history preserves it; CLAUDE.md already forbids reuse) or add
-`exclude: ["Deprecated"]` to the `VellumMusicKit` target, which removes it from compilation without
+Sources/NaviTunesKit/Deprecated/` (history preserves it; CLAUDE.md already forbids reuse) or add
+`exclude: ["Deprecated"]` to the `NaviTunesKit` target, which removes it from compilation without
 deleting it. Remove the three `lastfm_*` removals from `signOut()`. Rewrite the three stale comments:
 272 → "Server / plugin browse shelves for the New tab", 281 → "Set when the New tab feed build
 fails", 287–289 → "Canonical releases come from the active acquisition plugin; with none configured,
@@ -267,20 +267,20 @@ completeness is server-only".
 **Re-verified (T238) —** independent second pass, agent 15, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `Package.swift` target is exactly `.target(name: "VellumMusicKit", path: "Sources/VellumMusicKit", resources: [.process("Resources")], swiftSettings: [.swiftLanguageMode(.v5)])` with no `exclude:`; `wc -l` on `Deprecated/*.swift` totals `1214`. `grep -rn --include='*.swift' "lastfm_" Sources Tests VellumMusicHost` returns only `App/AppModel.swift:1418: UserDefaults.standard.removeObject(forKey: "lastfm_api_key")` and `1419: ["lastfm_secret", "lastfm_session"].forEach {` — nothing writes those keys. Stale comments confirmed verbatim: line 272 `/// External (iTunes) browse shelves for the New tab.`, line 281 `/// Set when iTunes browse fails so the New tab can show a concrete reason instead of an empty shelf.`, and 287–289 `backed by the iTunes Search API floor`. Extracting all 11 top-level types in `Deprecated/` and grepping each shows exactly one (`LastFmSimilarArtist`) has inbound references (three files), so `exclude:` today would break the build and the L06-first ordering is correct.
+- **Evidence:** `Package.swift` target is exactly `.target(name: "NaviTunesKit", path: "Sources/NaviTunesKit", resources: [.process("Resources")], swiftSettings: [.swiftLanguageMode(.v5)])` with no `exclude:`; `wc -l` on `Deprecated/*.swift` totals `1214`. `grep -rn --include='*.swift' "lastfm_" Sources Tests NaviTunesHost` returns only `App/AppModel.swift:1418: UserDefaults.standard.removeObject(forKey: "lastfm_api_key")` and `1419: ["lastfm_secret", "lastfm_session"].forEach {` — nothing writes those keys. Stale comments confirmed verbatim: line 272 `/// External (iTunes) browse shelves for the New tab.`, line 281 `/// Set when iTunes browse fails so the New tab can show a concrete reason instead of an empty shelf.`, and 287–289 `backed by the iTunes Search API floor`. Extracting all 11 top-level types in `Deprecated/` and grepping each shows exactly one (`LastFmSimilarArtist`) has inbound references (three files), so `exclude:` today would break the build and the L06-first ordering is correct.
 - **Better approach:** n/a — `git rm -r` after L06 (or `exclude: ["Deprecated"]`) plus the two `signOut()` line removals and the three comment rewrites are exactly right. One wording note: "linked into the app" is an inference about the linker; "type-checked on every build and offered in autocomplete" is what the tree proves.
 - **Versus the first pass:** AGREE — same facts, same single inbound symbol, same softening of "linked into the app".
 
 ---
 ## L06 — A dead Similar Artists pipeline spans `Artist/`, `Scrobbling/` and `Deprecated/`
 - **Round:** 1 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Artist/ArtistViewModel.swift:218`,
+- **File:** `Sources/NaviTunesKit/Artist/ArtistViewModel.swift:218`,
   `Artist/ArtistPageView.swift:1699–1767`, `Scrobbling/ListenBrainzClient.swift`
 - **Line:** as above
 
 ```swift
-Sources/VellumMusicKit/Artist/ArtistViewModel.swift:218:    @Published private(set) var similarArtists: [LastFmSimilarArtist] = []
-Sources/VellumMusicKit/Deprecated/LastFmClient.swift:16:struct LastFmSimilarArtist: Identifiable, Hashable {
+Sources/NaviTunesKit/Artist/ArtistViewModel.swift:218:    @Published private(set) var similarArtists: [LastFmSimilarArtist] = []
+Sources/NaviTunesKit/Deprecated/LastFmClient.swift:16:struct LastFmSimilarArtist: Identifiable, Hashable {
 ```
 
 ```swift
@@ -327,7 +327,7 @@ hidden" line and the `ArtistPageView` header comment.
 ---
 ## L07 — The cover-zoom machinery is filed under `NowPlaying/` but serves Home/Artist/Album/Library, and hides Settings and search-bar code
 - **Round:** 1 · **Severity:** medium · **Verdict:** **DENIED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/NowPlaying/CoverZoomTransition.swift:284–300`,
+- **File:** `Sources/NaviTunesKit/NowPlaying/CoverZoomTransition.swift:284–300`,
   `NowPlaying/CoverZoomCustomTransition.swift:1771–1812, 3089–3175`
 - **Line:** as above
 
@@ -352,7 +352,7 @@ pull-to-reveal `.searchable` placement workaround inside `CoverZoomDismissalObse
 (lines 225–400). Someone fixing a Settings push bug or the iOS 26 search-bar placement will not look
 in `NowPlaying/CoverZoom*.swift`.
 
-**Fix.** Create `Sources/VellumMusicKit/Navigation/` and `git mv` both `CoverZoom*.swift` files into it
+**Fix.** Create `Sources/NaviTunesKit/Navigation/` and `git mv` both `CoverZoom*.swift` files into it
 (pure moves; SPM has no per-folder target). Then extract: (1) `enum SettingsPushAnimationFix` and the
 `tracksSettingsPushAnimation()` `View` extension → `Settings/SettingsPushAnimationFix.swift` (the
 `UINavigationController` swizzle at 1832–1866 stays in Navigation and references the enum);
@@ -373,7 +373,7 @@ not re-derive it.
 **Re-verified (T238) —** independent second pass, agent 01, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** PARTLY REAL · **Fix:** ADEQUATE
-- **Evidence:** The two "hidden code" halves are exactly as described: `grep -rn "SettingsPushAnimationFix" Sources` gives `Sources/VellumMusicKit/NowPlaying/CoverZoomCustomTransition.swift:1771:enum SettingsPushAnimationFix {` with its only consumers in `Settings/SettingsView.swift:27`, `Settings/SettingsSections.swift:36`, `DesignSystem/MusicDesignSystem.swift:777`; and `CoverZoomTransition.swift:294` holds `private func forceStackedSearchBarPlacement()` inside `final class Helper: UIViewController` (declared at line 221 inside `private struct CoverZoomDismissalObserver`), with the pull-to-reveal members running to ~line 400. But the entry's load-bearing premise for the *move* — "none of them the player" — is false in this tree: `NowPlaying/NowPlayingCoverAnimator.swift:221` calls `CoverZoomFlight.shared.beginFlight(...)`, `:274` `let registry = CoverZoomRegistry.shared`, `:114` `timingParameters: CoverZoomTuning.easeOutQuint`, and `MiniPlayerView.swift:126` / `NowPlayingView.swift:1446` use `.coverZoomCellAnchor` / `.coverZoomHeroAnchor` — all declared in `CoverZoomCustomTransition.swift`. So the files are shared infrastructure the player genuinely depends on.
+- **Evidence:** The two "hidden code" halves are exactly as described: `grep -rn "SettingsPushAnimationFix" Sources` gives `Sources/NaviTunesKit/NowPlaying/CoverZoomCustomTransition.swift:1771:enum SettingsPushAnimationFix {` with its only consumers in `Settings/SettingsView.swift:27`, `Settings/SettingsSections.swift:36`, `DesignSystem/MusicDesignSystem.swift:777`; and `CoverZoomTransition.swift:294` holds `private func forceStackedSearchBarPlacement()` inside `final class Helper: UIViewController` (declared at line 221 inside `private struct CoverZoomDismissalObserver`), with the pull-to-reveal members running to ~line 400. But the entry's load-bearing premise for the *move* — "none of them the player" — is false in this tree: `NowPlaying/NowPlayingCoverAnimator.swift:221` calls `CoverZoomFlight.shared.beginFlight(...)`, `:274` `let registry = CoverZoomRegistry.shared`, `:114` `timingParameters: CoverZoomTuning.easeOutQuint`, and `MiniPlayerView.swift:126` / `NowPlayingView.swift:1446` use `.coverZoomCellAnchor` / `.coverZoomHeroAnchor` — all declared in `CoverZoomCustomTransition.swift`. So the files are shared infrastructure the player genuinely depends on.
 - **Better approach:** Drop the `git mv` of `CoverZoom*.swift` to `Navigation/` (it would separate `NowPlayingCoverAnimator` from the `CoverZoomFlight`/`CoverZoomRegistry`/`CoverZoomTuning` it reads, buying nothing since there are no per-folder modules). Keep only the two extractions, both inside the existing folders: (1) move `enum SettingsPushAnimationFix` + the `tracksSettingsPushAnimation()` `View` extension verbatim to `Settings/SettingsPushAnimationFix.swift`, leaving the `UINavigationController` swizzle where it is; (2) move the pull-to-reveal search members out as `extension CoverZoomDismissalObserver.Helper` in a new file rather than re-homing them into a new `final class` — `Helper` is `private` to `CoverZoomTransition.swift` today, so this needs the enclosing `CoverZoomDismissalObserver` widened from `private` to `internal`/`fileprivate`-free, but it is still a pure move with no lifecycle, `parent?.navigationItem`, or KVO-ownership change. Introducing a separate controller class that the `Helper` forwards `viewWillAppear`/`viewDidAppear` to changes when `parent` is non-nil and who retains the `NSKeyValueObservation`, which is precisely the delicate part of this code.
 - **Denial:** HOLDS — the premise that justified relocating ~3,950 lines is factually wrong, and the half that is real was preserved as L20 (`Verdict: CONFIRMED`), so nothing was lost.
 - **Versus the first pass:** AGREE — I reached the same refutation independently from `NowPlayingCoverAnimator.swift` before reading the doc, and re-scoping into L20 is the right disposition.
@@ -381,7 +381,7 @@ not re-derive it.
 ---
 ## L08 — `HomePresenceHelper` is Wi-Fi/location code living in `Home/`
 - **Round:** 1 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Home/HomePresenceHelper.swift`
+- **File:** `Sources/NaviTunesKit/Home/HomePresenceHelper.swift`
 - **Line:** 21–30
 
 ```swift
@@ -401,8 +401,8 @@ CoreLocation/NetworkExtension/CaptiveNetwork and its only callers are `Offline/A
 `CLLocationManagerDelegate` singleton, and anyone working on auto-offline will not find the SSID
 reader next to `AutoOfflineHelper`, the one file that depends on it.
 
-**Fix.** `git mv Sources/VellumMusicKit/Home/HomePresenceHelper.swift
-Sources/VellumMusicKit/Offline/HomeNetworkPresenceHelper.swift`, renaming the type to
+**Fix.** `git mv Sources/NaviTunesKit/Home/HomePresenceHelper.swift
+Sources/NaviTunesKit/Offline/HomeNetworkPresenceHelper.swift`, renaming the type to
 `HomeNetworkPresenceHelper` in the same commit so the name stops colliding with the Home tab. The
 move alone fixes discoverability; the rename removes the ambiguity.
 
@@ -413,14 +413,14 @@ move alone fixes discoverability; the rename removes the ambiguity.
 **Re-verified (T238) —** independent second pass, agent 15, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** The file opens with `import CoreLocation`, `import NetworkExtension`, `import SystemConfiguration.CaptiveNetwork` under `#if os(iOS)`, declares `27:enum HomePresenceHelper {` and `82:private final class HomeLocationAuthorizer: NSObject, CLLocationManagerDelegate {`. Caller grep across Sources/Tests/host (excluding the file) gives `8 Sources/VellumMusicKit/App/AppModel.swift`, `1 Sources/VellumMusicKit/Offline/AutoOfflineHelper.swift`, `4 Sources/VellumMusicKit/Settings/AccountView.swift` — nothing in `Home/`. `AutoOfflineHelper.swift:6: if case .ssid(let ssid) = await HomePresenceHelper.fetchCurrentHomeSSID() {` confirms the auto-offline dependency.
+- **Evidence:** The file opens with `import CoreLocation`, `import NetworkExtension`, `import SystemConfiguration.CaptiveNetwork` under `#if os(iOS)`, declares `27:enum HomePresenceHelper {` and `82:private final class HomeLocationAuthorizer: NSObject, CLLocationManagerDelegate {`. Caller grep across Sources/Tests/host (excluding the file) gives `8 Sources/NaviTunesKit/App/AppModel.swift`, `1 Sources/NaviTunesKit/Offline/AutoOfflineHelper.swift`, `4 Sources/NaviTunesKit/Settings/AccountView.swift` — nothing in `Home/`. `AutoOfflineHelper.swift:6: if case .ssid(let ssid) = await HomePresenceHelper.fetchCurrentHomeSSID() {` confirms the auto-offline dependency.
 - **Better approach:** n/a — `git mv` into `Offline/` is safe (pbxproj lists no Kit sources, SPM globs recursively), and the rename to `HomeNetworkPresenceHelper` touches 13 call sites in three files plus the definition, all mechanical. `HomeWifiSSIDReadResult` and `Settings/HomeWifiSSIDField.swift` carry the same "Home" prefix but are unambiguous ("Wifi") and can stay.
 - **Versus the first pass:** AGREE — same three files, same absence of any `Home/` caller, same safety argument for the move.
 
 ---
 ## L09 — `Settings/` is a dependency of `Backends/` and `Playback/`, and holds the pre-sign-in screen
 - **Round:** 1 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Settings/AppSettingsModels.swift`, `Settings/LoginView.swift`
+- **File:** `Sources/NaviTunesKit/Settings/AppSettingsModels.swift`, `Settings/LoginView.swift`
 - **Line:** n/a (whole-file)
 
 ```
@@ -459,18 +459,18 @@ Update the CLAUDE.md layout table.
 ---
 ## L10 — The widget extension links the entire 74k-line Kit to read one App-Group store
 - **Round:** 1 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `VellumMusicHost/VellumMusicHost.xcodeproj/project.pbxproj`
+- **File:** `NaviTunesHost/NaviTunesHost.xcodeproj/project.pbxproj`
 - **Line:** 254–256
 
 ```
-			name = VellumWidgets;
+			name = NaviTunesWidgets;
 			packageProductDependencies = (
-				BB0000000000000000000071 /* VellumMusicKit */,
+				BB0000000000000000000071 /* NaviTunesKit */,
 			);
-			productName = VellumWidgets;
+			productName = NaviTunesWidgets;
 ```
 
-**Problem.** `Sources/VellumMusicKit/Widgets/` is already a clean, Foundation-only, `public` API
+**Problem.** `Sources/NaviTunesKit/Widgets/` is already a clean, Foundation-only, `public` API
 (`WidgetDataStore`, `PlayWidgetItemIntent`, 199 lines) referencing no `Track`, `AppModel` or SwiftUI
 type — the extension uses exactly 15 `WidgetDataStore` and 5 `PlayWidgetItemIntent` symbols. Yet the
 appex depends on the whole Kit product, so the widget binary carries `PlaybackEngine`, the EQ, both
@@ -480,22 +480,22 @@ compile error breaks widget builds. The 534f7af message says `Widgets/` "holds o
 half of the widget contract" — it is actually the *shared* half, and the split it implies was never
 done.
 
-**Fix.** In `Package.swift` add a second library target `VellumWidgetShared` with
-`path: "Sources/VellumWidgetShared"`; `git mv Sources/VellumMusicKit/Widgets/*.swift` there; add it to
-`VellumMusicKit`'s `dependencies`; add `import VellumWidgetShared` to the Kit files calling
+**Fix.** In `Package.swift` add a second library target `NaviTunesWidgetShared` with
+`path: "Sources/NaviTunesWidgetShared"`; `git mv Sources/NaviTunesKit/Widgets/*.swift` there; add it to
+`NaviTunesKit`'s `dependencies`; add `import NaviTunesWidgetShared` to the Kit files calling
 `WidgetDataStore`/`PlayWidgetItemIntent` (chiefly `App/AppModel.swift`). In the pbxproj point
-`BB0000000000000000000071` at `VellumWidgetShared` and change the `import VellumMusicKit` lines in
-`VellumMusicHost/VellumWidgets/*.swift`. Verify with the standard xcodebuild command.
+`BB0000000000000000000071` at `NaviTunesWidgetShared` and change the `import NaviTunesKit` lines in
+`NaviTunesHost/NaviTunesWidgets/*.swift`. Verify with the standard xcodebuild command.
 
 
-**Verified —** **Measured, not predicted.** The built appex at `DerivedData/.../VellumWidgets.appex` is **56 MB**, with a 58 MB debug dylib; `nm` counts 2,846 `PlaybackEngine`, 2,052 `NavidromeClient`, 505 `JellyfinMusicClient`, 302 `RadioBrowserClient`, 11,206 `AppModel` symbols, plus a copied 124 KB Kit resource bundle inside the widget. (Debug artifacts — Release with `SWIFT_COMPILATION_MODE = wholemodule` would strip more; no build was run.) **Two corrections:** the extension also uses `TogglePlaybackIntent` (3 uses), so "exactly 15 and 5" is incomplete — the fix still works since it also lives in `Widgets/`. Cited pbxproj range is 253–257, not 254–256. The fix is safe: `BB…071` is a separate `XCSwiftPackageProductDependency` from the app's `A…014`, so repointing it does not touch the host app.
+**Verified —** **Measured, not predicted.** The built appex at `DerivedData/.../NaviTunesWidgets.appex` is **56 MB**, with a 58 MB debug dylib; `nm` counts 2,846 `PlaybackEngine`, 2,052 `NavidromeClient`, 505 `JellyfinMusicClient`, 302 `RadioBrowserClient`, 11,206 `AppModel` symbols, plus a copied 124 KB Kit resource bundle inside the widget. (Debug artifacts — Release with `SWIFT_COMPILATION_MODE = wholemodule` would strip more; no build was run.) **Two corrections:** the extension also uses `TogglePlaybackIntent` (3 uses), so "exactly 15 and 5" is incomplete — the fix still works since it also lives in `Widgets/`. Cited pbxproj range is 253–257, not 254–256. The fix is safe: `BB…071` is a separate `XCSwiftPackageProductDependency` from the app's `A…014`, so repointing it does not touch the host app.
 
 
 **Re-verified (T238) —** independent second pass, agent 15, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** pbxproj lines 253–257 (not 254–256): `name = VellumWidgets;` / `packageProductDependencies = (` / `BB0000000000000000000071 /* VellumMusicKit */,` / `);` with `productType = "com.apple.product-type.app-extension";`, and `BB…071` resolves to `XCSwiftPackageProductDependency ... productName = VellumMusicKit;` — the appex depends on the whole Kit product. `Widgets/` is 199 lines (`62 PlayWidgetItemIntent.swift`, `137 WidgetDataStore.swift`), all `public` API, and the extension files import `WidgetKit`, `SwiftUI`, `VellumMusicKit` and use `WidgetDataStore` (15), `PlayWidgetItemIntent` (5) **and** `TogglePlaybackIntent` (3), which the finding omits. Kit is `find ... | xargs cat | wc -l` = 74299 lines. Two inaccuracies: `PlayWidgetItemIntent.swift:1: import AppIntents` so the folder is not "Foundation-only"; and "widget binary carries PlaybackEngine ..." is an inference about linking/dead-stripping that I did not build to measure (the "any Kit compile error breaks widget builds" consequence holds regardless).
-- **Better approach:** The split is right but the recipe is incomplete and would not build as written: (1) the pbxproj `productName` names a *product*, so `Package.swift` also needs `.library(name: "VellumWidgetShared", targets: ["VellumWidgetShared"])` in `products:`, not just a new target (and `swiftSettings: [.swiftLanguageMode(.v5)]` to match); (2) the cross-process constants in `PlayWidgetItemIntent.swift` are `internal` (`let widgetCommandNotification = "com.randll.vellum.widgetCommand" as CFString`, `let widgetCommandKey`, `widgetCommandPlay`, `widgetCommandToggle`, `widgetCommandPlayIdKey`, `widgetCommandPlayKindKey`) and `AppModel.swift` reads all six of them, so once they cross a module boundary they must become `public` (likewise `WidgetDataStore.defaultsKey`/`artworkCacheDir` if anything outside the file touches them — currently only file-internal); (3) prefer adding a new `XCSwiftPackageProductDependency` entry for the appex rather than repointing `BB…071`, so the diff is additive and the host app's `A…014` is untouched. Then the standard xcodebuild verification.
+- **Evidence:** pbxproj lines 253–257 (not 254–256): `name = NaviTunesWidgets;` / `packageProductDependencies = (` / `BB0000000000000000000071 /* NaviTunesKit */,` / `);` with `productType = "com.apple.product-type.app-extension";`, and `BB…071` resolves to `XCSwiftPackageProductDependency ... productName = NaviTunesKit;` — the appex depends on the whole Kit product. `Widgets/` is 199 lines (`62 PlayWidgetItemIntent.swift`, `137 WidgetDataStore.swift`), all `public` API, and the extension files import `WidgetKit`, `SwiftUI`, `NaviTunesKit` and use `WidgetDataStore` (15), `PlayWidgetItemIntent` (5) **and** `TogglePlaybackIntent` (3), which the finding omits. Kit is `find ... | xargs cat | wc -l` = 74299 lines. Two inaccuracies: `PlayWidgetItemIntent.swift:1: import AppIntents` so the folder is not "Foundation-only"; and "widget binary carries PlaybackEngine ..." is an inference about linking/dead-stripping that I did not build to measure (the "any Kit compile error breaks widget builds" consequence holds regardless).
+- **Better approach:** The split is right but the recipe is incomplete and would not build as written: (1) the pbxproj `productName` names a *product*, so `Package.swift` also needs `.library(name: "NaviTunesWidgetShared", targets: ["NaviTunesWidgetShared"])` in `products:`, not just a new target (and `swiftSettings: [.swiftLanguageMode(.v5)]` to match); (2) the cross-process constants in `PlayWidgetItemIntent.swift` are `internal` (`let widgetCommandNotification = "com.randll.vellum.widgetCommand" as CFString`, `let widgetCommandKey`, `widgetCommandPlay`, `widgetCommandToggle`, `widgetCommandPlayIdKey`, `widgetCommandPlayKindKey`) and `AppModel.swift` reads all six of them, so once they cross a module boundary they must become `public` (likewise `WidgetDataStore.defaultsKey`/`artworkCacheDir` if anything outside the file touches them — currently only file-internal); (3) prefer adding a new `XCSwiftPackageProductDependency` entry for the appex rather than repointing `BB…071`, so the diff is additive and the host app's `A…014` is untouched. Then the standard xcodebuild verification.
 - **Versus the first pass:** AGREE on the problem (REINFORCED with a measured 56 MB appex I could not reproduce read-only, plus the same `TogglePlaybackIntent` and 253–257 corrections); DISAGREE on the fix being "safe" as written — the prior pass did not notice the missing `.library` product or the six `internal` constants that `AppModel` consumes, either of which stops the build.
 
 ---
@@ -510,7 +510,7 @@ done.
 ?? addtoplaylistinterface.MP4
 ?? apple-player.png
 ?? asdf.png
-?? docs/reference-apple-music-vs-vellum-dismiss.MP4
+?? docs/reference-apple-music-vs-navitunes-dismiss.MP4
 ?? docs/superpowers/plans/
 ?? docs/verification/
 ?? lyra-player.png
@@ -520,15 +520,15 @@ done.
 ```
 114M	addtoplaylistinterface.MP4
  20M	watchthis.MP4
- 25M	docs/reference-apple-music-vs-vellum-dismiss.MP4
+ 25M	docs/reference-apple-music-vs-navitunes-dismiss.MP4
 159M	docs/verification
 ```
 
 **Problem.** Nothing in `.gitignore` covers `*.MP4`, root `*.png`, `*.bak-*`, or the pre-rename `Lyra*`
-skeletons the Lyra → Vellum rename left behind; `git check-ignore` reports all of them NOT IGNORED.
+skeletons the Lyra → NaviTunes rename left behind; `git check-ignore` reports all of them NOT IGNORED.
 One `git add -A` commits ~320 MB of video and a dead Xcode project into a repo whose CI bills macOS
 minutes at 10× and clones the whole tree. `Sources/LyraMusicKit/` is the sharpest case: it sits
-*beside* `Sources/VellumMusicKit/` and contains exactly one file,
+*beside* `Sources/NaviTunesKit/` and contains exactly one file,
 `NowPlayingView.swift.bak-lyrics` (112 KB, dated Jul 5) — a hand-edit backup parked inside the source
 tree, under a stale package name, where a tool globbing `Sources/**/*.swift` sees two kits.
 `LyraMusicHost/` is an empty Xcode project shell; `LyraMusic.xcworkspace` contains only gitignored
@@ -539,7 +539,7 @@ Separately, the root `.env` is gitignored but holds an unrelated project's `DATA
 **Fix — proposal only; deliberately not executed.** Delete `LyraMusicHost/`,
 `LyraMusic.xcworkspace/` and `Sources/LyraMusicKit/` (the `.bak-lyrics` content is recoverable from
 history at Jul 5). Move the five root media files and
-`docs/reference-apple-music-vs-vellum-dismiss.MP4` into an ignored `media/`, and `docs/verification/`
+`docs/reference-apple-music-vs-navitunes-dismiss.MP4` into an ignored `media/`, and `docs/verification/`
 (159 MB, includes a nested `harness-t128/.build`) into an ignored `scratch/`. Add to `.gitignore`:
 `*.MP4`, `*.mp4`, `*.mov`, `/*.png`, `*.bak*`, `/media/`, `/scratch/`. Move `.env` out of the repo
 root. **Do the `.gitignore` entries first** — they are the part that prevents an accidental
@@ -566,7 +566,7 @@ root. **Do the `.gitignore` entries first** — they are the part that prevents 
 | `docs/verification/` **on disk** (2,831 files) | — | ~159 | — |
 
 Per-file, largest first: `addtoplaylistinterface.MP4` 119,230,674 ·
-`docs/reference-apple-music-vs-vellum-dismiss.MP4` 26,234,473 · `watchthis.MP4` 20,878,363 ·
+`docs/reference-apple-music-vs-navitunes-dismiss.MP4` 26,234,473 · `watchthis.MP4` 20,878,363 ·
 `asdf.png` 2,772,474 · `apple-player.png` 1,257,759 · `lyra-player.png` 757,878.
 
 **How the four figures arose.** ~144 MB and ~138 MB are the *same* five root files in decimal MB and
@@ -586,32 +586,32 @@ remain correct and are the safe half to do first.
 **Re-verified (T238) —** independent second pass, agent 01, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `git check-ignore -v addtoplaylistinterface.MP4 apple-player.png Sources/LyraMusicKit LyraMusicHost` exits 1 with no output — none are ignored; `.gitignore` has no `*.MP4`, no root `*.png`, no `*.bak*`, no `Lyra*` entry. `find Sources/LyraMusicKit -type f` returns exactly `Sources/LyraMusicKit/NowPlayingView.swift.bak-lyrics`, sitting beside `Sources/VellumMusicKit/`. My own measurement of the stageable set — `git status --porcelain -uall | grep '^??'` summed with `stat -f%z` — is **44 files, 172,485,499 bytes = 164.5 MiB**, not ~320 MB; the entry's figure double-counts `docs/verification`, of which `git check-ignore -v docs/verification/harness-t128/.build` returns `.gitignore:17:.build/`. I also verified the fix's recoverability claim: `git hash-object Sources/LyraMusicKit/NowPlayingView.swift.bak-lyrics` → `e23c8d07…`, and `git cat-file -e` on it succeeds, so that blob really is already in the object database.
+- **Evidence:** `git check-ignore -v addtoplaylistinterface.MP4 apple-player.png Sources/LyraMusicKit LyraMusicHost` exits 1 with no output — none are ignored; `.gitignore` has no `*.MP4`, no root `*.png`, no `*.bak*`, no `Lyra*` entry. `find Sources/LyraMusicKit -type f` returns exactly `Sources/LyraMusicKit/NowPlayingView.swift.bak-lyrics`, sitting beside `Sources/NaviTunesKit/`. My own measurement of the stageable set — `git status --porcelain -uall | grep '^??'` summed with `stat -f%z` — is **44 files, 172,485,499 bytes = 164.5 MiB**, not ~320 MB; the entry's figure double-counts `docs/verification`, of which `git check-ignore -v docs/verification/harness-t128/.build` returns `.gitignore:17:.build/`. I also verified the fix's recoverability claim: `git hash-object Sources/LyraMusicKit/NowPlayingView.swift.bak-lyrics` → `e23c8d07…`, and `git cat-file -e` on it succeeds, so that blob really is already in the object database.
 - **Better approach:** Do the `.gitignore` additions exactly as proposed (`*.MP4`, `*.mp4`, `*.mov`, `/*.png`, `*.bak*`, `/media/`) — that is the whole of the protective value and it is safe with files in place. Do **not** sweep `docs/verification/` into an ignored `scratch/`: only 33 files / ~0.1 MiB of it is stageable, the 159 MB is already ignored `.build/` output, and the surviving logs and `harness-t12x/` dirs are the repo's documented substitute for a unit-test target (the T130 plan cites `harness-t128`/`harness-t125` as the pattern to follow). Instead delete the nested `.build` dirs and leave `docs/verification/` tracked-eligible. Deleting `LyraMusicHost/`, `LyraMusic.xcworkspace/` and `Sources/LyraMusicKit/` is correct as written.
 - **Denial:** DOES NOT HOLD — every correction the verifier made is to arithmetic in the *description*; the defect (nothing ignored, 44 files / 164.5 MiB one `git add -A` away, two stale pre-rename skeletons in the tree) is real, unremediated today, and its recommended first step is conceded correct in the denial's own last sentence.
 - **Versus the first pass:** DISAGREE — I independently reproduced all three of the verifier's numeric corrections and accept them, but "the size estimate is 2× too big" is grounds for amending the entry, not for a DENIED verdict that leaves a live, unfixed hygiene exposure looking settled.
 
 ---
-## L12 — The `VellumMusic` executable target duplicates the host app entry and is built by nothing
+## L12 — The `NaviTunes` executable target duplicates the host app entry and is built by nothing
 - **Round:** 1 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
 - **File:** `Package.swift`
 - **Line:** 14, 24–29
 
 ```swift
-        .executable(name: "VellumMusic", targets: ["VellumMusic"]),
+        .executable(name: "NaviTunes", targets: ["NaviTunes"]),
 ...
         .executableTarget(
-            name: "VellumMusic",
-            dependencies: ["VellumMusicKit"],
-            path: "Sources/VellumMusic",
+            name: "NaviTunes",
+            dependencies: ["NaviTunesKit"],
+            path: "Sources/NaviTunes",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
 ```
 
-**Problem.** `Sources/VellumMusic/VellumMusicApp.swift` is a 13-line `@main` mirroring
-`VellumMusicHost/VellumMusicHost/VellumMusicHostApp.swift` minus scene-phase, deep-link and icon-sync
-handling. No scheme, CI job or doc builds it — `VellumMusicHost.xcscheme` builds `VellumMusicHost.app`
-and `VellumMusicUITests.xctest`; CI builds `-scheme VellumMusicKitTests`. `Package.swift`'s
+**Problem.** `Sources/NaviTunes/NaviTunesApp.swift` is a 13-line `@main` mirroring
+`NaviTunesHost/NaviTunesHost/NaviTunesHostApp.swift` minus scene-phase, deep-link and icon-sync
+handling. No scheme, CI job or doc builds it — `NaviTunesHost.xcscheme` builds `NaviTunesHost.app`
+and `NaviTunesUITests.xctest`; CI builds `-scheme NaviTunesKitTests`. `Package.swift`'s
 `.macOS(.v15)` comment says the platform line exists so `swift build` works on macOS, but
 CONTRIBUTING.md states the package is iOS-only and `swift test` cannot run. It is a second, wrong app
 entry point a newcomer can pick.
@@ -619,19 +619,19 @@ entry point a newcomer can pick.
 say it does, but no build was run for this sweep.
 
 **Fix.** Remove the `.executable` product and `.executableTarget` from `Package.swift` and
-`git rm -r Sources/VellumMusic`. Drop the `.macOS(.v15)` platform line and its comment unless a macOS
+`git rm -r Sources/NaviTunes`. Drop the `.macOS(.v15)` platform line and its comment unless a macOS
 smoke build is actually planned — that would need the Kit to compile for macOS first, which the
 executable target does nothing toward today.
 
 
-**Verified —** `Package.swift:14` exact; the `.executableTarget` block is lines **23–28**, cited as 24–29 (off by one, content verbatim). `VellumMusicApp.swift` is **14** lines, not 13, and is a strict subset of the host's 39-line entry — "minus scene-phase, deep-link and icon-sync handling" is exactly right. "Built by nothing" could not be refuted: only two shared schemes exist, neither references it, and CI builds `-scheme VellumMusicKitTests` with no `swift build` anywhere. Removal is safe — nothing in the pbxproj or CI names `VellumMusic` as a target.
+**Verified —** `Package.swift:14` exact; the `.executableTarget` block is lines **23–28**, cited as 24–29 (off by one, content verbatim). `NaviTunesApp.swift` is **14** lines, not 13, and is a strict subset of the host's 39-line entry — "minus scene-phase, deep-link and icon-sync handling" is exactly right. "Built by nothing" could not be refuted: only two shared schemes exist, neither references it, and CI builds `-scheme NaviTunesKitTests` with no `swift build` anywhere. Removal is safe — nothing in the pbxproj or CI names `NaviTunes` as a target.
 
 
 **Re-verified (T238) —** independent second pass, agent 16, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `Package.swift:14` reads `.executable(name: "VellumMusic", targets: ["VellumMusic"]),` and the `.executableTarget(name: "VellumMusic", ... path: "Sources/VellumMusic"` block is at lines 23–28 (finding cites 24–29, off by one). `Sources/VellumMusic/VellumMusicApp.swift` is a 14-line `@main` that is a strict subset of the 39-line `VellumMusicHost/VellumMusicHost/VellumMusicHostApp.swift` (no `scenePhase`, no `onOpenURL`, no `syncHomeScreenIconIfNeeded`). `grep -n "BuildableName" VellumMusicHost.xcscheme` lists only `VellumMusicHost.app` and `VellumMusicUITests.xctest`; `grep -n '"VellumMusic"' project.pbxproj` returns nothing; `.github/workflows/ci.yml:64` is `-scheme VellumMusicKitTests`; README/CONTRIBUTING/CLAUDE.md contain no `swift run` or `Sources/VellumMusic` mention. I also resolved the finding's *Unverified* item: `swift build --product VellumMusic` (scratch-path in my scratchpad) fails on macOS with `MusicDesignSystem.swift:998:14: error: 'listRowSpacing' is unavailable in macOS` and `MusicDesignSystem.swift:777:13: error: cannot find 'SettingsPushAnimationFix' in scope`, so the `.macOS(.v15)` comment ("Host `swift build` compiles for macOS") is false today.
-- **Better approach:** n/a — removing the product, target and `Sources/VellumMusic`, and dropping `.macOS(.v15)` + its comment, is exactly right. The pbxproj has no `SUPPORTED_PLATFORMS` / `SUPPORTS_MACCATALYST` keys (iOS-only default), so nothing consumes a macOS deployment target; the only thing that would is `swift build`, which already fails.
+- **Evidence:** `Package.swift:14` reads `.executable(name: "NaviTunes", targets: ["NaviTunes"]),` and the `.executableTarget(name: "NaviTunes", ... path: "Sources/NaviTunes"` block is at lines 23–28 (finding cites 24–29, off by one). `Sources/NaviTunes/NaviTunesApp.swift` is a 14-line `@main` that is a strict subset of the 39-line `NaviTunesHost/NaviTunesHost/NaviTunesHostApp.swift` (no `scenePhase`, no `onOpenURL`, no `syncHomeScreenIconIfNeeded`). `grep -n "BuildableName" NaviTunesHost.xcscheme` lists only `NaviTunesHost.app` and `NaviTunesUITests.xctest`; `grep -n '"NaviTunes"' project.pbxproj` returns nothing; `.github/workflows/ci.yml:64` is `-scheme NaviTunesKitTests`; README/CONTRIBUTING/CLAUDE.md contain no `swift run` or `Sources/NaviTunes` mention. I also resolved the finding's *Unverified* item: `swift build --product NaviTunes` (scratch-path in my scratchpad) fails on macOS with `MusicDesignSystem.swift:998:14: error: 'listRowSpacing' is unavailable in macOS` and `MusicDesignSystem.swift:777:13: error: cannot find 'SettingsPushAnimationFix' in scope`, so the `.macOS(.v15)` comment ("Host `swift build` compiles for macOS") is false today.
+- **Better approach:** n/a — removing the product, target and `Sources/NaviTunes`, and dropping `.macOS(.v15)` + its comment, is exactly right. The pbxproj has no `SUPPORTED_PLATFORMS` / `SUPPORTS_MACCATALYST` keys (iOS-only default), so nothing consumes a macOS deployment target; the only thing that would is `swift build`, which already fails.
 - **Versus the first pass:** AGREE — same facts (off-by-one, 14 not 13 lines, nothing builds it). I add the confirmation the prior pass did not run: `swift build` really does fail, so the macOS platform line's stated purpose is already dead.
 
 ---
@@ -642,9 +642,9 @@ executable target does nothing toward today.
 - **Line:** as above
 
 ```
-ISSUES.md:5:Sources/VellumMusicKit/ServerPlaylistViews.swift
-ISSUES.md:27:Sources/VellumMusicKit/RootView.swift
-docs/cover-zoom-transition-notes.md:10:Sources/VellumMusicKit/CoverZoomCustomTransition.swift
+ISSUES.md:5:Sources/NaviTunesKit/ServerPlaylistViews.swift
+ISSUES.md:27:Sources/NaviTunesKit/RootView.swift
+docs/cover-zoom-transition-notes.md:10:Sources/NaviTunesKit/CoverZoomCustomTransition.swift
 === CLAUDE.md .swift names that no longer exist ===
 MISSING: EqualizedAudioEnginePlayer.swift
 ```
@@ -656,13 +656,13 @@ to `EqualizedAudioEnginePlayer.swift`, which is a *type* inside `Playback/Playba
 file. `Rules/swiftui-body-cost.md:6` — cited in CLAUDE.md as a correctness constraint — says
 "~100 `@Published`" where `grep -c '@Published' App/AppModel.swift` is 141, understating it by 40%.
 
-**Fix.** `ISSUES.md:5` → `Sources/VellumMusicKit/Library/ServerPlaylistViews.swift`; `:27` →
+**Fix.** `ISSUES.md:5` → `Sources/NaviTunesKit/Library/ServerPlaylistViews.swift`; `:27` →
 `App/RootView.swift`; `docs/cover-zoom-transition-notes.md:10` →
 `NowPlaying/CoverZoomCustomTransition.swift`;
 `docs/superpowers/specs/2026-08-20-…:55` → `NowPlaying/CoverZoomTransition.swift`. In CLAUDE.md's
 Equalizer "Files" line write "`EqualizedAudioEnginePlayer` (in `Playback/PlaybackEngine.swift`)".
 Change `Rules/swiftui-body-cost.md:6` to "~140". Add a CI guard so flat paths cannot creep back:
-`git grep -nE 'Sources/VellumMusicKit/[A-Z][A-Za-z+]*\.swift' -- '*.md' && exit 1`.
+`git grep -nE 'Sources/NaviTunesKit/[A-Z][A-Za-z+]*\.swift' -- '*.md' && exit 1`.
 
 
 **Verified —** Every cited path reproduces at the exact line, and `grep -c '@Published'` = 141 against the rule's "~100".
@@ -675,7 +675,7 @@ Change `Rules/swiftui-body-cost.md:6` to "~140". Add a CI guard so flat paths ca
 **Re-verified (T238) —** independent second pass, agent 16, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** PARTLY REAL · **Fix:** WRONG
-- **Evidence:** The stale paths reproduce exactly: `git grep -nE 'Sources/VellumMusicKit/[A-Z][A-Za-z+]*\.swift' -- '*.md'` returns `ISSUES.md:5`, `ISSUES.md:27`, `docs/cover-zoom-transition-notes.md:10`, `docs/superpowers/specs/2026-08-20-cover-zoom-custom-transition-design.md:55` — and also `OPTIMIZATIONS.md:2891`, which the finding does not list. `Rules/swiftui-body-cost.md:6` says "`AppModel` has ~100 `@Published` properties" while `grep -c '@Published' App/AppModel.swift` = 141 (136 at line start), so "~140" is right. The CLAUDE.md pointer is stale, but the finding's own characterization is wrong: `EqualizedAudioEnginePlayer` is not "a *type* inside `Playback/PlaybackEngine.swift`" — the only hit in `Sources` is the tombstone `PlaybackEngine.swift:151: // There used to be an \`EqualizedAudioEnginePlayer\` here — an \`AVAudioEngine\` graph used`; there is no `class/struct/actor EqualizedAudioEnginePlayer` anywhere. So the defect (docs drifted) is real, the diagnosis of what CLAUDE.md should point at is not.
+- **Evidence:** The stale paths reproduce exactly: `git grep -nE 'Sources/NaviTunesKit/[A-Z][A-Za-z+]*\.swift' -- '*.md'` returns `ISSUES.md:5`, `ISSUES.md:27`, `docs/cover-zoom-transition-notes.md:10`, `docs/superpowers/specs/2026-08-20-cover-zoom-custom-transition-design.md:55` — and also `OPTIMIZATIONS.md:2891`, which the finding does not list. `Rules/swiftui-body-cost.md:6` says "`AppModel` has ~100 `@Published` properties" while `grep -c '@Published' App/AppModel.swift` = 141 (136 at line start), so "~140" is right. The CLAUDE.md pointer is stale, but the finding's own characterization is wrong: `EqualizedAudioEnginePlayer` is not "a *type* inside `Playback/PlaybackEngine.swift`" — the only hit in `Sources` is the tombstone `PlaybackEngine.swift:151: // There used to be an \`EqualizedAudioEnginePlayer\` here — an \`AVAudioEngine\` graph used`; there is no `class/struct/actor EqualizedAudioEnginePlayer` anywhere. So the defect (docs drifted) is real, the diagnosis of what CLAUDE.md should point at is not.
 - **Better approach:** Three parts of the fix are correct (the four path rewrites, "~140"). Two parts would do damage as written. (1) Writing "`EqualizedAudioEnginePlayer` (in `Playback/PlaybackEngine.swift`)" into CLAUDE.md documents a type that no longer exists; the whole "Equalizer playback path" section must instead be rewritten around `TapPlayerItem` / `EqualizerAudioTap` / `EqualizerTapRegistry` (which is what L16 proposes — do them together). (2) The CI guard `git grep -nE '...' -- '*.md' && exit 1` is inverted: when there are no matches, `git grep` exits 1, `&&` short-circuits, and the step's exit status is 1 — I confirmed `bash -c 'git grep -nE "ZZZ_NO_MATCH" -- "*.md" && exit 1; echo $?'` prints `1`. Under Actions' `bash -e` this fails CI on a *clean* tree. Write it as `! git grep -nE '...' -- '*.md'`, and either fix or exclude `OPTIMIZATIONS.md:2891` (a historical log line quoting an old grep) or the guard reds CI on day one anyway. Editing the dated design spec at `docs/superpowers/specs/2026-08-20-…:55` is optional — it records where code was *planned* to land, not a current pointer.
 - **Versus the first pass:** AGREE — the prior pass independently caught both the nonexistent-type problem and the `OPTIMIZATIONS.md:2891` false positive. I add the `&& exit 1` inversion, which the prior pass did not notice; that alone makes the guard unusable as written.
 
@@ -719,7 +719,7 @@ to README, CONTRIBUTING, CLAUDE.md, Package.swift, .gitignore.
 ---
 ## L15 — `AcquireResultDetailView` is an acquisition page filed under `Discovery/`
 - **Round:** 1 · **Severity:** low · **Verdict:** **DENIED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Discovery/DiscoverySearchView.swift`
+- **File:** `Sources/NaviTunesKit/Discovery/DiscoverySearchView.swift`
 - **Line:** 2308–2516
 
 ```
@@ -744,7 +744,7 @@ or delete it if T130 lands first. Nothing else in the file needs to change.
 **Re-verified (T238) —** independent second pass, agent 01, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** WRONG
-- **Evidence:** `grep -n "^struct " Sources/VellumMusicKit/Discovery/DiscoverySearchView.swift` gives `2308:struct AcquireResultDetailView: View {` in a 2,516-line file whose other top-level type is `298:struct DiscoverySearchView: View`, and the view is an acquisition surface (`private var job: AcquisitionJob? { acquisition.job(forKey: result.request.requestKey) }`, `await app.requestAcquisition(result.request)`). The T130 plan that would delete it is untracked and unstarted — `grep -c "^- \[x\]"` returns 0 against 46 unchecked boxes. However the struct closes at 2509: lines 2511–2516 are `private extension View { func discoverySearchListRowChrome() ... }`, which `grep -rn` shows is used at 878, 1151, 1193, 1236, 1280, 1374, 1689, 1754, 1784, 1814 and once more — all inside `DiscoverySearchView.swift` and none inside `AcquireResultDetailView`.
+- **Evidence:** `grep -n "^struct " Sources/NaviTunesKit/Discovery/DiscoverySearchView.swift` gives `2308:struct AcquireResultDetailView: View {` in a 2,516-line file whose other top-level type is `298:struct DiscoverySearchView: View`, and the view is an acquisition surface (`private var job: AcquisitionJob? { acquisition.job(forKey: result.request.requestKey) }`, `await app.requestAcquisition(result.request)`). The T130 plan that would delete it is untracked and unstarted — `grep -c "^- \[x\]"` returns 0 against 46 unchecked boxes. However the struct closes at 2509: lines 2511–2516 are `private extension View { func discoverySearchListRowChrome() ... }`, which `grep -rn` shows is used at 878, 1151, 1193, 1236, 1280, 1374, 1689, 1754, 1784, 1814 and once more — all inside `DiscoverySearchView.swift` and none inside `AcquireResultDetailView`.
 - **Better approach:** Cut lines **2308–2509** only, into `Acquisition/AcquireResultDetailView.swift`, leaving the `private extension View { discoverySearchListRowChrome() }` block in `DiscoverySearchView.swift`. Nothing else changes: the only cross-file symbols the view needs (`SearchNavTarget` at line 11, `LibraryTrackMatcher`, `RequestActionLabel`, `MusicDesign`) are all `internal` and module-visible. Cutting through 2516 as written moves a `private` (file-scoped) extension into another file, where the eleven remaining call sites can no longer see it — a hard compile failure.
 - **Denial:** HOLDS — the fix as written breaks the build, and the finding is a cosmetic filing observation whose only concrete instruction is wrong.
 - **Versus the first pass:** AGREE — I found the same off-by-7 range and the same eleven orphaned call sites before reading the doc; the verifier's corrected range (2308–2509) is what a re-raise should use.
@@ -752,7 +752,7 @@ or delete it if T130 lands first. Nothing else in the file needs to change.
 ---
 ## L16 — `CachingResourceLoaderDelegate` is a 346-line dead class, and a dead property documents a mechanism that no longer exists
 - **Round:** 1 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Playback/PlaybackEngine.swift:148–163`,
+- **File:** `Sources/NaviTunesKit/Playback/PlaybackEngine.swift:148–163`,
   `Playback/CachingResourceLoaderDelegate.swift`, `Playback/StreamingMediaDiskCache.swift:4–11`
 - **Line:** as above
 
@@ -798,7 +798,7 @@ Then move `CachingResourceLoaderDelegate.swift` to `Deprecated/` or delete it. R
 ---
 ## L17 — Dead views and a constant-return helper in `LibraryView.swift`
 - **Round:** 1 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/LibraryView.swift`
+- **File:** `Sources/NaviTunesKit/Library/LibraryView.swift`
 - **Line:** 502–506, 1826–1847, 2358–2420
 
 ```swift
@@ -820,20 +820,20 @@ reader of the new `Library/` folder must rule out before understanding what the 
 `Tests/` for references first — this sweep did not.
 
 
-**Verified —** All three ranges correct. Deadness tried and could not be refuted across both `Sources/` targets, `Tests/VellumMusicKitTests` and the host app: `ArtistAlbumsView` and `LibraryPlaceholderView` have zero references outside their own declarations, with no `#Preview`, `#selector`, KVO-string or `@objc` path — they are plain internal SwiftUI structs, so the host target cannot see them either. The `LibraryArtistsGenresViews.swift:454–457` comment reads exactly as described. `pinnedUsesCustomZoom` is called once (276) and unconditionally returns `true`, so `style: .custom` is an exact substitution. C02's callerless `playlistDateAdded` pair confirmed at `LibraryView:738` and `ServerPlaylistViews:326`.
+**Verified —** All three ranges correct. Deadness tried and could not be refuted across both `Sources/` targets, `Tests/NaviTunesKitTests` and the host app: `ArtistAlbumsView` and `LibraryPlaceholderView` have zero references outside their own declarations, with no `#Preview`, `#selector`, KVO-string or `@objc` path — they are plain internal SwiftUI structs, so the host target cannot see them either. The `LibraryArtistsGenresViews.swift:454–457` comment reads exactly as described. `pinnedUsesCustomZoom` is called once (276) and unconditionally returns `true`, so `style: .custom` is an exact substitution. C02's callerless `playlistDateAdded` pair confirmed at `LibraryView:738` and `ServerPlaylistViews:326`.
 
 
 **Re-verified (T238) —** independent second pass, agent 16, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `LibraryView.swift:502–506` reads `private func pinnedUsesCustomZoom(_ item: LibraryPinnedItem) -> Bool { ... true }` and its single caller is `276: style: pinnedUsesCustomZoom(item) ? .custom : .system`, so the expression is constant; the doc comment at 498–500 still describes the old "one hero rect globally" reason. `grep -rn "ArtistAlbumsView\b" Sources Tests VellumMusicHost --include='*.swift'` returns only the declaration `LibraryView.swift:2359:struct ArtistAlbumsView: View {` plus the tombstone comment at `LibraryArtistsGenresViews.swift:454`; `LibraryPlaceholderView\b` returns only `LibraryView.swift:1826:struct LibraryPlaceholderView: View {`. `ArtistAlbumsView` closes at 2420, `LibraryPlaceholderView` at 1847. `grep -rn "playlistDateAdded(" Sources` minus `func` lines and comments returns nothing — both helpers (`LibraryView:738`, `ServerPlaylistViews:326`) are callerless. `Tests/` has no references to any of these (my grep covered `Tests`).
+- **Evidence:** `LibraryView.swift:502–506` reads `private func pinnedUsesCustomZoom(_ item: LibraryPinnedItem) -> Bool { ... true }` and its single caller is `276: style: pinnedUsesCustomZoom(item) ? .custom : .system`, so the expression is constant; the doc comment at 498–500 still describes the old "one hero rect globally" reason. `grep -rn "ArtistAlbumsView\b" Sources Tests NaviTunesHost --include='*.swift'` returns only the declaration `LibraryView.swift:2359:struct ArtistAlbumsView: View {` plus the tombstone comment at `LibraryArtistsGenresViews.swift:454`; `LibraryPlaceholderView\b` returns only `LibraryView.swift:1826:struct LibraryPlaceholderView: View {`. `ArtistAlbumsView` closes at 2420, `LibraryPlaceholderView` at 1847. `grep -rn "playlistDateAdded(" Sources` minus `func` lines and comments returns nothing — both helpers (`LibraryView:738`, `ServerPlaylistViews:326`) are callerless. `Tests/` has no references to any of these (my grep covered `Tests`).
 - **Better approach:** n/a. `style: .custom` is an exact substitution: `coverZoomSource(id:style:cellCornerRadius:)` at `CoverZoomTransition.swift:698` takes `CoverZoomStyle`, whose cases are `.system` / `.custom` (`CoverZoomCustomTransition.swift:11,13`). Also delete the stale doc comment at 498–500 with the function.
 - **Versus the first pass:** AGREE — identical findings, including the `playlistDateAdded` pair.
 
 ---
 ## L18 — Dead player code: three unreferenced header builders, an orphan `@Namespace`, and an unused file
 - **Round:** 1 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/NowPlaying/NowPlayingView.swift:137, 982–1042, 1098–1136, 1362–1381`;
+- **File:** `Sources/NaviTunesKit/NowPlaying/NowPlayingView.swift:137, 982–1042, 1098–1136, 1362–1381`;
   `NowPlaying/NowPlayingDismissHost.swift`
 - **Line:** as above
 
@@ -878,13 +878,13 @@ vestigial by its own comment but is still read by `NowPlayingCoverAnimator.swift
 
 ```bash
 #!/usr/bin/env bash
-# Copy Icon Composer PNGs from VellumMusicHost/AppIcons into VellumMusicKit resources for in-app UI.
+# Copy Icon Composer PNGs from NaviTunesHost/AppIcons into NaviTunesKit resources for in-app UI.
 cp "$ICONS/AppIcon.icon/Assets/Untitled.png" "$DEST/red.png"
-cp "$ICONS/VellumIcon-pink.icon/Assets/pink.png" "$DEST/pink.png"
+cp "$ICONS/NaviTunesIcon-pink.icon/Assets/pink.png" "$DEST/pink.png"
 ```
 
-**Problem.** Ten PNGs live in both `VellumMusicHost/VellumMusicHost/AppIcons/*.icon/Assets/` (needed by
-Icon Composer) and `Sources/VellumMusicKit/Resources/AccentLogos/` (needed by `VellumAccentLogoView`).
+**Problem.** Ten PNGs live in both `NaviTunesHost/NaviTunesHost/AppIcons/*.icon/Assets/` (needed by
+Icon Composer) and `Sources/NaviTunesKit/Resources/AccentLogos/` (needed by `NaviTunesAccentLogoView`).
 They match today — md5s verified equal — but nothing enforces it: an icon tweak that skips the script
 ships a login logo that no longer matches the home-screen icon, which is exactly the accent/icon
 coupling CLAUDE.md's Appearance section warns about. The Icon Composer source for the default icon is
@@ -892,30 +892,30 @@ named `Untitled.png`, which the script silently renames.
 
 **Fix.** Keep the script — the `.icon` bundles need the files physically inside them — but make drift
 impossible: add a CI step after checkout running
-`scripts/sync-accent-logos-to-kit.sh && git diff --exit-code Sources/VellumMusicKit/Resources/AccentLogos`.
+`scripts/sync-accent-logos-to-kit.sh && git diff --exit-code Sources/NaviTunesKit/Resources/AccentLogos`.
 Rename `AppIcon.icon/Assets/Untitled.png` → `red.png` (update `AppIcon.icon/icon.json` and the
-script's first `cp`). Add a comment at the top of `DesignSystem/VellumAccentLogo.swift` pointing at
+script's first `cp`). Add a comment at the top of `DesignSystem/NaviTunesAccentLogo.swift` pointing at
 the script so the next person changing an icon knows a second copy exists.
 
 
-**Verified —** The verifier ran `md5 -q` on all ten pairs independently: **all ten MATCH** (red `56722f9a…`, pink `29df5b53…`, orange `695cbac5…`, yellow `194e3be9…`, green `7e9782a4…`, teal `84363ff7…`, blue `8dfeb746…`, indigo `c65b6b1f…`, purple `63bcad1c…`, lightgray `0961bf3f…`), so the "md5s verified equal" claim is independently true today — i.e. the copies have **not yet** drifted, and this is a latent risk rather than a live bug. `git ls-files` confirms both copies are tracked (10 PNGs under `AppIcons/*.icon/Assets/`, 10 under `Resources/AccentLogos/`), the script copies exactly those ten with nothing enforcing it, and `AppIcon.icon/icon.json:7` really does reference `"Untitled.png"` — **so the rename fix must touch that line too**, as the entry states. The consumer is real: `VellumAccentLogoView` (`DesignSystem/VellumAccentLogo.swift:39`, loaded with `subdirectory: "AccentLogos"`) used by `LoginView.swift:132`.
+**Verified —** The verifier ran `md5 -q` on all ten pairs independently: **all ten MATCH** (red `56722f9a…`, pink `29df5b53…`, orange `695cbac5…`, yellow `194e3be9…`, green `7e9782a4…`, teal `84363ff7…`, blue `8dfeb746…`, indigo `c65b6b1f…`, purple `63bcad1c…`, lightgray `0961bf3f…`), so the "md5s verified equal" claim is independently true today — i.e. the copies have **not yet** drifted, and this is a latent risk rather than a live bug. `git ls-files` confirms both copies are tracked (10 PNGs under `AppIcons/*.icon/Assets/`, 10 under `Resources/AccentLogos/`), the script copies exactly those ten with nothing enforcing it, and `AppIcon.icon/icon.json:7` really does reference `"Untitled.png"` — **so the rename fix must touch that line too**, as the entry states. The consumer is real: `NaviTunesAccentLogoView` (`DesignSystem/NaviTunesAccentLogo.swift:39`, loaded with `subdirectory: "AccentLogos"`) used by `LoginView.swift:132`.
 
-**Two corrections.** The cited "Line: 1–12" **understates the 21-line script** and the excerpt is abridged. And the fix's last bullet is **half-done already**: `VellumAccentLogo.swift:7` already says "from Icon Composer `AppIcons/*.icon` → `Resources/AccentLogos/`" — it just does not name the script. `.github/workflows/ci.yml` exists, so the proposed CI step is placeable.
+**Two corrections.** The cited "Line: 1–12" **understates the 21-line script** and the excerpt is abridged. And the fix's last bullet is **half-done already**: `NaviTunesAccentLogo.swift:7` already says "from Icon Composer `AppIcons/*.icon` → `Resources/AccentLogos/`" — it just does not name the script. `.github/workflows/ci.yml` exists, so the proposed CI step is placeable.
 
 *(Recovered from the round-1 verify transcript: the verdict was applied to this entry but the reasoning was not written back at the time. Restored here for completeness.)*
 
 **Re-verified (T238) —** independent second pass, agent 17, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** Both copies are tracked (`git ls-files` lists 10 PNGs under `VellumMusicHost/VellumMusicHost/AppIcons/*.icon/Assets/` and 10 under `Sources/VellumMusicKit/Resources/AccentLogos/`), and the only bridge is the hand-run script: `cp "$ICONS/AppIcon.icon/Assets/Untitled.png" "$DEST/red.png"`. I md5-compared all ten pairs myself and every one reports `MATCH`, so this is latent drift risk, not a live mismatch. `AppIcon.icon/icon.json` really carries `"image-name" : "Untitled.png"`, so the rename must touch that file. `grep -rn sync-accent .github/ scripts/ CONTRIBUTING.md` returns nothing, so no CI or docs enforce the sync; `.github/workflows/ci.yml` exists (PR-only `build-and-test` job). Two drifts in the finding: the script is 21 lines (cited "1–12"), and `VellumAccentLogo.swift:7` already reads `/// Bundled accent-colored Vellum logos (from Icon Composer `AppIcons/*.icon` → `Resources/AccentLogos/`).` — the comment bullet is mostly done, it just doesn't name the script.
-- **Better approach:** The CI step works and is placeable, but a unit test in `Tests/VellumMusicKitTests/` that walks up from `#filePath` and byte-compares the ten pairs runs inside the existing `VellumMusicKitTests` scheme (locally and in the existing CI job) with no workflow edit and fails with a named pair rather than a raw `git diff`. Keep the `Untitled.png` → `red.png` rename (update `icon.json` and the script's first `cp`), and just append the script name to the existing comment at `VellumAccentLogo.swift:7` instead of adding a second one.
+- **Evidence:** Both copies are tracked (`git ls-files` lists 10 PNGs under `NaviTunesHost/NaviTunesHost/AppIcons/*.icon/Assets/` and 10 under `Sources/NaviTunesKit/Resources/AccentLogos/`), and the only bridge is the hand-run script: `cp "$ICONS/AppIcon.icon/Assets/Untitled.png" "$DEST/red.png"`. I md5-compared all ten pairs myself and every one reports `MATCH`, so this is latent drift risk, not a live mismatch. `AppIcon.icon/icon.json` really carries `"image-name" : "Untitled.png"`, so the rename must touch that file. `grep -rn sync-accent .github/ scripts/ CONTRIBUTING.md` returns nothing, so no CI or docs enforce the sync; `.github/workflows/ci.yml` exists (PR-only `build-and-test` job). Two drifts in the finding: the script is 21 lines (cited "1–12"), and `NaviTunesAccentLogo.swift:7` already reads `/// Bundled accent-colored NaviTunes logos (from Icon Composer `AppIcons/*.icon` → `Resources/AccentLogos/`).` — the comment bullet is mostly done, it just doesn't name the script.
+- **Better approach:** The CI step works and is placeable, but a unit test in `Tests/NaviTunesKitTests/` that walks up from `#filePath` and byte-compares the ten pairs runs inside the existing `NaviTunesKitTests` scheme (locally and in the existing CI job) with no workflow edit and fails with a named pair rather than a raw `git diff`. Keep the `Untitled.png` → `red.png` rename (update `icon.json` and the script's first `cp`), and just append the script name to the existing comment at `NaviTunesAccentLogo.swift:7` instead of adding a second one.
 - **Versus the first pass:** AGREE — the prior pass independently found the same md5 matches, the `icon.json` reference, the understated line range, and the already-present comment.
 
 ---
 
 ## L20 — `Settings`-only and `.searchable`-only code is buried inside `NowPlaying/CoverZoom*.swift`
 - **Round:** 1 (re-scoped from the denied L07) · **Severity:** medium · **Verdict:** **CONFIRMED** _(this half was fully verified while the parent claim was refuted)_
-- **File:** `Sources/VellumMusicKit/NowPlaying/CoverZoomCustomTransition.swift:1771–1812, 1832–1866`;
+- **File:** `Sources/NaviTunesKit/NowPlaying/CoverZoomCustomTransition.swift:1771–1812, 1832–1866`;
   `NowPlaying/CoverZoomTransition.swift:225–400`
 - **Line:** as above
 
@@ -947,15 +947,15 @@ T057 after nine falsified hypotheses, and that `simultaneousGesture` on a `Navig
 reintroduced.
 
 
-**Verified — MISASSIGNED, CORRECTED 2026-09-09.** The block that stood here was a verbatim copy of **L19**'s verification (PNG md5 pairs, `AppIcon.icon/icon.json`, `VellumAccentLogo.swift`) and said nothing about `SettingsPushAnimationFix`, `Helper`, or the search-bar code this finding is actually about. It was written onto this entry by an off-by-one in round 1's apply script — the same fault that left **L19** with no block at all. **L20 was therefore never verified in the first pass.** The `**Re-verified (T238)**` block below is its first real verification; treat that as the authoritative one and disregard any impression that this entry carried a round-1 verdict.
+**Verified — MISASSIGNED, CORRECTED 2026-09-09.** The block that stood here was a verbatim copy of **L19**'s verification (PNG md5 pairs, `AppIcon.icon/icon.json`, `NaviTunesAccentLogo.swift`) and said nothing about `SettingsPushAnimationFix`, `Helper`, or the search-bar code this finding is actually about. It was written onto this entry by an off-by-one in round 1's apply script — the same fault that left **L19** with no block at all. **L20 was therefore never verified in the first pass.** The `**Re-verified (T238)**` block below is its first real verification; treat that as the authoritative one and disregard any impression that this entry carried a round-1 verdict.
 
 
 **Re-verified (T238) —** independent second pass, agent 17, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `Sources/VellumMusicKit/NowPlaying/CoverZoomCustomTransition.swift` has `enum SettingsPushAnimationFix {` at 1771 and `func tracksSettingsPushAnimation() -> some View {` at 1808; outside that file they are referenced only by `Settings/SettingsView.swift:27`, `Settings/SettingsSections.swift:36`, and `DesignSystem/MusicDesignSystem.swift:777` (`SettingsPushAnimationFix.armEntry()`). `NowPlaying/CoverZoomTransition.swift` has `// MARK: Pull-to-reveal search (refresh-control semantics)` at 225 inside `final class Helper: UIViewController` (222), with `private func forceStackedSearchBarPlacement()` at 294, `private func installPullToRevealSearch()` at 315, `private func applySearchBarVisibility(animated: Bool)` at 370, and `firstScrollView` at 414 — all search-bar machinery, none of it about the zoom. Line numbers match the finding. One nuance the finding underplays: `armEntry()` and `noteScreenAppeared()` both call `CoverZoomPushAnimationFix.installIfNeeded()`, so the Settings fix does depend on the cover-zoom swizzle; it can still live in `Settings/` since the package is one module and everything is `internal`. Severity "medium" is generous for a discoverability issue with no runtime effect, but the misplacement is real.
+- **Evidence:** `Sources/NaviTunesKit/NowPlaying/CoverZoomCustomTransition.swift` has `enum SettingsPushAnimationFix {` at 1771 and `func tracksSettingsPushAnimation() -> some View {` at 1808; outside that file they are referenced only by `Settings/SettingsView.swift:27`, `Settings/SettingsSections.swift:36`, and `DesignSystem/MusicDesignSystem.swift:777` (`SettingsPushAnimationFix.armEntry()`). `NowPlaying/CoverZoomTransition.swift` has `// MARK: Pull-to-reveal search (refresh-control semantics)` at 225 inside `final class Helper: UIViewController` (222), with `private func forceStackedSearchBarPlacement()` at 294, `private func installPullToRevealSearch()` at 315, `private func applySearchBarVisibility(animated: Bool)` at 370, and `firstScrollView` at 414 — all search-bar machinery, none of it about the zoom. Line numbers match the finding. One nuance the finding underplays: `armEntry()` and `noteScreenAppeared()` both call `CoverZoomPushAnimationFix.installIfNeeded()`, so the Settings fix does depend on the cover-zoom swizzle; it can still live in `Settings/` since the package is one module and everything is `internal`. Severity "medium" is generous for a discoverability issue with no runtime effect, but the misplacement is real.
 - **Better approach:** Part (1) is fine as written. For part (2): the extracted class must take the host lazily — `parent` is nil in `makeUIViewController` and only set once SwiftUI adds the child — so give it a `weak var host: UIViewController?` that `Helper` sets in `viewWillAppear`, and move `firstScrollView` with it (its only caller is `installPullToRevealSearch`). Preserve the two `searchControllerObservation` installs (willAppear at ~272 and didAppear at ~571) verbatim; this is device-verified UIKit workaround code and the move must be mechanical. There is no `Navigation/` folder today; the three consumers are `Library/LibraryView.swift:1170`, `Library/ServerPlaylistViews.swift:974`, and `AlbumDetail/BrowseAlbumDetailView.swift:335`, so `Library/` or `DesignSystem/` are existing homes (a new folder also works — SPM discovers recursively, so no pbxproj/Package.swift change either way).
-- **Versus the first pass:** DISAGREE — the `**Verified —**` block under `## L20 — ` in `docs/CODE_SWEEP.md` is a verbatim copy of L19's PNG/md5 verification ("All ten PNG pairs `md5`-compared independently…", `icon.json:7`, `VellumAccentLogo.swift:7`) and says nothing about `SettingsPushAnimationFix`, `Helper`, or the search-bar code. Whatever verdict was applied to L20, the recorded reasoning does not verify this finding at all; it needs a real verification written back.
+- **Versus the first pass:** DISAGREE — the `**Verified —**` block under `## L20 — ` in `docs/CODE_SWEEP.md` is a verbatim copy of L19's PNG/md5 verification ("All ten PNG pairs `md5`-compared independently…", `icon.json:7`, `NaviTunesAccentLogo.swift:7`) and says nothing about `SettingsPushAnimationFix`, `Helper`, or the search-bar code. Whatever verdict was applied to L20, the recorded reasoning does not verify this finding at all; it needs a real verification written back.
 
 ---
 
@@ -969,7 +969,7 @@ that is why "per body pass" is the unit of cost below.
 
 ## E01 — The playback queue snapshot is JSON-encoded and written on the main actor
 - **Round:** 1 · **Severity:** medium _(was high)_ · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:1198–1213`, `Playback/PlaybackQueueStore.swift:40–55`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:1198–1213`, `Playback/PlaybackQueueStore.swift:40–55`
 - **Line:** as above
 
 ```swift
@@ -1017,13 +1017,13 @@ that number.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
 - **Evidence:** `PlaybackQueueStore.save` is fully synchronous: `guard let data = try? JSONEncoder().encode(snap) else { return }` then `try? data.write(to: url, options: .atomic)`; the autosave feeds it from `.debounce(for: .milliseconds(1000), scheduler: DispatchQueue.main)` → `.sink { [weak self] _ in self?.persistPlaybackQueue() }` (AppModel 1182–1194, matches). `currentSnapshot()` (PlaybackEngine 595) packs `queue: queue`, `unshuffledQueue: unshuffledQueue`, `sourceQueueOrder: sourceQueueOrder` — three `[Track]`. Restore is synchronous inside `init`: `loadKeychain()` is called at 1091 from `public init()` (1003) and calls `restorePlaybackQueueFromDisk()` at 6911 and 6938, which does `guard let snap = PlaybackQueueStore.load()` (`Data(contentsOf:)` + `JSONDecoder`). The `saveRecentlyPlayedTracksToDefaults` precedent at 5920 is real (`recentlyPlayedSaveGeneration &+= 1` … `Task.detached(priority: .utility)`). One citation is wrong: `ServerPlaylistViews.swift:3557` sits inside `private func load() async` at 3540 (the add-to-playlist sheet), not a queue producer; the real shuffle producers are `LibrarySongsView.shuffleAll` (424) and `LibraryView.shuffleAll` (1525, 2111), bounded by the personal library. Magnitude is unmeasured, as the finding admits.
-- **Better approach:** Move only the debounced autosave off-main with the generation guard (Package.swift is `.swiftLanguageMode(.v5)`, so the detached capture compiles). For the scene-phase flush (`VellumMusicHostApp.swift:26`, on `.inactive`/`.background`), keep the synchronous write rather than a detached task wrapped in `BulkOperationBackgroundAssertion`: the app is leaving the foreground, a main-thread encode is invisible then, and a sync write is the only thing that guarantees the file lands before suspension; bump the generation first so a pending detached save cannot overwrite it. For the async `load()`, guard `player.queue.isEmpty` before `player.restore(...)` — `restore` calls `teardownPlayer()` and replaces `queue`, so a late restore would clobber playback the user started in the launch window. Delaying `showsMiniPlayerChrome` (set inside `restore` at 656) is an acceptable trade.
+- **Better approach:** Move only the debounced autosave off-main with the generation guard (Package.swift is `.swiftLanguageMode(.v5)`, so the detached capture compiles). For the scene-phase flush (`NaviTunesHostApp.swift:26`, on `.inactive`/`.background`), keep the synchronous write rather than a detached task wrapped in `BulkOperationBackgroundAssertion`: the app is leaving the foreground, a main-thread encode is invisible then, and a sync write is the only thing that guarantees the file lands before suspension; bump the generation first so a pending detached save cannot overwrite it. For the async `load()`, guard `player.queue.isEmpty` before `player.restore(...)` — `restore` calls `teardownPlayer()` and replaces `queue`, so a late restore would clobber playback the user started in the launch window. Delaying `showsMiniPlayerChrome` (set inside `restore` at 656) is an acceptable trade.
 - **Versus the first pass:** AGREE — same mechanism, same mis-citation of 3557, same conclusion that the severity should be medium with magnitude unmeasured.
 
 ---
 ## E02 — `showsMiniPlayerChrome` publishes the whole `AppModel` on every track change, carrying no information
 - **Round:** 1 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:1027–1029`, `Playback/PlaybackEngine.swift:556–559`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:1027–1029`, `Playback/PlaybackEngine.swift:556–559`
 - **Line:** as above
 
 ```swift
@@ -1069,7 +1069,7 @@ publish, not two.
 ---
 ## E03 — Every EQ slider tick publishes the whole `AppModel` twice and writes `UserDefaults` twice
 - **Round:** 1 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:6327–6350`, `Equalizer/SettingsEqualizerView.swift:394`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:6327–6350`, `Equalizer/SettingsEqualizerView.swift:394`
 - **Line:** as above
 
 ```swift
@@ -1118,7 +1118,7 @@ drag samples and commit to `UserDefaults` on `onEditingChanged(false)` — the v
 ---
 ## E04 — `writeWidgetData()` runs on every play/pause, each time spawning a network + directory scan and two timeline reloads
 - **Round:** 1 · **Severity:** medium _(was low)_ · **Verdict:** **REINFORCED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:1050–1053, 5880–5890`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:1050–1053, 5880–5890`
 - **Line:** as above
 
 ```swift
@@ -1155,7 +1155,7 @@ skip the detached task when unchanged.
 ---
 ## E05 — `AppModel.init` does keychain access, three JSON decodes and four store loads synchronously before the first frame
 - **Round:** 1 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:1097–1108`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:1097–1108`
 - **Line:** as above
 
 ```swift
@@ -1201,7 +1201,7 @@ list, kill-mode sets and Queue→History are all several taps deep). Keep `loadP
 ---
 ## E06 — Album detail re-scans the whole track index on every body pass, for a sheet that is almost never open
 - **Round:** 1 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/ServerPlaylistViews.swift:1065–1071, 2454–2465`,
+- **File:** `Sources/NaviTunesKit/Library/ServerPlaylistViews.swift:1065–1071, 2454–2465`,
   `App/AppModel.swift:1826–1834`
 - **Line:** as above
 
@@ -1248,7 +1248,7 @@ through to the index scan when empty; longer term add `librarySongCountByAlbumId
 ---
 ## E07 — The "Add Songs" sheet filters the entire track index on every body pass and every keystroke
 - **Round:** 1 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/ServerPlaylistViews.swift:3465–3474, 3489`
+- **File:** `Sources/NaviTunesKit/Library/ServerPlaylistViews.swift:3465–3474, 3489`
 - **Line:** as above
 
 ```swift
@@ -1292,7 +1292,7 @@ once; compute `available` once when `tracks` changes rather than per search); ca
 ---
 ## E08 — The Genres screen re-canonicalizes and re-sorts every genre per body pass, and again per visible row
 - **Round:** 1 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/LibraryArtistsGenresViews.swift:481–517, 555–570`
+- **File:** `Sources/NaviTunesKit/Library/LibraryArtistsGenresViews.swift:481–517, 555–570`
 - **Line:** as above
 
 ```swift
@@ -1335,7 +1335,7 @@ a 500-entry dictionary removes the substring work entirely.
 ---
 ## E09 — Hero and toolbar state on library detail is recomputed over all rows on every body pass
 - **Round:** 1 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/ServerPlaylistViews.swift:1658–1662, 1678–1680`
+- **File:** `Sources/NaviTunesKit/Library/ServerPlaylistViews.swift:1658–1662, 1678–1680`
 - **Line:** as above
 
 ```swift
@@ -1388,7 +1388,7 @@ app.librarySongIds)` at 1088. In `AppModel`, mirror `killModePendingRemovals` as
 ---
 ## E10 — Library → Songs reloads the whole personal library on every download completion
 - **Round:** 1 · **Severity:** low · **Verdict:** **REINFORCED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/LibrarySongsView.swift:1154–1161`
+- **File:** `Sources/NaviTunesKit/Library/LibrarySongsView.swift:1154–1161`
 - **Line:** as above
 
 ```swift
@@ -1429,7 +1429,7 @@ appears in `ServerPlaylistDetailView.load()` (2383): `offline.cachedTracks(forAl
 ---
 ## E11 — Navidrome artwork URLs carry a fresh salt per call, so `.id()` and `.task(id:)` keys change on every render
 - **Round:** 1 · **Severity:** high · **Verdict:** **REINFORCED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/NowPlaying/MiniPlayerView.swift:127` (and 197);
+- **File:** `Sources/NaviTunesKit/NowPlaying/MiniPlayerView.swift:127` (and 197);
   `NowPlaying/NowPlayingView.swift:430–452`; root cause `Backends/NavidromeClient.swift:1857–1862`
 - **Line:** as above
 
@@ -1501,7 +1501,7 @@ normalisation.
 ---
 ## E12 — `resolvedArtworkURL` is re-run 4–6× per player body pass and once per queue row, each doing filesystem syscalls
 - **Round:** 1 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/NowPlaying/NowPlayingView.swift:2096–2103` (plus 435, 472, 485, 654, 1442, 1636);
+- **File:** `Sources/NaviTunesKit/NowPlaying/NowPlayingView.swift:2096–2103` (plus 435, 472, 485, 654, 1442, 1636);
   `App/AppModel.swift:1445–1470`; `Offline/OfflineDownloadManager.swift:225–233`
 - **Line:** as above
 
@@ -1551,7 +1551,7 @@ session change, and on offline manifest save — the per-row path then becomes a
 ---
 ## E13 — The queue pane rebuilds its derived row arrays on every player body evaluation
 - **Round:** 1 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/NowPlaying/NowPlayingView.swift:587–634`
+- **File:** `Sources/NaviTunesKit/NowPlaying/NowPlayingView.swift:587–634`
 - **Line:** as above
 
 ```swift
@@ -1595,7 +1595,7 @@ it at all.
 ---
 ## E14 — Synced lyrics apply a live `.blur` to every visible line inside a scroll view
 - **Round:** 1 · **Severity:** low _(was medium)_ · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/NowPlaying/NowPlayingView.swift:2919–2940`
+- **File:** `Sources/NaviTunesKit/NowPlaying/NowPlayingView.swift:2919–2940`
 - **Line:** as above
 
 ```swift
@@ -1641,7 +1641,7 @@ stay, keep `.blur` only on lines adjacent to the active one (`abs(distance) <= 1
 ---
 ## E15 — Opening an artist by name fetches the server's entire artist list, uncached, every time
 - **Round:** 1 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Artist/ArtistViewModel.swift:763–803`
+- **File:** `Sources/NaviTunesKit/Artist/ArtistViewModel.swift:763–803`
 - **Line:** as above
 
 ```swift
@@ -1687,7 +1687,7 @@ artists) and apply the same exact-normalised filter to that small result.
 ---
 ## E16 — `cachedLibraryTrack(id:)` is O(N) on a miss and is called per favourite, per scrobble and per top-song candidate
 - **Round:** 1 · **Severity:** high · **Verdict:** **REINFORCED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:1995–2000`;
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:1995–2000`;
   callers `Home/NewTabPersonalizationEngine.swift:255–259`, `App/AppModel.swift:4688–4699, 4853–4861`,
   `Artist/ArtistViewModel.swift:868–897`
 - **Line:** as above
@@ -1759,7 +1759,7 @@ cache the normalised artist on `CompletedScrobble` at record time in
 ---
 ## E17 — Discover search rebuilds and re-sorts the whole hybrid feed, with per-row normalization, on every body pass
 - **Round:** 1 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Discovery/DiscoverySearchView.swift:438–568, 919–921, 1391–1436`
+- **File:** `Sources/NaviTunesKit/Discovery/DiscoverySearchView.swift:438–568, 919–921, 1391–1436`
 - **Line:** as above
 
 ```swift
@@ -1814,7 +1814,7 @@ serverAlbumsByReleaseKey: [String: AlbumSummary] = [:]`, `@State private var ser
 ---
 ## E18 — `HomeMixBuilder` groups the whole track index twice per rebuild, synchronously on main
 - **Round:** 1 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Home/HomeMixBuilder.swift:85–88, 100, 114`;
+- **File:** `Sources/NaviTunesKit/Home/HomeMixBuilder.swift:85–88, 100, 114`;
   called from `App/AppModel.swift:1975–1993`
 - **Line:** as above
 
@@ -1855,7 +1855,7 @@ generation counter like `RadioTabView.loadGeneration`. Wrap the current sync pat
 ---
 ## E19 — `RadioStationMeshArtworkView` builds its `MeshSpec` four times per body pass
 - **Round:** 1 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Radio/RadioStationMeshArtwork.swift:39–50`
+- **File:** `Sources/NaviTunesKit/Radio/RadioStationMeshArtwork.swift:39–50`
 - **Line:** as above
 
 ```swift
@@ -1901,7 +1901,7 @@ into `private let spec: MeshSpec`. All call sites already use
 ---
 ## E20 — The Radio tab fires 59 concurrent directory requests to fill one 25-card shelf
 - **Round:** 1 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Radio/RadioTabView.swift:523–536`
+- **File:** `Sources/NaviTunesKit/Radio/RadioTabView.swift:523–536`
 - **Line:** as above
 
 ```swift
@@ -1950,7 +1950,7 @@ lookups so pull-to-refresh does not redo 25 requests.
 ---
 ## E21 — Server radio reloads and reshuffles "Featured" on every library catalog change
 - **Round:** 1 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Radio/RadioTabView.swift:669–671, 735–737`
+- **File:** `Sources/NaviTunesKit/Radio/RadioTabView.swift:669–671, 735–737`
 - **Line:** as above
 
 ```swift
@@ -1995,7 +1995,7 @@ remove the `as? NavidromeClient` cast at 674.
 ---
 ## E22 — `NewTabHeroArtwork` bypasses `AlbumArtworkView` and blanks the hero on every remount
 - **Round:** 1 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Home/MusicNewTabView.swift:751–792`
+- **File:** `Sources/NaviTunesKit/Home/MusicNewTabView.swift:751–792`
 - **Line:** as above
 
 ```swift
@@ -2052,7 +2052,7 @@ and delete 751–793.
 
 ## P01 — The Now Playing transport row is unlabeled for VoiceOver
 - **Round:** 1 · **Severity:** medium _(was high)_ · **Verdict:** **DENIED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/NowPlaying/NowPlayingView.swift:1828–1866` (helper), call sites 1763–1809, `Menu` at 1125–1133; `NowPlaying/MiniPlayerView.swift:144–165`
+- **File:** `Sources/NaviTunesKit/NowPlaying/NowPlayingView.swift:1828–1866` (helper), call sites 1763–1809, `Menu` at 1125–1133; `NowPlaying/MiniPlayerView.swift:144–165`
 - **Line:** as above
 
 ```swift
@@ -2099,7 +2099,7 @@ The counts do not reproduce either: `NowPlayingView` is 41 Buttons / 3 labels (n
 **Re-verified (T238) —** independent second pass, agent 01, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `transportButton` (NowPlayingView.swift:1828–1866) ends `.buttonStyle(TransportPressButtonStyle())` / `.disabled(!isEnabled)` with no `accessibilityLabel`; `grep -n accessibilityLabel Sources/VellumMusicKit/NowPlaying/NowPlayingView.swift` returns only lines 224, 239, 1926, and `grep -c accessibilityLabel .../MiniPlayerView.swift` returns `0`. The buffering control at 1777–1787 is a bare `Button { player.togglePlayPause() } label: { ProgressView() … }` — no image, no label, so it announces as "button" with nothing else. The ellipsis `Menu` at 1125 labels itself with `Image(systemName: "ellipsis")` and no explicit label. The entry's premise about custom triangles is wrong, though: `SkipMarchGlyph.triangle` (line 39 of the struct) is `Image(systemName: pointsForward ? "arrowtriangle.forward.fill" : "arrowtriangle.backward.fill")` — SF Symbols, so prev/next announce as an arrowtriangle glyph description rather than silence, and the bolded "cannot operate playback" is an overstatement (play/pause is `play.fill`/`pause.fill`).
+- **Evidence:** `transportButton` (NowPlayingView.swift:1828–1866) ends `.buttonStyle(TransportPressButtonStyle())` / `.disabled(!isEnabled)` with no `accessibilityLabel`; `grep -n accessibilityLabel Sources/NaviTunesKit/NowPlaying/NowPlayingView.swift` returns only lines 224, 239, 1926, and `grep -c accessibilityLabel .../MiniPlayerView.swift` returns `0`. The buffering control at 1777–1787 is a bare `Button { player.togglePlayPause() } label: { ProgressView() … }` — no image, no label, so it announces as "button" with nothing else. The ellipsis `Menu` at 1125 labels itself with `Image(systemName: "ellipsis")` and no explicit label. The entry's premise about custom triangles is wrong, though: `SkipMarchGlyph.triangle` (line 39 of the struct) is `Image(systemName: pointsForward ? "arrowtriangle.forward.fill" : "arrowtriangle.backward.fill")` — SF Symbols, so prev/next announce as an arrowtriangle glyph description rather than silence, and the bolded "cannot operate playback" is an overstatement (play/pause is `play.fill`/`pause.fill`).
 - **Better approach:** Keep the required `accessibilityLabel:` parameter and the per-call-site strings as proposed, but (a) apply `.accessibilityHidden(true)` inside `SkipMarchGlyph` (or `.accessibilityElement(children: .ignore)` on the button content) so the two live arrowtriangle images cannot contribute competing descriptions during a march animation, (b) label the transport buttons with `.accessibilityLabel` **plus** `.accessibilityAddTraits(.isButton)` is unnecessary, but play/pause should carry the state in the label only (not a separate `accessibilityValue`) so VoiceOver announces the action, and (c) drop the closing "sweep the three zero-label files and label each" — `DiscoverySearchView` (22 buttons) and `OfflineStorageBrowserViews` (15) are unrelated surfaces and folding them in turns a 20-line targeted fix into an unbounded pass; raise them separately.
 - **Denial:** DOES NOT HOLD — the two things the verifier refuted are rhetorical (the custom-triangle premise and the bolded conclusion) plus miscounted button totals; the defect itself, and the fix, are conceded intact in the denial's own final paragraph ("The fix stands"), and the buffering `Button` and ellipsis `Menu` still announce with no label at all.
 - **Versus the first pass:** DISAGREE — I independently found the same SF-Symbol counter-evidence in `SkipMarchGlyph` and agree the counts and the bolded claim are wrong, but a real, unfixed accessibility gap with a correct fix should be CONFIRMED-with-amended-wording, not DENIED.
@@ -2107,7 +2107,7 @@ The counts do not reproduce either: `NowPlayingView` is 41 Buttons / 3 labels (n
 ---
 ## P02 — The Playlists "Favorites" filter, star badge and pinned-first sort read a key nothing writes any more
 - **Round:** 1 · **Severity:** high · **Verdict:** **REINFORCED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/LibraryView.swift:621, 635–643, 749–754, 795–804`
+- **File:** `Sources/NaviTunesKit/Library/LibraryView.swift:621, 635–643, 749–754, 795–804`
 - **Line:** as above
 
 ```swift
@@ -2156,7 +2156,7 @@ compute `let pinned = favoritedIds` once in `sortPlaylists` and pass it to
 ---
 ## P03 — Every Top Pick card is captioned "New Release" regardless of what it is
 - **Round:** 1 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Home/HomeView.swift:596–602`
+- **File:** `Sources/NaviTunesKit/Home/HomeView.swift:596–602`
 - **Line:** as above
 
 ```swift
@@ -2197,7 +2197,7 @@ album rather than inferring it in the view.
 ---
 ## P04 — The New tab labels an album shelf "Trending Songs", and its first two shelves show the same tracks
 - **Round:** 1 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Home/MusicNewTabView.swift:167–176, 190–194`; `Home/NewTabSectionViews.swift:22–23`
+- **File:** `Sources/NaviTunesKit/Home/MusicNewTabView.swift:167–176, 190–194`; `Home/NewTabSectionViews.swift:22–23`
 - **Line:** as above
 
 ```swift
@@ -2247,7 +2247,7 @@ For the duplication, feed the hero `newTabTopTracks.prefix(6)` and the list
 ---
 ## P05 — The Home fallback shelf titled "Your Library" shows the server catalog
 - **Round:** 1 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Home/HomeView.swift:143–151`
+- **File:** `Sources/NaviTunesKit/Home/HomeView.swift:143–151`
 - **Line:** as above
 
 ```swift
@@ -2290,7 +2290,7 @@ empty, with the honest title in the fallback case. Keep the derived array in `@S
 ---
 ## P06 — Play and Shuffle swap positions between Favorites and every other list, and the hero triplet is hand-built three times
 - **Round:** 1 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/DesignSystem/MusicDesignSystem.swift:1678–1691` vs `1718–1746`;
+- **File:** `Sources/NaviTunesKit/DesignSystem/MusicDesignSystem.swift:1678–1691` vs `1718–1746`;
   duplicates at `Library/ServerPlaylistViews.swift:1895–1928`, `Library/LibraryView.swift:1281–1306`,
   `AlbumDetail/BrowseAlbumDetailView.swift:563–576`
 - **Line:** as above
@@ -2352,14 +2352,14 @@ replace `actionButtonTriplet` (ServerPlaylistViews:1895), the `FavoritePlaylistV
 **Re-verified (T238) —** independent second pass, agent 20, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `MusicDesignSystem.swift:1678–1691` (`AlbumHeroPlayShuffleCluster`) emits `heroCapsuleButton(systemImage: "shuffle", title: "Shuffle", action: onShuffle)` before `heroCapsuleButton(systemImage: "play.fill", …)`, at `.font(.headline.weight(.bold))` / `.frame(height: 54)`; `LibraryPlayShuffleRow` (1712–1746) emits `Button(action: onPlay)` first at `.font(.body.weight(.semibold))` / `.padding(.vertical, 13)`. Both are used in the same `pills:` slot of `PlaylistHeroOrPillsHeader` — `LibraryView:1145` (Favorites) vs `ServerPlaylistViews:1242` (playlist detail), plus `LibrarySongsView:273` and `LibraryView:2039`. Duplicated triplets confirmed: `ServerPlaylistViews:1910` `HStack(spacing: 5)` + `.frame(width: MusicDesign.albumHeroPrimaryCapsuleWidth, height: 54)`; `LibraryView:1296` `HStack(spacing: MusicDesign.libraryPlayShuffleLabelSpacing)`; `BrowseAlbumDetailView:564–569` `HStack(spacing: 5)` with `.padding(.vertical, 14)` and no height. `grep -rn albumHeroPlayLabelSpacing Sources/VellumMusicKit | grep -v MusicDesignSystem.swift` returns nothing — the constant (`= 5`, line 586) is dead. Attribution slip: the finding's second excerpt is `ServerPlaylistViews:1910–1921`, not `MusicDesignSystem.swift:1718–1746`.
+- **Evidence:** `MusicDesignSystem.swift:1678–1691` (`AlbumHeroPlayShuffleCluster`) emits `heroCapsuleButton(systemImage: "shuffle", title: "Shuffle", action: onShuffle)` before `heroCapsuleButton(systemImage: "play.fill", …)`, at `.font(.headline.weight(.bold))` / `.frame(height: 54)`; `LibraryPlayShuffleRow` (1712–1746) emits `Button(action: onPlay)` first at `.font(.body.weight(.semibold))` / `.padding(.vertical, 13)`. Both are used in the same `pills:` slot of `PlaylistHeroOrPillsHeader` — `LibraryView:1145` (Favorites) vs `ServerPlaylistViews:1242` (playlist detail), plus `LibrarySongsView:273` and `LibraryView:2039`. Duplicated triplets confirmed: `ServerPlaylistViews:1910` `HStack(spacing: 5)` + `.frame(width: MusicDesign.albumHeroPrimaryCapsuleWidth, height: 54)`; `LibraryView:1296` `HStack(spacing: MusicDesign.libraryPlayShuffleLabelSpacing)`; `BrowseAlbumDetailView:564–569` `HStack(spacing: 5)` with `.padding(.vertical, 14)` and no height. `grep -rn albumHeroPlayLabelSpacing Sources/NaviTunesKit | grep -v MusicDesignSystem.swift` returns nothing — the constant (`= 5`, line 586) is dead. Attribution slip: the finding's second excerpt is `ServerPlaylistViews:1910–1921`, not `MusicDesignSystem.swift:1718–1746`.
 - **Better approach:** Fix the order first as its own change (swap the two calls in `AlbumHeroPlayShuffleCluster`) — that is the user-facing bug and needs no refactor. The proposed `AlbumHeroActionTriplet(palette:isDisabled:onShuffle:onPlay:primaryAction:)` cannot express `BrowseAlbumDetailView`'s row: there the shuffle button is *enabled* when `!isLibraryPlayback` and calls `flashToast("Request this first to shuffle.")` while drawing with `heroChromeTertiary` / `heroGlassCircleFillDisabled` (541–555), and the Play slot itself is replaced by a Request button (577+). Either give the triplet a `shuffleAppearance: .active | .muted` (independent of `disabled`) and a `@ViewBuilder` middle slot too, or leave the Browse row out and unify only the two library triplets. Note `heroGlyphColor`/`heroCircleFill` in `ServerPlaylistViews` (1934–1940) are plain palette pass-throughs today, so `palette`-only is sufficient for those two. Label spacing should reference the now-dead `albumHeroPlayLabelSpacing` rather than leaving three literals.
 - **Versus the first pass:** AGREE — same identical-slot evidence, same dead constant, same attribution fix. The prior block did not examine whether the proposed triplet fits the Browse row's toast-on-shuffle semantics; it does not, which I would add as a fix caveat.
 
 ---
 ## P07 — Failure feedback has no routing rule: the same class of action is a toast on success and a modal alert on failure
 - **Round:** 1 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/LibraryCellContextMenus.swift:110–118` (and 8 more sites in the file; 11 in `ServerPlaylistViews`; 53 `errorMessage =` sites total)
+- **File:** `Sources/NaviTunesKit/Library/LibraryCellContextMenus.swift:110–118` (and 8 more sites in the file; 11 in `ServerPlaylistViews`; 53 `errorMessage =` sites total)
 - **Line:** as above
 
 ```swift
@@ -2397,14 +2397,14 @@ for the image-import and playlist-delete paths.
 **Re-verified (T238) —** independent second pass, agent 20, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `LibraryCellContextMenus.swift:110–118` is verbatim (`app.errorMessage = error.localizedDescription` in `addAlbumToLibrary()`), and `grep -n "errorMessage = "` in that file returns lines 116, 127, 138, 149, 159, 260, 276, 287, 297 (nine); `ServerPlaylistViews` has eleven (356, 374, 481, 2441, 2472, 3220, 3244, 3265, 3364, 3394, 3574); `grep -rn "errorMessage = " Sources/VellumMusicKit | wc -l` = 53. `AppModel.swift:211` is a bare `@Published var errorMessage: String?` with no doc comment, directly under a documented `transientToast` (206–208). `LibraryErrorAlertChrome` (`RootView.swift:390–411`, cited as 395–411) is `.alert("Something went wrong", …) message: { Text(app.errorMessage ?? "") }`. Failure toasts in AppModel confirmed: `showTransientToast("Couldn't sync library to server")` (2497), `"Couldn't load mix"` (6706), `"Couldn't create share link"` (6745), against the success toast `showTransientToast("Added “\(album.title)”")` at 3161. Inconsistent routing is real.
+- **Evidence:** `LibraryCellContextMenus.swift:110–118` is verbatim (`app.errorMessage = error.localizedDescription` in `addAlbumToLibrary()`), and `grep -n "errorMessage = "` in that file returns lines 116, 127, 138, 149, 159, 260, 276, 287, 297 (nine); `ServerPlaylistViews` has eleven (356, 374, 481, 2441, 2472, 3220, 3244, 3265, 3364, 3394, 3574); `grep -rn "errorMessage = " Sources/NaviTunesKit | wc -l` = 53. `AppModel.swift:211` is a bare `@Published var errorMessage: String?` with no doc comment, directly under a documented `transientToast` (206–208). `LibraryErrorAlertChrome` (`RootView.swift:390–411`, cited as 395–411) is `.alert("Something went wrong", …) message: { Text(app.errorMessage ?? "") }`. Failure toasts in AppModel confirmed: `showTransientToast("Couldn't sync library to server")` (2497), `"Couldn't load mix"` (6706), `"Couldn't create share link"` (6745), against the success toast `showTransientToast("Added “\(album.title)”")` at 3161. Inconsistent routing is real.
 - **Better approach:** The doc comment and a `reportRecoverableFailure(_:underlying:)` helper are right, but the conversion list is partly wrong. (1) It contradicts itself: it says "keep the alert for … playlist-delete paths" yet lists `ServerPlaylistViews:2472`, which is inside `deletePlaylist()` (2467–2474). (2) Lines 356 and 374 run inside the add-to-playlist picker, which on iOS is a UIKit page sheet from `OverPlayerSheetPresenter` (`AppModel.swift:3586–3590`), and `dismissPlaylistPicker()` is only called on the success path; `OverPlayerSheetPresenter.swift` contains no toast chrome and `musicTransientToastChrome()` is applied only at `RootView:246/281`, so a failure toast would sit under the still-presented sheet (inference about UIKit-over-SwiftUI layering, not measured). (3) Line 481 is `NewPlaylistNameSheet.create()`, presented via SwiftUI `.sheet` at `LibraryView:201/889` and `ServerPlaylistViews:208`, with the same occlusion problem and the sheet left open on failure — a toast would make "tap Create, nothing happens" silent. Convert the nine context-menu sites and 2441 (`removeRow`, in the detail view); keep 356/374/481/2472 on the alert or add in-sheet inline error text. Also amend the CLAUDE.md toast bullet ("errors → `.alert`") in the same change so the new helper does not read as a rule violation.
 - **Versus the first pass:** DISAGREE — the prior block verified every count (I match them all) and correctly flagged the CLAUDE.md bullet conflict, but it waved the site list through. It missed that 2472 is the very `deletePlaylist()` path the fix says to exempt, and that 356/374/481 are sheet-hosted failure paths where a root-level toast is not the user's feedback surface; those need to come off the conversion list.
 
 ---
 ## P08 — The toast's bottom offset is a magic number that fits one host, it is dark-on-dark, and VoiceOver never hears it
 - **Round:** 1 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/DesignSystem/MusicDesignSystem.swift:1866–1876`; `App/AppModel.swift:3604–3616`
+- **File:** `Sources/NaviTunesKit/DesignSystem/MusicDesignSystem.swift:1866–1876`; `App/AppModel.swift:3604–3616`
 - **Line:** as above
 
 ```swift
@@ -2440,14 +2440,14 @@ under `colorScheme == .light`. In `AppModel.showTransientToast(_:)` (3604) add
 **Re-verified (T238) —** independent second pass, agent 21, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `MusicDesignSystem.swift:1866-1871` reads `.fill(Color.black.opacity(0.85))` … `.shadow(color: .black.opacity(0.25), radius: 10, y: 4)` … `.padding(.bottom, 110)` with no parameter and no `colorScheme` read anywhere in the modifier (the only `@Environment(\.colorScheme)` hits in the file are at 619/793/807/823, unrelated). The modifier is mounted twice: `RootView.swift:246: .musicTransientToastChrome()` and `RootView.swift:281: .musicTransientToastChrome()` inside `NowPlayingCoverPresenter`, whose own comment says the cover carries its copy because the root is occluded — so the 110 pt tab-bar/mini-player inset is applied on a surface with neither. `grep -rn "AccessibilityNotification\|UIAccessibility.post" Sources/VellumMusicKit` returns nothing; `showTransientToast` (AppModel:3604-3616) sets state, sleeps 1800 ms, and fires `UIImpactFeedbackGenerator(style: .soft)` only. That a label on a view that unmounts in 1.8 s is not read unless VoiceOver focus lands on it is an inference about platform behaviour, but it is the standard one. The app does follow the user theme (`RootView.swift:16: .preferredColorScheme(app.themePreference.colorScheme)`), so dark canvas is reachable.
+- **Evidence:** `MusicDesignSystem.swift:1866-1871` reads `.fill(Color.black.opacity(0.85))` … `.shadow(color: .black.opacity(0.25), radius: 10, y: 4)` … `.padding(.bottom, 110)` with no parameter and no `colorScheme` read anywhere in the modifier (the only `@Environment(\.colorScheme)` hits in the file are at 619/793/807/823, unrelated). The modifier is mounted twice: `RootView.swift:246: .musicTransientToastChrome()` and `RootView.swift:281: .musicTransientToastChrome()` inside `NowPlayingCoverPresenter`, whose own comment says the cover carries its copy because the root is occluded — so the 110 pt tab-bar/mini-player inset is applied on a surface with neither. `grep -rn "AccessibilityNotification\|UIAccessibility.post" Sources/NaviTunesKit` returns nothing; `showTransientToast` (AppModel:3604-3616) sets state, sleeps 1800 ms, and fires `UIImpactFeedbackGenerator(style: .soft)` only. That a label on a view that unmounts in 1.8 s is not read unless VoiceOver focus lands on it is an inference about platform behaviour, but it is the standard one. The app does follow the user theme (`RootView.swift:16: .preferredColorScheme(app.themePreference.colorScheme)`), so dark canvas is reachable.
 - **Better approach:** The `bottomInset` parameter and the `AccessibilityNotification.Announcement(...).post()` call are right (AppModel already `import SwiftUI`, so it compiles on iOS 17+). The fill change as written is incomplete: the toast's text is hard-coded `.foregroundStyle(.white)` and `.white.opacity(0.7)` (lines 1857/1861), so `.regularMaterial` in light mode gives white text on a light material — unreadable. Either keep the single dark pill (Apple Music uses one in both schemes) and add a hairline `.overlay(Capsule().stroke(.white.opacity(0.15)))` for dark-canvas separation, or switch the fill *and* the two text styles to `.primary` / `.secondary` together. Also prefer `bottomInset` computed from the host's safe area on the cover rather than a second literal `24`.
 - **Versus the first pass:** AGREE — same three defects confirmed with the same greps; the prior block did not judge the fix and so missed that the material swap without changing the `.white` text colours breaks light mode.
 
 ---
 ## P09 — The browse album page ships its own toast instead of the app's
 - **Round:** 1 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/AlbumDetail/BrowseAlbumDetailView.swift:37, 413–425, 1144–1150`
+- **File:** `Sources/NaviTunesKit/AlbumDetail/BrowseAlbumDetailView.swift:37, 413–425, 1144–1150`
 - **Line:** as above
 
 ```swift
@@ -2500,7 +2500,7 @@ toast)` line. No call site changes.
 ---
 ## P10 — The browse hero "+" opens a one-item menu where every other album page puts Add to Library
 - **Round:** 1 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/AlbumDetail/BrowseAlbumDetailView.swift:597–629`
+- **File:** `Sources/NaviTunesKit/AlbumDetail/BrowseAlbumDetailView.swift:597–629`
 - **Line:** as above
 
 ```swift
@@ -2548,7 +2548,7 @@ not-in-library case. Extract the three-way button into
 ---
 ## P11 — The navigation chevron is a hard-coded light-mode grey, copy-pasted past the shared view
 - **Round:** 1 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/DesignSystem/MusicDesignSystem.swift:1452–1459`;
+- **File:** `Sources/NaviTunesKit/DesignSystem/MusicDesignSystem.swift:1452–1459`;
   copies at `Library/LibraryArtistsGenresViews.swift:156–159`, `Library/LibraryView.swift:374–377`
 - **Line:** as above
 
@@ -2585,14 +2585,14 @@ iOS — add a `MusicDesign.tertiaryLabel` token next to `secondaryLabel` (438–
 **Re-verified (T238) —** independent second pass, agent 21, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `grep -rn "Color(white: 0.35)" Sources/VellumMusicKit` returns exactly three hits: `MusicDesignSystem.swift:1456`, `LibraryArtistsGenresViews.swift:158`, `LibraryView.swift:375`. The shared view is `struct MusicNavigationChevron: View { … .foregroundStyle(Color(white: 0.35)) … }` (1452-1459). Citation drift: the `LibraryArtistsGenresViews` copy is inside `private struct LibraryArtistRowLabel` (line 140) — the artist row, not the genre row — and the `LibraryView` copy is lines 373-375 inside `libraryRowLabel(_:)`, which pads `.padding(.horizontal, 20)` with no chevron-specific trailing pad. The app follows the user theme (`RootView.swift:16 .preferredColorScheme(app.themePreference.colorScheme)`; the only `.light` pin is `LibraryView.swift:1222`, a different view), so the fixed grey is shown on dark canvases. No `tertiaryLabel` token exists yet (grep returns nothing). The contrast ratio is unmeasured, as the finding says.
+- **Evidence:** `grep -rn "Color(white: 0.35)" Sources/NaviTunesKit` returns exactly three hits: `MusicDesignSystem.swift:1456`, `LibraryArtistsGenresViews.swift:158`, `LibraryView.swift:375`. The shared view is `struct MusicNavigationChevron: View { … .foregroundStyle(Color(white: 0.35)) … }` (1452-1459). Citation drift: the `LibraryArtistsGenresViews` copy is inside `private struct LibraryArtistRowLabel` (line 140) — the artist row, not the genre row — and the `LibraryView` copy is lines 373-375 inside `libraryRowLabel(_:)`, which pads `.padding(.horizontal, 20)` with no chevron-specific trailing pad. The app follows the user theme (`RootView.swift:16 .preferredColorScheme(app.themePreference.colorScheme)`; the only `.light` pin is `LibraryView.swift:1222`, a different view), so the fixed grey is shown on dark canvases. No `tertiaryLabel` token exists yet (grep returns nothing). The contrast ratio is unmeasured, as the finding says.
 - **Better approach:** The colour change to `Color(UIColor.tertiaryLabel)` (macOS branch `.tertiaryLabelColor`) is right and matches the stock List disclosure. But dropping `MusicNavigationChevron()` verbatim into `LibraryView:373-375` adds `MusicChevronRowMetrics.chevronTrailingPadding` (9 pt) inside a row already padded 20 pt, moving the hub chevron from 20 to 29 pt while the artist row sits at 17+9 = 26. Either give `MusicNavigationChevron` a `trailingPadding` parameter (default 9, pass 0 from the hub row) or change the hub row to `.musicChevronRowPadding()` so all three rows land on the shared metrics — pick one deliberately rather than shifting the hub by accident.
 - **Versus the first pass:** AGREE — same three sites and same citation corrections; I add the trailing-padding shift the verbatim swap would introduce in `LibraryView`.
 
 ---
 ## P12 — Reduce Motion is honoured by the shimmer and lyrics only; the cover zoom and header fades ignore it
 - **Round:** 1 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/NowPlaying/NowPlayingCoverAnimator.swift:108–122`;
+- **File:** `Sources/NaviTunesKit/NowPlaying/NowPlayingCoverAnimator.swift:108–122`;
   `NowPlaying/CoverZoomCustomTransition.swift:734, 1344`; `DesignSystem/MusicDesignSystem.swift:1391–1393`
 - **Line:** as above
 
@@ -2632,14 +2632,14 @@ Reduce Motion.
 **Re-verified (T238) —** independent second pass, agent 21, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** PARTLY REAL · **Fix:** ADEQUATE
-- **Evidence:** `grep -rn "accessibilityReduceMotion\|isReduceMotionEnabled" Sources/VellumMusicKit` hits only `MusicLoadingShimmer.swift:10` and `NowPlayingView.swift:2611` (LyricsFocusScrollView), and `prefersCrossFadeTransitions` appears nowhere. `NowPlayingCoverAnimator.swift:108-122` unconditionally builds `UIViewPropertyAnimator(duration: transitionDuration(using: context), timingParameters: CoverZoomTuning.easeOutQuint)` and animates `applyState(progress:)` (scale + translate); the same at `CoverZoomCustomTransition.swift:734` and `1344` (`flyHome`), plus `1366` (`flyBack`) and `NowPlayingCoverAnimator.swift:487` (drag release spring). Both are custom `UIViewControllerAnimatedTransitioning` implementations, which (inference about UIKit) get no automatic Reduce Motion substitution. The other two cited sites are not defects: `MusicDesignSystem.swift:1391-1392` is `.opacity(isVisible ? 1 : 0).animation(.easeInOut(duration: 0.2), value: isVisible)` and the artwork load at ~747 is `withAnimation(.easeOut(duration: 0.28)) { imageVisible = true }` — pure opacity cross-fades with no scale or translation, which is the substitute Reduce Motion asks for (inference from Apple's guidance).
+- **Evidence:** `grep -rn "accessibilityReduceMotion\|isReduceMotionEnabled" Sources/NaviTunesKit` hits only `MusicLoadingShimmer.swift:10` and `NowPlayingView.swift:2611` (LyricsFocusScrollView), and `prefersCrossFadeTransitions` appears nowhere. `NowPlayingCoverAnimator.swift:108-122` unconditionally builds `UIViewPropertyAnimator(duration: transitionDuration(using: context), timingParameters: CoverZoomTuning.easeOutQuint)` and animates `applyState(progress:)` (scale + translate); the same at `CoverZoomCustomTransition.swift:734` and `1344` (`flyHome`), plus `1366` (`flyBack`) and `NowPlayingCoverAnimator.swift:487` (drag release spring). Both are custom `UIViewControllerAnimatedTransitioning` implementations, which (inference about UIKit) get no automatic Reduce Motion substitution. The other two cited sites are not defects: `MusicDesignSystem.swift:1391-1392` is `.opacity(isVisible ? 1 : 0).animation(.easeInOut(duration: 0.2), value: isVisible)` and the artwork load at ~747 is `withAnimation(.easeOut(duration: 0.28)) { imageVisible = true }` — pure opacity cross-fades with no scale or translation, which is the substitute Reduce Motion asks for (inference from Apple's guidance).
 - **Better approach:** For the zoom animators, don't build a new "alpha only, frame pinned" mode — both classes already own a degradation path, `crossFade(context:)` (`NowPlayingCoverAnimator.swift:561`, `CoverZoomCustomTransition.swift:1455`), used when geometry is unusable. Branch on `UIAccessibility.isReduceMotionEnabled` (or `prefersCrossFadeTransitions`) at the top of `prepare`/`animateTransition`/`interruptibleAnimator` and take that path; also short-circuit the interactive drag to a dismiss-by-cross-fade so `flyHome`/`flyBack`/the 487 spring don't still scale. Strike the header-fade and artwork-fade half entirely: `.linear(duration: 0)` there replaces a compliant cross-fade with a hard pop for no accessibility gain. The rule addition to `Rules/swiftui-render-cost.md` is fine.
 - **Versus the first pass:** AGREE — the prior pass reached the same re-scope (zoom transitions real, the two fades struck); I add that the existing `crossFade` path is the natural implementation rather than a new alpha-only mode.
 
 ---
 ## P13 — User-facing copy references features that no longer exist
 - **Round:** 1 · **Severity:** low · **Verdict:** **REINFORCED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Discovery/DiscoverySearchView.swift:863–867`;
+- **File:** `Sources/NaviTunesKit/Discovery/DiscoverySearchView.swift:863–867`;
   `Subscriptions/SubscriptionsView.swift:52–56`
 - **Line:** as above
 
@@ -2684,7 +2684,7 @@ iTunes comments to say "server / plugin", and delete `mergeUniqueTracks`.
 ---
 ## P14 — Fixed point sizes on real text defeat Dynamic Type, and the 26 pt hero title is duplicated
 - **Round:** 1 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/ServerPlaylistViews.swift:1840–1842`;
+- **File:** `Sources/NaviTunesKit/Library/ServerPlaylistViews.swift:1840–1842`;
   duplicate `Library/LibraryView.swift:1256–1258`; `Settings/LoginView.swift:144, 250, 282`;
   `AlbumDetail/AppleMusicAlbumTrackRow.swift:177–236`
 - **Line:** as above
@@ -2718,14 +2718,14 @@ ring. In `LoginView` use `.title.bold()` at 144 and `.subheadline.weight(.medium
 **Re-verified (T238) —** independent second pass, agent 22, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `grep -rn 'font(.system(size:' Sources/VellumMusicKit | wc -l` → `45`; `grep -rn "ScaledMetric" Sources/VellumMusicKit | wc -l` → `0`, so nothing in the module scales a fixed size. The hero title `.font(.system(size: 26, weight: .bold))` appears at `Library/ServerPlaylistViews.swift:1841`, `Library/LibraryView.swift:1257` **and** `AlbumDetail/BrowseAlbumDetailView.swift:485` — three byte-identical copies, not two. `AppleMusicAlbumTrackRow.swift:177/196/204/223/236` are `.font(.system(size: 13/14/13/13/8.5 …))` glyphs and `ringDiameter` is `private let ringDiameter: CGFloat = 17` (line 96) used in six `.frame` calls. One citation is mislabeled: `LoginView.swift:250` and `:282` are `Image(systemName:)` icons in a `.frame(width: 22)` gutter, and the actual field label at 244 is already `.font(.caption.weight(.semibold))` — only `:144` (`Text("Login").font(.system(size: 28, weight: .bold))`) is real text.
+- **Evidence:** `grep -rn 'font(.system(size:' Sources/NaviTunesKit | wc -l` → `45`; `grep -rn "ScaledMetric" Sources/NaviTunesKit | wc -l` → `0`, so nothing in the module scales a fixed size. The hero title `.font(.system(size: 26, weight: .bold))` appears at `Library/ServerPlaylistViews.swift:1841`, `Library/LibraryView.swift:1257` **and** `AlbumDetail/BrowseAlbumDetailView.swift:485` — three byte-identical copies, not two. `AppleMusicAlbumTrackRow.swift:177/196/204/223/236` are `.font(.system(size: 13/14/13/13/8.5 …))` glyphs and `ringDiameter` is `private let ringDiameter: CGFloat = 17` (line 96) used in six `.frame` calls. One citation is mislabeled: `LoginView.swift:250` and `:282` are `Image(systemName:)` icons in a `.frame(width: 22)` gutter, and the actual field label at 244 is already `.font(.caption.weight(.semibold))` — only `:144` (`Text("Login").font(.system(size: 28, weight: .bold))`) is real text.
 - **Better approach:** (1) `.title.bold()` silently changes the hero from 26 pt to 28 pt and misses the third copy in `BrowseAlbumDetailView:485`; to keep the tuned size and still track Dynamic Type use `@ScaledMetric(relativeTo: .title) private var heroTitleSize: CGFloat = 26` (or a `MusicDesign` helper returning `Font.system(size:weight:)` from a scaled metric) at all three sites. (2) In the track row, scale the 8.5 pt arrow glyph too (its own `@ScaledMetric`), not just `ringDiameter`, otherwise the arrow stays fixed inside a growing ring. (3) Drop `LoginView:250/282` from the fix — they are icons in a fixed 22 pt gutter; scaling them without scaling the gutter breaks row alignment.
 - **Versus the first pass:** AGREE — it independently refuted the 250/282 citation, found the third 26 pt copy at `BrowseAlbumDetailView:485`, and flagged the fixed `ringDiameter`; my reading matches on every point.
 
 ---
 ## P15 — Empty-state grammar is inconsistent, and plurals are hand-rolled with no localization path
 - **Round:** 1 · **Severity:** low · **Verdict:** **REINFORCED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/ServerPlaylistViews.swift:95–104`;
+- **File:** `Sources/NaviTunesKit/Library/ServerPlaylistViews.swift:95–104`;
   plurals at `Settings/SettingsView.swift:180`, `Settings/SettingsSections.swift:351`, and 7 more sites
 - **Line:** as above
 
@@ -2760,7 +2760,7 @@ goal, add `Resources/Localizable.xcstrings` to `Package.swift`'s `resources` and
 **Re-verified (T238) —** independent second pass, agent 22, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** PARTLY REAL · **Fix:** WRONG
-- **Evidence:** `grep -rln ContentUnavailableView … | wc -l` → `18`; `grep -rn inflect` → nothing; `ls Sources/VellumMusicKit/Resources` → `AccentLogos` only. `ServerPlaylistViews.swift:96–104` does render `Text("No playlists yet. Tap + to create one.")` / `Text("No playlists match …")` as bare list rows, so the AddToPlaylistSheet half is real. `DiscoverySearchView.swift:863` is `Text("Search your server or Apple Music for songs, albums, and artists.")` under `recentHeader` — an instructional prompt, not a "nothing here" state, so calling it an empty-state grammar violation is a stretch. Nine `== 1 ? "" : "s"` sites confirmed, but most are **not** inside `Text`: `SettingsView.swift:180` `return "\(count) track\(count == 1 ? "" : "s") on disk"` (a `String?` computed property), `SettingsSections.swift:351` feeds `let subtitle: String` (364), `PlaylistKillListView.swift:291/300` return `String`, `ServerPlaylistViews.swift:1557` and `LibraryView.swift:1114` append to `[String]`. Only `SettingsEqualizerView.swift:124` is inside a `Text(...)`. Also `Package.swift:20` already has `resources: [.process("Resources")]`.
+- **Evidence:** `grep -rln ContentUnavailableView … | wc -l` → `18`; `grep -rn inflect` → nothing; `ls Sources/NaviTunesKit/Resources` → `AccentLogos` only. `ServerPlaylistViews.swift:96–104` does render `Text("No playlists yet. Tap + to create one.")` / `Text("No playlists match …")` as bare list rows, so the AddToPlaylistSheet half is real. `DiscoverySearchView.swift:863` is `Text("Search your server or Apple Music for songs, albums, and artists.")` under `recentHeader` — an instructional prompt, not a "nothing here" state, so calling it an empty-state grammar violation is a stretch. Nine `== 1 ? "" : "s"` sites confirmed, but most are **not** inside `Text`: `SettingsView.swift:180` `return "\(count) track\(count == 1 ? "" : "s") on disk"` (a `String?` computed property), `SettingsSections.swift:351` feeds `let subtitle: String` (364), `PlaylistKillListView.swift:291/300` return `String`, `ServerPlaylistViews.swift:1557` and `LibraryView.swift:1114` append to `[String]`. Only `SettingsEqualizerView.swift:124` is inside a `Text(...)`. Also `Package.swift:20` already has `resources: [.process("Resources")]`.
 - **Better approach:** "Replace the nine sites with `Text("^[\(count) track](inflect: true)")`" does not compile at the six String-typed sites above (a `Text` cannot be returned as a `String`, appended to `[String]`, or passed to `subtitle: String`). Use `String(localized: "^[\(count) track](inflect: true)")` at String sites and the `Text` form only where a `Text` is being built (inference: Foundation's automatic grammar agreement applies through `String(localized:)`/`LocalizedStringKey` without a catalog in the development language). The `Package.swift` step is a no-op and should be dropped. For empty states, replace only the AddToPlaylistSheet rows — `ContentUnavailableView.search(text:)` for the filtered case and a "No Playlists" CUV replacing the section (not dropped in as a row under a header); do not put `ContentUnavailableView("No Playlists", …)` at `DiscoverySearchView:862`, which is a search prompt, not a playlist list.
 - **Versus the first pass:** DISAGREE — it correctly found the tenth plural, the second Discovery site, the redundant `Package.swift` step and the CUV-replaces-section point, but it waved the inflection half through ("works without a catalog") without noticing that the proposed `Text(...)` wrapper cannot be applied at the String-typed sites, which is the bigger fix defect.
 
@@ -2773,7 +2773,7 @@ goal, add `Resources/Localizable.xcstrings` to `Package.swift`'s `resources` and
 
 ## C01 — The Now Playing "⋯" menu is a hand-rolled copy of `StandardSongMenuContent` and has already drifted
 - **Round:** 1 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/NowPlaying/NowPlayingView.swift:1224–1341`
+- **File:** `Sources/NaviTunesKit/NowPlaying/NowPlayingView.swift:1224–1341`
 - **Line:** as above
 
 ```swift
@@ -2819,7 +2819,7 @@ History"; "Play more like this / Add similar to queue / Play artist mix"). Delet
 ---
 ## C02 — Playlist sorting is implemented twice, with two identical enums and a dead helper in each copy
 - **Round:** 1 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/ServerPlaylistViews.swift:28–34, 281–331`;
+- **File:** `Sources/NaviTunesKit/Library/ServerPlaylistViews.swift:28–34, 281–331`;
   `Library/LibraryView.swift:537–543, 697–747`
 - **Line:** as above
 
@@ -2834,7 +2834,7 @@ History"; "Play more like this / Add similar to queue / Play artist mix"). Delet
 ```
 
 ```swift
-    /// Vellum library add date when known; otherwise server created.
+    /// NaviTunes library add date when known; otherwise server created.
     private func playlistDateAdded(_ playlist: PlaylistSummary) -> Date {
         if let entry = app.libraryPlaylistEntries.first(where: { $0.id == playlist.id }) {
             return entry.added
@@ -2877,7 +2877,7 @@ displayedPlaylists` recomputed on `.onChange` of `sortRaw`, `searchText` and
 ---
 ## C03 — Four copies of the re-push navigation dance, three of `heroArtSide`, and two spellings of the same row state
 - **Round:** 1 · **Severity:** low · **Verdict:** **REINFORCED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/ServerPlaylistViews.swift:551–561`;
+- **File:** `Sources/NaviTunesKit/Library/ServerPlaylistViews.swift:551–561`;
   `Library/LibraryView.swift:1462–1472, 1121–1130`; `Library/LibrarySongsView.swift:365–375, 377–391`;
   `AlbumDetail/BrowseAlbumDetailView.swift:298–305, 157–166`
 - **Line:** as above
@@ -2929,7 +2929,7 @@ compares the same signal everywhere.
 ---
 ## C04 — Root presentation chrome is duplicated by hand on the shell and the cover
 - **Round:** 1 · **Severity:** low _(was medium)_ · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/RootView.swift:240–247` and `276–292`
+- **File:** `Sources/NaviTunesKit/App/RootView.swift:240–247` and `276–292`
 - **Line:** as above
 
 ```swift
@@ -2967,13 +2967,13 @@ introduces the `bottomInset` parameter.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
 - **Evidence:** Shell: `RootView.swift:240–247` applies `.libraryRemovalConfirmationChrome()`, `.modifier(LibraryErrorAlertChrome())`, then `NowPlayingFullScreenCoverModifier`, then `.musicTransientToastChrome()`, `.musicQueueReplacementChrome()`. Cover: 281–292 applies the same four on `NowPlayingGestureHost` with the retrofit comments ("And again for removals…", "And once more for `errorMessage`…"). `LibraryRemovalConfirmation.swift:209–210` reads "Only the app root and the Now Playing cover apply this — anywhere else and two alerts race for the same presentation host." Both `LibraryErrorAlertChrome` copies bind the same `app.errorMessage` (390–408). The duplication is required (UIKit-presented cover inherits no SwiftUI environment, per the comment at 293–299), so this is lockstep risk, not a live defect; the double-present question stays unverified (inference: UIKit refuses the occluded root presentation with a console warning, so only the cover's alert shows).
-- **Better approach:** Two corrections. (1) `grep -rn bottomInset Sources/VellumMusicKit` → nothing: the `toastBottomInset:` parameter does not exist, so the helper must be introduced without it unless P08 lands first. (2) The fix's "call it once at 240" moves the toast/queue chrome from *after* the cover modifier to *before* it. On iOS the cover is a `.background { NowPlayingCoverPresenter … }` so overlay order is unaffected (inference), but the `#else` branch (`RootView.swift:313–329`) renders the player as a `ZStack` overlay with `.zIndex(1)` — applying the toast chrome inside that ZStack's `content` would put toasts *under* the player on non-iOS builds. Apply the helper on the shell *after* `NowPlayingFullScreenCoverModifier` (alert modifiers don't care about their position relative to a background) and on the cover as proposed. Moving `LibraryErrorAlertChrome` out of `RootView` into the DesignSystem helper is fine — single module, `private` → `fileprivate`/internal.
+- **Better approach:** Two corrections. (1) `grep -rn bottomInset Sources/NaviTunesKit` → nothing: the `toastBottomInset:` parameter does not exist, so the helper must be introduced without it unless P08 lands first. (2) The fix's "call it once at 240" moves the toast/queue chrome from *after* the cover modifier to *before* it. On iOS the cover is a `.background { NowPlayingCoverPresenter … }` so overlay order is unaffected (inference), but the `#else` branch (`RootView.swift:313–329`) renders the player as a `ZStack` overlay with `.zIndex(1)` — applying the toast chrome inside that ZStack's `content` would put toasts *under* the player on non-iOS builds. Apply the helper on the shell *after* `NowPlayingFullScreenCoverModifier` (alert modifiers don't care about their position relative to a background) and on the cover as proposed. Moving `LibraryErrorAlertChrome` out of `RootView` into the DesignSystem helper is fine — single module, `private` → `fileprivate`/internal.
 - **Versus the first pass:** AGREE — it confirmed the ranges and the prose contract, correctly lowered severity, and flagged the shell reorder; I add the concrete non-iOS z-order consequence of that reorder and the missing `bottomInset` parameter.
 
 ---
 ## C05 — `NowPlayingGestureHost` re-injects four environment objects the cover already injected
 - **Round:** 1 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/RootView.swift:441–444` (versus 300–303, 320–323, 187)
+- **File:** `Sources/NaviTunesKit/App/RootView.swift:441–444` (versus 300–303, 320–323, 187)
 - **Line:** as above
 
 ```swift
@@ -2992,7 +2992,7 @@ not the other — precisely the class of bug the 293–299 comment says already 
 four-line block appears a third time in the macOS branch (320–323), and the accessory injects `app` a
 fourth time (187).
 
-**Fix.** Remove 441–444 and add one `extension View { func vellumAppEnvironment(_ app: AppModel) ->
+**Fix.** Remove 441–444 and add one `extension View { func navitunesAppEnvironment(_ app: AppModel) ->
 some View }` applying the four `.environmentObject` calls; use it at 300–303, 320–323 and 189–191 so
 the injected set has one definition. Adding `app.equalizer` for **E03** then becomes a one-line change
 instead of four.
@@ -3004,14 +3004,14 @@ instead of four.
 **Re-verified (T238) —** independent second pass, agent 23, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `grep -n environmentObject Sources/VellumMusicKit/App/RootView.swift` returns the four-line block three times at 300–303, 320–323 and 441–444, plus `187:            .environmentObject(app)` and the three-line set at 189–191; line numbers have not drifted. `NowPlayingGestureHost` declares `@EnvironmentObject private var app: AppModel` (line 425), so it can only exist under an ancestor that already injected `app`; both construction sites (the iOS `content:` closure ending at 300–303 and the macOS `ZStack` branch at 316–323) inject all four objects on the outside. The inner set on `NowPlayingView` at 441–444 is therefore unreachable-as-first-provider and purely redundant. The 293–299 comment ("Injected **outermost**, and every one of them, because a `UIHostingController` inherits no SwiftUI environment") confirms the outer site is the one that matters. Line 187 is a different case: the `musicNativeTabChrome` accessory is its own hosting boundary and deliberately injects only `app` — the prose's "a fourth time" overstates it, though the fix correctly leaves 187 alone.
-- **Better approach:** n/a — lines 441–444 contain exactly the four `.environmentObject` calls and nothing else, so deleting them is safe; one `vellumAppEnvironment(_:)` extension at 300–303 / 320–323 / 189–191 is the right consolidation (adding `app` at 189–191 is harmless since `RootView` reads `app` from its own `@EnvironmentObject` at line 4).
+- **Evidence:** `grep -n environmentObject Sources/NaviTunesKit/App/RootView.swift` returns the four-line block three times at 300–303, 320–323 and 441–444, plus `187:            .environmentObject(app)` and the three-line set at 189–191; line numbers have not drifted. `NowPlayingGestureHost` declares `@EnvironmentObject private var app: AppModel` (line 425), so it can only exist under an ancestor that already injected `app`; both construction sites (the iOS `content:` closure ending at 300–303 and the macOS `ZStack` branch at 316–323) inject all four objects on the outside. The inner set on `NowPlayingView` at 441–444 is therefore unreachable-as-first-provider and purely redundant. The 293–299 comment ("Injected **outermost**, and every one of them, because a `UIHostingController` inherits no SwiftUI environment") confirms the outer site is the one that matters. Line 187 is a different case: the `musicNativeTabChrome` accessory is its own hosting boundary and deliberately injects only `app` — the prose's "a fourth time" overstates it, though the fix correctly leaves 187 alone.
+- **Better approach:** n/a — lines 441–444 contain exactly the four `.environmentObject` calls and nothing else, so deleting them is safe; one `navitunesAppEnvironment(_:)` extension at 300–303 / 320–323 / 189–191 is the right consolidation (adding `app` at 189–191 is harmless since `RootView` reads `app` from its own `@EnvironmentObject` at line 4).
 - **Versus the first pass:** AGREE — same four sites, same conclusion that the inner set is removable and that 187 is a required separate boundary rather than a "fourth" redundant copy.
 
 ---
 ## C06 — Three different "icon row" treatments across two levels of Settings
 - **Round:** 1 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Settings/SettingsView.swift:127–131`;
+- **File:** `Sources/NaviTunesKit/Settings/SettingsView.swift:127–131`;
   `Settings/SettingsSections.swift:367–375`; `Settings/SettingsView.swift:347–355`
 - **Line:** as above
 
@@ -3051,7 +3051,7 @@ glyphs scaling with the text beside them (**P14**).
 ---
 ## C07 — Plex sign-in error state is inferred by sniffing English substrings
 - **Round:** 1 · **Severity:** medium _(was low)_ · **Verdict:** **REINFORCED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Settings/SettingsView.swift:412–414`
+- **File:** `Sources/NaviTunesKit/Settings/SettingsView.swift:412–414`
 - **Line:** as above
 
 ```swift
@@ -3087,7 +3087,7 @@ footer that colours by content.
 ---
 ## C08 — `"streamingDiskCacheEnabled"` is a bare string literal at four sites, and the registered default contradicts the documented one
 - **Round:** 1 · **Severity:** low · **Verdict:** **REINFORCED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:736–745, 1010`;
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:736–745, 1010`;
   `Playback/PlaybackEngine.swift:179–181`; `Settings/SettingsPlaybackView.swift:9`
 - **Line:** as above
 
@@ -3144,14 +3144,14 @@ Re-verify C08's line numbers against current `HEAD` before implementing — `App
 **Re-verified (T238) —** independent second pass, agent 23, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `grep -rn streamingDiskCacheEnabled Sources/VellumMusicKit` shows exactly four literal sites: `SettingsPlaybackView.swift:9: @AppStorage("streamingDiskCacheEnabled") private var streamingDiskCacheEnabled = true`, `AppModel.swift:740: UserDefaults.standard.set(true, forKey: "streamingDiskCacheEnabled")`, `AppModel.swift:1010: UserDefaults.standard.register(defaults: ["streamingDiskCacheEnabled": true])`, `PlaybackEngine.swift:180: UserDefaults.standard.bool(forKey: "streamingDiskCacheEnabled")`. `CLAUDE.md:214` still says `**off by default** — registered in AppModel.init; turning the EQ on flips it true`, contradicting the registered `true`. The double tap update is confirmed: `syncEqualizerToEngine()` (6224) ends with `player.applyLiveEqualizerGains()` = `updateAllTaps(gains:, bypassed: effectiveEqualizerBypass)`, and `reloadForEqualizerSettingsChange()` = `updateAllTaps(gains:, bypassed: effectiveEqualizerBypass || !equalizerEnabled)`; with `private var effectiveEqualizerBypass: Bool { equalizerBypass || !equalizerEnabled }` (PlaybackEngine 1978) the two are identical, so line 743's `Task { await player.reloadForEqualizerSettingsChange() }` repeats the work 742 just did. Round-2 addendum checks out: the `@AppStorage` default is now `true` and matches `register(defaults:)`.
+- **Evidence:** `grep -rn streamingDiskCacheEnabled Sources/NaviTunesKit` shows exactly four literal sites: `SettingsPlaybackView.swift:9: @AppStorage("streamingDiskCacheEnabled") private var streamingDiskCacheEnabled = true`, `AppModel.swift:740: UserDefaults.standard.set(true, forKey: "streamingDiskCacheEnabled")`, `AppModel.swift:1010: UserDefaults.standard.register(defaults: ["streamingDiskCacheEnabled": true])`, `PlaybackEngine.swift:180: UserDefaults.standard.bool(forKey: "streamingDiskCacheEnabled")`. `CLAUDE.md:214` still says `**off by default** — registered in AppModel.init; turning the EQ on flips it true`, contradicting the registered `true`. The double tap update is confirmed: `syncEqualizerToEngine()` (6224) ends with `player.applyLiveEqualizerGains()` = `updateAllTaps(gains:, bypassed: effectiveEqualizerBypass)`, and `reloadForEqualizerSettingsChange()` = `updateAllTaps(gains:, bypassed: effectiveEqualizerBypass || !equalizerEnabled)`; with `private var effectiveEqualizerBypass: Bool { equalizerBypass || !equalizerEnabled }` (PlaybackEngine 1978) the two are identical, so line 743's `Task { await player.reloadForEqualizerSettingsChange() }` repeats the work 742 just did. Round-2 addendum checks out: the `@AppStorage` default is now `true` and matches `register(defaults:)`.
 - **Better approach:** The key-constant half is fine (`EqualizerStorage`, which already owns the sibling `enabledKey` / `bypassKey`, would be an equally natural owner). The "drop either … pick one owner" half is ambiguous in a way that matters: `syncEqualizerToEngine()` has 18 other callers (bypass, band gains, profiles, etc. — grep shows lines 750–863, 6220–6289) that rely on its `applyLiveEqualizerGains()` to push gains, so removing that call would break live slider/bypass updates. The only safe choice is to delete the `Task { await player.reloadForEqualizerSettingsChange() }` line at 743, after which `reloadForEqualizerSettingsChange` has zero callers and should be deleted from `PlaybackEngine` outright rather than kept "under its old name".
 - **Versus the first pass:** AGREE — the prior pass reached the same byte-for-byte-equivalence conclusion and the same "delete `reloadForEqualizerSettingsChange`" resolution.
 
 ---
 ## C09 — `KeychainStore` carries two unused private helpers and replaces items with delete-then-add
 - **Round:** 1 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 1; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/KeychainStore.swift:80–106`
+- **File:** `Sources/NaviTunesKit/App/KeychainStore.swift:80–106`
 - **Line:** as above
 
 ```swift
@@ -3202,7 +3202,7 @@ verify pass; ids continue the round-1 sequence.
 
 ## L21 — `MusicLibraryProviding` omits playlists, favorites and the magic-playlist API, so `AppModel` re-implements backend dispatch 72 times
 - **Round:** 2 · **Severity:** high · **Verdict:** **REINFORCED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/MusicLibraryProviding.swift:437–496` (cause); `App/AppModel.swift:2267–2278` (symptom)
+- **File:** `Sources/NaviTunesKit/Backends/MusicLibraryProviding.swift:437–496` (cause); `App/AppModel.swift:2267–2278` (symptom)
 
 ```swift
     private func fetchMagicPlaylistContents(playlistId: String) async throws -> LibraryPlaylistFetchShape {
@@ -3263,7 +3263,7 @@ scan status, deletion).
 - **Data** — `ArtistViewModel` loads the server catalog, then the active plugin's discography (`artistReleases`) when Lidarr or DroppedNeedle is configured. No TheAudioDB / Last.fm / iTunes / MusicBrainz calls.
 ```
 
-**Problem.** `Sources/VellumMusicKit/MusicBrainz/` is 7 files and 2,487 lines, all live:
+**Problem.** `Sources/NaviTunesKit/MusicBrainz/` is 7 files and 2,487 lines, all live:
 `MusicBrainzService.shared` is called from `ArtistViewModel.swift:562, 576, 994` and
 `ArtistIdentityResolver.swift`; `MusicBrainzSearchFeed` from `DiscoverySearchView.swift`;
 `MusicBrainzCacheStore` from `AppModel.swift`. The project's own operating manual therefore forbids a
@@ -3286,14 +3286,14 @@ sections.
 **Re-verified (T238) —** independent second pass, agent 23, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `wc -l Sources/VellumMusicKit/MusicBrainz/*.swift` → `2487 total` across 7 files. Live call sites outside that folder: `ArtistViewModel.swift:562 if let header = await MusicBrainzService.shared.artistHeader(mbid: mbid, forceRefresh: forceRefresh)`, `:576 let result = await MusicBrainzService.shared.discography(`, `:994 MusicBrainzService.shared.releaseGroupId(forReleaseId:)`, `ArtistIdentityResolver.swift:53, 95, 135, 145`, `DiscoverySearchView.swift:329 @StateObject private var musicBrainz = MusicBrainzSearchFeed()`, `AppModel.swift:2773, 2791 MusicBrainzCacheStore.clearAll()`. No feature flag gates any of it (grep for `musicBrainzEnabled`/`disableMusicBrainz` is empty). `CLAUDE.md:116` reads `No TheAudioDB / Last.fm / iTunes / MusicBrainz calls.` under Artist page → Data, directly contradicted by the in-tree comment at `ArtistViewModel.swift:828–834` ("MusicBrainz owns that now"). `CLAUDE.md:99` (`No iTunes / TheAudioDB / MusicBrainz browse.`) sits in the New-tab section and `Home/` genuinely has no MusicBrainz references, so it is true in scope but misleading as a global rule given Discover search's MusicBrainz feed. A rate limiter does exist to name: `actor MusicBrainzRefreshLimiter` with `minimumInterval: TimeInterval = 10` (`MusicBrainzService.swift:137–143`).
+- **Evidence:** `wc -l Sources/NaviTunesKit/MusicBrainz/*.swift` → `2487 total` across 7 files. Live call sites outside that folder: `ArtistViewModel.swift:562 if let header = await MusicBrainzService.shared.artistHeader(mbid: mbid, forceRefresh: forceRefresh)`, `:576 let result = await MusicBrainzService.shared.discography(`, `:994 MusicBrainzService.shared.releaseGroupId(forReleaseId:)`, `ArtistIdentityResolver.swift:53, 95, 135, 145`, `DiscoverySearchView.swift:329 @StateObject private var musicBrainz = MusicBrainzSearchFeed()`, `AppModel.swift:2773, 2791 MusicBrainzCacheStore.clearAll()`. No feature flag gates any of it (grep for `musicBrainzEnabled`/`disableMusicBrainz` is empty). `CLAUDE.md:116` reads `No TheAudioDB / Last.fm / iTunes / MusicBrainz calls.` under Artist page → Data, directly contradicted by the in-tree comment at `ArtistViewModel.swift:828–834` ("MusicBrainz owns that now"). `CLAUDE.md:99` (`No iTunes / TheAudioDB / MusicBrainz browse.`) sits in the New-tab section and `Home/` genuinely has no MusicBrainz references, so it is true in scope but misleading as a global rule given Discover search's MusicBrainz feed. A rate limiter does exist to name: `actor MusicBrainzRefreshLimiter` with `minimumInterval: TimeInterval = 10` (`MusicBrainzService.swift:137–143`).
 - **Better approach:** n/a — a doc rewrite naming `MusicBrainzService`, `MusicBrainzRefreshLimiter` and `MusicBrainzCacheStore`, plus one line on precedence when server / plugin / MusicBrainz disagree, is the correct and complete remedy; I would only scope the :99 edit to say "the New tab itself makes no MusicBrainz calls" rather than deleting the sentence.
 - **Versus the first pass:** AGREE — same file count, same call sites (including the extra `ArtistIdentityResolver` and `AppModel` lines), same absence of a gating flag.
 
 ---
 ## L23 — The acquisition plugin abstraction leaks: DroppedNeedle branches in the Settings view, Lidarr id parsing in the manager
 - **Round:** 2 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Settings/SettingsView.swift:233–241` (also 244–262, 269–271, 302–310, 750–753)
+- **File:** `Sources/NaviTunesKit/Settings/SettingsView.swift:233–241` (also 244–262, 269–271, 302–310, 750–753)
 
 ```swift
     private var visibleConfigFields: [AcquisitionConfigField] {
@@ -3336,55 +3336,55 @@ the Lidarr cache key to `kind.rawValue`.
 **Re-verified (T238) —** independent second pass, agent 24, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `Sources/VellumMusicKit/Settings/SettingsView.swift` lines match the citation: `if activeKind == .droppedNeedle, field.id == "loginMethod" { return false }` (236), and the downcasts at 303 (`(AcquisitionManager.makeProvider(.droppedNeedle) as? DroppedNeedleAcquisitionPlugin)?.clearStoredSessionToken()`) and 752 (`guard let plugin = AcquisitionManager.makeProvider(.droppedNeedle) as? DroppedNeedleAcquisitionPlugin`). The leak is worse than described: `configField(_:)` at 627 already renders `field.pickerOptions` generically, yet `setupSection` (376–381) hides `loginMethod` and hardcodes `Picker("Sign-In Method", selection: $loginMethodSelection)` with literal `"local"/"jellyfin"/"plex"` tags, duplicating the options DroppedNeedle already declares in `pickerOptions`. Manager side confirmed: `AcquisitionManager.swift:214–221` parses `"native:"`, `"mbid:"`, `albumId.count >= 36`, `Int(albumId) != nil`; the cache key is `AcquisitionTrackListCache.key(pluginKind: Self.nativeIdPrefix, ...)` (Lidarr 550) with `nativeIdPrefix = "lidarr:"` and the key builder `"\(pluginKind):\(releaseGroupMBID)"`, yielding `lidarr::<mbid>`. One qualifier: the `"native:"`/`"mbid:"` prefixes are core conventions, not Lidarr's — `AcquisitionRelease.trackLookupId` in `AcquisitionCore.swift:476–477` emits `"native:\(nativeAlbumId)"` / `"mbid:\(releaseGroupMBID)"` — so only the bare `>= 36` / `Int(...)` heuristics are Lidarr-shaped.
+- **Evidence:** `Sources/NaviTunesKit/Settings/SettingsView.swift` lines match the citation: `if activeKind == .droppedNeedle, field.id == "loginMethod" { return false }` (236), and the downcasts at 303 (`(AcquisitionManager.makeProvider(.droppedNeedle) as? DroppedNeedleAcquisitionPlugin)?.clearStoredSessionToken()`) and 752 (`guard let plugin = AcquisitionManager.makeProvider(.droppedNeedle) as? DroppedNeedleAcquisitionPlugin`). The leak is worse than described: `configField(_:)` at 627 already renders `field.pickerOptions` generically, yet `setupSection` (376–381) hides `loginMethod` and hardcodes `Picker("Sign-In Method", selection: $loginMethodSelection)` with literal `"local"/"jellyfin"/"plex"` tags, duplicating the options DroppedNeedle already declares in `pickerOptions`. Manager side confirmed: `AcquisitionManager.swift:214–221` parses `"native:"`, `"mbid:"`, `albumId.count >= 36`, `Int(albumId) != nil`; the cache key is `AcquisitionTrackListCache.key(pluginKind: Self.nativeIdPrefix, ...)` (Lidarr 550) with `nativeIdPrefix = "lidarr:"` and the key builder `"\(pluginKind):\(releaseGroupMBID)"`, yielding `lidarr::<mbid>`. One qualifier: the `"native:"`/`"mbid:"` prefixes are core conventions, not Lidarr's — `AcquisitionRelease.trackLookupId` in `AcquisitionCore.swift:476–477` emits `"native:\(nativeAlbumId)"` / `"mbid:\(releaseGroupMBID)"` — so only the bare `>= 36` / `Int(...)` heuristics are Lidarr-shaped.
 - **Better approach:** The view-side direction is right, but put the sign-in flow on the protocol rather than as closures inside `AcquisitionCapabilities`: keep capabilities as data (`externalSignIn: ExternalSignInDescriptor?` with label/icon/`tokenFieldId`) and add `startExternalSignIn() async throws -> ExternalSignInHandle` / `pollExternalSignIn(_:) async throws -> String?` / `clearExternalSession()` to `AcquisitionProviding` with default no-op implementations; then `AcquisitionPluginSettingsView` calls `acquisition.provider` (or `makeProvider(activeKind)`) through the protocol and the downcast disappears without stuffing plugin-capturing closures into a `Sendable` value type that is rebuilt on every `capabilities` read. For field visibility, a `hiddenWhen: [(fieldId: String, equals: String)]` per field is simpler than a top-level `[String: Set<String>]` table and lets `hasMinimumDraft` fall out of `required` after filtering, with the token field marked required while `externalSignIn` is the selected method. Also render the existing `pickerOptions` for `loginMethod` instead of the hardcoded picker at 376 — that's a delete, not new code. On the cache key: changing Lidarr's namespace to `kind.rawValue` orphans existing on-disk `lidarr::<mbid>` entries (the cache is permanent by design, `AcquisitionTrackListCache.swift:1–15`); either accept the one-time refetch or read both keys.
 - **Versus the first pass:** AGREE — the prior pass counts the same sites and notes the two downcasts; I add that the hardcoded picker duplicates `pickerOptions` the plugin already declares and that `"native:"/"mbid:"` are core, not Lidarr, conventions. I disagree only on the fix rating: closures in a `Sendable` capabilities struct "conform" but protocol methods are the cleaner shape.
 
 ---
 ## L24 — `UserDefaults` keys use six naming conventions across twelve files, which is why the rename migration missed most of them
 - **Round:** 2 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:343, 484–486`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:343, 484–486`
 
 ```swift
-    private static let favoriteTrackIdsKey = "VellumMusic.favoriteTrackIds"
+    private static let favoriteTrackIdsKey = "NaviTunes.favoriteTrackIds"
 ...
-    private static let themePreferenceKey = "vellumThemePreference"
-    private static let launchTabPreferenceKey = "vellumLaunchTabPreference"
-    private static let wifiStreamQualityKey = "vellumWifiStreamQuality"
+    private static let themePreferenceKey = "navitunesThemePreference"
+    private static let launchTabPreferenceKey = "navitunesLaunchTabPreference"
+    private static let wifiStreamQualityKey = "navitunesWifiStreamQuality"
 ```
 
-**Problem.** A package-wide grep finds ~90 defaults keys under `VellumMusic.`, `vellum` camel-case,
-`vellum.`, `com.randll.vellum.`, `acquisition.`, `coverZoom.`, and bare names (`pinnedLibraryItemRefs`,
+**Problem.** A package-wide grep finds ~90 defaults keys under `NaviTunes.`, `navitunes` camel-case,
+`navitunes.`, `com.randll.vellum.`, `acquisition.`, `coverZoom.`, and bare names (`pinnedLibraryItemRefs`,
 `favoritedPlaylistIds`, `streamingDiskCacheEnabled`, `lastfm_api_key`). Key constants are declared in
 twelve files. There is no single place to enumerate what the app stores — which is precisely why
 **C14**'s migration could not be written correctly and why **C22**'s sign-out cannot know what to
-clear. Several of these are also multi-tens-of-KB blobs in the plist (`vellumCompletedScrobbles` at
-500 items, `VellumMusic.recentlyPlayedTracks` at 100 full `Track`s).
+clear. Several of these are also multi-tens-of-KB blobs in the plist (`navitunesCompletedScrobbles` at
+500 items, `NaviTunes.recentlyPlayedTracks` at 100 full `Track`s).
 
-**Fix.** Add `App/DefaultsKeys.swift` with `enum DefaultsKey: String, CaseIterable` (one `vellum.`
-prefix, one raw value per key) and a `UserDefaults.vellum` accessor; replace every
+**Fix.** Add `App/DefaultsKeys.swift` with `enum DefaultsKey: String, CaseIterable` (one `navitunes.`
+prefix, one raw value per key) and a `UserDefaults.navitunes` accessor; replace every
 `static let …Key = "…"` with a case. `LegacyLyraMigration` then becomes a table-driven `[(old, new)]`
 walk over `DefaultsKey.allCases`, and `signOut` iterates a `perAccount` subset. Move
-`vellumCompletedScrobbles` and `VellumMusic.recentlyPlayedTracks` to JSON files under
-`Application Support/VellumMusic/` like the other stores.
+`navitunesCompletedScrobbles` and `NaviTunes.recentlyPlayedTracks` to JSON files under
+`Application Support/NaviTunes/` like the other stores.
 
 
-**Verified —** Counted independently: 98 distinct key literals, minus 8 non-defaults = **90 UserDefaults keys**, so "~90" is exact. Prefix histogram: `vellum`-camelCase **64**, bare **8**, `VellumMusic.` **8**, `vellum.` **4**, `coverZoom.` **2**, `com.randll.vellum.` **1**, `acquisition.` dynamic. Every convention listed exists — but the distribution is lopsided (64 of 90 are one convention, three of the "six" cover ≤4 keys each); add that clause. "Twelve files" undercounts: **13** declare key constants, **16** touch defaults keys at all. Causal link to C14 verified: exactly 4 of the 90 keys use a `vellum.` prefix.
+**Verified —** Counted independently: 98 distinct key literals, minus 8 non-defaults = **90 UserDefaults keys**, so "~90" is exact. Prefix histogram: `navitunes`-camelCase **64**, bare **8**, `NaviTunes.` **8**, `navitunes.` **4**, `coverZoom.` **2**, `com.randll.vellum.` **1**, `acquisition.` dynamic. Every convention listed exists — but the distribution is lopsided (64 of 90 are one convention, three of the "six" cover ≤4 keys each); add that clause. "Twelve files" undercounts: **13** declare key constants, **16** touch defaults keys at all. Causal link to C14 verified: exactly 4 of the 90 keys use a `navitunes.` prefix.
 
-**Hazard in the fix — flag before anyone acts on it.** "One `vellum.` prefix, one raw value per key" rewrites the on-disk key strings for ~86 keys. Without a per-key old→new migration that silently resets every existing user's favorites, EQ, scrobble queue, pins and playback settings — **precisely the C14 failure mode**. The enum is right; the re-prefixing must either not happen or ship in the same change as the migration table.
+**Hazard in the fix — flag before anyone acts on it.** "One `navitunes.` prefix, one raw value per key" rewrites the on-disk key strings for ~86 keys. Without a per-key old→new migration that silently resets every existing user's favorites, EQ, scrobble queue, pins and playback settings — **precisely the C14 failure mode**. The enum is right; the re-prefixing must either not happen or ship in the same change as the migration table.
 
 
 **Re-verified (T238) —** independent second pass, agent 24, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** Grepping `(static let|let|var) …Key… = "…"` across `Sources/VellumMusicKit` yields 93 distinct literals in 15 files; my prefix histogram: `vellum`-camelCase 62, `VellumMusic.` 8, `vellum.` 4, `coverZoom.` 2, `com.randll.vellum.` 1, `acquisition.` 1, plus bare names (`pinnedLibraryItemRefs`, `favoritedPlaylistIds`, `streamingDiskCacheEnabled`, `widgetCommand`, `lastfm_api_key`). `AppModel.swift:343` is `private static let favoriteTrackIdsKey = "VellumMusic.favoriteTrackIds"` and 484–486 are the `vellumThemePreference` family as quoted. The migration link holds: `LegacyLyraMigration.runIfNeeded()` only calls `migrateDefaults(defaults, fromPrefix: "lyra.", toPrefix: "vellum.")` and `fromPrefix: "com.randll.lyra."`, while `git log -S'lyraThemePreference'` and `-S'LyraMusic.favoriteTrackIds'` show both spellings existed until rename commit `f592b6e` — so the camel-case and `LyraMusic.` keys were never migrated. The blob claim also holds: `ScrobbleStore` stores `completedKey = "vellumCompletedScrobbles"` with `completedCap = 500` via `Self.save(completed, key:)`, and `recentlyPlayedTracks` is JSON `Data` under `UserDefaults.standard.set(data, forKey: Self.recentlyPlayedTracksKey)` (AppModel 5928). Minor: the finding says twelve files; I count 15 declaring key constants.
-- **Better approach:** The central `DefaultsKey` enum and table-driven migration are right, but "one `vellum.` prefix, one raw value per key" means changing the stored string for ~85 keys, which is itself a second silent-data-loss rename unless every old→new pair ships in the same migration table — the exact defect C14 describes. Do it in two steps: (1) introduce `DefaultsKey` with raw values equal to today's strings (no on-disk change) so enumeration, `signOut`'s per-account subset and the Lyra migration table (`lyraThemePreference` → `vellumThemePreference`, `LyraMusic.*` → `VellumMusic.*`) can be written now; (2) only then, optionally, re-prefix with a generated `[(old, new)]` walk. Carve out the widget keys: `WidgetDataStore` reads `UserDefaults(suiteName: appGroupID)` and the extension target in `VellumMusicHost/VellumWidgets` shares those literals, so renaming `widgetCommand`/`widgetPendingPlayId` needs both targets changed together. Moving the two large blobs to JSON files under Application Support is fine and independent.
+- **Evidence:** Grepping `(static let|let|var) …Key… = "…"` across `Sources/NaviTunesKit` yields 93 distinct literals in 15 files; my prefix histogram: `navitunes`-camelCase 62, `NaviTunes.` 8, `navitunes.` 4, `coverZoom.` 2, `com.randll.vellum.` 1, `acquisition.` 1, plus bare names (`pinnedLibraryItemRefs`, `favoritedPlaylistIds`, `streamingDiskCacheEnabled`, `widgetCommand`, `lastfm_api_key`). `AppModel.swift:343` is `private static let favoriteTrackIdsKey = "NaviTunes.favoriteTrackIds"` and 484–486 are the `navitunesThemePreference` family as quoted. The migration link holds: `LegacyLyraMigration.runIfNeeded()` only calls `migrateDefaults(defaults, fromPrefix: "lyra.", toPrefix: "navitunes.")` and `fromPrefix: "com.randll.lyra."`, while `git log -S'lyraThemePreference'` and `-S'LyraMusic.favoriteTrackIds'` show both spellings existed until rename commit `f592b6e` — so the camel-case and `LyraMusic.` keys were never migrated. The blob claim also holds: `ScrobbleStore` stores `completedKey = "navitunesCompletedScrobbles"` with `completedCap = 500` via `Self.save(completed, key:)`, and `recentlyPlayedTracks` is JSON `Data` under `UserDefaults.standard.set(data, forKey: Self.recentlyPlayedTracksKey)` (AppModel 5928). Minor: the finding says twelve files; I count 15 declaring key constants.
+- **Better approach:** The central `DefaultsKey` enum and table-driven migration are right, but "one `navitunes.` prefix, one raw value per key" means changing the stored string for ~85 keys, which is itself a second silent-data-loss rename unless every old→new pair ships in the same migration table — the exact defect C14 describes. Do it in two steps: (1) introduce `DefaultsKey` with raw values equal to today's strings (no on-disk change) so enumeration, `signOut`'s per-account subset and the Lyra migration table (`lyraThemePreference` → `navitunesThemePreference`, `LyraMusic.*` → `NaviTunes.*`) can be written now; (2) only then, optionally, re-prefix with a generated `[(old, new)]` walk. Carve out the widget keys: `WidgetDataStore` reads `UserDefaults(suiteName: appGroupID)` and the extension target in `NaviTunesHost/NaviTunesWidgets` shares those literals, so renaming `widgetCommand`/`widgetPendingPlayId` needs both targets changed together. Moving the two large blobs to JSON files under Application Support is fine and independent.
 - **Versus the first pass:** AGREE — same histogram shape (camel-case dominates), same 13–16 file count correction, and the prior pass flags the identical re-prefixing hazard. I add the git evidence that the camel-case `lyra…` keys really did exist pre-rename and the widget App Group carve-out.
 
 ---
 ## L25 — Downtify keeps dead code that fabricates progress, and normalises base URLs differently from every other plugin
 - **Round:** 2 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Acquisition/DowntifyClient.swift:139–158` (also 237–239, 111–130)
+- **File:** `Sources/NaviTunesKit/Acquisition/DowntifyClient.swift:139–158` (also 237–239, 111–130)
 
 ```swift
     static func download(
@@ -3412,32 +3412,32 @@ walk over `DefaultsKey.allCases`, and `signOut` iterates a `perAccount` subset. 
 next to the protocol invites its return. Separately `baseURL(_:path:)` just concatenates, while Lidarr
 and DroppedNeedle go through `AcquisitionHTTP.normalizedBase`, so a user who types
 `192.168.1.10:8000` gets "Invalid Downtify URL" from this plugin only. It also uses `URLSession.shared`
-rather than `URLSession.vellum`, and `DowntifyJob.id` falls back to `UUID()` — which, when it triggers,
+rather than `URLSession.navitunes`, and `DowntifyJob.id` falls back to `UUID()` — which, when it triggers,
 makes every poll's snapshot compare unequal and defeats the `snapshot != serverJobs` publish guard.
 
 **Fix.** Delete `download(…)`, `DownloadProgressHandler`, and the two unused `DowntifyJob` inits. Route
 `queue`, `search` and `triggerDownload` through `AcquisitionHTTP.requestJSON(base:path:query:method:)`
-(which normalises the base, uses `URLSession.vellum`, and maps errors to the shared messages). Change
+(which normalises the base, uses `URLSession.navitunes`, and maps errors to the shared messages). Change
 `DowntifyJob.id`'s fallback to a stable hash of `(title, artist, filename)`.
 
 
-**Verified —** `grep -rn 'DowntifyClient.download|DownloadProgressHandler|optimisticURL|forcedURL' Sources/ Tests/ VellumMusicHost/` returns **only the four declaration sites** (111, 121, 137, 145). All four dead. `baseURL(_:path:)` is pure concatenation while `AcquisitionHTTP.normalizedBase` (696) adds the scheme and both other plugins reach it — so a bare `192.168.1.10:8000` fails on Downtify alone with "Invalid Downtify URL in Settings." (192, 220). `URLSession.shared` at 171, 196, 229 — three sites, never `URLSession.vellum`. The `DowntifyJob.id` UUID fallback needs url empty *and* filename *and* title nil, so the entry's "when it triggers" hedge is warranted. **Excerpt defect:** a blank line at 151 and the `@discardableResult` attribute are dropped without a marker.
+**Verified —** `grep -rn 'DowntifyClient.download|DownloadProgressHandler|optimisticURL|forcedURL' Sources/ Tests/ NaviTunesHost/` returns **only the four declaration sites** (111, 121, 137, 145). All four dead. `baseURL(_:path:)` is pure concatenation while `AcquisitionHTTP.normalizedBase` (696) adds the scheme and both other plugins reach it — so a bare `192.168.1.10:8000` fails on Downtify alone with "Invalid Downtify URL in Settings." (192, 220). `URLSession.shared` at 171, 196, 229 — three sites, never `URLSession.navitunes`. The `DowntifyJob.id` UUID fallback needs url empty *and* filename *and* title nil, so the entry's "when it triggers" hedge is warranted. **Excerpt defect:** a blank line at 151 and the `@discardableResult` attribute are dropped without a marker.
 
 
 **Re-verified (T238) —** independent second pass, agent 24, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `grep -rn 'DownloadProgressHandler|optimisticURL|forcedURL' Sources/` returns only the declaration lines `DowntifyClient.swift:111`, `:121`, `:137`, `:145`; `DowntifyAcquisitionPlugin` calls only `queue`, `search`, `pickBest`, `enqueue`. `download(...)` is verbatim the pattern `AcquisitionCore.swift` lines 3–10 forbid ("There is deliberately no progress callback in this file"). `private static func baseURL(_ base: String, path: String) -> String { base.hasSuffix("/") ? ... : "\(base)\(path)" }` (237–239) does no scheme normalisation, while `AcquisitionHTTP.normalizedBase` (Core 696) adds `http://` and Lidarr/DroppedNeedle route through `requestJSON`. `URLSession.shared.data` at 171, 196, 229 — never `URLSession.vellum`. `var id: String { url.isEmpty ? (filename ?? title ?? UUID().uuidString) : url }` (line 30) feeds `AcquisitionJob(id: "downtify:\(job.id)", ...)`, and `AcquisitionJob: Hashable` includes `id`, so `snapshot != serverJobs` is true every poll when the fallback fires. Inference on the exact message: whether `URLComponents(string: "192.168.1.10:8000/api/songs/search")` returns nil or a schemeless URL that `URLSession` rejects, the user sees a failure on Downtify alone; the "Invalid Downtify URL" wording is the likely branch, not a certainty.
-- **Better approach:** The deletions are correct. Routing through `AcquisitionHTTP.requestJSON` as written does not fit: `queue` and `search` decode `[DowntifyJob]` / `[DowntifySong]` with `JSONDecoder` from `Data`, and `requestJSON` returns `Any` from `JSONSerialization`, so you would re-serialise to decode. Add an `AcquisitionHTTP.requestData(base:path:query:method:headers:) -> Data` that `requestJSON` itself wraps (normalised base, `URLSession.vellum`, shared error mapping), and have Downtify decode from that. `triggerDownload` (POST with query, no body) can use `requestJSON` directly. For the id fallback, hash `(title, artist, filename)` but guard the all-nil case with the row's index so two unknown rows don't collapse into one.
+- **Evidence:** `grep -rn 'DownloadProgressHandler|optimisticURL|forcedURL' Sources/` returns only the declaration lines `DowntifyClient.swift:111`, `:121`, `:137`, `:145`; `DowntifyAcquisitionPlugin` calls only `queue`, `search`, `pickBest`, `enqueue`. `download(...)` is verbatim the pattern `AcquisitionCore.swift` lines 3–10 forbid ("There is deliberately no progress callback in this file"). `private static func baseURL(_ base: String, path: String) -> String { base.hasSuffix("/") ? ... : "\(base)\(path)" }` (237–239) does no scheme normalisation, while `AcquisitionHTTP.normalizedBase` (Core 696) adds `http://` and Lidarr/DroppedNeedle route through `requestJSON`. `URLSession.shared.data` at 171, 196, 229 — never `URLSession.navitunes`. `var id: String { url.isEmpty ? (filename ?? title ?? UUID().uuidString) : url }` (line 30) feeds `AcquisitionJob(id: "downtify:\(job.id)", ...)`, and `AcquisitionJob: Hashable` includes `id`, so `snapshot != serverJobs` is true every poll when the fallback fires. Inference on the exact message: whether `URLComponents(string: "192.168.1.10:8000/api/songs/search")` returns nil or a schemeless URL that `URLSession` rejects, the user sees a failure on Downtify alone; the "Invalid Downtify URL" wording is the likely branch, not a certainty.
+- **Better approach:** The deletions are correct. Routing through `AcquisitionHTTP.requestJSON` as written does not fit: `queue` and `search` decode `[DowntifyJob]` / `[DowntifySong]` with `JSONDecoder` from `Data`, and `requestJSON` returns `Any` from `JSONSerialization`, so you would re-serialise to decode. Add an `AcquisitionHTTP.requestData(base:path:query:method:headers:) -> Data` that `requestJSON` itself wraps (normalised base, `URLSession.navitunes`, shared error mapping), and have Downtify decode from that. `triggerDownload` (POST with query, no body) can use `requestJSON` directly. For the id fallback, hash `(title, artist, filename)` but guard the all-nil case with the row's index so two unknown rows don't collapse into one.
 - **Versus the first pass:** AGREE — same four dead sites, same three `URLSession.shared` sites, same hedge on the UUID fallback. The prior pass did not examine whether `requestJSON`'s `Any` return suits Downtify's `Decodable` decoding; that is why I rate the fix ADEQUATE rather than as-written.
 
 ---
 ## L26 — Duplicated Subsonic request code, a dead Jellyfin method, and an avatar URL that breaks the file's own binary-endpoint rule
 - **Round:** 2 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/NavidromeClient.swift:120–131, 1701–1710`; `JellyfinMusicClient.swift:1486–1515`
+- **File:** `Sources/NaviTunesKit/Backends/NavidromeClient.swift:120–131, 1701–1710`; `JellyfinMusicClient.swift:1486–1515`
 
 ```swift
-        let (data, res) = try await URLSession.vellum.data(from: url)
+        let (data, res) = try await URLSession.navitunes.data(from: url)
         guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
@@ -3467,14 +3467,14 @@ on every launch.
 **Re-verified (T238) —** independent second pass, agent 24, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `fetchAlbumList2Page` (NavidromeClient 120–131) and `subsonicRequest` (1813–1826) are character-identical from `let (data, res) = try await URLSession.vellum.data(from: url)` through the `throw NSError(domain: "Navidrome", code: 0, ...)` error-dict check; the only extra in the page variant is `let totalCount = http.value(forHTTPHeaderField: "x-total-count").flatMap { Int($0) }`. `grep -rn fetchLibraryItemRows Sources/VellumMusicKit Tests/` returns only the definition at `JellyfinMusicClient.swift:1486` — dead. `accountAvatarURL` ends `return try? buildURL(path: "getAvatar", query: query)` (1709); `buildURL` calls `buildRESTURL(... responseFormatJSON: true)` which appends `URLQueryItem(name: "f", value: "json")` (1855), against the rule on 1833 and the `buildMediaURL` provided for it. The E11 side-note is partly off: `AccountAvatarCache` keys its file by identity, not URL, so the per-launch refetch is driven by `prefetchAccountAvatar()` running unconditionally; a stable URL would only help via `request.cachePolicy = .returnCacheDataElseLoad` hitting `URLCache`, which is inference about Foundation behaviour.
+- **Evidence:** `fetchAlbumList2Page` (NavidromeClient 120–131) and `subsonicRequest` (1813–1826) are character-identical from `let (data, res) = try await URLSession.navitunes.data(from: url)` through the `throw NSError(domain: "Navidrome", code: 0, ...)` error-dict check; the only extra in the page variant is `let totalCount = http.value(forHTTPHeaderField: "x-total-count").flatMap { Int($0) }`. `grep -rn fetchLibraryItemRows Sources/NaviTunesKit Tests/` returns only the definition at `JellyfinMusicClient.swift:1486` — dead. `accountAvatarURL` ends `return try? buildURL(path: "getAvatar", query: query)` (1709); `buildURL` calls `buildRESTURL(... responseFormatJSON: true)` which appends `URLQueryItem(name: "f", value: "json")` (1855), against the rule on 1833 and the `buildMediaURL` provided for it. The E11 side-note is partly off: `AccountAvatarCache` keys its file by identity, not URL, so the per-launch refetch is driven by `prefetchAccountAvatar()` running unconditionally; a stable URL would only help via `request.cachePolicy = .returnCacheDataElseLoad` hitting `URLCache`, which is inference about Foundation behaviour.
 - **Better approach:** Take the overload option the fix already offers — add `subsonicRequestWithResponse(...) -> (payload, HTTPURLResponse)` and make `subsonicRequest` a one-line wrapper — so the dozens of existing `subsonicRequest` call sites stay untouched. Delete `fetchLibraryItemRows`; switch the avatar to `buildMediaURL`.
 - **Versus the first pass:** AGREE — identical duplication, dead-method and avatar findings. I add that the "stops re-fetching on every launch" tail is only true through `URLCache`, not `AccountAvatarCache`, which keys by identity.
 
 ---
 ## E23 — With the Activity list open, Lidarr's queue is fetched 1 + N times per second
 - **Round:** 2 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Acquisition/AcquisitionManager.swift:428–441`
+- **File:** `Sources/NaviTunesKit/Acquisition/AcquisitionManager.swift:428–441`
 
 ```swift
         let snapshot = await provider.activeJobs()
@@ -3517,7 +3517,7 @@ refetch. (3) Raise the live interval to 3 s.
 ---
 ## E24 — The download worker runs in batches, so "3 concurrent" degrades to 1 whenever one file is slow
 - **Round:** 2 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Offline/OfflineDownloadManager+Queue.swift:252–271`
+- **File:** `Sources/NaviTunesKit/Offline/OfflineDownloadManager+Queue.swift:252–271`
 
 ```swift
             let slots = pendingWorkSlots(limit: maxConcurrentDownloads.rawValue)
@@ -3560,7 +3560,7 @@ changes. Keep the pause check at the top of the inner loop.
 ---
 ## E25 — `libraryGenres` walks up to 15,000 albums before trying the genre endpoint its sibling prefers
 - **Round:** 2 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/NavidromeClient.swift:452–463`; `JellyfinMusicClient.swift:382–399`
+- **File:** `Sources/NaviTunesKit/Backends/NavidromeClient.swift:452–463`; `JellyfinMusicClient.swift:382–399`
 
 ```swift
     func libraryGenres(limit: Int) async throws -> [LibraryGenreSummary] {
@@ -3608,7 +3608,7 @@ and union by name rather than serialising 16 pages before the cheap call.
 ---
 ## E26 — Jellyfin `randomTracks` fetches album tracklists one at a time instead of asking the server for random audio
 - **Round:** 2 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/JellyfinMusicClient.swift:1227–1248`
+- **File:** `Sources/NaviTunesKit/Backends/JellyfinMusicClient.swift:1227–1248`
 
 ```swift
     func randomTracks(limit: Int, genre: String?) async throws -> [Track] {
@@ -3645,7 +3645,7 @@ removes the alphabetical bias.
 ---
 ## E27 — The acquisition `provider` is rebuilt on every access, and `capabilities` / `isConfigured` are read from view bodies
 - **Round:** 2 · **Severity:** low _(was medium)_ · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Acquisition/AcquisitionManager.swift:104–109`
+- **File:** `Sources/NaviTunesKit/Acquisition/AcquisitionManager.swift:104–109`
 
 ```swift
     var provider: AcquisitionProviding {
@@ -3690,7 +3690,7 @@ the same two points. For `job(matchingTitle:)`, precompute a `Set<String>` of ti
 ---
 ## E28 — `MyListeningView` re-summarises 500 scrobbles on every body pass, and once more per heatmap bar
 - **Round:** 2 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Scrobbling/MyListeningView.swift:6–8, 135–139`
+- **File:** `Sources/NaviTunesKit/Scrobbling/MyListeningView.swift:6–8, 135–139`
 
 ```swift
     private var summary: ListeningAnalyticsSummary {
@@ -3730,7 +3730,7 @@ instead of `Set<String>` and drop the `DateFormatter`; keep `dayKey` only for th
 **Re-verified (T238) —** independent second pass, agent 25, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `MyListeningView.swift:6–8` is `private var summary: ListeningAnalyticsSummary { ListeningAnalytics.summarize(completed: app.scrobbleService.store.completed) }` and my grep shows `summary` read at lines 12, 21, 24, 27, 38, 39, 47, 48, 60, 80, 98, plus `barHeight(for:)` at 135–139 re-reading `summary.dailyHeatmap` from inside the `ForEach(summary.dailyHeatmap.reversed())` at 60–64 — one `summarize` per bar, `dailyHeatmap` capped by `.prefix(90)` (`ListeningAnalytics.swift:88`). `computeStreaks` (94–98) does allocate `let formatter = DateFormatter()` per call and round-trips `dayKeys.compactMap { formatter.date(from: $0) }`. `ScrobbleStore.completed` is `@Published private(set)` with `completedCap = 500` (`ScrobbleService.swift:67, 73`). No memo, no `@State`, no equality guard anywhere on the path. Also confirmed: my grep for `store.$` / `store.objectWillChange` / `scrobbleService.objectWillChange` in `Sources/VellumMusicKit` returns no hits, so nothing forwards `ScrobbleStore` publishes to `AppModel` — the view only re-renders on unrelated `AppModel` publishes.
+- **Evidence:** `MyListeningView.swift:6–8` is `private var summary: ListeningAnalyticsSummary { ListeningAnalytics.summarize(completed: app.scrobbleService.store.completed) }` and my grep shows `summary` read at lines 12, 21, 24, 27, 38, 39, 47, 48, 60, 80, 98, plus `barHeight(for:)` at 135–139 re-reading `summary.dailyHeatmap` from inside the `ForEach(summary.dailyHeatmap.reversed())` at 60–64 — one `summarize` per bar, `dailyHeatmap` capped by `.prefix(90)` (`ListeningAnalytics.swift:88`). `computeStreaks` (94–98) does allocate `let formatter = DateFormatter()` per call and round-trips `dayKeys.compactMap { formatter.date(from: $0) }`. `ScrobbleStore.completed` is `@Published private(set)` with `completedCap = 500` (`ScrobbleService.swift:67, 73`). No memo, no `@State`, no equality guard anywhere on the path. Also confirmed: my grep for `store.$` / `store.objectWillChange` / `scrobbleService.objectWillChange` in `Sources/NaviTunesKit` returns no hits, so nothing forwards `ScrobbleStore` publishes to `AppModel` — the view only re-renders on unrelated `AppModel` publishes.
 - **Better approach:** Direction is right (state, single bind, `maxCount` passed in, drop the `DateFormatter`). Refinements: subscribe with `.onReceive(app.scrobbleService.store.$completed) { summary = ListeningAnalytics.summarize(completed: $0) }` and summarise the closure's value — `@Published` emits from `willSet`, so re-reading `store.completed` inside the closure sees the old array; `Published` replays the current value on subscribe, so the separate `.task` is redundant. Make the `@State` non-optional with an empty default so the section gates don't all grow unwraps. Alternatively hold `@ObservedObject private var store: ScrobbleStore` and recompute in `.onChange(of: store.completed.count)` — same effect, one less publisher plumb.
 - **Versus the first pass:** AGREE — its 11 + up-to-90 count matches my line list exactly, and its staleness find (no `ScrobbleStore` forwarding) reproduced under my own grep. Its `willSet` and redundant-`.task` caveats are the same ones I reached.
 
@@ -3738,7 +3738,7 @@ instead of `Set<String>` and drop the `DateFormatter`; keep `dayKey` only for th
 
 ## E29 — The EQ Response graph re-runs the automation engine and two `AVAudioSession` route queries on every body pass
 - **Round:** 2 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Equalizer/SettingsEqualizerView.swift:108–113`; `App/AppModel.swift:6231–6262`
+- **File:** `Sources/NaviTunesKit/Equalizer/SettingsEqualizerView.swift:108–113`; `App/AppModel.swift:6231–6262`
 
 ```swift
     private var graphSection: some View {
@@ -3784,7 +3784,7 @@ control over, and the stock API is built for begin/end edit sessions.
 ---
 ## E30 — `LibrarySnapshotStore.saveAsync` is un-debounced and rewrites the entire track index on every membership mutation
 - **Round:** 2 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/LibrarySnapshotStore.swift:79–90`
+- **File:** `Sources/NaviTunesKit/Library/LibrarySnapshotStore.swift:79–90`
 
 ```swift
     static func saveAsync(_ snapshot: LibrarySnapshot) {
@@ -3830,7 +3830,7 @@ index. Pairs with **C27**, which fixes the check-then-write window in the same t
 ---
 ## E31 — Playlist-rows cache eviction is hash-ordered and contradicts its own doc; the in-memory copy has no cap
 - **Round:** 2 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/PlaylistRowsCacheStore.swift:77–87`
+- **File:** `Sources/NaviTunesKit/Library/PlaylistRowsCacheStore.swift:77–87`
 
 ```swift
             var trimmed = rowsByPlaylistId
@@ -3871,7 +3871,7 @@ on open). Fix the doc comment to match whichever policy ships.
 ---
 ## P16 — The hearing test applies the most boost to the bands the user hears best
 - **Round:** 2 · **Severity:** high · **Verdict:** **REINFORCED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Equalizer/EqualizerHearingTestView.swift:92–96` (copy at 52)
+- **File:** `Sources/NaviTunesKit/Equalizer/EqualizerHearingTestView.swift:92–96` (copy at 52)
 
 ```swift
     private func saveCurrentBand() {
@@ -3922,7 +3922,7 @@ Steelman rejected: `toneAmplitude(for:)` (154–161) pre-scales bass 0.9 → tre
 ---
 ## P17 — EQ settings copy still describes the removed cache-then-swap engine, and "Stereo width" is a tone tilt
 - **Round:** 2 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Equalizer/SettingsEqualizerView.swift:103–105` (also 126, 275); `App/AppModel.swift:736–745`; `Equalizer/EqualizerProfileModels.swift:24–33`
+- **File:** `Sources/NaviTunesKit/Equalizer/SettingsEqualizerView.swift:103–105` (also 126, 275); `App/AppModel.swift:736–745`; `Equalizer/EqualizerProfileModels.swift:24–33`
 
 ```swift
         } footer: {
@@ -3963,7 +3963,7 @@ Dark/Warm/Neutral/Bright/Brilliant.
 ---
 ## P18 — "Exclude artist" is advertised in Settings but is neither wired to a menu nor honoured by `isExcluded`
 - **Round:** 2 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Scrobbling/ScrobbleService.swift:155–163`; copy at `Settings/SettingsLibraryDataView.swift:248`
+- **File:** `Sources/NaviTunesKit/Scrobbling/ScrobbleService.swift:155–163`; copy at `Settings/SettingsLibraryDataView.swift:248`
 
 ```swift
     func isExcluded(track: Track, playlistId: String?) -> Bool {
@@ -4007,7 +4007,7 @@ functions and change the Settings copy to "albums" only.
 ---
 ## P19 — "Total plays" is silently capped at 500, and the completed list is re-serialised to `UserDefaults` on every scrobble
 - **Round:** 2 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Scrobbling/ScrobbleService.swift:73, 91–97`
+- **File:** `Sources/NaviTunesKit/Scrobbling/ScrobbleService.swift:73, 91–97`
 
 ```swift
     private static let completedCap = 500
@@ -4033,7 +4033,7 @@ elsewhere (`MusicSubscriptionStore`, `EqualizerProfileStore`) is a JSON file in 
 updated in `recordCompleted` **before** truncation; have `summarize` take those for total/streaks/
 heatmap and the list only for top artists and tracks. If the aggregates are not added, change the
 Overview header to "Last 500 plays". Move `pending`/`completed`/`exclusions` to
-`Application Support/VellumMusic/scrobbles.json` with a one-time migration, and append rather than
+`Application Support/NaviTunes/scrobbles.json` with a one-time migration, and append rather than
 insert-at-0 (sort descending on read). Pairs with **L24**.
 
 
@@ -4064,31 +4064,31 @@ Requirements:
 
 **Problem.** `Package.swift` is `swift-tools-version: 6.2` with `.iOS("26.1")`, and the pbxproj has
 `IPHONEOS_DEPLOYMENT_TARGET = 26.1` / `LastUpgradeCheck = 2650` — Xcode 16 cannot open it, and
-`ci.yml:28–29` says so in a comment. The widget bundle contains `VellumRecentlyPlayedWidget` and
-`VellumNowPlayingWidget`; there is **no** mixes widget (`grep -i mix VellumMusicHost/VellumWidgets/`
+`ci.yml:28–29` says so in a comment. The widget bundle contains `NaviTunesRecentlyPlayedWidget` and
+`NaviTunesNowPlayingWidget`; there is **no** mixes widget (`grep -i mix NaviTunesHost/NaviTunesWidgets/`
 returns nothing). CONTRIBUTING lists two test suites; there are five (`ArtistReleaseKind`,
 `LibraryTrackMatcher`, `NavidromeLyricsParser` were added later). A first-time reader is told the wrong
 toolchain, the wrong feature and the wrong test surface.
 
 **Fix.** README:89 → "Xcode 26.1 or later (swift-tools 6.2, iOS 26.1 SDK)"; README:60 → "Home screen
 widgets for Now Playing and Recently Played." CONTRIBUTING:58–61 → replace the hand-maintained list
-with "Each file in `Tests/VellumMusicKitTests/` is one `@Suite` named for the type it pins; the file's
+with "Each file in `Tests/NaviTunesKitTests/` is one `@Suite` named for the type it pins; the file's
 doc comment says why", so it cannot rot again.
 
 
-**Verified —** Every claim re-verified: tools 6.2 / `.iOS("26.1")` / `IPHONEOS_DEPLOYMENT_TARGET = 26.1` / `LastUpgradeCheck = 2650`; `ci.yml:28–29` says in a comment that an older Xcode "cannot build it at all"; `grep -ric mix VellumMusicHost/VellumWidgets/` returns **0 across all 5 files** — there is no mixes widget; and `Tests/` holds five suites against CONTRIBUTING's exhaustive-sounding list of two. **Added:** `README.md:52` is a fourth drift in the same class — the equalizer paragraph still describes the removed cache-then-swap path, and it is the one a user is most likely to act on. **Nit:** "Xcode 16 cannot open it" overstates; `LastUpgradeCheck` does not block opening. Say "cannot build it".
+**Verified —** Every claim re-verified: tools 6.2 / `.iOS("26.1")` / `IPHONEOS_DEPLOYMENT_TARGET = 26.1` / `LastUpgradeCheck = 2650`; `ci.yml:28–29` says in a comment that an older Xcode "cannot build it at all"; `grep -ric mix NaviTunesHost/NaviTunesWidgets/` returns **0 across all 5 files** — there is no mixes widget; and `Tests/` holds five suites against CONTRIBUTING's exhaustive-sounding list of two. **Added:** `README.md:52` is a fourth drift in the same class — the equalizer paragraph still describes the removed cache-then-swap path, and it is the one a user is most likely to act on. **Nit:** "Xcode 16 cannot open it" overstates; `LastUpgradeCheck` does not block opening. Say "cannot build it".
 
 
 **Re-verified (T238) —** independent second pass, agent 26, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** Confirmed `Package.swift:1` is `// swift-tools-version: 6.2` with `.iOS("26.1")` (line 8), and `project.pbxproj` has `IPHONEOS_DEPLOYMENT_TARGET = 26.1` / `LastUpgradeCheck = 2650`, while `README.md:89-90` says "Xcode 16 or later" / "iOS 26". `ci.yml:28-29` comment: "The package targets iOS 26.1 with swift-tools 6.2, so an older Xcode cannot..." Confirmed the widget bundle (`VellumMusicHost/VellumWidgets/`) contains only `VellumNowPlayingWidget.swift` and `VellumRecentlyPlayedWidget.swift` — no mixes widget, matching README.md:60's false "Made for You mixes" claim. Confirmed `Tests/VellumMusicKitTests/` has five files (`ArtistReleaseKindTests.swift`, `GenreCanonicalizerTests.swift`, `LibraryMembershipTests.swift`, `LibraryTrackMatcherTests.swift`, `NavidromeLyricsParserTests.swift`) against CONTRIBUTING.md's two-suite list.
+- **Evidence:** Confirmed `Package.swift:1` is `// swift-tools-version: 6.2` with `.iOS("26.1")` (line 8), and `project.pbxproj` has `IPHONEOS_DEPLOYMENT_TARGET = 26.1` / `LastUpgradeCheck = 2650`, while `README.md:89-90` says "Xcode 16 or later" / "iOS 26". `ci.yml:28-29` comment: "The package targets iOS 26.1 with swift-tools 6.2, so an older Xcode cannot..." Confirmed the widget bundle (`NaviTunesHost/NaviTunesWidgets/`) contains only `NaviTunesNowPlayingWidget.swift` and `NaviTunesRecentlyPlayedWidget.swift` — no mixes widget, matching README.md:60's false "Made for You mixes" claim. Confirmed `Tests/NaviTunesKitTests/` has five files (`ArtistReleaseKindTests.swift`, `GenreCanonicalizerTests.swift`, `LibraryMembershipTests.swift`, `LibraryTrackMatcherTests.swift`, `NavidromeLyricsParserTests.swift`) against CONTRIBUTING.md's two-suite list.
 - **Versus the first pass:** AGREE — matches prior REINFORCED verdict and same evidence (tools version, deployment target, widget grep, test file count). Its added note that README.md:52 (the equalizer paragraph) carries a fourth, related drift is a legitimate scope addition, not a disagreement.
 
 ---
 ## C10 — `Track.withArtworkURL` / `withDuration` silently drop `artistId` on the playback path
 - **Round:** 2 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/MusicLibraryProviding.swift:313–334` (and 336–357)
+- **File:** `Sources/NaviTunesKit/Backends/MusicLibraryProviding.swift:313–334` (and 336–357)
 
 ```swift
     func withArtworkURL(_ newArtworkURL: URL?) -> Track {
@@ -4139,7 +4139,7 @@ cannot regress the same way.
 ---
 ## C11 — The Jellyfin magic-playlist read caps at 5,000 rows with no pagination, and the truncated list overwrites `librarySongIds`
 - **Round:** 2 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/JellyfinMusicClient.swift:958–965`; consumer `App/AppModel.swift:2295–2299`
+- **File:** `Sources/NaviTunesKit/Backends/JellyfinMusicClient.swift:958–965`; consumer `App/AppModel.swift:2295–2299`
 
 ```swift
             URLQueryItem(name: "Limit", value: "5000"),
@@ -4185,7 +4185,7 @@ disagree, so the poll keeps the previous `librarySongIds`.
 ---
 ## C12 — Navidrome sends the membership payload as a GET query string, capping the library at ~100 albums behind a stock reverse proxy
 - **Round:** 2 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/NavidromeClient.swift:1639–1644, 1812–1814`
+- **File:** `Sources/NaviTunesKit/Backends/NavidromeClient.swift:1639–1644, 1812–1814`
 
 ```swift
     /// Updates the playlist's comment field. Used to persist ``LibraryMembershipPayload``.
@@ -4197,7 +4197,7 @@ disagree, so the poll keeps the previous `librarySongIds`.
     }
 ```
 
-**Problem.** `subsonicRequest` uses `URLSession.vellum.data(from: url)` — a **GET** — so the entire
+**Problem.** `subsonicRequest` uses `URLSession.navitunes.data(from: url)` — a **GET** — so the entire
 `LibraryMembershipPayload` JSON rides in the request line at roughly 80 percent-encoded bytes per
 album. nginx's default `large_client_header_buffers 4 8k` returns 414 at about 8 KB (~100 albums);
 Cloudflare cuts at 16 KB (~200). Past that, every `addAlbumToLibrary` / `removeAlbumFromLibrary` throws
@@ -4216,7 +4216,7 @@ it. Independently shrink the payload in `LibraryMembershipPayload.encoded()` —
 ISO-8601, `a`/`p` keys — so the comment column stays small either way.
 
 
-**Verified —** GET confirmed unambiguously: `subsonicRequest` → `buildURL` → `URLSession.vellum.data(from: url)`, no `URLRequest`, no `httpMethod`. The three `httpMethod` sites (1059, 1114, 1138) are the **native** Navidrome API, not the Subsonic `/rest/` surface. **Payload measured rather than assumed:** with `.iso8601` dates, `.sortedKeys`, and `urlQueryAllowed` escaping, 100 albums encode to **9,357 bytes with 32-char hex ids and 9,757 with UUIDs — ~94–98 bytes/album, not ~80**. So the thresholds are *optimistic*: nginx's 8 KB request-line buffer is exhausted at roughly **80–85 albums**, Cloudflare's 16 KB at **165–170**. Tighten those downward.
+**Verified —** GET confirmed unambiguously: `subsonicRequest` → `buildURL` → `URLSession.navitunes.data(from: url)`, no `URLRequest`, no `httpMethod`. The three `httpMethod` sites (1059, 1114, 1138) are the **native** Navidrome API, not the Subsonic `/rest/` surface. **Payload measured rather than assumed:** with `.iso8601` dates, `.sortedKeys`, and `urlQueryAllowed` escaping, 100 albums encode to **9,357 bytes with 32-char hex ids and 9,757 with UUIDs — ~94–98 bytes/album, not ~80**. So the thresholds are *optimistic*: nginx's 8 KB request-line buffer is exhausted at roughly **80–85 albums**, Cloudflare's 16 KB at **165–170**. Tighten those downward.
 
 **The "independently shrink the payload" half is not independent and is unsafe as ordered.** Epoch seconds and `a`/`p` keys make the new payload **undecodable by any older build**, which lands in exactly the `.empty` clobber path **C15** documents. It must ship *after* C15's `.corrupt`/`.tooNew` handling and must bump `v`. Also state a minimum Navidrome version for the POST premise rather than asserting it for Subsonic generally.
 
@@ -4224,14 +4224,14 @@ ISO-8601, `a`/`p` keys — so the comment column stays small either way.
 **Re-verified (T238) —** independent second pass, agent 06, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `setPlaylistComment` (NavidromeClient.swift:1639-1644) calls `subsonicRequest(path: "updatePlaylist", query: [...])`, and `subsonicRequest` (1812-1814) is `let (data, res) = try await URLSession.vellum.data(from: url)` — a plain GET with no `URLRequest`/`httpMethod` anywhere in that function. The three `httpMethod =` sites in the file (1059, 1114, 1138) are all under `// MARK: - Native (non-Subsonic) API`, not the `/rest/` Subsonic surface used for `updatePlaylist`. So the full `LibraryMembershipPayload` JSON does ride in the query string as claimed.
+- **Evidence:** `setPlaylistComment` (NavidromeClient.swift:1639-1644) calls `subsonicRequest(path: "updatePlaylist", query: [...])`, and `subsonicRequest` (1812-1814) is `let (data, res) = try await URLSession.navitunes.data(from: url)` — a plain GET with no `URLRequest`/`httpMethod` anywhere in that function. The three `httpMethod =` sites in the file (1059, 1114, 1138) are all under `// MARK: - Native (non-Subsonic) API`, not the `/rest/` Subsonic surface used for `updatePlaylist`. So the full `LibraryMembershipPayload` JSON does ride in the query string as claimed.
 - **Better approach:** The GET→POST switch (`subsonicPostRequest(path:form:)`) is correct and should ship on its own. The paired "shrink the payload" change (epoch seconds, `a`/`p` keys) is not safe to ship independently: nothing reads the `v` field (confirmed for C15 — only `self.v = v` in the initializer), so an old build reading a new compact payload fails to decode and collapses to `.empty`, landing directly in C15's clobber path. Sequence it: ship POST first, ship the compact encoding only after C15's `.corrupt`/`.tooNew` decode handling exists, and bump `v` when the format changes.
 - **Versus the first pass:** AGREE — the earlier pass's byte-count refinement (~94-98 bytes/album with real percent-encoding overhead, not ~80) and its point that the payload-shrink half of the fix is unsafe without C15 landing first are both consistent with what I verified independently (the dead `v` field, the whole-payload GET).
 
 ---
 ## C13 — Acquisition API keys, passwords and session tokens are stored in plaintext `UserDefaults`
 - **Round:** 2 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Acquisition/AcquisitionCore.swift:668–690`
+- **File:** `Sources/NaviTunesKit/Acquisition/AcquisitionCore.swift:668–690`
 
 ```swift
 enum AcquisitionConfigStore {
@@ -4275,15 +4275,15 @@ out and calls `removeObject`. `set` needs the `Kind`, so change the signature to
 - **Versus the first pass:** DISAGREE (partially) — I agree with the earlier pass's correction #1 (wrong caller list: `disconnectAcquisitionPlugin` calls `clear` not `set`, and the real `set` callers with bare-string ids are inside `DroppedNeedleAcquisitionPlugin`). But I disagree with correction #2: I read `DroppedNeedleAcquisitionPlugin.swift:94-101` directly and `sessionToken` **is** declared in `configFields` (`AcquisitionConfigField(id: "sessionToken", kind: .apiKey, ..., required: false)`, present since commit `0cccfa5d`, 2026-07-13, per `git blame`), and `AcquisitionCapabilities.configFields` has no filtering — it's a plain stored property. So `AcquisitionConfigStore.clear(kind, fields: AcquisitionManager.capabilities(for: kind).configFields)` does iterate over and remove the `sessionToken` key today; the claim "disconnecting DroppedNeedle today leaves the live session token in the plist" does not hold up against the code as written.
 
 ---
-## C14 — The Lyra → Vellum migration misses almost every key it was written to migrate, and never moves the data folder
+## C14 — The Lyra → NaviTunes migration misses almost every key it was written to migrate, and never moves the data folder
 - **Round:** 2 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/LegacyLyraMigration.swift:15–31`
+- **File:** `Sources/NaviTunesKit/App/LegacyLyraMigration.swift:15–31`
 
 ```swift
     static func runIfNeeded() {
         let defaults = UserDefaults.standard
         guard !defaults.bool(forKey: markerKey) else { return }
-        migrateDefaults(defaults, fromPrefix: "lyra.", toPrefix: "vellum.")
+        migrateDefaults(defaults, fromPrefix: "lyra.", toPrefix: "navitunes.")
         migrateDefaults(defaults, fromPrefix: "com.randll.lyra.", toPrefix: "com.randll.vellum.")
         migrateKeychainItems(accounts: ["jellyfin", "navidrome"])
         defaults.set(true, forKey: markerKey)
@@ -4308,16 +4308,16 @@ with something other than "not found" (a locked keychain at first launch after r
 `errSecInteractionNotAllowed`), so the saved server login is lost permanently; and the whole type
 hard-codes `UserDefaults.standard`, so the pure defaults half cannot be tested.
 
-**Fix.** Add `migrateDefaults(fromPrefix: "LyraMusic.", toPrefix: "VellumMusic.")` and a camel-case pass
-(`key.hasPrefix("lyra") && key.dropFirst(4).first?.isUppercase == true` → `"vellum" + suffix`). Add
-`migrateApplicationSupportFolder()` that `moveItem`s `Application Support/LyraMusic` → `VellumMusic`
+**Fix.** Add `migrateDefaults(fromPrefix: "LyraMusic.", toPrefix: "NaviTunes.")` and a camel-case pass
+(`key.hasPrefix("lyra") && key.dropFirst(4).first?.isUppercase == true` → `"navitunes" + suffix`). Add
+`migrateApplicationSupportFolder()` that `moveItem`s `Application Support/LyraMusic` → `NaviTunes`
 when the destination does not exist (merging `Downloads/` when it does), plus `LyraOfflineDownloads`.
-**Rename the marker to `vellum.migration.lyraLocalState.v2`** so installs that already ran v1 pick up
+**Rename the marker to `navitunes.migration.lyraLocalState.v2`** so installs that already ran v1 pick up
 the rest. Only write the marker when every keychain read returned `errSecSuccess` or
 `errSecItemNotFound`. Change the signature to
 `runIfNeeded(defaults: UserDefaults = .standard, keychain: KeychainMigrating = SystemKeychain())` and
-add `Tests/VellumMusicKitTests/LegacyLyraMigrationTests.swift` covering: `lyra.x` → `vellum.x`;
-`LyraMusic.x` → `VellumMusic.x`; existing destination not overwritten; second run is a no-op; marker
+add `Tests/NaviTunesKitTests/LegacyLyraMigrationTests.swift` covering: `lyra.x` → `navitunes.x`;
+`LyraMusic.x` → `NaviTunes.x`; existing destination not overwritten; second run is a no-op; marker
 not set when the injected keychain reports `errSecInteractionNotAllowed`. Fix the
 `Signing.xcconfig` comment. **Do this together with L24**, which is what makes the key table
 enumerable in the first place.
@@ -4325,20 +4325,20 @@ enumerable in the first place.
 
 **Verified —** **Verified by enumeration, not sampling.** Extracted every removed `lyra`/`Lyra` string literal from `git show 836f7f8 -U0` (177 unique) and classified each. The `"lyra."` pass matches **the kill-mode trio only**. The `"com.randll.lyra."` pass matches **one** UserDefaults key (`jellyfin.deviceId`) — the other four literals with that prefix are a `UTType` identifier, a Darwin notification name and two WidgetKit `kind:` strings, none of them defaults. **Migrated: 4. Missed: ~54** — roughly 44 camel-case `lyra*` (including all 16 `lyraEqualizer*`, the scrobble trio, theme, offline mode, trusted SSL hosts, home SSIDs and the full quality set) plus 10 `LyraMusic.*` (favorites, recently-played, playlist date maps, and the magic-playlist id cache). The finding is if anything too kind. Folder rename confirmed: zero `LyraMusic`/`LyraOfflineDownloads` references outside the `.bak` file, and no `migrateApplicationSupportFolder` exists. Marker and `Signing.xcconfig:27` defects both confirmed.
 
-**The fix is wrong on the filesystem half and must be rewritten.** Resolving each directory's real domain: the snapshot, offline manifest and custom-radio are in **Application Support** ✔; **`VellumMusic/Downloads` is in `Documents/`** ✘ — and that is the *only* thing users actually lose; `stream-cache`, `ArtworkCache` and `AccountAvatar` are in **Caches** (self-healing, low stakes); and `VellumOfflineDownloads` is in `temporaryDirectory` holding in-flight `.part` files — pointless to migrate, drop it. An Application-Support-only move would appear to fix the problem while not recovering the audio. Enumerate all three domains. The marker-rename-to-v2 approach is safe: `migrateDefaults` already skips keys whose destination exists, so a re-run cannot overwrite post-upgrade values.
+**The fix is wrong on the filesystem half and must be rewritten.** Resolving each directory's real domain: the snapshot, offline manifest and custom-radio are in **Application Support** ✔; **`NaviTunes/Downloads` is in `Documents/`** ✘ — and that is the *only* thing users actually lose; `stream-cache`, `ArtworkCache` and `AccountAvatar` are in **Caches** (self-healing, low stakes); and `NaviTunesOfflineDownloads` is in `temporaryDirectory` holding in-flight `.part` files — pointless to migrate, drop it. An Application-Support-only move would appear to fix the problem while not recovering the audio. Enumerate all three domains. The marker-rename-to-v2 approach is safe: `migrateDefaults` already skips keys whose destination exists, so a re-run cannot overwrite post-upgrade values.
 
 
 **Re-verified (T238) —** independent second pass, agent 06, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `LegacyLyraMigration.swift:15-31` matches the quote exactly. Current UserDefaults keys use `"VellumMusic.favoriteTrackIds"` / `"VellumMusic.recentlyPlayedEntries"` (AppModel.swift:343,393) and bare camelCase like `"vellumThemePreference"`, `"vellumWifiStreamBitRate"`, `"vellumEqualizerBandGains"` (AppModel.swift:484-510, EqualizerSettings.swift:50-67) — none of which begin with lowercase `"lyra."`, so `migrateDefaults(fromPrefix: "lyra.", toPrefix: "vellum.")` cannot match them; only `grep -rn "\"lyra" Sources/VellumMusicKit` still finds is the migration's own literal. `grep -rln "LyraMusic" Sources/VellumMusicKit` returns zero hits, confirming no folder-migration code exists anywhere.
-- **Better approach:** The camelCase-pass and marker-versioning ideas are sound and directly verified against real key names. But the filesystem half is wrong as scoped: `OfflineDownloadManager.downloadsFolder()` (line 225-227) resolves under `.documentDirectory`, not Application Support — `VellumMusic/Downloads` (the actual audio bytes users lose) lives in **Documents**, while `StreamingMediaDiskCache`/`ArtworkURLCache` live in `.cachesDirectory` (self-healing, low stakes) and the in-flight `.part` files live under `temporaryDirectory` (pointless to migrate). A single `migrateApplicationSupportFolder()` as proposed would move the snapshot/manifest/custom-radio tree but silently leave the actual downloaded audio behind, looking fixed while it isn't. Enumerate and migrate per real domain: Application Support (snapshot, offline manifest, custom-radio), Documents (`VellumMusic/Downloads` → new downloads root), skip Caches and the tmp folder.
+- **Evidence:** `LegacyLyraMigration.swift:15-31` matches the quote exactly. Current UserDefaults keys use `"NaviTunes.favoriteTrackIds"` / `"NaviTunes.recentlyPlayedEntries"` (AppModel.swift:343,393) and bare camelCase like `"navitunesThemePreference"`, `"navitunesWifiStreamBitRate"`, `"navitunesEqualizerBandGains"` (AppModel.swift:484-510, EqualizerSettings.swift:50-67) — none of which begin with lowercase `"lyra."`, so `migrateDefaults(fromPrefix: "lyra.", toPrefix: "navitunes.")` cannot match them; only `grep -rn "\"lyra" Sources/NaviTunesKit` still finds is the migration's own literal. `grep -rln "LyraMusic" Sources/NaviTunesKit` returns zero hits, confirming no folder-migration code exists anywhere.
+- **Better approach:** The camelCase-pass and marker-versioning ideas are sound and directly verified against real key names. But the filesystem half is wrong as scoped: `OfflineDownloadManager.downloadsFolder()` (line 225-227) resolves under `.documentDirectory`, not Application Support — `NaviTunes/Downloads` (the actual audio bytes users lose) lives in **Documents**, while `StreamingMediaDiskCache`/`ArtworkURLCache` live in `.cachesDirectory` (self-healing, low stakes) and the in-flight `.part` files live under `temporaryDirectory` (pointless to migrate). A single `migrateApplicationSupportFolder()` as proposed would move the snapshot/manifest/custom-radio tree but silently leave the actual downloaded audio behind, looking fixed while it isn't. Enumerate and migrate per real domain: Application Support (snapshot, offline manifest, custom-radio), Documents (`NaviTunes/Downloads` → new downloads root), skip Caches and the tmp folder.
 - **Versus the first pass:** AGREE — I independently confirmed `downloadsFolder()` uses `.documentDirectory` (OfflineDownloadManager.swift:225-227) and that Caches-based stores (`StreamingMediaDiskCache.swift:28`, `ArtworkURLCache.swift:125`) are separate from Application Support (`AccountAvatarCache.swift:96`), which validates the earlier pass's per-domain correction to the fix.
 
 ---
 ## C15 — A malformed, truncated or newer-version membership payload decodes to `.empty`, and the next add overwrites the server with it
 - **Round:** 2 · **Severity:** high · **Verdict:** **REINFORCED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/LibraryMembership.swift:163–171` (and `v` at 151–157)
+- **File:** `Sources/NaviTunesKit/Library/LibraryMembership.swift:163–171` (and `v` at 151–157)
 
 ```swift
     /// Tolerant decode — an absent or malformed comment field becomes an empty payload
@@ -4369,7 +4369,7 @@ but unparseable), `.tooNew` (`v > supportedVersion`), `.ok(payload)`. In `applyM
 of `trackIds`; `persistLibraryMembershipPayload` must **refuse to write** while that flag is set (log +
 a persistent `errorMessage`, not a toast), clearing it on the first clean parse. Use an
 `ISO8601DateFormatter` with `[.withInternetDateTime, .withFractionalSeconds]` fallback. Add
-`Tests/VellumMusicKitTests/LibraryMembershipPayloadTests.swift`: round-trip preserves ids, order and
+`Tests/NaviTunesKitTests/LibraryMembershipPayloadTests.swift`: round-trip preserves ids, order and
 dates; `encoded()` is byte-identical for equal payloads; `decode(nil)`, `decode("")`, `decode("{")` and
 `decode("{\"v\":2,\"albums\":[]}")` each produce the intended outcome; a truncated string causes **no
 write**; `upsertAlbum` is idempotent and keeps the original `added` date.
@@ -4383,14 +4383,14 @@ write**; `upsertAlbum` is idempotent and keeps the original `added` date.
 **Re-verified (T238) —** independent second pass, agent 06, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `LibraryMembershipPayload.decode` (LibraryMembership.swift:166-171) is `(try? decoder.decode(...)) ?? .empty` — any absent, corrupt, or forward-incompatible comment collapses to the same `.empty` value. `grep -rn "\.v\b" Sources/VellumMusicKit/Library/*.swift Sources/VellumMusicKit/App/AppModel.swift` finds only `self.v = v` in the initializer — nothing reads it, so a `v: 2` payload isn't even detected, it just decodes into the v1 shape. `applyMagicPlaylistFetch`'s actual guard (AppModel.swift:2305-2306) is `let payloadHasContent = !payload.albums.isEmpty || !payload.playlists.isEmpty; if payloadHasContent || fetch.trackIds.isEmpty { ... }` — it tests the fetched payload/song-list, not "whether this device already holds entries," but the practical effect (a device with no prior in-memory entries, or one whose songs list happens to be non-empty from other devices, sees the corrupt read pass silently) matches the finding's described outcome, and `persistLibraryMembershipPayload` (2483-2499) is confirmed to be a blind whole-list replace built purely from local `libraryAlbumEntries`/`libraryPlaylistEntries`.
+- **Evidence:** `LibraryMembershipPayload.decode` (LibraryMembership.swift:166-171) is `(try? decoder.decode(...)) ?? .empty` — any absent, corrupt, or forward-incompatible comment collapses to the same `.empty` value. `grep -rn "\.v\b" Sources/NaviTunesKit/Library/*.swift Sources/NaviTunesKit/App/AppModel.swift` finds only `self.v = v` in the initializer — nothing reads it, so a `v: 2` payload isn't even detected, it just decodes into the v1 shape. `applyMagicPlaylistFetch`'s actual guard (AppModel.swift:2305-2306) is `let payloadHasContent = !payload.albums.isEmpty || !payload.playlists.isEmpty; if payloadHasContent || fetch.trackIds.isEmpty { ... }` — it tests the fetched payload/song-list, not "whether this device already holds entries," but the practical effect (a device with no prior in-memory entries, or one whose songs list happens to be non-empty from other devices, sees the corrupt read pass silently) matches the finding's described outcome, and `persistLibraryMembershipPayload` (2483-2499) is confirmed to be a blind whole-list replace built purely from local `libraryAlbumEntries`/`libraryPlaylistEntries`.
 - **Better approach:** N/A — the `.absent`/`.corrupt`/`.tooNew`/`.ok` split plus a `membershipPayloadIsUntrusted` gate on writes is the right shape and matches the codebase's existing "don't clobber on ambiguous state" pattern already used in `refreshLibraryMembership`'s catch block.
 - **Versus the first pass:** AGREE — the earlier pass's two corrections are accurate and match what I read myself: the guard's real predicate is on the fetched payload/trackIds, not local state (though the conclusion survives), and `encoded()` uses plain `.iso8601` (never emits fractional seconds), so the millis-decode hazard is currently theoretical for this app's own writer, not a live bug today.
 
 ---
 ## C16 — The membership poll clobbers an in-flight add, then persists the reverted payload; a failed write is never retried
 - **Round:** 2 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:3166–3195` (`addAlbumToLibrary`), 2295–2316 (`applyMagicPlaylistFetch`), 2483–2499 (`persistLibraryMembershipPayload`)
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:3166–3195` (`addAlbumToLibrary`), 2295–2316 (`applyMagicPlaylistFetch`), 2483–2499 (`persistLibraryMembershipPayload`)
 
 ```swift
         let toAdd = tracks.map(\.id).filter { !librarySongIds.contains($0) }
@@ -4448,7 +4448,7 @@ replacing, then re-run the write; have the auto-sync loop retry it; escalate to 
 ---
 ## C17 — Stale-id repair removes tracks from the server before adding their replacements, inside `catch {}`
 - **Round:** 2 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:6648–6658`; `Playback/StaleSongRecovery.swift:12–21`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:6648–6658`; `Playback/StaleSongRecovery.swift:12–21`
 
 ```swift
     private func persistTrackIDSwapsToMagicPlaylist(_ swaps: [String: Track]) async {
@@ -4483,7 +4483,7 @@ retry through **C16**'s pending-payload mechanism; log the error instead of swal
 `Dictionary(uniqueKeysWithValues:)` with
 `Dictionary(freshTracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })`. Extend
 `applyTrackIDSwaps` to rewrite the kill-mode maps, pin refs and exclusions. Add
-`Tests/VellumMusicKitTests/StaleSongMatchingTests.swift` covering: exact title+artist match; two
+`Tests/NaviTunesKitTests/StaleSongMatchingTests.swift` covering: exact title+artist match; two
 same-title tracks disambiguated by duration within 2 s; disc/index match; title-only match must **not**
 fire when two candidates share the title and `indexNumber == 0`; ids already present in fresh are never
 swapped; duplicate fresh ids do not trap.
@@ -4499,14 +4499,14 @@ swapped; duplicate fresh ids do not trap.
 **Re-verified (T238) —** independent second pass, agent 06, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `persistTrackIDSwapsToMagicPlaylist` (AppModel.swift:6648-6658) is verbatim as quoted: remove-then-add, `catch {}` swallows everything. `librarySongIds` is updated to the *new* ids synchronously in `applyTrackIDSwaps` (6633-6636) before the detached `Task` at 6644 even starts. `StaleSongMatching.buildSwapMap` (StaleSongRecovery.swift:13) is `Dictionary(uniqueKeysWithValues: freshTracks.map { ($0.id, $0) })`, which traps on a duplicate key — and this is not hypothetical: `NowPlayingView.swift` carries a comment recording this exact crash ("reordering trapped in `Dictionary(uniqueKeysWithValues:)` with 'Fatal error: Duplicate values for key'"), and `grep -rn "Dictionary(uniqueKeysWithValues:" Sources/VellumMusicKit` returns 12 hits codebase-wide.
+- **Evidence:** `persistTrackIDSwapsToMagicPlaylist` (AppModel.swift:6648-6658) is verbatim as quoted: remove-then-add, `catch {}` swallows everything. `librarySongIds` is updated to the *new* ids synchronously in `applyTrackIDSwaps` (6633-6636) before the detached `Task` at 6644 even starts. `StaleSongMatching.buildSwapMap` (StaleSongRecovery.swift:13) is `Dictionary(uniqueKeysWithValues: freshTracks.map { ($0.id, $0) })`, which traps on a duplicate key — and this is not hypothetical: `NowPlayingView.swift` carries a comment recording this exact crash ("reordering trapped in `Dictionary(uniqueKeysWithValues:)` with 'Fatal error: Duplicate values for key'"), and `grep -rn "Dictionary(uniqueKeysWithValues:" Sources/NaviTunesKit` returns 12 hits codebase-wide.
 - **Better approach:** Reversing add-before-remove is correct, but it isn't complete: `removeTracksFromServerMagicPlaylist`'s own doc comment (AppModel.swift:3397-3398) says Navidrome removes "by zero-based index in the current playlist," and `StaleSongMatching`'s title-only fallback stage can map two different stale ids to the same fresh track, so `swaps.values.map(\.id)` can contain a duplicate — which would insert a genuine duplicate row into the playlist, not just a harmless transient one. Dedupe the new ids (e.g. via a `Set`) and skip any already present in the current playlist before calling `addTracksToServerMagicPlaylist`, in addition to reordering.
 - **Versus the first pass:** AGREE — I independently verified both supporting facts the earlier pass added: the Navidrome index-based-removal comment at AppModel.swift:3397-3398, and the pre-existing crash comment + 12 total `Dictionary(uniqueKeysWithValues:)` call sites, which make "the trap is not hypothetical" a well-founded correction rather than speculation.
 
 ---
 ## C18 — A stale playback session detaches the *new* session's player, leaving silence with `isPlaying == true`
 - **Round:** 2 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Playback/PlaybackEngine.swift:2553–2572` (and `detachPlayerKeepingQueueState` at 2021–2036)
+- **File:** `Sources/NaviTunesKit/Playback/PlaybackEngine.swift:2553–2572` (and `detachPlayerKeepingQueueState` at 2021–2036)
 
 ```swift
         if await playbackFailedAfterReady(
@@ -4555,14 +4555,14 @@ this candidate's tap tag if `liveTapTags` contains it. Better, make
 **Re-verified (T238) —** independent second pass, agent 07, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `attachPlayer(_:item:track:...)` does `player = p` unconditionally (Sources/VellumMusicKit/Playback/PlaybackEngine.swift:2823), and `detachPlayerKeepingQueueState()` (line 2021) operates only on `self.player`/`self.timeObserver` etc., never a passed-in candidate — confirmed via `guard let timeObserver { player?.removeTimeObserver(...) } ... stopPlayer(player); player = nil ... retireAllTaps()`. `playbackFailedAfterReady` (line 2295) also reads `self.player`, not the caller's `item`'s own player: `if let p = player { if p.timeControlStatus == .playing { return false } ... }`. So after a second `loadAVPlayerItem` task calls `attachPlayer(pB,...)`, the first (stale-epoch) task's later `guard isPlaybackEpochCurrent(epoch) else { detachPlayerKeepingQueueState(); return false }` (line 2569-2571) tears down `pB`, not its own dead `p`, while the two guards *before* `attachPlayer` correctly use `stopPlayer(p)` (lines 2517, 2521) — exactly the inconsistency described.
+- **Evidence:** `attachPlayer(_:item:track:...)` does `player = p` unconditionally (Sources/NaviTunesKit/Playback/PlaybackEngine.swift:2823), and `detachPlayerKeepingQueueState()` (line 2021) operates only on `self.player`/`self.timeObserver` etc., never a passed-in candidate — confirmed via `guard let timeObserver { player?.removeTimeObserver(...) } ... stopPlayer(player); player = nil ... retireAllTaps()`. `playbackFailedAfterReady` (line 2295) also reads `self.player`, not the caller's `item`'s own player: `if let p = player { if p.timeControlStatus == .playing { return false } ... }`. So after a second `loadAVPlayerItem` task calls `attachPlayer(pB,...)`, the first (stale-epoch) task's later `guard isPlaybackEpochCurrent(epoch) else { detachPlayerKeepingQueueState(); return false }` (line 2569-2571) tears down `pB`, not its own dead `p`, while the two guards *before* `attachPlayer` correctly use `stopPlayer(p)` (lines 2517, 2521) — exactly the inconsistency described.
 - **Better approach:** N/A — the proposed identity-guarded `detachPlayerKeepingQueueState(expecting: p)` (mirroring `ensurePlaybackStarted`'s `self.player === player` guard at line 1912) is implementable cleanly: the two generic call sites (`teardownPlayer()` line 2138, and the pre-load-loop call at line 2416) can pass `expecting: player` (self-referential, so behavior is unchanged there), while the two stale-epoch guards pass `expecting: p` so a mismatch short-circuits the whole body (including `retireAllTaps()`), protecting both the live player and its tap.
 - **Versus the first pass:** AGREE — prior pass confirms the same mechanism end-to-end and adds two real scoping corrections (precondition requires a stalled first track; `isPlaying == true` is path-specific to `playAlbum`, not `advanceToNext`) plus a wider silent-EQ variant via `liveTapTags`/`retireAllTaps` before the player even exists. None of that changes the REAL verdict.
 
 ---
 ## C19 — The EQ tap's coefficient publish is not thread-safe, and the double buffer can be overwritten while the render thread reads it
 - **Round:** 2 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Equalizer/EqualizerAudioTap.swift:264–290` (callers: 347–362 `didPrepare`; `EqualizerTapRegistry.swift:216–220`)
+- **File:** `Sources/NaviTunesKit/Equalizer/EqualizerAudioTap.swift:264–290` (callers: 347–362 `didPrepare`; `EqualizerTapRegistry.swift:216–220`)
 
 ```swift
     private func publishCoefficients() {
@@ -4618,14 +4618,14 @@ zipper noise on drags; that is two more `Float` per band in `TapBiquadState`, st
 **Re-verified (T238) —** independent second pass, agent 07, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `publishCoefficients()` (Sources/VellumMusicKit/Equalizer/EqualizerAudioTap.swift:264) reads then writes `state.pointee.activeCoefficientSet` with no lock: `let inactive = state.pointee.activeCoefficientSet == 0 ? 1 : 0 ... state.pointee.activeCoefficientSet = Int32(inactive)`. Both `updateSettings` (called from `EqualizerTapRegistry.updateAllTaps`, reached via the `@MainActor` `PlaybackEngine.applyLiveEqualizerGains`) and `didPrepare` (called from the AVFoundation `tapPrepare` C callback on an unspecified thread) call this with no synchronization — `EqualizerAudioTap` is a plain class, and `EqualizerTapRegistry.updateAllTaps` releases its own lock *before* calling `tap.updateSettings`. `tapProcess` (line 483) captures `let setBase = Int(state.pointee.activeCoefficientSet) * bandCount` once and uses it for the whole callback, so a second publish landing mid-callback (its "inactive" being the render thread's currently-active slot) tears the read, matching problem (2) exactly.
+- **Evidence:** `publishCoefficients()` (Sources/NaviTunesKit/Equalizer/EqualizerAudioTap.swift:264) reads then writes `state.pointee.activeCoefficientSet` with no lock: `let inactive = state.pointee.activeCoefficientSet == 0 ? 1 : 0 ... state.pointee.activeCoefficientSet = Int32(inactive)`. Both `updateSettings` (called from `EqualizerTapRegistry.updateAllTaps`, reached via the `@MainActor` `PlaybackEngine.applyLiveEqualizerGains`) and `didPrepare` (called from the AVFoundation `tapPrepare` C callback on an unspecified thread) call this with no synchronization — `EqualizerAudioTap` is a plain class, and `EqualizerTapRegistry.updateAllTaps` releases its own lock *before* calling `tap.updateSettings`. `tapProcess` (line 483) captures `let setBase = Int(state.pointee.activeCoefficientSet) * bandCount` once and uses it for the whole callback, so a second publish landing mid-callback (its "inactive" being the render thread's currently-active slot) tears the read, matching problem (2) exactly.
 - **Better approach:** N/A — the lock (serializing the two non-render-thread writers) plus a three-slot/`renderingCoefficientSet` scheme (so a publish never targets the slot the render thread announced it's currently using) directly addresses all three sub-defects, and `Atomic<Int32>` from `Synchronization` is available at this project's iOS 26.1 deployment target.
 - **Versus the first pass:** AGREE — prior pass confirmed the mechanism and thread origins, with three corrections (didPrepare *reads* gains/bypassed rather than mutating them, though still racy via ARC on the CoW array; defect (2)'s window is µs-scale execution time not full buffer duration; defect (1) is broader than "route change during a drag," applying to every track boundary). These are refinements, not retractions — the REAL verdict stands.
 
 ---
 ## C20 — `NavidromeClient` mutable session state is read and written from concurrent generic-executor tasks
 - **Round:** 2 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/NavidromeClient.swift:40–61` (properties), 1052–1073 (`nativeAuthenticate`), 1763–1764 (`refreshUserMetadata`)
+- **File:** `Sources/NaviTunesKit/Backends/NavidromeClient.swift:40–61` (properties), 1052–1073 (`nativeAuthenticate`), 1763–1764 (`refreshUserMetadata`)
 
 ```swift
     private func nativeAuthenticate(force: Bool = false) async throws -> String {
@@ -4635,7 +4635,7 @@ zipper noise on drags; that is two more `Float` per band in `TapBiquadState`, st
         }
         let url = baseURL.appendingPathComponent("auth/login")
         // … (elided: request construction)
-        let (data, response) = try await URLSession.vellum.data(for: request)
+        let (data, response) = try await URLSession.navitunes.data(for: request)
         // … (elided: parse)
         nativeAuthToken = token
         return token
@@ -4671,14 +4671,14 @@ See **C45** for the language-mode change that would surface all of this at compi
 **Re-verified (T238) —** independent second pass, agent 07, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `final class NavidromeClient: MusicLibraryProviding` (Sources/VellumMusicKit/Backends/NavidromeClient.swift:40) is a plain class with `private var nativeAuthToken: String?`, `private(set) var currentUserMetadata: NavidromeUserMetadata?`, `private(set) var isLibraryAdmin: Bool` all mutated with no lock inside `async` methods (e.g. `nativeAuthenticate`: `nativeAuthToken = token`; `refreshUserMetadata`: `currentUserMetadata = metadata; isLibraryAdmin = metadata.adminRole`). `LibraryView.swift:582` confirms `let maxConcurrent = 4` in a `withTaskGroup` feeding `fetchPlaylistRows` → `fetchPlaylistRowsViaNativeAPI` → `nativeAuthenticate`, so genuinely concurrent unsynchronized writers are reachable, not hypothetical.
+- **Evidence:** `final class NavidromeClient: MusicLibraryProviding` (Sources/NaviTunesKit/Backends/NavidromeClient.swift:40) is a plain class with `private var nativeAuthToken: String?`, `private(set) var currentUserMetadata: NavidromeUserMetadata?`, `private(set) var isLibraryAdmin: Bool` all mutated with no lock inside `async` methods (e.g. `nativeAuthenticate`: `nativeAuthToken = token`; `refreshUserMetadata`: `currentUserMetadata = metadata; isLibraryAdmin = metadata.adminRole`). `LibraryView.swift:582` confirms `let maxConcurrent = 4` in a `withTaskGroup` feeding `fetchPlaylistRows` → `fetchPlaylistRowsViaNativeAPI` → `nativeAuthenticate`, so genuinely concurrent unsynchronized writers are reachable, not hypothetical.
 - **Better approach:** The actor-wrapping for `nativeAuthToken` (shared in-flight login task) is the right minimal fix for the real race. But `streamURL(for:)`/`fallbackStreamURLs(for:)` are declared `func streamURL(for track: Track) throws -> URL` (line 557) — synchronous, not async — and every caller (PlaybackEngine, OfflineDownloadManager) is `@MainActor`, so the "quality knobs" race the fix proposes to solve with an "atomic value struct" does not exist; that part of the fix should be dropped rather than implemented, and effort concentrated on wrapping only the genuinely racy trio (`nativeAuthToken`, `currentUserMetadata`, `isLibraryAdmin`) in one actor with `await`-based accessors.
 - **Versus the first pass:** AGREE on the core CONFIRMED verdict, and my own reading independently corroborates the prior pass's refutation that `streamURL`/`fallbackStreamURLs` are synchronous and MainActor-only (verified directly), which is why I marked the fix ADEQUATE rather than BEST — the "quality knobs" clause of the proposed fix targets a race that isn't there.
 
 ---
 ## C21 — Sign-out does not cancel session-scoped tasks, so account A's catalog lands in account B
 - **Round:** 2 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:1374–1437` (`signOut`), 2022–2035 (`scheduleLibraryBootstrap`), 3530–3550, 1650–1661, 3699–3745
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:1374–1437` (`signOut`), 2022–2035 (`scheduleLibraryBootstrap`), 3530–3550, 1650–1661, 3699–3745
 
 ```swift
     public func scheduleLibraryBootstrap() {
@@ -4728,7 +4728,7 @@ before every assignment when it differs. Cancel `libraryBootstrapTask`, `library
 ---
 ## C22 — Sign-out leaves the previous account's scrobble queue, history, kill-mode, pins and follows behind
 - **Round:** 2 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:1417–1424`; `Scrobbling/ScrobbleService.swift:251–276`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:1417–1424`; `Scrobbling/ScrobbleService.swift:251–276`
 
 ```swift
         KeychainStore.clear()
@@ -4742,10 +4742,10 @@ before every assignment when it differs. Cancel `libraryBootstrapTask`, `library
 ```
 
 **Problem.** `signOut()` clears the snapshot, rows cache, queue and recently-played keys, but never
-touches `ScrobbleStore` (`vellumPendingScrobbles` / `vellumCompletedScrobbles` /
-`vellumScrobbleExclusions`), `KillModeStore`, `pinnedLibraryItemRefs`,
-`VellumMusic.favoriteArtistNames`, the playlist date maps, `subscriptions.json`, or
-`vellumAcquisitionJobs` — **none of which is scoped by server or user**. Concretely:
+touches `ScrobbleStore` (`navitunesPendingScrobbles` / `navitunesCompletedScrobbles` /
+`navitunesScrobbleExclusions`), `KillModeStore`, `pinnedLibraryItemRefs`,
+`NaviTunes.favoriteArtistNames`, the playlist date maps, `subscriptions.json`, or
+`navitunesAcquisitionJobs` — **none of which is scoped by server or user**. Concretely:
 `ScrobbleService.processPendingScrobbles` drains `store.pending` against whatever `activeLibrary` is
 now, so **the old server's track ids get POSTed as scrobbles to the new server**, and "My Listening"
 shows the previous account's history to the new one. `processTask` is not cancelled from `signOut()`
@@ -4755,7 +4755,7 @@ see **L05**.)
 
 **Fix.** Introduce one `AccountScope` string (`"\(backend)/\(normalizedServerKey)/\(userKey)"` — the
 tuple `LibraryMembership.defaultsKey` already computes) and either (a) prefix every per-account key
-with it (`ScrobbleStore`, `KillModeStore`, `LibraryPinStore.storageKey`, the `VellumMusic.*` history
+with it (`ScrobbleStore`, `KillModeStore`, `LibraryPinStore.storageKey`, the `NaviTunes.*` history
 keys, `MusicSubscriptionStore.filename`) — which also gives free multi-account switching — or, at
 minimum, (b) add `scope` to `PendingScrobble`, drop mismatches in the drain loop, and call
 `store.clearAll()` / `KillModeStore.clear()` from `signOut()`. Either way add
@@ -4763,7 +4763,7 @@ minimum, (b) add `scope` to `PendingScrobble`, drop mismatches in the drain loop
 iteration (or bail when `app.activeLibrary !== lib`). Depends on **L24**.
 
 
-**Verified —** Verified not cleared: the three `ScrobbleStore` keys, `KillModeStore`, `LibraryPinStore.storageKey`, `VellumMusic.favoriteArtistNames`, `VellumMusic.playlistCreatedDates`, `MusicSubscriptionStore`'s `subscriptions.json`, and `vellumAcquisitionJobs` — **none carries a server or user component**, and `ScrobbleStore` has no `clearAll()`. Cross-account submission confirmed: `processPendingScrobbles` resolves `app.activeLibrary` per call, so after signing into B it holds B's client while `store.pending` still holds A's track ids; and `signOut()` contains no reference to `scrobbleService`, so `processTask` is never cancelled and an in-flight drain keeps posting to A's strongly-captured `lib`. The `lastfm_*` parenthetical is correct — nothing writes those keys. **Context worth adding:** `signOut` *does* clear ten other per-account artifacts (recently-played keys, last-sync, keychain, snapshot, rows cache, stream cache, queue, avatar, artwork caches), which is what makes these omissions read as oversights rather than policy.
+**Verified —** Verified not cleared: the three `ScrobbleStore` keys, `KillModeStore`, `LibraryPinStore.storageKey`, `NaviTunes.favoriteArtistNames`, `NaviTunes.playlistCreatedDates`, `MusicSubscriptionStore`'s `subscriptions.json`, and `navitunesAcquisitionJobs` — **none carries a server or user component**, and `ScrobbleStore` has no `clearAll()`. Cross-account submission confirmed: `processPendingScrobbles` resolves `app.activeLibrary` per call, so after signing into B it holds B's client while `store.pending` still holds A's track ids; and `signOut()` contains no reference to `scrobbleService`, so `processTask` is never cancelled and an in-flight drain keeps posting to A's strongly-captured `lib`. The `lastfm_*` parenthetical is correct — nothing writes those keys. **Context worth adding:** `signOut` *does* clear ten other per-account artifacts (recently-played keys, last-sync, keychain, snapshot, rows cache, stream cache, queue, avatar, artwork caches), which is what makes these omissions read as oversights rather than policy.
 
 
 **Re-verified (T238) —** independent second pass, agent 27, judged from the source with the first pass's verdict withheld.
@@ -4775,7 +4775,7 @@ iteration (or bail when `app.activeLibrary !== lib`). Depends on **L24**.
 ---
 ## C23 — DroppedNeedle's session refresh is unreachable, so an expired token never re-logs in
 - **Round:** 2 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Acquisition/DroppedNeedleAcquisitionPlugin.swift:449–455`; `AcquisitionCore.swift:764–766`
+- **File:** `Sources/NaviTunesKit/Acquisition/DroppedNeedleAcquisitionPlugin.swift:449–455`; `AcquisitionCore.swift:764–766`
 
 ```swift
     private static func isAuthFailure(_ error: Error) -> Bool {
@@ -4825,7 +4825,7 @@ read `responseBody` too.
 ---
 ## C24 — Non-terminal jobs restored from disk can never finish, and block re-requesting forever
 - **Round:** 2 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Acquisition/AcquisitionManager.swift:533–537` (with 83–88, 127–130)
+- **File:** `Sources/NaviTunesKit/Acquisition/AcquisitionManager.swift:533–537` (with 83–88, 127–130)
 
 ```swift
     private func noteAbsentFromQueue(key: String, job: AcquisitionJob) {
@@ -4868,7 +4868,7 @@ meaningful. Add `let createdAt: Date` to `AcquisitionJob` (Codable, defaulting `
 ---
 ## C25 — The scrobble queue retries permanently-failing items forever and keeps hammering a dead network
 - **Round:** 2 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Scrobbling/ScrobbleService.swift:251–276`
+- **File:** `Sources/NaviTunesKit/Scrobbling/ScrobbleService.swift:251–276`
 
 ```swift
             let queue = store.pending
@@ -4911,14 +4911,14 @@ parameter) so a backlog drain is one write rather than 2N.
 **Re-verified (T238) —** independent second pass, agent 07, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `ScrobbleService.processPendingScrobbles` (Sources/VellumMusicKit/Scrobbling/ScrobbleService.swift:251) loops `for item in queue { ... } catch { continue }` — no attempt counter, no backoff, no classification. `PendingScrobble` (line 3) has no `attempts`/`lastAttempt` fields. `effectiveOfflineMode` is checked once in the outer guard (line 253), not per item. `removePending`/`addPending` each call `persistPending()` → `Self.save(pending, key:...)`, re-encoding the whole array on every single item drained.
+- **Evidence:** `ScrobbleService.processPendingScrobbles` (Sources/NaviTunesKit/Scrobbling/ScrobbleService.swift:251) loops `for item in queue { ... } catch { continue }` — no attempt counter, no backoff, no classification. `PendingScrobble` (line 3) has no `attempts`/`lastAttempt` fields. `effectiveOfflineMode` is checked once in the outer guard (line 253), not per item. `removePending`/`addPending` each call `persistPending()` → `Self.save(pending, key:...)`, re-encoding the whole array on every single item drained.
 - **Better approach:** The attempts/backoff/cap/single-persist redesign is sound, but the "on a transport error (URLError) break; on a server-side error (HTTP 4xx...) increment attempts" split is not reliably implementable against the current error shapes. `JellyfinMusicClient.reportPlaybackSession` (JellyfinMusicClient.swift:735) throws the exact same `URLError(.badServerResponse)` for a genuine per-item HTTP rejection (e.g. a stale-track 404) as it would be indistinguishable-by-type from other URLError transport failures, so a naive `error is URLError → break` would abort the whole batch on a single bad Jellyfin item instead of isolating it (Navidrome is safer here since `subsonicRequest`'s in-band `error` object throws a plain `NSError(domain: "Navidrome", ...)`, distinct from URLError, so Subsonic code 70 does correctly fall into the "per-item" bucket). Fix `reportPlaybackSession` (and `subsonicRequest`'s HTTP-guard branch) to throw a typed error carrying the real status code first — mirroring the same fix recommended for `AcquisitionError` in C23 — then classify on that, not on `URLError` vs not.
 - **Versus the first pass:** AGREE on the CONFIRMED problem — prior pass independently verifies no attempts/backoff/cap exist, the 2N re-encode cost, and that Subsonic code 70 surfaces through `subsonicRequest`. It does not examine whether the proposed transport-vs-server-error classification actually works against Jellyfin's error shape, which is the gap I'm flagging in the fix.
 
 ---
 ## C26 — `ScrobbleStore` publishes are never forwarded to `AppModel`, so the exclusions trash button looks dead
 - **Round:** 2 · **Severity:** medium _(was high)_ · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:1027–1029` (the forwards that exist); consumers `Scrobbling/MyListeningView.swift:3–8`, `Settings/SettingsLibraryDataView.swift:148–160, 251–265`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:1027–1029` (the forwards that exist); consumers `Scrobbling/MyListeningView.swift:3–8`, `Settings/SettingsLibraryDataView.swift:148–160, 251–265`
 
 ```swift
         // Mini-player chrome is the only playback signal most tabs need from AppModel.
@@ -4945,7 +4945,7 @@ which is what **E02** is about; use it only for the counts row if at all.) Do th
 
 **Verified —** `ScrobbleStore` is `@MainActor final class … ObservableObject` with three `@Published private(set)` properties, so it does publish. Enumerated every forwarding sink in `AppModel`: exactly two (`player.$showsMiniPlayerChrome`, `offline.$downloadedTrackIds`) — **nothing from the scrobble store**, and all 10 `scrobbleService` references are reads. Refutation attempted on every consumer: no `@ObservedObject`, no `@StateObject`, no `.onReceive` in either named file. Claim holds on every screen named.
 
-**Under-scoped:** there are four affected consumers, not two — add `ScrobbleBrowserView` (`SettingsLibraryDataView:212, 219`) and `VellumClientBackup.swift:58–62, 92`, where a restore calls `replaceCompleted`/`replaceExclusions` and the counts row it just changed will not move.
+**Under-scoped:** there are four affected consumers, not two — add `ScrobbleBrowserView` (`SettingsLibraryDataView:212, 219`) and `NaviTunesClientBackup.swift:58–62, 92`, where a restore calls `replaceCompleted`/`replaceExclusions` and the counts row it just changed will not move.
 
 **Severity lowered high → medium.** The entry's own body says "Nothing crashes — it just looks broken," which is accurate: `removeExclusion` is `removeAll`-based and idempotent, so re-tapping causes no damage, and nothing is lost or corrupted.
 
@@ -4954,12 +4954,12 @@ which is what **E02** is about; use it only for the counts row if at all.) Do th
 
 - **Problem:** REAL · **Fix:** BEST
 - **Evidence:** `AppModel.init()` forwards exactly two publishers into `objectWillChange` — `player.$showsMiniPlayerChrome` (line 1029) and `offline.$downloadedTrackIds` (line 1065) — nothing from `scrobbleService.store`. Confirmed the three named consumers hold only `@EnvironmentObject private var app: AppModel` with no `@ObservedObject`/`.onReceive` on the store, e.g. `ScrobbleExclusionBrowserView`: `app.scrobbleService.store.removeExclusion(id: item.id, kind: item.kind)` inside a `Button` whose row will not disappear until an unrelated `AppModel` publish fires.
-- **Versus the first pass:** AGREE — CODE_SWEEP confirms the exact same two forwarding sinks and no observation in either file, additionally finds two more affected consumers (`ScrobbleBrowserView`, `VellumClientBackup.swift`) and lowers severity to medium for the same "looks broken, nothing corrupts" reasoning I'd independently reach from reading `removeExclusion`'s `removeAll`-based idempotent implementation.
+- **Versus the first pass:** AGREE — CODE_SWEEP confirms the exact same two forwarding sinks and no observation in either file, additionally finds two more affected consumers (`ScrobbleBrowserView`, `NaviTunesClientBackup.swift`) and lowers severity to medium for the same "looks broken, nothing corrupts" reasoning I'd independently reach from reading `removeExclusion`'s `removeAll`-based idempotent implementation.
 
 ---
 ## C27 — The disk-cache stores check their generation before the encode and write after it
 - **Round:** 2 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/PlaylistRowsCacheStore.swift:71–92`; same shape `LibrarySnapshotStore.swift:61–90`
+- **File:** `Sources/NaviTunesKit/Library/PlaylistRowsCacheStore.swift:71–92`; same shape `LibrarySnapshotStore.swift:61–90`
 
 ```swift
         let work = DispatchWorkItem {
@@ -5005,7 +5005,7 @@ adds the missing per-call generation to `LibrarySnapshotStore.saveAsync`.
 ---
 ## C28 — A download finishing after "Clear all downloads" resurrects a manifest entry for a deleted file
 - **Round:** 2 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Offline/OfflineDownloadManager.swift:726–776`; `OfflineDownloadManager+CacheManagement.swift:146–158`
+- **File:** `Sources/NaviTunesKit/Offline/OfflineDownloadManager.swift:726–776`; `OfflineDownloadManager+CacheManagement.swift:146–158`
 
 ```swift
         try FileManager.default.moveItem(at: tmpURL, to: dest)
@@ -5049,7 +5049,7 @@ flight).
 ---
 ## C29 — Manifest and filesystem are never reconciled, and startup does synchronous disk I/O on the main actor
 - **Round:** 2 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Offline/OfflineDownloadManager.swift:179–193`
+- **File:** `Sources/NaviTunesKit/Offline/OfflineDownloadManager.swift:179–193`
 
 ```swift
     init() {
@@ -5103,7 +5103,7 @@ first, assign `Self.manifestCache` and `downloadedTrackIds` from its result, and
 ---
 ## C30 — `cachedItems` claims an album is downloaded before a byte lands, and cancelling leaves a phantom
 - **Round:** 2 · **Severity:** high _(was medium)_ · **Verdict:** **REINFORCED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Offline/OfflineDownloadManager+Queue.swift:50–65` (with 177–186)
+- **File:** `Sources/NaviTunesKit/Offline/OfflineDownloadManager+Queue.swift:50–65` (with 177–186)
 
 ```swift
         let tracksToFetch = topUp ? missing : tracks
@@ -5172,7 +5172,7 @@ the verifier is right.
 ---
 ## C31 — A followed artist's failed request is marked "Requested" forever and never retried
 - **Round:** 2 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Subscriptions/MusicSubscriptionEngine.swift:142–152`
+- **File:** `Sources/NaviTunesKit/Subscriptions/MusicSubscriptionEngine.swift:142–152`
 
 ```swift
             let result = await env.enqueue(request)
@@ -5219,7 +5219,7 @@ killed mid-download).
 ---
 ## C32 — `subsonicRequest` discards the Subsonic error code, so auth-vs-unreachable is decided by string-matching
 - **Round:** 2 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/NavidromeClient.swift:1822–1825`; consumer 1721–1741
+- **File:** `Sources/NaviTunesKit/Backends/NavidromeClient.swift:1822–1825`; consumer 1721–1741
 
 ```swift
         if let err = sub["error"] as? [String: Any],
@@ -5271,12 +5271,12 @@ success payload. Same class of defect as **C23**.
 ---
 ## C33 — Jellyfin list endpoints ignore the HTTP status, so a 401/403/500 reads as an empty catalog
 - **Round:** 2 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/JellyfinMusicClient.swift:349–354` (same at 449, 470, 503, 522, 563); 1181–1184
+- **File:** `Sources/NaviTunesKit/Backends/JellyfinMusicClient.swift:349–354` (same at 449, 470, 503, 522, 563); 1181–1184
 
 ```swift
         var req = URLRequest(url: comps.url!)
         applyAuth(&req)
-        let (data, _) = try await URLSession.vellum.data(for: req)
+        let (data, _) = try await URLSession.navitunes.data(for: req)
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let items = json?["Items"] as? [[String: Any]] ?? []
         return items.compactMap(parseAlbum)
@@ -5302,7 +5302,7 @@ results but rethrow when all three subtasks fail, and add `var isPartial: Bool` 
 helper.
 
 
-**Verified —** Enumerated all 31 `URLSession.vellum.data(for: req)` calls in the file: exactly **six** bind `(data, _)` and drop the response — lines 351, 451, 472, 505, 524, 565 — and each was resolved to its enclosing function. Eight named methods against six sites reconciles correctly, because `albums(limit:)`, `recentlyAdded` and `recentlyPlayed` all funnel through `fetchAlbumSummaries`. The other 25 guard properly, and the two counter-examples are real at ±1 from the cited lines — so "inconsistency, not policy" is right (6 of 31). `searchCatalog` verified in both clients: Jellyfin collapses all three subtasks with `(try? await …) ?? []`; Navidrome propagates. The entry's "a 403 **with a JSON body**" hedge is the right one — a bare or HTML body throws at `JSONSerialization` — and ASP.NET `ProblemDetails` is such an object, so the case is live.
+**Verified —** Enumerated all 31 `URLSession.navitunes.data(for: req)` calls in the file: exactly **six** bind `(data, _)` and drop the response — lines 351, 451, 472, 505, 524, 565 — and each was resolved to its enclosing function. Eight named methods against six sites reconciles correctly, because `albums(limit:)`, `recentlyAdded` and `recentlyPlayed` all funnel through `fetchAlbumSummaries`. The other 25 guard properly, and the two counter-examples are real at ±1 from the cited lines — so "inconsistency, not policy" is right (6 of 31). `searchCatalog` verified in both clients: Jellyfin collapses all three subtasks with `(try? await …) ?? []`; Navidrome propagates. The entry's "a 403 **with a JSON body**" hedge is the right one — a bare or HTML body throws at `JSONSerialization` — and ASP.NET `ProblemDetails` is such an object, so the case is live.
 
 **The empty result is written to disk.** `refreshLibraryAlbums` sets `libraryAlbumsLoadError = nil` at 3532, assigns `libraryAlbums = fetched + preserved` at 3547 with **no non-empty guard**, and calls `persistLibrarySnapshot()` at 3551. So a single 403 does not just blank the session — it **persists the blank catalog**, where it survives relaunch until a successful fetch replaces it, and because nothing threw the UI presents a confidently empty library rather than a failure state. **Minor:** there are **seven** `(try? await lib.searchCatalog(…)) ?? .empty` sites, not six (six in `AppModel`, plus `DiscoverySearchView:2105`). Fix compiles — `badResponse(status:message:)` and `humanReadableError(from:)` already exist, and `CatalogSearchResults` uses the memberwise init so a defaulted `isPartial` keeps every call site compiling.
 
@@ -5310,14 +5310,14 @@ helper.
 **Re-verified (T238) —** independent second pass, agent 28, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** Confirmed by reading all cited sites (349-354, 449-, 470-, 503-, 522-, 563-): each does `let (data, _) = try await URLSession.vellum.data(for: req)` then `let items = json?["Items"] as? [[String: Any]] ?? []` with no status check, while `libraryArtists` (line ~373) and `fetchPlaylistSummaries` (line ~940) do `guard let http = res as? HTTPURLResponse, http.statusCode == 200 else { throw URLError(.badServerResponse) }`. `searchCatalog` (1171-1184) does `let songs = (try? await songsTask) ?? []` for all three subtasks, silently converting any failure — including a thrown non-2xx from the underlying `searchAudioItems`/`searchAlbumItems`/`searchArtistItems`, which do check status — into an empty result.
+- **Evidence:** Confirmed by reading all cited sites (349-354, 449-, 470-, 503-, 522-, 563-): each does `let (data, _) = try await URLSession.navitunes.data(for: req)` then `let items = json?["Items"] as? [[String: Any]] ?? []` with no status check, while `libraryArtists` (line ~373) and `fetchPlaylistSummaries` (line ~940) do `guard let http = res as? HTTPURLResponse, http.statusCode == 200 else { throw URLError(.badServerResponse) }`. `searchCatalog` (1171-1184) does `let songs = (try? await songsTask) ?? []` for all three subtasks, silently converting any failure — including a thrown non-2xx from the underlying `searchAudioItems`/`searchAlbumItems`/`searchArtistItems`, which do check status — into an empty result.
 - **Better approach:** N/A — verified `JellyfinClientError.badResponse(status:message:)` and `humanReadableError(from:)` already exist in the file, and `CatalogSearchResults`'s memberwise init means a defaulted `isPartial` won't break `static let empty`. I also checked `refreshLibraryAlbums` (AppModel.swift:3530-3570): it does `let fetched = try await all` with no `try?`, so once `albums(limit:)` actually throws on a bad status instead of returning `[]`, the catch block at 3567 fires and calls `restoreLibraryFromDisk()` instead of persisting an empty catalog — this fix incidentally also closes that "persists the blank catalog" hole.
 - **Versus the first pass:** AGREE — matches my independent read; the recorded note about a 7th `searchCatalog` call site and the "persists to disk" consequence are additive details, not contradictions.
 
 ---
 ## C34 — One failed `getSong` aborts the whole playlist or favorites load on Navidrome
 - **Round:** 2 · **Severity:** low _(was medium)_ · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/NavidromeClient.swift:910–927`
+- **File:** `Sources/NaviTunesKit/Backends/NavidromeClient.swift:910–927`
 
 ```swift
             try await withThrowingTaskGroup(of: Track?.self) { group in
@@ -5362,7 +5362,7 @@ failed.
 ---
 ## C35 — Widget play/pause intents are a Darwin-notification relay that only works while the app is alive; taps are lost or replayed later
 - **Round:** 2 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Widgets/PlayWidgetItemIntent.swift:12–23`; consumer `App/AppModel.swift:2626–2628, 2680–2716`
+- **File:** `Sources/NaviTunesKit/Widgets/PlayWidgetItemIntent.swift:12–23`; consumer `App/AppModel.swift:2626–2628, 2680–2716`
 
 ```swift
 private func postWidgetCommand(_ command: String, itemId: String? = nil, itemKind: String? = nil) {
@@ -5399,20 +5399,20 @@ Darwin observer and `handleWidgetCommandFromNotification`. If the relay must sta
 
 **Verified —** Both intents confirmed `openAppWhenRun = false` and plain `AppIntent` — no `AudioPlaybackIntent`, `ForegroundContinuableIntent` or `LiveActivityIntent` conformance — so `perform()` runs in the widget extension. Invoked from `Button(intent:)` at 8 sites across both widgets. The only consumer is the `CFNotificationCenterAddObserver` registered from `init`, and Darwin notifications are not queued for a non-running process. No expiry: `grep` for `widgetCommandPostedAt|postedAt` returns nothing, and the drain path reads the raw string with no timestamp check. `kind: .album` hardcoded at 5858/5868 while the id falls back to `track.id`, and `handleWidgetPlayCommand` then calls `tracks(forAlbumId:)` and returns silently on empty — **and it ignores `itemKind` entirely**, which is plumbed widget → defaults → 2710 → 2662 and never read. That last point is an extra defect the entry misses.
 
-**One fix correction:** "move them to the shared target (see L10)" — **they are already in the shared target.** `PlayWidgetItemIntent.swift` is in `Sources/VellumMusicKit/Widgets/` and the pbxproj links `VellumMusicKit` into both targets. Only the `AudioPlaybackIntent` conformance is needed; no file move. Deployment target 26.1 is well past the iOS 17 floor. **Scope:** the silent case narrows to a *recently-played* tile whose track had an empty `albumId` and is not the active track.
+**One fix correction:** "move them to the shared target (see L10)" — **they are already in the shared target.** `PlayWidgetItemIntent.swift` is in `Sources/NaviTunesKit/Widgets/` and the pbxproj links `NaviTunesKit` into both targets. Only the `AudioPlaybackIntent` conformance is needed; no file move. Deployment target 26.1 is well past the iOS 17 floor. **Scope:** the silent case narrows to a *recently-played* tile whose track had an empty `albumId` and is not the active track.
 
 
 **Re-verified (T238) —** independent second pass, agent 28, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
 - **Evidence:** `TogglePlaybackIntent`/`PlayWidgetItemIntent` (PlayWidgetItemIntent.swift) both set `public static var openAppWhenRun: Bool = false` and only conform to `AppIntent`, calling `postWidgetCommand` which writes to `UserDefaults(suiteName:)` and fires `CFNotificationCenterPostNotification`. `AppModel.handleAppBecameActive` (line 2626) calls `handleWidgetCommandFromNotification()` "for commands that fired while the app wasn't running" with no timestamp anywhere (`grep` for `widgetCommandPostedAt` returns nothing). Also confirmed the secondary bug: `writeWidgetData` hardcodes `kind: .album` at both sites (`let id = track.albumId.isEmpty ? track.id : track.albumId` then `kind: .album`), and `handleWidgetPlayCommand(itemId:itemKind:)` never references its own `itemKind` parameter in its body at all — it's dead/unused end to end.
-- **Better approach:** `AudioPlaybackIntent` conformance is the correct API for this. But "move them to the shared target" is describing something already true: `PlayWidgetItemIntent.swift` already lives in `Sources/VellumMusicKit/Widgets/`, and that package is already linked into both the main app and the widget extension (confirmed via grep — the file is referenced from both `AppModel.swift` and the `VellumWidgets` extension files). No file move is needed or possible to "do" differently — just add the protocol conformance in place.
+- **Better approach:** `AudioPlaybackIntent` conformance is the correct API for this. But "move them to the shared target" is describing something already true: `PlayWidgetItemIntent.swift` already lives in `Sources/NaviTunesKit/Widgets/`, and that package is already linked into both the main app and the widget extension (confirmed via grep — the file is referenced from both `AppModel.swift` and the `NaviTunesWidgets` extension files). No file move is needed or possible to "do" differently — just add the protocol conformance in place.
 - **Versus the first pass:** AGREE — the recorded verdict makes the identical correction ("they are already in the shared target ... no file move") that I reached independently, plus flags the same unused-`itemKind` defect I found.
 
 ---
 ## C36 — Overlapping widget artwork caches prune each other's files
 - **Round:** 2 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Widgets/WidgetDataStore.swift:108–127`; caller `App/AppModel.swift:5886–5891`
+- **File:** `Sources/NaviTunesKit/Widgets/WidgetDataStore.swift:108–127`; caller `App/AppModel.swift:5886–5891`
 
 ```swift
             if FileManager.default.fileExists(atPath: dest.path) { continue }
@@ -5453,7 +5453,7 @@ until `pending` is empty and prunes **once**, against the latest set.
 ---
 ## C37 — The schema stamp guards two of the five stores that persist `Track`
 - **Round:** 2 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Playback/PlaybackQueueStore.swift:40–47`
+- **File:** `Sources/NaviTunesKit/Playback/PlaybackQueueStore.swift:40–47`
 
 ```swift
     static func load() -> PlaybackQueueSnapshot? {
@@ -5496,7 +5496,7 @@ so offline artist links never gain the new fields.
 ---
 ## C38 — The magic-playlist id is cached in two places and the name-drift path clears only one
 - **Round:** 2 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:1690–1692, 2117–2121`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:1690–1692, 2117–2121`
 
 ```swift
             if !expectedNames.contains(fetch.name), !LibraryMembership.isMagicPlaylistName(fetch.name) {
@@ -5532,14 +5532,14 @@ invalidates the only copy. Alternatively gate every mutation entry point on
 **Re-verified (T238) —** independent second pass, agent 29, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** PARTLY REAL · **Fix:** WRONG
-- **Evidence:** The two-cache fact is true: `LibrarySnapshot.libraryMagicPlaylistId` lives in a single global file (`private static let filename = "library-snapshot.json"`, no server/user scoping) while `LibraryMembership.cachedPlaylistId` is scoped UserDefaults, and the drift handler at AppModel.swift:2115-2119 calls only `LibraryMembership.clearCachedPlaylistId(...)`. But `resolveMagicPlaylistId` (AppModel.swift:2179-2216) does find-by-name **first** (`for name in candidateNames { if let existing = try await findMagicPlaylistByName(name) { ... return existing } }`) and only falls back to `LibraryMembership.cachedPlaylistId(...)` as a third-tier fallback after the legacy-migration check — so the cached copy the drift handler clears is nearly irrelevant to resolution, and swapping the snapshot's source to that same cache (the proposed fix) doesn't close anything. The real, worse hazard is that ~30 mutation call sites (e.g. `addAlbumToLibrary`: `guard let playlistId = libraryMagicPlaylistId, let lib = activeLibrary else { return }`) read `libraryMagicPlaylistId` completely ungated: `grep -rn hasResolvedMembershipThisSession` returns zero hits anywhere in Sources/Tests/VellumMusicHost, and `isResolvingLibraryMembership`'s only consumer is a spinner in `LibraryView.swift:390` — dead as a gate on this exact path because `let isInitialResolve = libraryMagicPlaylistId == nil` (line 2100) is false on a cold launch that already painted a snapshot id.
+- **Evidence:** The two-cache fact is true: `LibrarySnapshot.libraryMagicPlaylistId` lives in a single global file (`private static let filename = "library-snapshot.json"`, no server/user scoping) while `LibraryMembership.cachedPlaylistId` is scoped UserDefaults, and the drift handler at AppModel.swift:2115-2119 calls only `LibraryMembership.clearCachedPlaylistId(...)`. But `resolveMagicPlaylistId` (AppModel.swift:2179-2216) does find-by-name **first** (`for name in candidateNames { if let existing = try await findMagicPlaylistByName(name) { ... return existing } }`) and only falls back to `LibraryMembership.cachedPlaylistId(...)` as a third-tier fallback after the legacy-migration check — so the cached copy the drift handler clears is nearly irrelevant to resolution, and swapping the snapshot's source to that same cache (the proposed fix) doesn't close anything. The real, worse hazard is that ~30 mutation call sites (e.g. `addAlbumToLibrary`: `guard let playlistId = libraryMagicPlaylistId, let lib = activeLibrary else { return }`) read `libraryMagicPlaylistId` completely ungated: `grep -rn hasResolvedMembershipThisSession` returns zero hits anywhere in Sources/Tests/NaviTunesHost, and `isResolvingLibraryMembership`'s only consumer is a spinner in `LibraryView.swift:390` — dead as a gate on this exact path because `let isInitialResolve = libraryMagicPlaylistId == nil` (line 2100) is false on a cold launch that already painted a snapshot id.
 - **Better approach:** Don't touch which cache the snapshot mirrors (it changes nothing, since `resolveMagicPlaylistId` barely consults the cached id). Implement the fix's own "alternative" for real: add a `hasResolvedMembershipThisSession` (or reuse `libraryMagicPlaylistId != nil && lastLibraryMembershipRefresh != nil`) flag and gate every mutation entry point (`addAlbumToLibrary`, `removeAlbumFromLibrary`, `toggleFavoriteTrack`, etc.) on it, so a cold-launch snapshot id can paint the UI instantly without being usable for a server write until `refreshLibraryMembership()` actually completes once this session.
 - **Versus the first pass:** AGREE — CODE_SWEEP's Verified block reaches the same two conclusions independently verifiable in the code: the causal chain (name-drift → stale cache → hazard) is refuted by `resolveMagicPlaylistId`'s find-by-name-first order, and the real hazard is the ungated mutation window, backed by the same zero-hit / dead-spinner evidence I confirmed myself.
 
 ---
 ## C39 — Re-downloading a track permanently names the new file "… (2).ext"
 - **Round:** 2 · **Severity:** low · **Verdict:** **DENIED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Offline/OfflineDownloadManager.swift:714–726`
+- **File:** `Sources/NaviTunesKit/Offline/OfflineDownloadManager.swift:714–726`
 
 ```swift
         let root = try Self.downloadsFolder()
@@ -5579,7 +5579,7 @@ What remains is cosmetic and intermittent — *every other* re-download of the s
 ---
 ## C40 — The EQ tap assumes non-interleaved Float32 without checking the format it was prepared with
 - **Round:** 2 · **Severity:** low _(was medium)_ · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Equalizer/EqualizerAudioTap.swift:417–438` (`tapPrepare`), 485–499 (`tapProcess`)
+- **File:** `Sources/NaviTunesKit/Equalizer/EqualizerAudioTap.swift:417–438` (`tapPrepare`), 485–499 (`tapProcess`)
 
 ```swift
     for (bufferIndex, buffer) in buffers.enumerated() {
@@ -5614,13 +5614,13 @@ as pure passthrough, and log the flags. In `tapProcess`, add
 **Re-verified (T238) —** independent second pass, agent 29, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `tapPrepare` (EqualizerAudioTap.swift) only ever stores `state.pointee.sampleRate = format.mSampleRate; state.pointee.channels = Int32(format.mChannelsPerFrame); state.pointee.maxFrames = ...` (both the owned and orphan branches) and never reads `format.mFormatFlags` or `format.mBitsPerChannel` — `grep -n "mFormatFlags\|mBitsPerChannel\|mDataByteSize" Sources/VellumMusicKit/Equalizer/EqualizerAudioTap.swift` returns nothing. `tapProcess`'s per-buffer guard is only `guard bufferIndex < Int(state.pointee.channels), let raw = buffer.mData else { continue }` before `raw.assumingMemoryBound(to: Float.self)` and a `for frame in 0 ..< frames` read/write loop with no `mDataByteSize` bound check.
+- **Evidence:** `tapPrepare` (EqualizerAudioTap.swift) only ever stores `state.pointee.sampleRate = format.mSampleRate; state.pointee.channels = Int32(format.mChannelsPerFrame); state.pointee.maxFrames = ...` (both the owned and orphan branches) and never reads `format.mFormatFlags` or `format.mBitsPerChannel` — `grep -n "mFormatFlags\|mBitsPerChannel\|mDataByteSize" Sources/NaviTunesKit/Equalizer/EqualizerAudioTap.swift` returns nothing. `tapProcess`'s per-buffer guard is only `guard bufferIndex < Int(state.pointee.channels), let raw = buffer.mData else { continue }` before `raw.assumingMemoryBound(to: Float.self)` and a `for frame in 0 ..< frames` read/write loop with no `mDataByteSize` bound check.
 - **Versus the first pass:** AGREE — CODE_SWEEP confirms the same code facts verbatim and calls the fix "correct and cheap." It also corrects the finding's failure-mode description (an interleaved buffer would only get its first half filtered, not "L,R,L,R as a single stream") and downgrades severity medium→low as defensive hardening against a currently-unreached format; that's a reasonable refinement of consequence, not of whether the missing validation itself exists.
 
 ---
 ## C41 — `allTracks` swallows the `search3` error and falls back to a 2,000-album walk; `tracksPage` probes three queries at end-of-list
 - **Round:** 2 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/NavidromeClient.swift:322–328, 349–366`
+- **File:** `Sources/NaviTunesKit/Backends/NavidromeClient.swift:322–328, 349–366`
 
 ```swift
     func allTracks(limit: Int) async throws -> [Track] {
@@ -5656,14 +5656,14 @@ and an empty page means end-of-list in one request.
 **Re-verified (T238) —** independent second pass, agent 29, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** PARTLY REAL · **Fix:** ADEQUATE
-- **Evidence:** The `allTracks` half is fully real: `if let batch = try? await fetchSongsViaSearch3(cap: cap), !batch.isEmpty { return ... }` converts any error (auth/timeout) on the first `search3` query into a silent fallback to `allTracksByWalkingAlbums`, which calls `albums(limit: albumBudget)` (`min(2_000, max(400, cap))`) then `(try? await self.tracks(forAlbumId: album.id)) ?? []` in groups of 8 — swallowing `CancellationError` too. But the `tracksPage` half's framing as "the Library → Songs paginator" is not real: `grep -rn "tracksPage" Sources Tests VellumMusicHost` returns exactly four hits — the Navidrome impl, the Jellyfin impl, the protocol requirement, and a protocol-extension default — zero call sites anywhere, and `LibrarySongsView.swift` (grep for "Page\|offset\|allTracks\|paginat") has no reference to it at all. The "pages can come from a different result set" defect is real code but currently unreachable dead API surface, not a live paginator bug.
+- **Evidence:** The `allTracks` half is fully real: `if let batch = try? await fetchSongsViaSearch3(cap: cap), !batch.isEmpty { return ... }` converts any error (auth/timeout) on the first `search3` query into a silent fallback to `allTracksByWalkingAlbums`, which calls `albums(limit: albumBudget)` (`min(2_000, max(400, cap))`) then `(try? await self.tracks(forAlbumId: album.id)) ?? []` in groups of 8 — swallowing `CancellationError` too. But the `tracksPage` half's framing as "the Library → Songs paginator" is not real: `grep -rn "tracksPage" Sources Tests NaviTunesHost` returns exactly four hits — the Navidrome impl, the Jellyfin impl, the protocol requirement, and a protocol-extension default — zero call sites anywhere, and `LibrarySongsView.swift` (grep for "Page\|offset\|allTracks\|paginat") has no reference to it at all. The "pages can come from a different result set" defect is real code but currently unreachable dead API surface, not a live paginator bug.
 - **Better approach:** The `allTracks` fix (propagate `search3` errors via `try await`, check `Task.isCancelled` per chunk) is correct as written. For `tracksPage`, fixing its internal query-consistency logic is speculative effort spent on code nothing calls — first confirm whether it's meant to be wired into `LibrarySongsView`'s pagination (in which case wire it up and then fix it) or should be deleted as dead code; polishing an unreachable method's correctness without resolving that question doesn't reduce any real risk today.
 - **Versus the first pass:** AGREE — CODE_SWEEP's Verified block makes exactly this correction ("must be re-scoped... it is not the Library → Songs paginator... Zero call sites... dead API surface"), which I independently confirmed via the same grep.
 
 ---
 ## C42 — `mediaURLWithQueryAuth` does the opposite of its name, and the docs promise query auth the code strips
 - **Round:** 2 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/JellyfinMusicClient.swift:289, 831–845`
+- **File:** `Sources/NaviTunesKit/Backends/JellyfinMusicClient.swift:289, 831–845`
 
 ```swift
     private func mediaURLWithQueryAuth(_ base: URL, extraQuery: [URLQueryItem]) -> URL {
@@ -5704,7 +5704,7 @@ home instead of seven consumer files. Do this with **L13**/**L16**/**L22**.
 ---
 ## C43 — App and widget ship with mismatched build numbers because `Info.plist` hard-codes them
 - **Round:** 2 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `VellumMusicHost/VellumMusicHost/Info.plist:19–20, 32–33` vs `project.pbxproj:496, 508, 560, 569`
+- **File:** `NaviTunesHost/NaviTunesHost/Info.plist:19–20, 32–33` vs `project.pbxproj:496, 508, 560, 569`
 
 ```xml
 	<key>CFBundleShortVersionString</key>
@@ -5719,7 +5719,7 @@ home instead of seven consumer files. Do this with **L13**/**L16**/**L22**.
 ...
 				CURRENT_PROJECT_VERSION = 2;
 				MARKETING_VERSION = 1.1;
-				PRODUCT_BUNDLE_IDENTIFIER = "$(VELLUM_BUNDLE_ID).widgets";
+				PRODUCT_BUNDLE_IDENTIFIER = "$(NAVITUNES_BUNDLE_ID).widgets";
 ```
 
 **Problem.** `GENERATE_INFOPLIST_FILE = NO` and the app plist uses literals, so the app's
@@ -5731,23 +5731,23 @@ mechanics. Bumping the version currently means editing three places that already
 **Fix.** Replace the two literals in the app plist with `$(MARKETING_VERSION)` and
 `$(CURRENT_PROJECT_VERSION)` (the widget plist already does this). Move `MARKETING_VERSION` and
 `CURRENT_PROJECT_VERSION` out of the four per-target configuration blocks into
-`VellumMusicHost/Config/Signing.xcconfig` (or a new `Version.xcconfig`) so one line governs every
+`NaviTunesHost/Config/Signing.xcconfig` (or a new `Version.xcconfig`) so one line governs every
 target.
 
 
-**Verified —** Read from bytes. **App:** `CFBundleShortVersionString` literal `1.1`, `CFBundleVersion` literal **`3`**; pbxproj says `CURRENT_PROJECT_VERSION = 4`. **Widget:** both are `$(…)` variables resolving to `1.1` and **`2`**. Every refutation route closed: `GENERATE_INFOPLIST_FILE = NO` in **all four** app/widget configs (the two `= YES` belong to the **VellumMusicUITests** target, which ships nothing); `INFOPLIST_FILE` points at the literal plists in all four; **zero `PBXShellScriptBuildPhase` entries in the entire pbxproj**; no `INFOPLIST_PREPROCESS`, no `agvtool`; and nothing in CI or the build script overrides `CURRENT_PROJECT_VERSION`. The ITMS-90473 mechanic is real. **Nit:** the second excerpt splices line 560 onto 569 with no ellipsis.
+**Verified —** Read from bytes. **App:** `CFBundleShortVersionString` literal `1.1`, `CFBundleVersion` literal **`3`**; pbxproj says `CURRENT_PROJECT_VERSION = 4`. **Widget:** both are `$(…)` variables resolving to `1.1` and **`2`**. Every refutation route closed: `GENERATE_INFOPLIST_FILE = NO` in **all four** app/widget configs (the two `= YES` belong to the **NaviTunesUITests** target, which ships nothing); `INFOPLIST_FILE` points at the literal plists in all four; **zero `PBXShellScriptBuildPhase` entries in the entire pbxproj**; no `INFOPLIST_PREPROCESS`, no `agvtool`; and nothing in CI or the build script overrides `CURRENT_PROJECT_VERSION`. The ITMS-90473 mechanic is real. **Nit:** the second excerpt splices line 560 onto 569 with no ellipsis.
 
 
 **Re-verified (T238) —** independent second pass, agent 29, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `VellumMusicHost/Info.plist` has literal `<key>CFBundleShortVersionString</key><string>1.1</string>` and `<key>CFBundleVersion</key><string>3</string>`, while `project.pbxproj` sets `CURRENT_PROJECT_VERSION = 4;` for the app target (both Debug/Release) and `CURRENT_PROJECT_VERSION = 2;` for the widget target, whose own `VellumWidgets/Info.plist` I confirmed uses `<string>$(CURRENT_PROJECT_VERSION)</string>` (i.e. resolves to 2). All four app/widget configs have `GENERATE_INFOPLIST_FILE = NO`, so the app's literal "3" is what actually ships, mismatched against the widget's "2" and the pbxproj's stated "4".
+- **Evidence:** `NaviTunesHost/Info.plist` has literal `<key>CFBundleShortVersionString</key><string>1.1</string>` and `<key>CFBundleVersion</key><string>3</string>`, while `project.pbxproj` sets `CURRENT_PROJECT_VERSION = 4;` for the app target (both Debug/Release) and `CURRENT_PROJECT_VERSION = 2;` for the widget target, whose own `NaviTunesWidgets/Info.plist` I confirmed uses `<string>$(CURRENT_PROJECT_VERSION)</string>` (i.e. resolves to 2). All four app/widget configs have `GENERATE_INFOPLIST_FILE = NO`, so the app's literal "3" is what actually ships, mismatched against the widget's "2" and the pbxproj's stated "4".
 - **Versus the first pass:** AGREE — CODE_SWEEP verified the same byte values and closed every refutation route (no shell-script phase, no agvtool, GENERATE_INFOPLIST_FILE=NO confirmed on all four relevant configs), matching what I found directly. The widget plist already uses `$(MARKETING_VERSION)`/`$(CURRENT_PROJECT_VERSION)`, which I confirmed is the exact pattern the fix proposes applying to the app plist too — proven feasible by the sibling target's existing precedent.
 
 ---
 ## C44 — The team ID the xcconfig says is "intentionally NOT set" is set in the pbxproj
 - **Round:** 2 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `VellumMusicHost/VellumMusicHost.xcodeproj/project.pbxproj:422, 466` vs `VellumMusicHost/Config/Signing.xcconfig:3–6`
+- **File:** `NaviTunesHost/NaviTunesHost.xcodeproj/project.pbxproj:422, 466` vs `NaviTunesHost/Config/Signing.xcconfig:3–6`
 
 ```
 				DEVELOPMENT_TEAM = <TEAM_ID>;
@@ -5800,7 +5800,7 @@ into `AppModel` compiles silently. **This is the setting that lets C19, C20, C21
 without a single diagnostic.** The project is on tools 6.2 already; `.v5` buys only not seeing the
 warnings.
 
-**Fix.** Add `.enableUpcomingFeature("StrictConcurrency")` to the `VellumMusicKit` target's
+**Fix.** Add `.enableUpcomingFeature("StrictConcurrency")` to the `NaviTunesKit` target's
 `swiftSettings`, fix warnings file-by-file starting with `App/`, `Playback/`, `Library/`, then flip to
 `.swiftLanguageMode(.v6)` and `SWIFT_VERSION = 6.0` in the pbxproj. Do it behind a CI job running with
 the flag on and `continue-on-error: true` until the count reaches zero. Treat this as the umbrella task
@@ -5821,7 +5821,7 @@ for the round-2 concurrency findings rather than a cleanup.
 ---
 ## C46 — The widget extension disables App Transport Security for network calls it never makes
 - **Round:** 2 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `VellumMusicHost/VellumWidgets/Info.plist:28–32`
+- **File:** `NaviTunesHost/NaviTunesWidgets/Info.plist:28–32`
 
 ```xml
 	<key>NSAppTransportSecurity</key>
@@ -5831,7 +5831,7 @@ for the round-2 concurrency findings rather than a cleanup.
 	</dict>
 ```
 
-**Problem.** `grep -n 'URLSession\|AsyncImage\|Data(contentsOf' VellumMusicHost/VellumWidgets/*.swift`
+**Problem.** `grep -n 'URLSession\|AsyncImage\|Data(contentsOf' NaviTunesHost/NaviTunesWidgets/*.swift`
 returns nothing — the widgets read artwork from the App Group file cache `WidgetDataStore` maintains.
 The blanket ATS exception on the extension is dead configuration that App Store review will ask you to
 justify twice, and it is the first thing a security reviewer flags. The host app's identical exception
@@ -5844,13 +5844,13 @@ exactly what `NSAllowsLocalNetworking` grants — and fall back to the blanket f
 HTTP server is a supported case.
 
 
-**Verified —** **Survived a real refutation attempt.** The entry's grep is under-scoped — the widget target links `VellumMusicKit`, which *does* contain a network call (`WidgetDataStore.swift:116`, `URLSession.shared.data(for: request)`). But that is inside `cacheArtwork(items:)`, and `grep -rn cacheArtwork` across Sources and the host shows exactly one caller: **`AppModel.swift:5887`**, the host app process. The extension only calls `WidgetDataStore.read()` and `cachedArtworkData(for:)`, the latter being `try? Data(contentsOf: url)` on a **file** URL in the App Group container. The 8 `Button(intent:)` sites resolve to the two intents, whose `perform()` writes `UserDefaults` and posts a Darwin notification — no network. So the extension makes no network requests and the ATS exception is dead. Host plist has the identical blanket exception at 36–40, and the `README.md:83` citation is exact.
+**Verified —** **Survived a real refutation attempt.** The entry's grep is under-scoped — the widget target links `NaviTunesKit`, which *does* contain a network call (`WidgetDataStore.swift:116`, `URLSession.shared.data(for: request)`). But that is inside `cacheArtwork(items:)`, and `grep -rn cacheArtwork` across Sources and the host shows exactly one caller: **`AppModel.swift:5887`**, the host app process. The extension only calls `WidgetDataStore.read()` and `cachedArtworkData(for:)`, the latter being `try? Data(contentsOf: url)` on a **file** URL in the App Group container. The 8 `Button(intent:)` sites resolve to the two intents, whose `perform()` writes `UserDefaults` and posts a Darwin notification — no network. So the extension makes no network requests and the ATS exception is dead. Host plist has the identical blanket exception at 36–40, and the `README.md:83` citation is exact.
 
 
 **Re-verified (T238) —** independent second pass, agent 30, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** The widget's own files have no network code (`grep -n 'URLSession\|AsyncImage\|Data(contentsOf' VellumMusicHost/VellumWidgets/*.swift` → empty), but `Sources/VellumMusicKit/Widgets/WidgetDataStore.swift:116` does contain `if let (data, _) = try? await URLSession.shared.data(for: request) {` inside `cacheArtwork(items:)`, and the pbxproj shows `VellumWidgets` links the `VellumMusicKit` package product (line 255/16/111 in project.pbxproj), so that code *is* compiled into the extension binary. Checking callers closes the gap: `grep -rn "cacheArtwork\b"` shows the only call site is `Sources/VellumMusicKit/App/AppModel.swift:5887` (`let wrote = await WidgetDataStore.cacheArtwork(items: allItems)`), i.e. the host app process; the widget files (`VellumRecentlyPlayedWidget.swift`, `VellumNowPlayingWidget.swift`) only call `WidgetDataStore.read()` and `WidgetDataStore.cachedArtworkData(for:)`, the latter a plain `try? Data(contentsOf: url)` file read. So the extension genuinely never fires a request at runtime.
+- **Evidence:** The widget's own files have no network code (`grep -n 'URLSession\|AsyncImage\|Data(contentsOf' NaviTunesHost/NaviTunesWidgets/*.swift` → empty), but `Sources/NaviTunesKit/Widgets/WidgetDataStore.swift:116` does contain `if let (data, _) = try? await URLSession.shared.data(for: request) {` inside `cacheArtwork(items:)`, and the pbxproj shows `NaviTunesWidgets` links the `NaviTunesKit` package product (line 255/16/111 in project.pbxproj), so that code *is* compiled into the extension binary. Checking callers closes the gap: `grep -rn "cacheArtwork\b"` shows the only call site is `Sources/NaviTunesKit/App/AppModel.swift:5887` (`let wrote = await WidgetDataStore.cacheArtwork(items: allItems)`), i.e. the host app process; the widget files (`NaviTunesRecentlyPlayedWidget.swift`, `NaviTunesNowPlayingWidget.swift`) only call `WidgetDataStore.read()` and `WidgetDataStore.cachedArtworkData(for:)`, the latter a plain `try? Data(contentsOf: url)` file read. So the extension genuinely never fires a request at runtime.
 - **Better approach:** Deleting the widget's `NSAppTransportSecurity` dict is unambiguously correct. The host-plist swap (`NSAllowsArbitraryLoads` → `NSAllowsLocalNetworking` + `NSAllowsArbitraryLoadsInWebContent=false`) is plausible — every `http://` placeholder in the codebase (`LoginView.swift:165`, `AccountView.swift:520`, the three acquisition plugin config placeholders) uses an RFC1918 address like `192.168.1.x` — but `AcquisitionCore.swift:695-699`'s `normalizeURL` accepts and prepends `http://` to *any* user-typed host with no LAN restriction, so a user pointing Lidarr/Downtify/DroppedNeedle at a public HTTP-only host would silently break under `NSAllowsLocalNetworking` (which only exempts private/`.local` addresses). Verify no supported non-LAN HTTP configuration exists (or gate the narrower exception behind it) before making the host-plist change; the widget-plist deletion can ship independently and with full confidence.
 - **Versus the first pass:** AGREE — recorded verdict labels this "Survived a real refutation attempt" and traces the identical chain (WidgetDataStore.swift:116 → sole caller AppModel.swift:5887 → widget only reads files/UserDefaults), which is exactly the investigation I ran independently before reading it.
 
@@ -5900,14 +5900,14 @@ unstructured log are both cheap wins against that.
 **Re-verified (T238) —** independent second pass, agent 30, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `.github/workflows/ci.yml` triggers are `on: pull_request: branches: [dev, main]` and `workflow_dispatch` only — no `push:` trigger, so a direct push to `dev` runs nothing. `Package.swift` has no package-level `dependencies:` array (only two intra-package `dependencies: ["VellumMusicKit"]` target references) and `find . -iname Package.resolved` returns nothing, confirming the SwiftPM cache path is empty. The `Build and test` step's `run:` block is one continuous `xcodebuild test \` invocation with no `|` anywhere, so `set -o pipefail` guards nothing. Critically, `~/.claude/projects/.../MEMORY.md` records "Branch protection pending — rules agreed 2026-09-09 but NOT applied" — dated today — which means `CONTRIBUTING.md:5`'s claim ("`main` and `dev` are protected. Neither accepts a direct push") is currently aspirational, not enforced, making the "opt-in gate" concern live rather than theoretical.
+- **Evidence:** `.github/workflows/ci.yml` triggers are `on: pull_request: branches: [dev, main]` and `workflow_dispatch` only — no `push:` trigger, so a direct push to `dev` runs nothing. `Package.swift` has no package-level `dependencies:` array (only two intra-package `dependencies: ["NaviTunesKit"]` target references) and `find . -iname Package.resolved` returns nothing, confirming the SwiftPM cache path is empty. The `Build and test` step's `run:` block is one continuous `xcodebuild test \` invocation with no `|` anywhere, so `set -o pipefail` guards nothing. Critically, `~/.claude/projects/.../MEMORY.md` records "Branch protection pending — rules agreed 2026-09-09 but NOT applied" — dated today — which means `CONTRIBUTING.md:5`'s claim ("`main` and `dev` are protected. Neither accepts a direct push") is currently aspirational, not enforced, making the "opt-in gate" concern live rather than theoretical.
 - **Better approach:** The `2>&1 | tee xcodebuild.log | xcbeautify --renderer github-actions` fix assumes `xcbeautify` is preinstalled on the `macos-26` runner image — nothing in this repo's CI or docs currently references it (`grep -rn xcbeautify` across `.github`, `CONTRIBUTING.md`, `README.md` is empty), so the fix should add an explicit install step (`brew install xcbeautify` or equivalent) rather than assume availability. The `push: branches: [dev, main]` addition is a reasonable backstop but is not itself "the fix" for the governance gap — if the ruleset is later actually applied, direct pushes are rejected outright and this trigger never fires; if it is not applied (today's actual state per memory), the real fix is applying/enforcing that ruleset, which the doc's own "record the ruleset as code" suggestion targets more directly than the push trigger does.
 - **Versus the first pass:** AGREE — recorded verdict raises severity low→medium and independently surfaces the same branch-protection-pending fact via project memory, plus flags citation off-by-a-few-lines nits I did not separately check but have no reason to doubt.
 
 ---
 ## C48 — `StreamingMediaDiskCache` is `@unchecked Sendable` but its `lazy var directory` is touched outside the lock
 - **Round:** 2 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Playback/StreamingMediaDiskCache.swift:26–36, 84–86`
+- **File:** `Sources/NaviTunesKit/Playback/StreamingMediaDiskCache.swift:26–36, 84–86`
 
 ```swift
     func makeTemporaryFileURL() -> URL? {
@@ -5944,7 +5944,7 @@ temp download on cancel.
 ---
 ## C49 — Non-isolated static memo caches assume main-only access
 - **Round:** 2 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/LibraryPinStore.swift:97–110`; same pattern `DesignSystem/MusicDesignSystem.swift:59–70`
+- **File:** `Sources/NaviTunesKit/Library/LibraryPinStore.swift:97–110`; same pattern `DesignSystem/MusicDesignSystem.swift:59–70`
 
 ```swift
     private static var decodedCacheRaw: String?
@@ -5987,7 +5987,7 @@ off-main caller ever appears, store the pair in one struct behind an `NSLock` as
 ---
 ## C50 — The acquisition poll reconciles a snapshot from the plugin that was active when the poll started
 - **Round:** 2 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 2; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Acquisition/AcquisitionManager.swift:428–441, 22–30`
+- **File:** `Sources/NaviTunesKit/Acquisition/AcquisitionManager.swift:428–441, 22–30`
 
 ```swift
     func refreshFromServer() async {
@@ -6037,7 +6037,7 @@ rounds 1–2 (listed in the run summary).
 
 ## L27 — The stream cache has no writer: the "Cache streamed songs" toggle does nothing
 - **Round:** 3 · **Severity:** high · **Verdict:** **REINFORCED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Playback/CachingResourceLoaderDelegate.swift` (346 lines); `Playback/StreamingMediaDiskCache.swift:70–80, 112–174, 185–220`; `Settings/SettingsPlaybackView.swift:129`
+- **File:** `Sources/NaviTunesKit/Playback/CachingResourceLoaderDelegate.swift` (346 lines); `Playback/StreamingMediaDiskCache.swift:70–80, 112–174, 185–220`; `Settings/SettingsPlaybackView.swift:129`
 
 ```swift
 /// LRU disk cache of fully-streamed media files so replaying a recently-played
@@ -6090,7 +6090,7 @@ by `StreamingMediaDiskCache:118,153`. Either way, fix CLAUDE.md and the footer.
 ---
 ## L28 — `PersonalLibrarySearch` is a complete, documented search engine with no caller
 - **Round:** 3 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/PersonalLibrarySearch.swift` (109 lines); `App/AppModel.swift:2503–2520`
+- **File:** `Sources/NaviTunesKit/Library/PersonalLibrarySearch.swift` (109 lines); `App/AppModel.swift:2503–2520`
 
 ```swift
     func searchPersonalLibrary(query: String) -> PersonalLibrarySearchResults {
@@ -6114,13 +6114,13 @@ one unreachable. Note it also builds a `Dictionary(uniqueKeysWithValues:)` — t
 `SearchLibraryView` through it, do that first and then delete the *other* path — not both.
 
 
-**Verified —** `grep -rn "PersonalLibrarySearch\|searchPersonalLibrary" Sources Tests VellumMusicHost` → 9 hits, **all inside the file itself or the `searchPersonalLibrary` body**. Zero callers. `PersonalLibrarySearchResults`, `PersonalLibrarySearch.search`, `.snapshot` and `.empty` all have zero external uses — so the deletion is the whole file plus 18 `AppModel` lines, not a partial. `SearchLibraryView` exists and does not reference it, so the "two parallel implementations, one unreachable" framing holds. Cited range 2503–2520 correct (2503–2506 is the doc comment). Nothing to refute.
+**Verified —** `grep -rn "PersonalLibrarySearch\|searchPersonalLibrary" Sources Tests NaviTunesHost` → 9 hits, **all inside the file itself or the `searchPersonalLibrary` body**. Zero callers. `PersonalLibrarySearchResults`, `PersonalLibrarySearch.search`, `.snapshot` and `.empty` all have zero external uses — so the deletion is the whole file plus 18 `AppModel` lines, not a partial. `SearchLibraryView` exists and does not reference it, so the "two parallel implementations, one unreachable" framing holds. Cited range 2503–2520 correct (2503–2506 is the doc comment). Nothing to refute.
 
 
 **Re-verified (T238) —** independent second pass, agent 31, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `grep -rn "PersonalLibrarySearch\|searchPersonalLibrary" --include="*.swift" Sources Tests VellumMusicHost` returns only the declarations in `PersonalLibrarySearch.swift` and the `AppModel.swift:2507` function body — no external caller anywhere. The live path is confirmed separate: `DiscoverySearchView.swift:439-440` builds its own local search using `app.libraryAlbumEntries` / `app.librarySongIds` directly, never touching `PersonalLibrarySearch`. `AppModel.swift:2510` also contains `Dictionary(uniqueKeysWithValues: libraryPlaylists.map { ($0.id, $0) })`, and this exact line (2510) is one of the eleven sites named in C17's verified block's sweep list ("AppModel 1789, 1797, 2465, 2510, ...").
+- **Evidence:** `grep -rn "PersonalLibrarySearch\|searchPersonalLibrary" --include="*.swift" Sources Tests NaviTunesHost` returns only the declarations in `PersonalLibrarySearch.swift` and the `AppModel.swift:2507` function body — no external caller anywhere. The live path is confirmed separate: `DiscoverySearchView.swift:439-440` builds its own local search using `app.libraryAlbumEntries` / `app.librarySongIds` directly, never touching `PersonalLibrarySearch`. `AppModel.swift:2510` also contains `Dictionary(uniqueKeysWithValues: libraryPlaylists.map { ($0.id, $0) })`, and this exact line (2510) is one of the eleven sites named in C17's verified block's sweep list ("AppModel 1789, 1797, 2465, 2510, ...").
 - **Versus the first pass:** AGREE — the recorded block's "9 hits, all inside the file itself or the `searchPersonalLibrary` body... Nothing to refute" matches what I found independently.
 
 ---
@@ -6136,7 +6136,7 @@ struct ArtistAlbumsView: View {
 ```
 
 **Problem.** A tokenized whole-tree identifier index (comments stripped, `Sources` + `Tests` +
-`VellumMusicHost`) returns **exactly one occurrence** — the declaration — for `ArtistAlbumsView`,
+`NaviTunesHost`) returns **exactly one occurrence** — the declaration — for `ArtistAlbumsView`,
 `LibraryPlaceholderView`, `MusicAlphabetIndexScrubber`, `LibrarySearchPill`,
 `MusicArtistPageLoadingSkeleton`, `TrackDownloadProgressStrip`, `AlbumTracklistLoadingRow`(+`Chrome`)
 and `NowPlayingDismissHost`. No `#Preview` references any of them. `ArtistAlbumsView`'s doc comment
@@ -6196,13 +6196,13 @@ should go either way.
 **Re-verified (T238) —** independent second pass, agent 31, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** All nine cited members (`clearSessionMemoForVerification`, `setEchoesToConsole`, `smallestGapSeconds`, `totalBackoffSeconds`, `secondsUntilAllowed`, `pendingCount`, `configuredMaximumAttempts`, `configuredTotalDeadline`, `resolveArtist`) return exactly 1 grep hit (declaration only) across `Sources`/`Tests`/`VellumMusicHost`, and `find Tests -iname "*MusicBrainz*"` returns nothing. I read `record()` myself: `private let capacity = 500` with `if entries.count > capacity { entries.removeFirst(entries.count - capacity) }` — this refutes the finding's own "*Unverified:* whether that log is genuinely unbounded" aside; it is a bounded 500-entry ring, not a leak.
+- **Evidence:** All nine cited members (`clearSessionMemoForVerification`, `setEchoesToConsole`, `smallestGapSeconds`, `totalBackoffSeconds`, `secondsUntilAllowed`, `pendingCount`, `configuredMaximumAttempts`, `configuredTotalDeadline`, `resolveArtist`) return exactly 1 grep hit (declaration only) across `Sources`/`Tests`/`NaviTunesHost`, and `find Tests -iname "*MusicBrainz*"` returns nothing. I read `record()` myself: `private let capacity = 500` with `if entries.count > capacity { entries.removeFirst(entries.count - capacity) }` — this refutes the finding's own "*Unverified:* whether that log is genuinely unbounded" aside; it is a bounded 500-entry ring, not a leak.
 - **Versus the first pass:** AGREE — the recorded block's correction ("the actor accumulates entries for the process lifetime" is wrong as a memory claim; it's a 500-entry ring) is exactly what I found reading `record()` myself.
 
 ---
 ## L31 — Ten unused `MusicDesign` tokens, including artist-hero blur knobs CLAUDE.md documents as the tuning surface
 - **Round:** 3 · **Severity:** low · **Verdict:** **REINFORCED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/DesignSystem/MusicDesignSystem.swift:492, 512, 546, 548, 555, 557, 579, 586, 1075, 1235`
+- **File:** `Sources/NaviTunesKit/DesignSystem/MusicDesignSystem.swift:492, 512, 546, 548, 555, 557, 579, 586, 1075, 1235`
 
 ```swift
     static let artistHeroBlurBandHeight
@@ -6233,14 +6233,14 @@ which removes the last consumers of some neighbouring tokens.
 **Re-verified (T238) —** independent second pass, agent 31, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** All ten tokens (`adaptiveOverlayFill`, `miniArtwork`, `artistHeroBlurBandHeight`, `artistHeroBlurBlendFeatherHeight`, `artistHeroBlurScale`, `artistHeroBlurPeakOpacity`, `nowPlayingSliderFillOpacity`, `albumHeroPlayLabelSpacing`, `musicHidesTabBar`, `musicGlassCircleInteractiveChrome`) are declaration-only (1 hit each). `grep -n "artistHeroBlur" Sources/VellumMusicKit/Artist/ArtistPageView.swift` returns nothing, confirming the blur-four claim. However I also found the finding's "driven by independent literals" framing is only half right: `ArtistPageView.swift:564` reads `MusicDesign.artistHeroImageBlurRadius` (`MusicDesignSystem.swift:553`, = 30) for the actual blur radius — a live, non-dead sibling token — so only the capped-opacity/band-height/scale half of the "~30pt radius, capped opacity" description is silent, not the whole effect.
+- **Evidence:** All ten tokens (`adaptiveOverlayFill`, `miniArtwork`, `artistHeroBlurBandHeight`, `artistHeroBlurBlendFeatherHeight`, `artistHeroBlurScale`, `artistHeroBlurPeakOpacity`, `nowPlayingSliderFillOpacity`, `albumHeroPlayLabelSpacing`, `musicHidesTabBar`, `musicGlassCircleInteractiveChrome`) are declaration-only (1 hit each). `grep -n "artistHeroBlur" Sources/NaviTunesKit/Artist/ArtistPageView.swift` returns nothing, confirming the blur-four claim. However I also found the finding's "driven by independent literals" framing is only half right: `ArtistPageView.swift:564` reads `MusicDesign.artistHeroImageBlurRadius` (`MusicDesignSystem.swift:553`, = 30) for the actual blur radius — a live, non-dead sibling token — so only the capped-opacity/band-height/scale half of the "~30pt radius, capped opacity" description is silent, not the whole effect.
 - **Better approach:** N/A — the fix's own second option ("make ArtistPageView's literals read the constants") is in fact cheaper than the finding implies, since `artistHeroImageBlurRadius` is a working precedent for exactly that wiring pattern three lines above the dead ones.
 - **Versus the first pass:** AGREE — the recorded correction about `artistHeroImageBlurRadius` already being wired, and about the neighboring `artistHero*` geometry tokens all having live readers, matches what I verified independently.
 
 ---
 ## L32 — ~180 lines of uncalled API left behind by refactors, across twelve files
 - **Round:** 3 · **Severity:** low · **Verdict:** **REINFORCED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Library/LibraryMembership.swift:183–199`; `App/KeychainStore.swift:80–90`; `Equalizer/EqualizerSettings.swift:54–55`; `App/AppModel.swift:1769–1771, 2737–2744, 3211–3215, 3874–3879, 4176–4192, 4919–4927, 5624–5626, 5955–5959`; `Backends/JellyfinMusicClient.swift:1120–1123, 1486–1515`; `Offline/OfflineDownloadManager+Queue.swift:214–216`; `Discovery/DiscoverySearchView.swift:2034–2045`; `Library/LibraryView.swift:639–643`; `Backends/VellumNetworking.swift:22`
+- **File:** `Library/LibraryMembership.swift:183–199`; `App/KeychainStore.swift:80–90`; `Equalizer/EqualizerSettings.swift:54–55`; `App/AppModel.swift:1769–1771, 2737–2744, 3211–3215, 3874–3879, 4176–4192, 4919–4927, 5624–5626, 5955–5959`; `Backends/JellyfinMusicClient.swift:1120–1123, 1486–1515`; `Offline/OfflineDownloadManager+Queue.swift:214–216`; `Discovery/DiscoverySearchView.swift:2034–2045`; `Library/LibraryView.swift:639–643`; `Backends/NaviTunesNetworking.swift:22`
 
 ```swift
     mutating func upsertAlbum(id: String, addedAt date: Date = Date()) {
@@ -6392,7 +6392,7 @@ Half (b): `drain` reads `state.pointee.ringWriteCount` and `.processEntryCount` 
 ---
 ## E33 — `albumTracksCache` has no eviction, no cap, and is not cleared on sign-out
 - **Round:** 3 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:644–645, 330–334` (writers also 6494, 6616)
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:644–645, 330–334` (writers also 6494, 6616)
 
 ```swift
     func cacheAlbumTracks(albumId: String, tracks: [Track]) {
@@ -6423,13 +6423,13 @@ eviction (the shape `PlaylistSortedRowsMemo` already uses).
 **Re-verified (T238) —** independent second pass, agent 32, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `cacheAlbumTracks` (AppModel.swift:330-334) writes unconditionally with no cap, and `grep -n "albumTracksCache" Sources/VellumMusicKit/App/AppModel.swift` shows only the declaration, two accessors, and four writers (330-334, 1831, 1998, 6487-6494, 6608-6616) — no `removeAll`/`removeValue` anywhere. `signOut()` (lines 1374-1442) clears ~40 pieces of state including `clearInMemoryPlaylistRowsCache()`, `LibrarySnapshotStore.clear()`, `PlaylistRowsCacheStore.clear()`, and even `Task { await AlbumDetailArtistCatalogCache.shared.clear() }`, but never touches `albumTracksCache`. I also independently found `clearLibraryMediaCatalog()` (line 1597, doc comment: "Drops in-memory library media when the active server identity changes without an explicit sign-out") — the exact "server-identity-change path" the fix names — and it also omits `albumTracksCache` while clearing `playlistRowsCache.removeAll()` right next to it. `cachedLibraryTrack(id:)` (line ~6607) does `for cached in albumTracksCache.values { ... }`, confirming the linked E16 miss-walk cost.
+- **Evidence:** `cacheAlbumTracks` (AppModel.swift:330-334) writes unconditionally with no cap, and `grep -n "albumTracksCache" Sources/NaviTunesKit/App/AppModel.swift` shows only the declaration, two accessors, and four writers (330-334, 1831, 1998, 6487-6494, 6608-6616) — no `removeAll`/`removeValue` anywhere. `signOut()` (lines 1374-1442) clears ~40 pieces of state including `clearInMemoryPlaylistRowsCache()`, `LibrarySnapshotStore.clear()`, `PlaylistRowsCacheStore.clear()`, and even `Task { await AlbumDetailArtistCatalogCache.shared.clear() }`, but never touches `albumTracksCache`. I also independently found `clearLibraryMediaCatalog()` (line 1597, doc comment: "Drops in-memory library media when the active server identity changes without an explicit sign-out") — the exact "server-identity-change path" the fix names — and it also omits `albumTracksCache` while clearing `playlistRowsCache.removeAll()` right next to it. `cachedLibraryTrack(id:)` (line ~6607) does `for cached in albumTracksCache.values { ... }`, confirming the linked E16 miss-walk cost.
 - **Versus the first pass:** AGREE — the recorded Verified block enumerates the same reference set, confirms the same signOut gap and cross-server-collision mechanism, and calls the fix "in scope and safe" with no corrections. Matches my independent read exactly, including the extra `clearLibraryMediaCatalog()` site.
 
 ---
 ## E34 — Nothing in the app responds to memory pressure
 - **Round:** 3 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:1578–1585`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:1578–1585`
 
 ```swift
     private func clearMediaArtworkCaches() async {
@@ -6459,7 +6459,7 @@ or disk-backed. Keep `discoveryLibraryTracks` (it is the working set) unless `.c
 `discoveryTrackById` and `libraryChartTrackIndex` can be dropped and rebuilt off-main.
 
 
-**Verified —** Wider spellings run than the entry used, over `Sources/` **and** `VellumMusicHost/`: `memory ?warning|memory ?pressure|didReceiveMemory|os_proc_available_memory|jetsam|lowMemory` → **two hits, both inside comments**, each explaining why a particular `NSCache` was capped *because* only the system purges on a warning. Zero handlers, zero `makeMemoryPressureSource`.
+**Verified —** Wider spellings run than the entry used, over `Sources/` **and** `NaviTunesHost/`: `memory ?warning|memory ?pressure|didReceiveMemory|os_proc_available_memory|jetsam|lowMemory` → **two hits, both inside comments**, each explaining why a particular `NSCache` was capped *because* only the system purges on a warning. Zero handlers, zero `makeMemoryPressureSource`.
 
 **Two corrections, both downward, to the resident list.** `ReleaseIdentityKeyCache` is **capped at 20,000 with a full flush** — listing it as a non-responding resident overstates it. `AccountAvatarCache.decodedImages` is keyed by *account identity* (one or two entries) and `signOut()` already removes it — drop it entirely. The load-bearing residents are `albumTracksCache` (**E33**), `playlistRowsCache` (**E35**), the two artist caches (**E37**) and `discoveryLibraryTracks` + indexes. **Fix note:** `UIApplication.didReceiveMemoryWarningNotification` needs UIKit in `AppModel.swift` — check the import or use the `DispatchSource` alternative, which has no such constraint.
 
@@ -6467,14 +6467,14 @@ or disk-backed. Keep `discoveryLibraryTracks` (it is the working set) unless `.c
 **Re-verified (T238) —** independent second pass, agent 32, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `grep -rni "memorywarning\|memoryPressure\|makeMemoryPressureSource\|didReceiveMemoryWarning" Sources/VellumMusicKit/` returns nothing. The only capped stores are `NSCache`-backed (`ArtworkURLCache`, `ArtworkImageDecoder`, `ArtworkDynamicGradient` — confirmed via `grep -rln "NSCache" Sources/VellumMusicKit/`), each with a comment like "on a system memory warning, in one large purge" — i.e. relying on the OS, not app code. `ArtistEnrichmentCache`/`AlbumDetailArtistCatalogCache` are actors with plain `[String: Entry]` dictionaries and no external pressure hook.
+- **Evidence:** `grep -rni "memorywarning\|memoryPressure\|makeMemoryPressureSource\|didReceiveMemoryWarning" Sources/NaviTunesKit/` returns nothing. The only capped stores are `NSCache`-backed (`ArtworkURLCache`, `ArtworkImageDecoder`, `ArtworkDynamicGradient` — confirmed via `grep -rln "NSCache" Sources/NaviTunesKit/`), each with a comment like "on a system memory warning, in one large purge" — i.e. relying on the OS, not app code. `ArtistEnrichmentCache`/`AlbumDetailArtistCatalogCache` are actors with plain `[String: Entry]` dictionaries and no external pressure hook.
 - **Better approach:** Two of the fix's named targets don't match the actual API surface: `LidarrArtistListCache` is declared `private actor LidarrArtistListCache` inside `LidarrAcquisitionPlugin.swift:1256` — `AppModel` cannot reach it directly and must go through the already-existing `LidarrAcquisitionPlugin.resetSessionCaches()` (used today in `clearMetadataCache()`/`clearAllLocalCaches()`). And `AccountAvatarCache` has no "clear decoded images only" entry point — `clearAll()` (line 40) wipes the on-disk store too, which memory pressure shouldn't do; a new `AccountAvatarCache.clearDecodedImagesOnly()` would need to be added. Also worth dropping `AccountAvatarCache` from the target list entirely — see the corrections below, it's already trivial and already cleared on sign-out.
-- **Versus the first pass:** AGREE on the core problem (CONFIRMED, zero handlers) and I independently reproduced both of the prior pass's downward corrections: `ReleaseIdentityKeyCache` is capped — `Sources/VellumMusicKit/Home/AlbumSummary+NewTabMatch.swift:9,23`: `private static let capacity = 20_000` and `if entries.count >= capacity { entries.removeAll(keepingCapacity: true) }`; and `AccountAvatarCache` is already handled at sign-out — `signOut()` (AppModel.swift:1376-1379) calls `AccountAvatarCache.remove(identity:)`. One thing I'd add: the prior pass's "Fix note" flags needing to "check the import" for `UIApplication.didReceiveMemoryWarningNotification` — `AppModel.swift` already has `import UIKit` at line 6, so that's a non-issue, not an open question.
+- **Versus the first pass:** AGREE on the core problem (CONFIRMED, zero handlers) and I independently reproduced both of the prior pass's downward corrections: `ReleaseIdentityKeyCache` is capped — `Sources/NaviTunesKit/Home/AlbumSummary+NewTabMatch.swift:9,23`: `private static let capacity = 20_000` and `if entries.count >= capacity { entries.removeAll(keepingCapacity: true) }`; and `AccountAvatarCache` is already handled at sign-out — `signOut()` (AppModel.swift:1376-1379) calls `AccountAvatarCache.remove(identity:)`. One thing I'd add: the prior pass's "Fix note" flags needing to "check the import" for `UIApplication.didReceiveMemoryWarningNotification` — `AppModel.swift` already has `import UIKit` at line 6, so that's a non-issue, not an open question.
 
 ---
 ## E35 — In-memory `playlistRowsCache` is unbounded while its disk mirror is capped at 60, and the warmup loop is designed to fill it
 - **Round:** 3 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:321, 3642–3661`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:321, 3642–3661`
 
 ```swift
     private func warmPlaylistRowsCache() {
@@ -6506,13 +6506,13 @@ rather than paging through `libraryPlaylists`.
 **Re-verified (T238) —** independent second pass, agent 32, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `private var playlistRowsCache: [String: [PlaylistRowItem]] = [:]` (AppModel.swift:321) has no size cap; `grep -n "playlistRowsCache" Sources/VellumMusicKit/App/AppModel.swift` shows writes at 1669, 3739, and removals only via two `.removeAll()` full-clear call sites (1616, 2808) and one single-key `removeValue` (3682) — no LRU. `PlaylistRowsCacheStore.saveAsync` (PlaylistRowsCacheStore.swift:65-90) does `var trimmed = rowsByPlaylistId` (a value-type copy) then trims `trimmed` to `maxPlaylists = 60` before writing to disk — the in-memory dictionary passed in is never mutated by this call, exactly as the finding says.
+- **Evidence:** `private var playlistRowsCache: [String: [PlaylistRowItem]] = [:]` (AppModel.swift:321) has no size cap; `grep -n "playlistRowsCache" Sources/NaviTunesKit/App/AppModel.swift` shows writes at 1669, 3739, and removals only via two `.removeAll()` full-clear call sites (1616, 2808) and one single-key `removeValue` (3682) — no LRU. `PlaylistRowsCacheStore.saveAsync` (PlaylistRowsCacheStore.swift:65-90) does `var trimmed = rowsByPlaylistId` (a value-type copy) then trims `trimmed` to `maxPlaylists = 60` before writing to disk — the in-memory dictionary passed in is never mutated by this call, exactly as the finding says.
 - **Versus the first pass:** AGREE — the Verified block's mechanism check ("`maxPlaylists = 60` is applied only in `saveAsync`, to a local `trimmed` copy") is exactly what I found. The severity re-scoping ("not unbounded — bounded by playlist count", realistic ceiling 1-5MB not 25-30MB for a typical account) is a reasonable, well-supported correction I have no basis to dispute; I also confirmed `warmPlaylistRowsCache()` calls `playlistRowsWarmupTask?.cancel()` on entry (line 3650), backing the "burst refresh actually slows the fill" mitigation the doc raises.
 
 ---
 ## E36 — `ArtworkURLCache`'s disk folder has no size cap or pruning
 - **Round:** 3 · **Severity:** low _(was medium)_ · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/DesignSystem/ArtworkURLCache.swift:5–14, 148–151`
+- **File:** `Sources/NaviTunesKit/DesignSystem/ArtworkURLCache.swift:5–14, 148–151`
 
 ```swift
     private static func saveToDisk(data: Data, key: String) {
@@ -6545,13 +6545,13 @@ from `saveToDisk` every N writes or from a background task on launch — the sam
 **Re-verified (T238) —** independent second pass, agent 32, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `saveToDisk` (ArtworkURLCache.swift:106-109) writes every fetched cover unconditionally: `try? data.write(to: url, options: .atomic)`. `grep -n "prune|limit|byte" Sources/VellumMusicKit/DesignSystem/ArtworkURLCache.swift` only turns up `totalDiskBytes()`/`listDiskEntries()`, which exist purely to populate a Settings row — no eviction logic exists. `StreamingMediaDiskCache.swift` by contrast has `private let maxBytes: Int64 = 512 * 1024 * 1024` and LRU via `contentModificationDate`, confirming the pattern the fix proposes to reuse already exists in this codebase.
+- **Evidence:** `saveToDisk` (ArtworkURLCache.swift:106-109) writes every fetched cover unconditionally: `try? data.write(to: url, options: .atomic)`. `grep -n "prune|limit|byte" Sources/NaviTunesKit/DesignSystem/ArtworkURLCache.swift` only turns up `totalDiskBytes()`/`listDiskEntries()`, which exist purely to populate a Settings row — no eviction logic exists. `StreamingMediaDiskCache.swift` by contrast has `private let maxBytes: Int64 = 512 * 1024 * 1024` and LRU via `contentModificationDate`, confirming the pattern the fix proposes to reuse already exists in this codebase.
 - **Versus the first pass:** AGREE — I independently reproduced both of the doc's corrections. (1) "One file per cover" is right, not "several files": `NavidromeClient.swift:1035` hardcodes `"size": "400"` for `streamURLForCover` (the main album-art path), and every `coverArtURL(forId:size:)` call site I found consistently uses one size for a given artwork *kind* (400 for album covers, e.g. `AppModel.swift:1538,4392`; 256 for playlist covers, e.g. `AppModel.swift:2360,2394,4341`) rather than varying per UI context. (2) The cache-bust growth vector is real: `appendCacheBust(to:)` (AppModel.swift:2404-2410) appends `_ts=<epoch>`, and `normalizedCacheURLString` (ArtworkURLCache.swift) only filters query params named exactly `t` and `s` — `_ts` sails through, so every cache-busted playlist cover permanently occupies a new, never-reread file. Severity-lowering to low (medium for Jellyfin, which has no size cap) is consistent with what I found.
 
 ---
 ## E37 — Artist caches expire only on re-read of the same key, and one survives sign-out
 - **Round:** 3 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Artist/ArtistEnrichmentCache.swift:19–34`; `AlbumDetail/AlbumDetailArtistCatalogCache.swift:21–35`
+- **File:** `Sources/NaviTunesKit/Artist/ArtistEnrichmentCache.swift:19–34`; `AlbumDetail/AlbumDetailArtistCatalogCache.swift:21–35`
 
 ```swift
     func load(forArtistName name: String) -> Entry? {
@@ -6592,7 +6592,7 @@ insertion-order eviction, clear both from `signOut()`, and drop them under memor
 ---
 ## E38 — `PlaybackCPUSampler`'s timer starts on first play and is never stopped; `reset()` has no callers
 - **Round:** 3 · **Severity:** low _(was low)_ · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Playback/PlaybackCPUSampler.swift:60–76, 80–92`
+- **File:** `Sources/NaviTunesKit/Playback/PlaybackCPUSampler.swift:60–76, 80–92`
 
 ```swift
     static func playbackDidStop() {
@@ -6632,7 +6632,7 @@ whole type behind `#if DEBUG` with a no-op `#else` mirror the way `PlaybackTapLo
 ---
 ## E39 — `ArtistViewModel` never cancels its catalog and plugin tasks when the page pops
 - **Round:** 3 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Artist/ArtistViewModel.swift:504–513, 725–726`
+- **File:** `Sources/NaviTunesKit/Artist/ArtistViewModel.swift:504–513, 725–726`
 
 ```swift
         let pluginTask = Task { @MainActor [weak self] in
@@ -6668,14 +6668,14 @@ published state.
 **Re-verified (T238) —** independent second pass, agent 33, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `Sources/VellumMusicKit/Artist/ArtistViewModel.swift:210` declares `@MainActor final class ArtistViewModel: ObservableObject` with no `deinit`; `grep -n "\.cancel()" Sources/VellumMusicKit/Artist/ArtistViewModel.swift` returns nothing. `load(using:forceRefresh:)` (lines ~504-513) spawns `pluginTask`/`catalogTask` as bare `Task { @MainActor [weak self] in guard let self ... }`, stored at lines 725-726, and is itself invoked from `ArtistPageView.swift:216` inside `.task(id: artistTaskKey) { await model.load(using: app) }` — a structured `.task` whose cancellation on view-disappear does not propagate into the two unstructured child `Task{}`s, which hold `self` strongly via `guard let self` for their duration.
+- **Evidence:** `Sources/NaviTunesKit/Artist/ArtistViewModel.swift:210` declares `@MainActor final class ArtistViewModel: ObservableObject` with no `deinit`; `grep -n "\.cancel()" Sources/NaviTunesKit/Artist/ArtistViewModel.swift` returns nothing. `load(using:forceRefresh:)` (lines ~504-513) spawns `pluginTask`/`catalogTask` as bare `Task { @MainActor [weak self] in guard let self ... }`, stored at lines 725-726, and is itself invoked from `ArtistPageView.swift:216` inside `.task(id: artistTaskKey) { await model.load(using: app) }` — a structured `.task` whose cancellation on view-disappear does not propagate into the two unstructured child `Task{}`s, which hold `self` strongly via `guard let self` for their duration.
 - **Better approach:** N/A — note only: `loadMusicBrainzMetadata`'s discography progress callback (~line 580) spawns a third unstructured `Task { @MainActor [weak self] in self?.applyMusicBrainzProgress(...) }` that isn't stored anywhere and so wouldn't be touched by the proposed `deinit`, but that Task is outside what this finding names/describes, so it doesn't make the given fix wrong for the two Tasks it targets.
 - **Versus the first pass:** AGREE — prior pass's CONFIRMED verdict, its note that `.swiftLanguageMode(.v5)` (verified in `Package.swift:21,27,33` and `SWIFT_VERSION = 5.0` in the pbxproj) makes the `deinit` fix compile today, and its discovery of the extra unstructured Task at line ~580 are all independently reproducible from the code.
 
 ---
 ## E40 — `LidarrArtistListCache` holds the entire `/artist` response as untyped JSON for the process lifetime
 - **Round:** 3 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Acquisition/LidarrAcquisitionPlugin.swift:1256–1263`
+- **File:** `Sources/NaviTunesKit/Acquisition/LidarrAcquisitionPlugin.swift:1256–1263`
 
 ```swift
 private actor LidarrArtistListCache {
@@ -6705,14 +6705,14 @@ time and cache that; drop `rows` when the TTL lapses or under memory pressure.
 **Re-verified (T238) —** independent second pass, agent 33, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `Sources/VellumMusicKit/Acquisition/LidarrAcquisitionPlugin.swift:1268-1281` — `artists(base:fetch:)` only ever assigns `self.rows = fresh` on a TTL miss; there is no code path that clears `rows` when the TTL merely lapses, only `reset()` at line 1287, which is reachable solely via `resetSessionCaches()` from `AppModel.swift:2781` (`clearMetadataCache`) and `:2798` (`clearAllLocalCaches`) — both explicit user-initiated cache clears.
-- **Better approach:** The proposed struct (name, id, MBID, image URL, overview) omits `genres`, which `artistProfile(named:)` (line ~478) reads directly off the raw row (`let genres = (row["genres"] as? [String]) ?? []`) — that field needs to be in the projection too or the profile method breaks. Also, this codebase has no memory-pressure subsystem anywhere (`grep -rn "MemoryPressure\|didReceiveMemoryWarning" Sources/VellumMusicKit/` finds nothing), so "drop under memory pressure" requires building new infrastructure that doesn't exist elsewhere — for a `low`-severity, single-server-bounded cache, simply projecting to a small struct (dropping the boxed `NSDictionary` graphs) is enough; skip the memory-pressure hook as scope creep.
+- **Evidence:** `Sources/NaviTunesKit/Acquisition/LidarrAcquisitionPlugin.swift:1268-1281` — `artists(base:fetch:)` only ever assigns `self.rows = fresh` on a TTL miss; there is no code path that clears `rows` when the TTL merely lapses, only `reset()` at line 1287, which is reachable solely via `resetSessionCaches()` from `AppModel.swift:2781` (`clearMetadataCache`) and `:2798` (`clearAllLocalCaches`) — both explicit user-initiated cache clears.
+- **Better approach:** The proposed struct (name, id, MBID, image URL, overview) omits `genres`, which `artistProfile(named:)` (line ~478) reads directly off the raw row (`let genres = (row["genres"] as? [String]) ?? []`) — that field needs to be in the projection too or the profile method breaks. Also, this codebase has no memory-pressure subsystem anywhere (`grep -rn "MemoryPressure\|didReceiveMemoryWarning" Sources/NaviTunesKit/` finds nothing), so "drop under memory pressure" requires building new infrastructure that doesn't exist elsewhere — for a `low`-severity, single-server-bounded cache, simply projecting to a small struct (dropping the boxed `NSDictionary` graphs) is enough; skip the memory-pressure hook as scope creep.
 - **Versus the first pass:** AGREE — prior pass's CONFIRMED verdict and its added detail ("populated only after an artist page or a Following check... for everyone else it is `[]` forever") both check out against the actor's code; it didn't evaluate the fix's field-completeness, which is my own addition, not a disagreement.
 
 ---
 ## E41 — `EqualizerTapRegistry.drainedEntryCount` is never pruned on `retire`
 - **Round:** 3 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Equalizer/EqualizerTapRegistry.swift:24–27, 85–96`
+- **File:** `Sources/NaviTunesKit/Equalizer/EqualizerTapRegistry.swift:24–27, 85–96`
 
 ```swift
     func retire(itemTag: UInt64) {
@@ -6738,13 +6738,13 @@ E32**, where `retire` is not reached at all on the common path.
 **Re-verified (T238) —** independent second pass, agent 33, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `Sources/VellumMusicKit/Equalizer/EqualizerTapRegistry.swift:76-84` — `retire(itemTag:)` does `taps.removeValue(forKey: itemTag)` and `drainedCount.removeValue(forKey: itemTag)` but never touches `drainedEntryCount`; `grep -n "drainedEntryCount" Sources/VellumMusicKit/Equalizer/EqualizerTapRegistry.swift` shows it's declared at line 27 and written at lines 151/153 inside `drain()`, with no corresponding removal anywhere in the file.
+- **Evidence:** `Sources/NaviTunesKit/Equalizer/EqualizerTapRegistry.swift:76-84` — `retire(itemTag:)` does `taps.removeValue(forKey: itemTag)` and `drainedCount.removeValue(forKey: itemTag)` but never touches `drainedEntryCount`; `grep -n "drainedEntryCount" Sources/NaviTunesKit/Equalizer/EqualizerTapRegistry.swift` shows it's declared at line 27 and written at lines 151/153 inside `drain()`, with no corresponding removal anywhere in the file.
 - **Versus the first pass:** AGREE — prior pass's CONFIRMED verdict and its re-scoping ("dwarfed ~1000x by the ~14 KB tap wrappers beside them... ship it inside the E32 change") match what's in the file; the one-line fix is trivially safe under the same lock.
 
 ---
 ## E42 — MusicBrainz cache filenames reduce every non-ASCII key to underscores, so same-length CJK/Cyrillic names collide
 - **Round:** 3 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/MusicBrainz/MusicBrainzCacheStore.swift:102–106, 112–118`
+- **File:** `Sources/NaviTunesKit/MusicBrainz/MusicBrainzCacheStore.swift:102–106, 112–118`
 
 ```swift
     private static func filename(for key: String) -> String {
@@ -6777,14 +6777,14 @@ readable key inside the entry, which is already verified on load.
 **Re-verified (T238) —** independent second pass, agent 33, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** Reproduced the collision myself: running `filename(for:)`'s exact logic (`Sources/VellumMusicKit/MusicBrainz/MusicBrainzCacheStore.swift:100-103`) against `"artistidentity:椎名林檎|decided-by-owned-albums"` (the key `ArtistIdentityResolver.key(target:)` at `ArtistIdentityResolver.swift:131` builds from `LibraryTrackMatcher.normalize(name)`) produces `artistidentity______decided-by-owned-albums.json` (6 underscores, not the 5 shown in the finding's own example — worth flagging, though it doesn't change the defect). `load(_:)` at lines 112-118 guards on `entry.key == key`, confirming a collision degrades to a cache miss rather than serving wrong data — but I traced `save(_:)` (`if !entry.isComplete, let existing = load(entry.key), existing.isComplete { return false }`) and under a collision `load(entry.key)` returns `nil` for the *other* artist's on-disk entry, so the partial-overwrite guard is defeated and an incomplete entry silently clobbers a complete one.
+- **Evidence:** Reproduced the collision myself: running `filename(for:)`'s exact logic (`Sources/NaviTunesKit/MusicBrainz/MusicBrainzCacheStore.swift:100-103`) against `"artistidentity:椎名林檎|decided-by-owned-albums"` (the key `ArtistIdentityResolver.key(target:)` at `ArtistIdentityResolver.swift:131` builds from `LibraryTrackMatcher.normalize(name)`) produces `artistidentity______decided-by-owned-albums.json` (6 underscores, not the 5 shown in the finding's own example — worth flagging, though it doesn't change the defect). `load(_:)` at lines 112-118 guards on `entry.key == key`, confirming a collision degrades to a cache miss rather than serving wrong data — but I traced `save(_:)` (`if !entry.isComplete, let existing = load(entry.key), existing.isComplete { return false }`) and under a collision `load(entry.key)` returns `nil` for the *other* artist's on-disk entry, so the partial-overwrite guard is defeated and an incomplete entry silently clobbers a complete one.
 - **Better approach:** N/A — hashing the filename also incidentally fixes the save-guard defeat I traced above, and nothing in the codebase depends on the filename's readable form: `clearAll()` (line 150) and `diskBytes()` iterate by `.json` extension only, not by name pattern.
 - **Versus the first pass:** AGREE — this is the strongest match of the batch. The prior pass's REINFORCED verdict, its independent discovery of the save-guard defeat, and its "6 underscores, not 5" cosmetic correction are all things I reproduced myself from the code rather than took on faith.
 
 ---
 ## E43 — Lucene fuzz distance is computed from the *escaped* term length, so short punctuated names get loosened
 - **Round:** 3 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/MusicBrainz/MusicBrainzQuery.swift:49–53, 71–76`
+- **File:** `Sources/NaviTunesKit/MusicBrainz/MusicBrainzQuery.swift:49–53, 71–76`
 
 ```swift
     private static func fuzzyClause(field: String, term: String) -> String {
@@ -6816,14 +6816,14 @@ rows the user actually opens, or cap seeding to the first page's exact-name matc
 **Re-verified (T238) —** independent second pass, agent 33, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** Reimplemented `escape()`/`fuzzDistance()` from `Sources/VellumMusicKit/MusicBrainz/MusicBrainzQuery.swift:27-63` myself: `"+/-"` (raw len 3, should get `fuzz=None`) escapes to `\+\/\-` (len 6) and gets `fuzz=1`; `"AC/DC"` (raw len 5, `fuzz=1`) escapes to `AC\/DC` (len 6) and stays at `fuzz=1` "by luck" exactly as claimed. Traced the call path: `terms(_:)` (line 47) maps `escape` over each token, and `build(...)` (line 96) calls `fuzzyClause(field:term:)` with those already-escaped strings, so `fuzzDistance(forTermLength: term.count)` at line 68 unavoidably measures the escaped length.
+- **Evidence:** Reimplemented `escape()`/`fuzzDistance()` from `Sources/NaviTunesKit/MusicBrainz/MusicBrainzQuery.swift:27-63` myself: `"+/-"` (raw len 3, should get `fuzz=None`) escapes to `\+\/\-` (len 6) and gets `fuzz=1`; `"AC/DC"` (raw len 5, `fuzz=1`) escapes to `AC\/DC` (len 6) and stays at `fuzz=1` "by luck" exactly as claimed. Traced the call path: `terms(_:)` (line 47) maps `escape` over each token, and `build(...)` (line 96) calls `fuzzyClause(field:term:)` with those already-escaped strings, so `fuzzDistance(forTermLength: term.count)` at line 68 unavoidably measures the escaped length.
 - **Better approach:** The distance-from-raw-length correction is correct and sufficient on its own to fix the named defect (it's `BEST` in isolation). The bundled second directive — "seed the header cache only for rows the user actually opens, or cap seeding to the first page's exact-name matches" — is a separate design change to `seedHeaderCache`/`searchArtists` (`MusicBrainzService.swift:262-269`) not required to fix the escaped-length bug; if pursued, seeding lazily from the already-in-memory row at the moment the user opens it (no extra network call, since the full artist object is already in hand from the search response) is safer than "cap to first page's exact-name matches," which would silently skip caching a legitimately opened later or fuzzy match.
 - **Versus the first pass:** DISAGREE (partial) — I agree with the CONFIRMED problem verdict and independently reproduced the same "+/-" / "AC/DC" numbers plus the sharper `!!!` example. But the prior pass's claim that "one cross-reference is wrong... the entry implies [E43 and E42] compound" does not match the actual finding text I was given: the visible **Problem** paragraph only says the widened result set feeds **C55**'s ambiguity, and never mentions E42 or claims the two findings compound. The Verified block appears to be correcting a cross-reference that isn't present in this finding as written — worth flagging even though it doesn't affect the overall CONFIRMED verdict.
 
 ---
 ## P21 — VoiceOver, Voice Control and Switch Control users are trapped in the Now Playing cover
 - **Round:** 3 · **Severity:** medium _(was high)_ · **Verdict:** **DENIED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/RootView.swift:417–424`; `NowPlaying/NowPlayingView.swift:1654–1657`
+- **File:** `Sources/NaviTunesKit/App/RootView.swift:417–424`; `NowPlaying/NowPlayingView.swift:1654–1657`
 
 ```swift
 /// The drag-to-dismiss used to live here as a SwiftUI `DragGesture` that faked the motion
@@ -6868,7 +6868,7 @@ users have a target rather than a gesture.
 ---
 ## P22 — The progress scrubber is a `Capsule` + `DragGesture` with no label, value or adjustable action, so VoiceOver cannot seek
 - **Round:** 3 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/NowPlaying/NowPlayingView.swift:2154–2178` (view at 2216)
+- **File:** `Sources/NaviTunesKit/NowPlaying/NowPlayingView.swift:2154–2178` (view at 2216)
 
 ```swift
             GeometryReader { geo in
@@ -6910,7 +6910,7 @@ Mark the two time `Text` labels `.accessibilityHidden(true)` so the value is not
 ---
 ## P23 — The volume scrubber is equally silent, and the hidden `MPVolumeView` likely exposes a phantom inert slider
 - **Round:** 3 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/NowPlaying/NowPlayingView.swift:2418–2445`, bridge at 2483–2492
+- **File:** `Sources/NaviTunesKit/NowPlaying/NowPlayingView.swift:2418–2445`, bridge at 2483–2492
 
 ```swift
     func makeUIView(context: Context) -> MPVolumeView {
@@ -6953,7 +6953,7 @@ The two speaker glyphs are decorative `Image`s that will read as "speaker fill" 
 ---
 ## P24 — Synced lyric lines are `Text` + `onTapGesture` at a fixed 28 pt: no button trait, no current-line cue, no Dynamic Type
 - **Round:** 3 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/NowPlaying/NowPlayingView.swift:2919–2939`; font at 2658
+- **File:** `Sources/NaviTunesKit/NowPlaying/NowPlayingView.swift:2919–2939`; font at 2658
 
 ```swift
             .contentShape(Rectangle())
@@ -6986,14 +6986,14 @@ Change the font to `Font.system(.title, design: .default).weight(.bold)`, or
 **Re-verified (T238) —** independent second pass, agent 33, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `Sources/VellumMusicKit/NowPlaying/NowPlayingView.swift:2919-2940` (`lyricLineView`) has no `.accessibilityAddTraits`, `.accessibilityHint`, or `.accessibilityAction` anywhere — the `Text(line.text)` only carries `.font`/`.foregroundStyle`/`.blur`/`.scaleEffect`/`.opacity` plus the guarded `.onTapGesture` at lines 2936-2939 (`guard !isUnsynced else { return }; seekToLine(line, index: index)`), confirming no button trait or current-line cue exists. `private static let syncedLineFont = Font.system(size: 28, weight: .bold)` at line 2658 is a fixed point size with no `relativeTo:`/`@ScaledMetric`, while the unsynced branch's `.title2.weight(.bold)` (line 2924) does scale with Dynamic Type.
+- **Evidence:** `Sources/NaviTunesKit/NowPlaying/NowPlayingView.swift:2919-2940` (`lyricLineView`) has no `.accessibilityAddTraits`, `.accessibilityHint`, or `.accessibilityAction` anywhere — the `Text(line.text)` only carries `.font`/`.foregroundStyle`/`.blur`/`.scaleEffect`/`.opacity` plus the guarded `.onTapGesture` at lines 2936-2939 (`guard !isUnsynced else { return }; seekToLine(line, index: index)`), confirming no button trait or current-line cue exists. `private static let syncedLineFont = Font.system(size: 28, weight: .bold)` at line 2658 is a fixed point size with no `relativeTo:`/`@ScaledMetric`, while the unsynced branch's `.title2.weight(.bold)` (line 2924) does scale with Dynamic Type.
 - **Better approach:** The suggested `.accessibilityAddTraits`/`.accessibilityHint`/`.accessibilityAction` additions are written unconditionally, but `isUnsynced` (a shared computed property, line 2643) already gates the sighted tap gesture off for unsynced lines. Applying the accessibility additions as literally written would announce a "seeks playback" affordance on unsynced lines that don't seek, and — worse — `.accessibilityAction { seekToLine(line, index: index) }` bypasses the `guard !isUnsynced` entirely, so a VoiceOver user could actually trigger a seek on unsynced lyrics that a sighted user's tap cannot. These need the same `isUnsynced` guard as the existing tap gesture (e.g. `isUnsynced ? [] : (...)`), and the action closure needs the same early-return. The font change (`Font.system(.title, design: .default).weight(.bold)` or `@ScaledMetric`) is fine as written.
 - **Versus the first pass:** AGREE — prior pass's CONFIRMED verdict, its correction that `.title2` scales further than "34pt+" at high accessibility sizes (roughly 44-53pt at AX3/AX5, which is a documented Dynamic Type behavior I'm treating as an inference rather than something I measured), and its note that the fenced code (2935-2939) only shows the tail of the cited 2919-2939 range are all consistent with what I read. It did not flag the `isUnsynced`-guard gap in the proposed accessibility fix — that's my own addition, not a disagreement with what it did check.
 
 ---
 ## P25 — EQ band sliders have no label: VoiceOver hears "62%" with no band name and no dB value
 - **Round:** 3 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Equalizer/SettingsEqualizerView.swift:397–412`
+- **File:** `Sources/NaviTunesKit/Equalizer/SettingsEqualizerView.swift:397–412`
 
 ```swift
             Slider(value: gainBinding, in: EqualizerBand.gainRange, step: 0.5)
@@ -7035,7 +7035,7 @@ draw surface `.accessibilityHidden(true)` with a hint pointing at the sliders.
 ---
 ## P26 — The radio directory row plays via `onTapGesture` on a non-`Button`, so "Play" is only reachable through the Actions rotor
 - **Round:** 3 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Radio/RadioDirectoryViews.swift:376–383`
+- **File:** `Sources/NaviTunesKit/Radio/RadioDirectoryViews.swift:376–383`
 
 ```swift
         .contentShape(Rectangle())
@@ -7060,7 +7060,7 @@ matching `LibrarySongsView:727`, and delete the `.onTapGesture`. Add
 
 **Verified —** Confirmed verbatim; the Save button really is correctly labelled and the `.contextMenu` Play item really does exist, so the Actions-rotor path is real. Not silent — poorly announced: three separate `Text` stops, no `.accessibilityElement(children: .combine)` anywhere in the row, none carrying `.isButton` or the word "Play".
 
-**The outlier claim survives a hard test and is stronger than written.** `grep -rn "onTapGesture" Sources/VellumMusicKit/` returns exactly **3 hits kit-wide** — two are P24's lyric lines and this is the third; `TapGesture()` returns one `#if DEBUG` probe and three comment mentions. There is no `simultaneousGesture(TapGesture` row pattern anywhere. So this is not merely the lone outlier among list rows — it is one of only **two non-debug bare tap gestures in the entire kit**.
+**The outlier claim survives a hard test and is stronger than written.** `grep -rn "onTapGesture" Sources/NaviTunesKit/` returns exactly **3 hits kit-wide** — two are P24's lyric lines and this is the third; `TapGesture()` returns one `#if DEBUG` probe and three comment mentions. There is no `simultaneousGesture(TapGesture` row pattern anywhere. So this is not merely the lone outlier among list rows — it is one of only **two non-debug bare tap gestures in the entire kit**.
 
 **Two corrections.** `LibrarySongsView.rowBody` is at line **729** (`Button(action: onPlay)` at 730), not 727. And the title is slightly too strong: the `contentShape` sits on the enclosing `HStack`, so a VoiceOver double-tap on the station name synthesizes a touch that hit-tests in and fires `onPlay()` — the same mechanism **P24** credits. Retitle to "…carries no button trait and never says 'Play'."
 
@@ -7068,13 +7068,13 @@ matching `LibrarySongsView:727`, and delete the `.onTapGesture`. Add
 **Re-verified (T238) —** independent second pass, agent 34, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `RadioDirectoryViews.swift:379-383`: `.contentShape(Rectangle())` / `.onTapGesture { guard !isStarting else { return }; onPlay() }` sits directly on the row `HStack`, with only the trailing save button (`374-375`) as an actual `Button`. `grep -rn "onTapGesture" Sources/VellumMusicKit/` returns exactly 3 hits kit-wide (`RadioDirectoryViews.swift:380`, `NowPlayingView.swift:2936`, `NowPlayingView.swift:2967`), confirming this is one of only two non-Radio bare tap gestures in the app. `LibrarySongsView.swift` shows `private var rowBody: some View {` at line 729 with `Button(action: onPlay) {` at line 730 — one line off from the cited "727" but the pattern claim (every other row wraps content in a real `Button`) holds.
+- **Evidence:** `RadioDirectoryViews.swift:379-383`: `.contentShape(Rectangle())` / `.onTapGesture { guard !isStarting else { return }; onPlay() }` sits directly on the row `HStack`, with only the trailing save button (`374-375`) as an actual `Button`. `grep -rn "onTapGesture" Sources/NaviTunesKit/` returns exactly 3 hits kit-wide (`RadioDirectoryViews.swift:380`, `NowPlayingView.swift:2936`, `NowPlayingView.swift:2967`), confirming this is one of only two non-Radio bare tap gestures in the app. `LibrarySongsView.swift` shows `private var rowBody: some View {` at line 729 with `Button(action: onPlay) {` at line 730 — one line off from the cited "727" but the pattern claim (every other row wraps content in a real `Button`) holds.
 - **Versus the first pass:** AGREE — matches the recorded correction that the true line is 729/730 not 727, and confirms the "exactly 3 hits" grep independently.
 
 ---
 ## P27 — Both A–Z index scrubbers expose 27 inert letters: drag-only, no adjustable action
 - **Round:** 3 · **Severity:** low _(was medium)_ · **Verdict:** **DENIED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/LibraryAlphabetIndex.swift:123–138`; duplicate `DesignSystem/MusicDesignSystem.swift:1586–1618`
+- **File:** `Sources/NaviTunesKit/Library/LibraryAlphabetIndex.swift:123–138`; duplicate `DesignSystem/MusicDesignSystem.swift:1586–1618`
 
 ```swift
             .frame(width: hitWidth)
@@ -7163,7 +7163,7 @@ plus a darker success green for light mode.
 ---
 ## P29 — "Clear metadata cache?" understates what it deletes: it also wipes up to 512 MB of cached audio
 - **Round:** 3 · **Severity:** medium _(was high)_ · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Offline/OfflineStorageBrowserViews.swift:385, 397, 406–407`; behaviour at `App/AppModel.swift:2766–2784`
+- **File:** `Sources/NaviTunesKit/Offline/OfflineStorageBrowserViews.swift:385, 397, 406–407`; behaviour at `App/AppModel.swift:2766–2784`
 
 ```swift
         case .metadata: return "Clear metadata cache?"
@@ -7202,7 +7202,7 @@ into its own "Clear stream cache" action so the title stays true.
 ---
 ## P30 — "Clear downloaded music?" promises the queue is unaffected, and the first thing it does is clear the queue
 - **Round:** 3 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Offline/OfflineStorageBrowserViews.swift:396, 405`
+- **File:** `Sources/NaviTunesKit/Offline/OfflineStorageBrowserViews.swift:396, 405`
 
 ```swift
         case .downloadedMusic: return "Removes all downloaded tracks. Playback queue downloads are not affected."
@@ -7231,25 +7231,25 @@ streams are kept."`
 ---
 ## P31 — The About page claims downloads are "encrypted-at-rest copies in Application Support" — both halves are false
 - **Round:** 3 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Settings/SettingsSections.swift:393`
+- **File:** `Sources/NaviTunesKit/Settings/SettingsSections.swift:393`
 
 ```swift
-Text("Vellum Music streams from your Jellyfin or Navidrome server. Offline cache stores encrypted-at-rest copies in Application Support.")
+Text("NaviTunes streams from your Jellyfin or Navidrome server. Offline cache stores encrypted-at-rest copies in Application Support.")
 ```
 
-**Problem.** Downloads are written to `Documents/VellumMusic/Downloads`
+**Problem.** Downloads are written to `Documents/NaviTunes/Downloads`
 (`OfflineDownloadManager:225–233`, `.documentDirectory`) — not Application Support — and there is **no
 `FileProtectionType` anywhere under `Offline/`** (grep returns nothing). The app relies on iOS's default
 data-protection class, which is not the same as the app encrypting anything. This is a privacy
 guarantee in user-facing copy that the code never makes. (The Documents location is also what makes
 **C14**'s migration fix wrong — it looks in Application Support.)
 
-**Fix.** `"Vellum Music streams from your Jellyfin or Navidrome server. Downloaded music is stored on
+**Fix.** `"NaviTunes streams from your Jellyfin or Navidrome server. Downloaded music is stored on
 this device in the app's Documents folder and removed when you delete the app."` If the encryption
 claim is wanted, set `.completeFileProtection` when writing download files and keep the sentence.
 
 
-**Verified —** **Both halves false, and the grep is wider than the entry ran.** It scoped `FileProtectionType` to `Offline/`; repo-wide `grep -rn "FileProtectionType\|completeFileProtection\|NSFileProtection\|dataProtection" Sources/ Tests/ VellumMusicHost/` returns **zero hits** — nothing anywhere sets a protection class. And the location claim is stronger than stated: the **only** `.applicationSupportDirectory` reference in `OfflineDownloadManager.swift` is inside `legacyCacheFolder()`, consumed by `migrateLegacyApplicationSupportCachesIfNeeded()`, which drains `Application Support/VellumMusic/Offline` **into** `Documents/VellumMusic/Downloads`. So Application Support is not merely wrong — it is the location the app actively migrates *away from*. `encrypted` appears exactly once in the entire package: in this sentence.
+**Verified —** **Both halves false, and the grep is wider than the entry ran.** It scoped `FileProtectionType` to `Offline/`; repo-wide `grep -rn "FileProtectionType\|completeFileProtection\|NSFileProtection\|dataProtection" Sources/ Tests/ NaviTunesHost/` returns **zero hits** — nothing anywhere sets a protection class. And the location claim is stronger than stated: the **only** `.applicationSupportDirectory` reference in `OfflineDownloadManager.swift` is inside `legacyCacheFolder()`, consumed by `migrateLegacyApplicationSupportCachesIfNeeded()`, which drains `Application Support/NaviTunes/Offline` **into** `Documents/NaviTunes/Downloads`. So Application Support is not merely wrong — it is the location the app actively migrates *away from*. `encrypted` appears exactly once in the entire package: in this sentence.
 
 **Fix is safe:** neither `UIFileSharingEnabled` nor `LSSupportsOpeningDocumentsInPlace` is set in any Info.plist, so `Documents` is not exposed in Files.app and the replacement wording introduces no new inaccuracy. **Note for C14:** a migration path *does* exist here (`OfflineDownloadManager:447`), so C14's "the fix is wrong on the filesystem half" should be re-checked against that function rather than assumed.
 
@@ -7257,7 +7257,7 @@ claim is wanted, set `.completeFileProtection` when writing download files and k
 **Re-verified (T238) —** independent second pass, agent 34, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `SettingsSections.swift:393`: `Text("Vellum Music streams from your Jellyfin or Navidrome server. Offline cache stores encrypted-at-rest copies in Application Support.")`. `OfflineDownloadManager.swift:225-235`: `nonisolated static func downloadsFolder() throws -> URL { let base = try FileManager.default.url(for: .documentDirectory, ...); let dir = base.appendingPathComponent("VellumMusic/Downloads", ...) ...}` confirms Documents, not Application Support. `grep -rn "FileProtectionType\|completeFileProtection\|fileProtection" Sources/VellumMusicKit/Offline/*.swift` returned no output — no encryption/protection class is ever set.
+- **Evidence:** `SettingsSections.swift:393`: `Text("NaviTunes streams from your Jellyfin or Navidrome server. Offline cache stores encrypted-at-rest copies in Application Support.")`. `OfflineDownloadManager.swift:225-235`: `nonisolated static func downloadsFolder() throws -> URL { let base = try FileManager.default.url(for: .documentDirectory, ...); let dir = base.appendingPathComponent("NaviTunes/Downloads", ...) ...}` confirms Documents, not Application Support. `grep -rn "FileProtectionType\|completeFileProtection\|fileProtection" Sources/NaviTunesKit/Offline/*.swift` returned no output — no encryption/protection class is ever set.
 - **Versus the first pass:** AGREE — both code facts (Documents location, zero FileProtectionType hits) reproduce exactly what the recorded "REINFORCED" verdict cites.
 
 ---
@@ -7305,7 +7305,7 @@ from Server" as the only "Delete" in the menu.
 ---
 ## P33 — The "Sync now" footer promises a discovery-index refresh `syncLibraryNow()` does not perform
 - **Round:** 3 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Settings/SettingsSections.swift:71–72`
+- **File:** `Sources/NaviTunesKit/Settings/SettingsSections.swift:71–72`
 
 ```swift
         } footer: {
@@ -7337,7 +7337,7 @@ specifically because search results look stale gets everything *except* the thin
 ---
 ## P34 — The auto-offline hint points to a Home Wi-Fi section that is hidden in exactly the case the hint fires
 - **Round:** 3 · **Severity:** high · **Verdict:** **REINFORCED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Settings/SettingsSections.swift:99–103`; gate at `Settings/AccountView.swift:546–548`
+- **File:** `Sources/NaviTunesKit/Settings/SettingsSections.swift:99–103`; gate at `Settings/AccountView.swift:546–548`
 
 ```swift
 if app.autoOfflineMode == .homeWifi, app.homeWifiSSIDs.isEmpty {
@@ -7416,7 +7416,7 @@ fall back to `"HTTP \(status)"` when `humanReadableError` returns nil, rather th
 ```
 
 **Problem.** Both screens read the **server catalog** (`libraryArtists`, `albums(inGenre:)`), while
-Settings → Library defines "Your Library" strictly as "Music you've added in Vellum — synced via your
+Settings → Library defines "Your Library" strictly as "Music you've added in NaviTunes — synced via your
 personal library playlist", and the removal dialogs use it in that sense. `SubscriptionsView` labels a
 release "In Library" when it is merely on the server, and says followed artists get albums "missing
 from your library" when the diff is against the server. The hub's `"\(n) in your library"` /
@@ -7440,7 +7440,7 @@ names it as the app's central naming hazard.
 ---
 ## P37 — The scrobble footer states the threshold backwards
 - **Round:** 3 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Settings/SettingsLibraryDataView.swift:181`; behaviour at `Playback/PlaybackEngine.swift:3508–3515`
+- **File:** `Sources/NaviTunesKit/Settings/SettingsLibraryDataView.swift:181`; behaviour at `Playback/PlaybackEngine.swift:3508–3515`
 
 ```swift
 Text("Scrobbles are submitted to your server when a track passes the playback threshold (~50% or 30 seconds).")
@@ -7470,7 +7470,7 @@ seconds of it)."`
 ---
 ## C51 — `requestKey` collapses every same-titled release by an artist into one job, so bulk and subscription requests silently skip all but the first
 - **Round:** 3 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Acquisition/AcquisitionCore.swift:155, 160–165, 505–513`; consumers `AcquisitionManager.swift:269–270`, `Subscriptions/MusicSubscriptionEngine.swift:142–147`, `App/AppModel.swift:5077–5079`
+- **File:** `Sources/NaviTunesKit/Acquisition/AcquisitionCore.swift:155, 160–165, 505–513`; consumers `AcquisitionManager.swift:269–270`, `Subscriptions/MusicSubscriptionEngine.swift:142–147`, `App/AppModel.swift:5077–5079`
 
 ```swift
     static func key(artist: String, title: String?, album: String?) -> String {
@@ -7509,7 +7509,7 @@ broadest payoff of the identity findings.
 ---
 ## C52 — The subscription "do I already own this?" set is a 60-row full-text search, so owned albums get re-downloaded
 - **Round:** 3 · **Severity:** high · **Verdict:** **REINFORCED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:5107–5112`; consumer `Subscriptions/MusicSubscriptionEngine.swift:96–97, 117–123, 135–142`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:5107–5112`; consumer `Subscriptions/MusicSubscriptionEngine.swift:96–97, 117–123, 135–142`
 
 ```swift
     func serverAlbums(forArtistName name: String) async -> [AlbumSummary] {
@@ -7550,7 +7550,7 @@ artist row exists. **Never enqueue from a truncated "have" set:** if the search 
 ---
 ## C53 — The subscription engine stores the artist MBID and then asks the plugin by name
 - **Round:** 3 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Subscriptions/MusicSubscriptionEngine.swift:17–21, 90`; plugin side `Acquisition/LidarrAcquisitionPlugin.swift:388–392, 992–994, 1009–1012`
+- **File:** `Sources/NaviTunesKit/Subscriptions/MusicSubscriptionEngine.swift:17–21, 90`; plugin side `Acquisition/LidarrAcquisitionPlugin.swift:388–392, 992–994, 1009–1012`
 
 ```swift
         var serverAlbumsForArtist: (_ name: String) async -> [AlbumSummary]
@@ -7588,7 +7588,7 @@ one widening of `Environment` to `(name, mbid, serverArtistId)` fixes both.
 ---
 ## C54 — A song's "parent release" is the earliest-dated release, which for most hits is the single
 - **Round:** 3 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/MusicBrainz/MusicBrainzModels.swift:333–342, 352`; consumer `MusicBrainz/MusicBrainzDiscographyMapping.swift:117–124`
+- **File:** `Sources/NaviTunesKit/MusicBrainz/MusicBrainzModels.swift:333–342, 352`; consumer `MusicBrainz/MusicBrainzDiscographyMapping.swift:117–124`
 
 ```swift
     var primaryRelease: MusicBrainzRecordingRelease? {
@@ -7626,14 +7626,14 @@ primary artist when the search includes credits.
 **Re-verified (T238) —** independent second pass, agent 09, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `MusicBrainzRecording.primaryRelease` (MusicBrainzModels.swift, `dated.min { $0.1 < $1.1 }?.0 ?? releases.first`) picks strictly by earliest date. `MusicBrainzRecordingReleaseGroup.primaryType` is decoded (`let primaryType: String?` at line 384) but grep across `Sources/VellumMusicKit/MusicBrainz/*.swift` shows the only other uses of `primaryType` are on the unrelated `MusicBrainzReleaseGroup` type (lines 227/257) used for discography bucketing — this nested one is never read anywhere. `MusicBrainzDiscographyMapping.asAcquisitionResult` (lines 105-124) then builds `AcquisitionRequest(albumTitle: albumTitle, releaseGroupMBID: recording.releaseGroupMBID, …)` straight from that earliest-dated release.
+- **Evidence:** `MusicBrainzRecording.primaryRelease` (MusicBrainzModels.swift, `dated.min { $0.1 < $1.1 }?.0 ?? releases.first`) picks strictly by earliest date. `MusicBrainzRecordingReleaseGroup.primaryType` is decoded (`let primaryType: String?` at line 384) but grep across `Sources/NaviTunesKit/MusicBrainz/*.swift` shows the only other uses of `primaryType` are on the unrelated `MusicBrainzReleaseGroup` type (lines 227/257) used for discography bucketing — this nested one is never read anywhere. `MusicBrainzDiscographyMapping.asAcquisitionResult` (lines 105-124) then builds `AcquisitionRequest(albumTitle: albumTitle, releaseGroupMBID: recording.releaseGroupMBID, …)` straight from that earliest-dated release.
 - **Better approach:** The core idea (rank by `primaryType` before date) is right and directly implementable since `primaryType` is already decoded, but two clauses in the proposed fix aren't grounded in the current data model: `MusicBrainzRecordingReleaseGroup` decodes only `id`, `title`, `primaryType` — no `secondary-types` field exists, so "Album with no secondary types first" can't be implemented until that field is added to the struct; and `MusicBrainzRecordingRelease` carries no release-level artist-credit, so "skip groups whose credited artist differs from the recording's primary artist" has nothing to compare against with current decoding. Concrete alternative: rank purely by `primaryType` tiers (`Album` > `EP` > `Single` > everything else/nil), tie-break by earliest valid date as today; add `secondary-types` decoding as a separate follow-up before attempting the "no secondary types" refinement.
 - **Versus the first pass:** AGREE on PROBLEM — matches "CONFIRMED," including the note that `primaryType` is confirmed decoded-but-unused and the "Lose Yourself"/8 Mile example holds while the Paranoid Android example may not on real MB data (a nuance about the specific example, not the defect). The doc's verification does not rate the fix quality; my ADEQUATE call is my own addition.
 
 ---
 ## C55 — Identity tie-break accepts a single generic or self-titled match, then caches that decision for a week under a name-only key
 - **Round:** 3 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Artist/ArtistIdentityResolver.swift:94–114, 130–132`
+- **File:** `Sources/NaviTunesKit/Artist/ArtistIdentityResolver.swift:94–114, 130–132`
 
 ```swift
             if matches > (best?.matches ?? 0) {
@@ -7678,7 +7678,7 @@ compare `matches` against `ownedAlbums.count`, not `ownedKeys.count`.
 ---
 ## C56 — Discography ownership falls back to a title match even when both sides carry release-group ids that disagree
 - **Round:** 3 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Artist/ArtistViewModel.swift:1030–1041`; ordering from `MusicBrainz/MusicBrainzService.swift:727–735`
+- **File:** `Sources/NaviTunesKit/Artist/ArtistViewModel.swift:1030–1041`; ordering from `MusicBrainz/MusicBrainzService.swift:727–735`
 
 ```swift
             let owned: AlbumSummary? = {
@@ -7723,7 +7723,7 @@ before any title fallback, so an exact identity can never be pre-empted by a loo
 ---
 ## C57 — New-tab album ownership uses substring containment on artist with no length floor, checked before the exact match
 - **Round:** 3 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Home/AlbumSummary+NewTabMatch.swift:242–251` (same rule at 122–130)
+- **File:** `Sources/NaviTunesKit/Home/AlbumSummary+NewTabMatch.swift:242–251` (same rule at 122–130)
 
 ```swift
     private func matchEntries(_ entries: [Entry]?, wantArtist: String) -> AlbumSummary? {
@@ -7768,7 +7768,7 @@ with a floor (`min(count) >= 4`) and only on token boundaries; or tokenise with
 ---
 ## C58 — `catalogReleaseIdentityKey` strips the trailing parenthetical that is the only thing distinguishing some releases
 - **Round:** 3 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Home/AlbumSummary+NewTabMatch.swift:41–49, 56–58`; consumers `App/AppModel.swift:2571–2574, 2591–2594`, `Home/NewTabPersonalizationEngine.swift:475`
+- **File:** `Sources/NaviTunesKit/Home/AlbumSummary+NewTabMatch.swift:41–49, 56–58`; consumers `App/AppModel.swift:2571–2574, 2591–2594`, `Home/NewTabPersonalizationEngine.swift:475`
 
 ```swift
     static func normalizedAlbumTitleLoose(_ raw: String) -> String {
@@ -7812,7 +7812,7 @@ run the artist half through `LibraryTrackMatcher.normalize` so punctuation varia
 ---
 ## C59 — A followed artist's fallback id is empty for punctuation-only names, so distinct artists share one id and the follow is inert
 - **Round:** 3 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Subscriptions/MusicSubscriptionModels.swift:10`; normalizer `Library/LibraryTrackMatcher.swift:15–28`
+- **File:** `Sources/NaviTunesKit/Subscriptions/MusicSubscriptionModels.swift:10`; normalizer `Library/LibraryTrackMatcher.swift:15–28`
 
 ```swift
     var id: String { artistMBID.map { "mbid:\($0)" } ?? "name:\(LibraryTrackMatcher.normalize(name))" }
@@ -7851,7 +7851,7 @@ whose `musicBrainzIdentity` is known, always pass the MBID — `ArtistPageView` 
 ---
 ## C60 — The song-search identity key merges different songs and splits the same one across credit spellings
 - **Round:** 3 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/MusicBrainz/MusicBrainzSearchFeed.swift:323–327`; credit helpers `MusicBrainz/MusicBrainzModels.swift:74–78`
+- **File:** `Sources/NaviTunesKit/MusicBrainz/MusicBrainzSearchFeed.swift:323–327`; credit helpers `MusicBrainz/MusicBrainzModels.swift:74–78`
 
 ```swift
     static func songIdentityKey(_ recording: MusicBrainzRecording) -> String {
@@ -7889,7 +7889,7 @@ library test so either spelling can overlap.
 ---
 ## C61 — `PlaylistEditSheet` deletes the wrong Navidrome song on any second removal in the same sheet session
 - **Round:** 3 · **Severity:** high · **Verdict:** **REINFORCED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/ServerPlaylistViews.swift:2971–2975, 3348–3362`; `App/AppModel.swift:3821–3826`
+- **File:** `Sources/NaviTunesKit/Library/ServerPlaylistViews.swift:2971–2975, 3348–3362`; `App/AppModel.swift:3821–3826`
 
 ```swift
         do {
@@ -7944,20 +7944,20 @@ every successful removal and disable Remove until it lands.
 ```
 
 **Problem.** CLAUDE.md records this as a known gap; it is reachable and worse than documented. On a
-first Vellum launch (or any cleared snapshot), `refreshLibraryAlbums` → `refreshLibraryPlaylists` runs
+first NaviTunes launch (or any cleared snapshot), `refreshLibraryAlbums` → `refreshLibraryPlaylists` runs
 **before** membership resolves, so `libraryMagicPlaylistId` is nil and only the name check applies — and
-`isMagicPlaylistName` matches `__vellum_` **only**. The server still holds `__lyra_<hash12>`: the user's
+`isMagicPlaylistName` matches `__navitunes_` **only**. The server still holds `__lyra_<hash12>`: the user's
 entire personal library. It lands in `libraryPlaylists`. `refreshLibraryMembership` then finds it,
 renames it on the server and sets the id — but **neither it nor `applyMagicPlaylistFetch` re-runs
 `refreshLibraryPlaylists`**, and the filter runs only at fetch time, so the stale row survives until an
 unrelated playlist mutation refetches. Reach: Library → Playlists → tap `__lyra_ab12cd34ef56` → ⋯ →
 Delete playlist → confirm. The dialog names a hex-suffixed playlist the user never created — precisely
 what a user deletes as junk — and that deletes every `librarySongIds` track plus the membership payload.
-**Steady-state variant:** if a `__vellum_` playlist was created on an earlier post-rename build before
-the migration existed, `resolveMagicPlaylistId` returns at the first `__vellum_` hit and never migrates,
+**Steady-state variant:** if a `__navitunes_` playlist was created on an earlier post-rename build before
+the migration existed, `resolveMagicPlaylistId` returns at the first `__navitunes_` hit and never migrates,
 so the `__lyra_` playlist holding the old library is **permanently** exposed as a normal playlist.
 
-**Fix.** (1) Widen `isMagicPlaylistName` to accept both `__vellum_` and `__lyra_` — the code comment at
+**Fix.** (1) Widen `isMagicPlaylistName` to accept both `__navitunes_` and `__lyra_` — the code comment at
 100–103 already asks for this. (2) Re-run the filter whenever `libraryMagicPlaylistId` changes: call
 `refreshLibraryPlaylists()` (or re-apply `filterOutMagicPlaylist` to the cached array) at the end of
 `applyMagicPlaylistFetch` when the id changed. (3) Defensively refuse `deletePlaylist` and
@@ -7965,23 +7965,23 @@ so the `__lyra_` playlist holding the old library is **permanently** exposed as 
 guard that does not depend on the filter being armed.
 
 
-**Verified —** Ordering confirmed: `runLibraryBootstrap:2037` awaits `refreshLibraryAlbums()` to completion — which ends with `await refreshLibraryPlaylists()` at 3566 — **before** `async let membership` even starts. `isMagicPlaylistName` confirmed `__vellum_`-only. **`legacyLyraMagicPlaylistNames` is NOT in the filter path** — its only non-doc call site is inside `migrateLegacyLyraMagicPlaylistIfNeeded`, and `filterOutMagicPlaylist` checks id + `isMagicPlaylistName` only. Nothing re-runs the filter when the id resolves: `applyMagicPlaylistFetch` calls four other refreshers and `invalidatePlaylistRowsCache` for the magic playlist only.
+**Verified —** Ordering confirmed: `runLibraryBootstrap:2037` awaits `refreshLibraryAlbums()` to completion — which ends with `await refreshLibraryPlaylists()` at 3566 — **before** `async let membership` even starts. `isMagicPlaylistName` confirmed `__navitunes_`-only. **`legacyLyraMagicPlaylistNames` is NOT in the filter path** — its only non-doc call site is inside `migrateLegacyLyraMagicPlaylistIfNeeded`, and `filterOutMagicPlaylist` checks id + `isMagicPlaylistName` only. Nothing re-runs the filter when the id resolves: `applyMagicPlaylistFetch` calls four other refreshers and `invalidatePlaylistRowsCache` for the magic playlist only.
 
-**The "transient" variant is not transient, and it targets exactly the affected population.** `git show 836f7f8` renames the snapshot directory `Application Support/LyraMusic` → `VellumMusic` **with no data migration**, so on an upgrading user's first Vellum launch the snapshot is empty and `libraryMagicPlaylistId` restores as nil. Since the launch tab defaults to Library, `LibraryView:913`'s `.task { refreshLibraryPlaylists() }` races the membership resolve and **wins easily** (one `getPlaylists` call vs. find-by-name × N + rename + fetch-contents). Nothing re-runs the filter afterward, so the `__lyra_` row stays listed **for the rest of the session**. Reach confirmed end to end through `playlistOverflowMenuContent:1815–1824` → `serverPlaylistDelete` → `NavidromeClient.deletePlaylist`, with the dialog rendering the hex name and song count.
+**The "transient" variant is not transient, and it targets exactly the affected population.** `git show 836f7f8` renames the snapshot directory `Application Support/LyraMusic` → `NaviTunes` **with no data migration**, so on an upgrading user's first NaviTunes launch the snapshot is empty and `libraryMagicPlaylistId` restores as nil. Since the launch tab defaults to Library, `LibraryView:913`'s `.task { refreshLibraryPlaylists() }` races the membership resolve and **wins easily** (one `getPlaylists` call vs. find-by-name × N + rename + fetch-contents). Nothing re-runs the filter afterward, so the `__lyra_` row stays listed **for the rest of the session**. Reach confirmed end to end through `playlistOverflowMenuContent:1815–1824` → `serverPlaylistDelete` → `NavidromeClient.deletePlaylist`, with the dialog rendering the hex name and song count.
 
-**The steady-state variant is permanent, with commit evidence:** `836f7f8` (rename) predates `7e9287c` (the `__lyra_` migration), so anyone who launched a build in between got a fresh empty `__vellum_` adopted and their real library orphaned. **One re-scoping:** "deletes every `librarySongIds` track" is loose — at that moment `librarySongIds` is empty. What is destroyed is the **server-side** library, which in the steady-state case is the only surviving copy.
+**The steady-state variant is permanent, with commit evidence:** `836f7f8` (rename) predates `7e9287c` (the `__lyra_` migration), so anyone who launched a build in between got a fresh empty `__navitunes_` adopted and their real library orphaned. **One re-scoping:** "deletes every `librarySongIds` track" is loose — at that moment `librarySongIds` is empty. What is destroyed is the **server-side** library, which in the steady-state case is the only surviving copy.
 
 
 **Re-verified (T238) —** independent second pass, agent 10, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `runLibraryBootstrap` (`AppModel.swift:2037-2055`) awaits `refreshLibraryAlbums()` — whose body ends with `await refreshLibraryPlaylists()` (`:3566`) — to completion before `async let membership: Void = refreshLibraryMembership()` even starts. `isMagicPlaylistName` is confirmed prefix-locked: `guard name.hasPrefix("__vellum_") else { return false }` (`LibraryMembership.swift:105`). `applyMagicPlaylistFetch` (`:2280-`) sets `libraryMagicPlaylistId` but never calls `refreshLibraryPlaylists()` or re-applies `filterOutMagicPlaylist` to the already-cached `libraryPlaylists` array. I also confirmed no guard exists in `AppModel.deletePlaylist` (`:4437`) or `removePlaylistRows` (`:3805`) against `playlistId == libraryMagicPlaylistId`.
+- **Evidence:** `runLibraryBootstrap` (`AppModel.swift:2037-2055`) awaits `refreshLibraryAlbums()` — whose body ends with `await refreshLibraryPlaylists()` (`:3566`) — to completion before `async let membership: Void = refreshLibraryMembership()` even starts. `isMagicPlaylistName` is confirmed prefix-locked: `guard name.hasPrefix("__navitunes_") else { return false }` (`LibraryMembership.swift:105`). `applyMagicPlaylistFetch` (`:2280-`) sets `libraryMagicPlaylistId` but never calls `refreshLibraryPlaylists()` or re-applies `filterOutMagicPlaylist` to the already-cached `libraryPlaylists` array. I also confirmed no guard exists in `AppModel.deletePlaylist` (`:4437`) or `removePlaylistRows` (`:3805`) against `playlistId == libraryMagicPlaylistId`.
 - **Versus the first pass:** AGREE — my independent read matches the "REINFORCED" verdict; the prior pass's added detail (git history showing the snapshot-directory rename with no data migration, and the `LibraryView.task` race making the "transient" case non-transient) is consistent with what the code shows, and the one correction ("deletes every librarySongIds track" is loose — it's the server-side library that's destroyed) is a fair scope narrowing, not a reversal.
 
 ---
 ## C63 — Renaming the magic playlist outside the app silently replaces the library with an empty one
 - **Round:** 3 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:2117–2127, 2205–2216`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:2117–2127, 2205–2216`
 
 ```swift
             if !expectedNames.contains(fetch.name), !LibraryMembership.isMagicPlaylistName(fetch.name) {
@@ -7992,7 +7992,7 @@ guard that does not depend on the filter being armed.
                 let freshId = try await resolveMagicPlaylistId(identity: identity)
 ```
 
-**Problem.** Navidrome's web UI lists `__vellum_…` playlists, so a user who renames it to something
+**Problem.** Navidrome's web UI lists `__navitunes_…` playlists, so a user who renames it to something
 readable ("My Library") triggers this branch on the next 60 s poll: find-by-name fails, the cached-id
 fallback is rejected because the name no longer matches, and **a brand-new empty playlist is created and
 adopted**. `applyMagicPlaylistFetch` then sets `librarySongIds = []` and — because `trackIds.isEmpty` —
@@ -8009,20 +8009,20 @@ than silently creating.
 
 **Verified —** Rename path traced: `findMagicPlaylistByName` fails for both spellings → `migrateLegacyLyraMagicPlaylistIfNeeded` finds no `__lyra_` → the cached-id fallback (2205–2211) **fetches the playlist successfully but is rejected** by `isMagicPlaylistName(fetch.name)` → falls through to `createEmptyMagicPlaylist` (2213). **It really does create rather than recover**, and no branch anywhere renames the cached-id playlist back. `applyMagicPlaylistFetch` on the empty playlist then satisfies the `payloadHasContent || trackIds.isEmpty` guard and wipes both entry arrays.
 
-**Two corrections.** (1) The quoted excerpt is the *drift* branch at 2117, which is **dead for this scenario** — `resolveMagicPlaylistId` creates the empty playlist on its first call, so the `expectedNames` check later sees the new `__vellum_` name and passes. The cited range does include 2205–2216, which is the code that actually fires, so the finding is right; the headline excerpt points at the wrong line. (2) "a hash the user cannot know" overstates it — the new `__vellum_<hash>` playlist sits in the same web UI list the user just renamed from, so recovery is awkward and manual, not impossible.
+**Two corrections.** (1) The quoted excerpt is the *drift* branch at 2117, which is **dead for this scenario** — `resolveMagicPlaylistId` creates the empty playlist on its first call, so the `expectedNames` check later sees the new `__navitunes_` name and passes. The cited range does include 2205–2216, which is the code that actually fires, so the finding is right; the headline excerpt points at the wrong line. (2) "a hash the user cannot know" overstates it — the new `__navitunes_<hash>` playlist sits in the same web UI list the user just renamed from, so recovery is awkward and manual, not impossible.
 
 
 **Re-verified (T238) —** independent second pass, agent 36, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** Traced the full ladder in `resolveMagicPlaylistId` (`AppModel.swift:2179-2216`): after a rename, `findMagicPlaylistByName` fails for all candidate names, `migrateLegacyLyraMagicPlaylistIfNeeded` finds no `__lyra_` playlist, and the cached-id fallback at line 2205 does `let cached = LibraryMembership.cachedPlaylistId(...), let fetch = try? await fetchMagicPlaylistContents(playlistId: cached), LibraryMembership.isMagicPlaylistName(fetch.name) { return cached }` — the fetch succeeds (the renamed playlist is found) but `isMagicPlaylistName("My Library")` returns `false` (`LibraryMembership.swift:104-108`: `guard name.hasPrefix("__vellum_") else { return false }`), so the guard fails and execution falls through to `let created = try await createEmptyMagicPlaylist(name: identity.name)` at line 2212. Back in `refreshLibraryMembership`, the newly created playlist's `fetch.name` matches `expectedNames`, so the quoted "name drift" branch at 2117-2127 is actually never entered in this exact scenario — the empty playlist is adopted directly. `applyMagicPlaylistFetch` (line ~2280) then hits `payloadHasContent || fetch.trackIds.isEmpty` (true, since the new playlist is empty) and overwrites `libraryAlbumEntries`/`libraryPlaylistEntries` with the empty payload.
+- **Evidence:** Traced the full ladder in `resolveMagicPlaylistId` (`AppModel.swift:2179-2216`): after a rename, `findMagicPlaylistByName` fails for all candidate names, `migrateLegacyLyraMagicPlaylistIfNeeded` finds no `__lyra_` playlist, and the cached-id fallback at line 2205 does `let cached = LibraryMembership.cachedPlaylistId(...), let fetch = try? await fetchMagicPlaylistContents(playlistId: cached), LibraryMembership.isMagicPlaylistName(fetch.name) { return cached }` — the fetch succeeds (the renamed playlist is found) but `isMagicPlaylistName("My Library")` returns `false` (`LibraryMembership.swift:104-108`: `guard name.hasPrefix("__navitunes_") else { return false }`), so the guard fails and execution falls through to `let created = try await createEmptyMagicPlaylist(name: identity.name)` at line 2212. Back in `refreshLibraryMembership`, the newly created playlist's `fetch.name` matches `expectedNames`, so the quoted "name drift" branch at 2117-2127 is actually never entered in this exact scenario — the empty playlist is adopted directly. `applyMagicPlaylistFetch` (line ~2280) then hits `payloadHasContent || fetch.trackIds.isEmpty` (true, since the new playlist is empty) and overwrites `libraryAlbumEntries`/`libraryPlaylistEntries` with the empty payload.
 - **Better approach:** N/A — `renamePlaylist(playlistId:name:)` already exists on `AppModel` (`AppModel.swift:4417`) and is already used for exactly this pattern in `migrateLegacyLyraMagicPlaylistIfNeeded` (`try await renamePlaylist(playlistId: legacyId, name: identity.name)` at line 2236), so "treat a cached id whose playlist still exists as the library and rename it back" is directly implementable by reusing existing, already-proven infrastructure.
 - **Versus the first pass:** AGREE — the recorded block traces the identical mechanism and independently notes the same nuance I found (the quoted 2117-2127 excerpt is "dead for this scenario," and the code that actually fires is 2205-2216, which the finding's file citation does also include), so the overall CONFIRMED verdict and reasoning match mine exactly.
 
 ---
 ## C64 — `removeAlbumFromLibrary` treats a failed track fetch as "no tracks" and persists the removal anyway
 - **Round:** 3 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:3342–3369`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:3342–3369`
 
 ```swift
         let albumTracks = (try? await lib.tracks(forAlbumId: album.id)) ?? []
@@ -8055,7 +8055,7 @@ rather than returning empty.
 ---
 ## C65 — Kill Mode "Remove All" deletes every copy of a duplicated track, not the one that was skipped
 - **Round:** 3 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/PlaylistKillListView.swift:32–39, 168–171`; `App/AppModel.swift:4207–4216`
+- **File:** `Sources/NaviTunesKit/Library/PlaylistKillListView.swift:32–39, 168–171`; `App/AppModel.swift:4207–4216`
 
 ```swift
         // Preserve duplicates: a track id may map to multiple rows when a playlist contains
@@ -8088,13 +8088,13 @@ explicitly in the confirmation that all duplicates will be removed.
 ---
 ## C66 — Kill Mode state survives sign-out and is keyed only by playlist id
 - **Round:** 3 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/KillModeStore.swift:10–13`
+- **File:** `Sources/NaviTunesKit/Library/KillModeStore.swift:10–13`
 
 ```swift
 enum KillModeStore {
-    private static let enabledPlaylistsKey = "vellum.killMode.enabledPlaylists"
-    private static let pendingRemovalsKey = "vellum.killMode.pendingRemovals"
-    private static let passedTracksKey = "vellum.killMode.passed"
+    private static let enabledPlaylistsKey = "navitunes.killMode.enabledPlaylists"
+    private static let pendingRemovalsKey = "navitunes.killMode.pendingRemovals"
+    private static let passedTracksKey = "navitunes.killMode.passed"
 ```
 
 **Problem.** `signOut()` clears the snapshot and membership but touches none of these keys, so enabled
@@ -8115,13 +8115,13 @@ only reachable path; cross-server ids do not collide. This is one instance of th
 **Re-verified (T238) —** independent second pass, agent 37, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `KillModeStore.swift:11-13` defines three flat, unnamespaced `UserDefaults` keys (`vellum.killMode.enabledPlaylists`, `.pendingRemovals`, `.passed`). `AppModel.signOut()` (lines 1374-1442) clears membership, snapshot, keychain, recently-played, caches, etc., but never touches `killModeEnabledPlaylistIds`, `killModePendingRemovals`, `killModePassedTracks`, nor calls into `KillModeStore` to clear them — and those three `@Published` properties are only loaded once, in `init` (`killModeEnabledPlaylistIds = KillModeStore.loadEnabled()` etc. at lines 1099-1101), so they survive both in memory and on disk across a sign-out/sign-in within the same process. `LibraryMembership.defaultsKey(backend:serverKey:userKey:)` at `LibraryMembership.swift:112` is the in-tree precedent for namespacing that Kill Mode lacks.
+- **Evidence:** `KillModeStore.swift:11-13` defines three flat, unnamespaced `UserDefaults` keys (`navitunes.killMode.enabledPlaylists`, `.pendingRemovals`, `.passed`). `AppModel.signOut()` (lines 1374-1442) clears membership, snapshot, keychain, recently-played, caches, etc., but never touches `killModeEnabledPlaylistIds`, `killModePendingRemovals`, `killModePassedTracks`, nor calls into `KillModeStore` to clear them — and those three `@Published` properties are only loaded once, in `init` (`killModeEnabledPlaylistIds = KillModeStore.loadEnabled()` etc. at lines 1099-1101), so they survive both in memory and on disk across a sign-out/sign-in within the same process. `LibraryMembership.defaultsKey(backend:serverKey:userKey:)` at `LibraryMembership.swift:112` is the in-tree precedent for namespacing that Kill Mode lacks.
 - **Versus the first pass:** AGREE — CODE_SWEEP.md's Verified block for C66 confirms the same flat keys, the same signOut() omission (naming the same list of things it does clear), and the same in-memory survival, concluding the reachable same-server-different-account path is real.
 
 ---
 ## C67 — `clearAllDownloads` writes an empty manifest even when file deletion partially failed
 - **Round:** 3 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Offline/OfflineDownloadManager+CacheManagement.swift:146–158`
+- **File:** `Sources/NaviTunesKit/Offline/OfflineDownloadManager+CacheManagement.swift:146–158`
 
 ```swift
     func clearAllDownloads() {
@@ -8159,7 +8159,7 @@ manifest from what remains and surface "couldn't remove N files".
 ---
 ## C68 — Jellyfin's `deletePlaylist` is the generic item-delete endpoint
 - **Round:** 3 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/JellyfinMusicClient.swift:1077–1083`
+- **File:** `Sources/NaviTunesKit/Backends/JellyfinMusicClient.swift:1077–1083`
 
 ```swift
     func deletePlaylist(playlistId: String) async throws {
@@ -8174,7 +8174,7 @@ manifest from what remains and surface "couldn't remove N files".
 Handed an album or track id by mistake, it deletes that media for every user of the server. **No
 reachable path exists today** — the only callers are the playlist detail menu (id from
 `libraryPlaylists`) and a `#if DEBUG` `DebugUIRemote` cleanup hook that additionally filters on a
-`"vellum ui test"` name prefix. This is recorded because it is one refactor away, and because **C62**
+`"navitunes ui test"` name prefix. This is recorded because it is one refactor away, and because **C62**
 shows an id from `libraryPlaylists` is not always the playlist the user thinks it is.
 
 **Fix.** Have `deletePlaylist` fetch the item first and refuse unless `Type == "Playlist"`, or take a
@@ -8183,7 +8183,7 @@ shows an id from `libraryPlaylists` is not always the playlist the user thinks i
 
 **Verified —** Same route confirmed by direct comparison: `deletePlaylist` builds `apiURL("Items", playlistId)` + `DELETE`, and `deleteTrackFromLibrary:1125–1136` builds `apiURL("Items", trimmed)` + `DELETE`. The only differences are a `UserId` query param and a non-empty guard. **No `Type` check on either.**
 
-**The "no reachable path today" caveat holds** — the verifier tried to construct one and could not. `ServerPlaylistViews:2469` is the only production caller, and the Delete item lives in `playlistOverflowMenuContent`, which the toolbar does not render for album sources (`isAlbumStyleDetail` branches to `albumOverflowMenuContent`). `DebugUIRemote:107` is `#if DEBUG` and additionally filters `name.hasPrefix("vellum ui test")`. **C62**'s mis-identified id is still a *playlist* id, so it deletes a playlist — that is C62's harm, not this one. Keeping `low` as a latent-hazard note; no inflation warranted. (Worth noting the synthetic fallback at 661–668 would supply `id: "__album__"` if the gating ever slipped — a 404, not a media delete.)
+**The "no reachable path today" caveat holds** — the verifier tried to construct one and could not. `ServerPlaylistViews:2469` is the only production caller, and the Delete item lives in `playlistOverflowMenuContent`, which the toolbar does not render for album sources (`isAlbumStyleDetail` branches to `albumOverflowMenuContent`). `DebugUIRemote:107` is `#if DEBUG` and additionally filters `name.hasPrefix("navitunes ui test")`. **C62**'s mis-identified id is still a *playlist* id, so it deletes a playlist — that is C62's harm, not this one. Keeping `low` as a latent-hazard note; no inflation warranted. (Worth noting the synthetic fallback at 661–668 would supply `id: "__album__"` if the gating ever slipped — a 404, not a media delete.)
 
 
 **Re-verified (T238) —** independent second pass, agent 37, judged from the source with the first pass's verdict withheld.
@@ -8195,7 +8195,7 @@ shows an id from `libraryPlaylists` is not always the playlist the user thinks i
 ---
 ## C69 — `ArtistViewModel.jellyfinOverview` is declared, read in three places, and never assigned
 - **Round:** 3 · **Severity:** low _(was medium)_ · **Verdict:** **CONFIRMED** _(verify pass, round 3; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Artist/ArtistViewModel.swift:220, 328, 356`; `Artist/ArtistPageView.swift:1550–1554`
+- **File:** `Sources/NaviTunesKit/Artist/ArtistViewModel.swift:220, 328, 356`; `Artist/ArtistPageView.swift:1550–1554`
 
 ```swift
     private var bio: String? {
@@ -8205,7 +8205,7 @@ shows an id from `libraryPlaylists` is not always the playlist the user thinks i
     }
 ```
 
-**Problem.** `grep -rnw jellyfinOverview Sources VellumMusicHost` returns four sites — the declaration
+**Problem.** `grep -rnw jellyfinOverview Sources NaviTunesHost` returns four sites — the declaration
 and three reads — and **zero assignments**. There is no artist-overview fetch in `JellyfinMusicClient`
 (`Overview` appears only on playlists) and no `overview` member on `MusicLibraryProviding`, so no code
 path can ever set it. Three `if let … !isEmpty` branches are always skipped, and `hasAboutSection`
@@ -8217,7 +8217,7 @@ so on Jellyfin the About section shows only when a plugin profile exists. Same s
 `MusicLibraryProviding`, implement it in `JellyfinMusicClient` via `Items/{id}` → `Overview`, return nil
 from Navidrome, and assign in `ArtistViewModel.load(using:forceRefresh:)`.
 
-**Verified —** `grep -rnw jellyfinOverview Sources VellumMusicHost Tests` returns exactly the four sites claimed — the declaration and three reads — with **zero assignments**, and `private(set)` means no external one is possible. Plumbing confirmed absent: no `artistOverview` member on `MusicLibraryProviding`, and `Overview` in `JellyfinMusicClient` appears only on playlist reads/writes. So on Jellyfin the About section shows only when a plugin profile or MusicBrainz header facts exist, as claimed.
+**Verified —** `grep -rnw jellyfinOverview Sources NaviTunesHost Tests` returns exactly the four sites claimed — the declaration and three reads — with **zero assignments**, and `private(set)` means no external one is possible. Plumbing confirmed absent: no `artistOverview` member on `MusicLibraryProviding`, and `Overview` in `JellyfinMusicClient` appears only on playlist reads/writes. So on Jellyfin the About section shows only when a plugin profile or MusicBrainz header facts exist, as claimed.
 
 **Severity lowered medium → low.** Every read is an always-false term inside an `||` or an early-return `if let` chain — nothing is mis-gated, nothing renders wrong, and no user-visible behaviour differs from deleting the property. The harm is entirely "a reader assumes Jellyfin bios are wired" — the same class as the **L06** `similarArtists` comparison the entry itself draws, i.e. code hygiene rather than a medium-severity defect. The fix is right either way.
 
@@ -8551,7 +8551,7 @@ let total = max(0, Int(seconds.rounded()))     // Offline:104           — roun
 **Re-verified (T238) —** independent second pass, agent 02, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** PARTLY REAL · **Fix:** WRONG
-- **Evidence:** `grep -rn '%d:%02d\|%02d:%02d' Sources/VellumMusicKit/` returns exactly the three cited sites. But there are two rules, not three: `let total = Int(round(s))` (BrowseAlbumDetailView.swift:962) and `let total = max(0, Int(seconds.rounded()))` (OfflineStorageBrowserViews.swift:104) are the same rule. The third differs for a reason — `grep -n formatTime NowPlayingView.swift` shows it is used only at :2186 `Text(formatTime(displayTime))` and :2188 `Text("−" + formatTime(max(0, effectiveDuration - displayTime)))`, i.e. elapsed and remaining position, never a static track duration, and floor is the correct rule for a running counter. What is real: none of the three rolls over at an hour, so a 75-minute mix reads "75:00", and the two duration copies are genuine unmerged duplicates.
+- **Evidence:** `grep -rn '%d:%02d\|%02d:%02d' Sources/NaviTunesKit/` returns exactly the three cited sites. But there are two rules, not three: `let total = Int(round(s))` (BrowseAlbumDetailView.swift:962) and `let total = max(0, Int(seconds.rounded()))` (OfflineStorageBrowserViews.swift:104) are the same rule. The third differs for a reason — `grep -n formatTime NowPlayingView.swift` shows it is used only at :2186 `Text(formatTime(displayTime))` and :2188 `Text("−" + formatTime(max(0, effectiveDuration - displayTime)))`, i.e. elapsed and remaining position, never a static track duration, and floor is the correct rule for a running counter. What is real: none of the three rolls over at an hour, so a 75-minute mix reads "75:00", and the two duration copies are genuine unmerged duplicates.
 - **Better approach:** "One rounding rule" across all three regresses the player: with `.rounded()` the elapsed label reads 4:00 while a 3:59.6 track is still playing, and jumps to 0:01 half a second in. Add `TrackListSummary.clock(_ seconds: TimeInterval) -> String` that rounds and rolls over at an hour (`h:mm:ss`), and use it at the two *duration* sites only. Fix the player separately by giving `formatTime` its own hour rollover while keeping `.rounded(.down)`.
 - **Denial:** HOLDS — The headline ("three different rounding rules") is false on the entry's own body text, and the floor/round split is a legitimate semantic difference, not drift.
 - **Versus the first pass:** AGREE — I reached the same two-rules/floor-is-correct conclusion before reading it. One caveat: the hour-rollover bug the denial calls "a real, small bug that deserves its own line" never got that line (`grep -n "75:00\|h:mm:ss" docs/CODE_SWEEP.md` finds it only inside this DENIED entry), so a real defect now lives only in a killed record.
@@ -8798,7 +8798,7 @@ Navidrome"), and include the health state in the playback-failure toast.
 
 **The snapshot repopulates `libraryAlbums` earlier than the entry says.** `loadKeychain()` runs synchronously in `init()` (called at `:1091`), setting `isSignedIn = true` and kicking `libraryDiskRestoreTask`; `reconcileRestoredSession` then **awaits that restore before any network work** (`:6968-6973`), and `applyRestoredSnapshotLight` assigns `libraryAlbums = snap.albums` (`:1685`). So the catalog is already non-empty before `refreshLibraryAlbums()` even starts, let alone throws — the `catch`'s own `restoreLibraryFromDisk()` (`:3569`) is a redundant second restore, and being `async` it would not beat the `onChange` anyway.
 
-**Premise survived an attack.** `reconcileRestoredSession` deliberately does **not** bootstrap on `.unreachable` (`:6998-7001`, `break`) — which would have made this unreachable — but `RootView.swift:193` calls `scheduleLibraryBootstrap()` from an unconditional `.task` and `isSignedIn` is already true by then. Bootstrap runs, `refreshLibraryAlbums` fails after 25 s (`VellumNetworking.swift:68`). Premise holds.
+**Premise survived an attack.** `reconcileRestoredSession` deliberately does **not** bootstrap on `.unreachable` (`:6998-7001`, `break`) — which would have made this unreachable — but `RootView.swift:193` calls `scheduleLibraryBootstrap()` from an unconditional `.task` and `isSignedIn` is already true by then. Bootstrap runs, `refreshLibraryAlbums` fails after 25 s (`NaviTunesNetworking.swift:68`). Premise holds.
 
 **Reinforcement — the Library surface is deader than written.** `showLoadError` has exactly one writer (the `onChange`), so it needs `libraryAlbumsLoadError` to *transition* while `AlbumsGridView` is on screen. In this flow the error is set at launch, long before the user opens Library -> Albums, so **the alert never fires even if the isEmpty gate were removed**. Two gates, both broken, one of them twice.
 
@@ -9103,7 +9103,7 @@ Route sign-in errors through the existing `friendlyMessage(for:)` that today onl
 Connection.
 
 
-**Verified —** `signIn()`'s only URL validation is `URL(string:) != nil` — no `scheme`/`host` check, in direct contrast to `runConnectionTest`, which checks both (`LoginView.swift:386-390`). The URL survives the whole client stack: `NavidromeClient.buildRESTURL` (`:1838-1872`) does `URLComponents(url: baseURL.appendingPathComponent("rest/\(path)"), resolvingAgainstBaseURL: false)!` and only throws `.badURL` if `comps.url` is nil — which it will not be for a path-only base — so the request reaches `URLSession.vellum.data(from:)` (`:1814`) intact. `signIn`'s catch (`AppModel.swift:1305-1313`) sets `errorMessage = error.localizedDescription` raw; `friendlyMessage(for:)` (`LoginView.swift:469-489`) is `private` to `LoginView` with exactly one caller (`:461`, inside `runConnectionTest`). The placeholder really is the only scheme hint (`LoginView.swift:165`).
+**Verified —** `signIn()`'s only URL validation is `URL(string:) != nil` — no `scheme`/`host` check, in direct contrast to `runConnectionTest`, which checks both (`LoginView.swift:386-390`). The URL survives the whole client stack: `NavidromeClient.buildRESTURL` (`:1838-1872`) does `URLComponents(url: baseURL.appendingPathComponent("rest/\(path)"), resolvingAgainstBaseURL: false)!` and only throws `.badURL` if `comps.url` is nil — which it will not be for a path-only base — so the request reaches `URLSession.navitunes.data(from:)` (`:1814`) intact. `signIn`'s catch (`AppModel.swift:1305-1313`) sets `errorMessage = error.localizedDescription` raw; `friendlyMessage(for:)` (`LoginView.swift:469-489`) is `private` to `LoginView` with exactly one caller (`:461`, inside `runConnectionTest`). The placeholder really is the only scheme hint (`LoginView.swift:165`).
 
 **Correction to the fix — the proposed remedy does not work.** Routing sign-in through `friendlyMessage(for:)` would **not** fix this: `.badURL, .unsupportedURL` maps to the string `"Invalid server URL."` (`LoginView.swift:485-486`) — the same unhelpful text. The fix needs **the normalization step plus a new message**; the "route through friendlyMessage" half is a no-op for this case.
 
@@ -9121,7 +9121,7 @@ Connection.
 
 ## P46 — An unreachable server on first sign-in spins for up to 25 s, then shows a raw `URLError`
 - **Round:** 4 · **Severity:** low _(was medium; verifier re-scoped)_ · **Verdict:** **CONFIRMED** _(verify pass, round 4; different agent than the raiser)_
-- **File:** `Backends/VellumNetworking.swift:68–69`; `Settings/LoginView.swift:308–313`
+- **File:** `Backends/NaviTunesNetworking.swift:68–69`; `Settings/LoginView.swift:308–313`
 
 ```swift
         config.timeoutIntervalForRequest = 25
@@ -9142,7 +9142,7 @@ the timeout for the auth call specifically.
 
 **Verified —** Confirmed but **materially over-scoped as written; demoted medium -> low.**
 
-Established: the timeouts are exactly `timeoutIntervalForRequest = 25` / `ForResource = 60` (`VellumNetworking.swift:68-69`); sign-in runs on that session (`NavidromeClient.swift:1814`, `JellyfinMusicClient.swift:153`); there is **no cancel affordance** — `loginButton` (`LoginView.swift:324-348`) disables on `app.isAuthenticating`, swaps to "SIGNING IN…" with a `ProgressView`, and nothing holds a handle on the `Task { await app.signIn() }`.
+Established: the timeouts are exactly `timeoutIntervalForRequest = 25` / `ForResource = 60` (`NaviTunesNetworking.swift:68-69`); sign-in runs on that session (`NavidromeClient.swift:1814`, `JellyfinMusicClient.swift:153`); there is **no cancel affordance** — `loginButton` (`LoginView.swift:324-348`) disables on `app.isAuthenticating`, swaps to "SIGNING IN…" with a `ProgressView`, and nothing holds a handle on the `Task { await app.signIn() }`.
 
 **Four corrections:**
 1. **Citation mismatch.** `LoginView.swift:308-313` is the `errorText` view builder, not the login button. The "disables and spins with no cancel" claim lives at `:324-348`; the cited range supports only the raw-error half.
@@ -9156,7 +9156,7 @@ Established: the timeouts are exactly `timeoutIntervalForRequest = 25` / `ForRes
 **Re-verified (T238) —** independent second pass, agent 40, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `VellumURLSession.shared` (used by both clients' `signIn`, e.g. `NavidromeClient.swift` / `JellyfinMusicClient.swift:153` via `URLSession.vellum.data(for:)`) sets `config.timeoutIntervalForRequest = 25` / `timeoutIntervalForResource = 60` (`Backends/VellumNetworking.swift:68-69`). `AppModel.signIn()` catch block does `errorMessage = error.localizedDescription` (`App/AppModel.swift:1313`) — it never calls `LoginView`'s private `friendlyMessage(for:)`, which only runs inside `runConnectionTest()` (`Settings/LoginView.swift:461`). `loginButton` disables only on `app.isAuthenticating` (`LoginView.swift:326-348`) with no cancel action.
+- **Evidence:** `NaviTunesURLSession.shared` (used by both clients' `signIn`, e.g. `NavidromeClient.swift` / `JellyfinMusicClient.swift:153` via `URLSession.navitunes.data(for:)`) sets `config.timeoutIntervalForRequest = 25` / `timeoutIntervalForResource = 60` (`Backends/NaviTunesNetworking.swift:68-69`). `AppModel.signIn()` catch block does `errorMessage = error.localizedDescription` (`App/AppModel.swift:1313`) — it never calls `LoginView`'s private `friendlyMessage(for:)`, which only runs inside `runConnectionTest()` (`Settings/LoginView.swift:461`). `loginButton` disables only on `app.isAuthenticating` (`LoginView.swift:326-348`) with no cancel action.
 - **Versus the first pass:** AGREE — prior pass's "Verified —" block also lands on CONFIRMED (demoted medium→low) and I independently reproduced its core evidence: `NavidromeClient.swift:1816` throws a bare `URLError(.badServerResponse)` while `JellyfinMusicClient` throws `JellyfinClientError.badResponse(status:message:)` (`JellyfinMusicClient.swift:4,9,161`) which has a real `errorDescription` — so the raw-URLError half of the claim is Navidrome-only, as the prior pass says. I did not independently re-derive the "closed port gives instant ECONNREFUSED, not a 25s spin" correction, but it does not contradict my REAL verdict on the core no-cancel / raw-error defect.
 
 ---
@@ -9225,10 +9225,10 @@ enables home-Wi-Fi detection rather than from Check Connection.
 
 **Verified —** **The finding's central claim and its proposed fix are both already satisfied in the tree.**
 
-1. *"Nothing on screen says it is for reading the Wi-Fi SSID to know when to use that address"* is **false**. `AccountView.swift:389` renders `Text(localFallbackFooter)` **directly under the secondary-URL field**, and `localFallbackFooter` (`:550-552`) reads: *"Vellum normally connects to the primary address. The local fallback is only used on your home Wi-Fi — add your network name below and allow location access so Vellum can verify you're home."* That is verbatim the entry's proposed fix ("put a one-line explainer next to the secondary URL field"), already shipped.
-2. Two more explainers exist: `AccountView.swift:455` (*"Location access (including Precise Location when prompted) is required so Vellum can read your network name and confirm you're home before using a local fallback address"*) and `:535`, in the connection-health footer.
-3. **The system dialog itself explains it.** `VellumMusicHost/VellumMusicHost/Info.plist:43-44`, `NSLocationWhenInUseUsageDescription` = *"Vellum uses your location to confirm you're on your home Wi-Fi before connecting to a local server address or reading your network name."*
-4. *"This is the app's only permission prompt"* is **false** — `Info.plist:41-42` declares `NSLocalNetworkUsageDescription`, so any user whose server is on a LAN gets iOS's Local Network prompt as well. (The sub-claim that no notification permission is requested *is* correct: zero `UNUserNotificationCenter` / `requestAuthorization` hits in `Sources/` or `VellumMusicHost/`.)
+1. *"Nothing on screen says it is for reading the Wi-Fi SSID to know when to use that address"* is **false**. `AccountView.swift:389` renders `Text(localFallbackFooter)` **directly under the secondary-URL field**, and `localFallbackFooter` (`:550-552`) reads: *"NaviTunes normally connects to the primary address. The local fallback is only used on your home Wi-Fi — add your network name below and allow location access so NaviTunes can verify you're home."* That is verbatim the entry's proposed fix ("put a one-line explainer next to the secondary URL field"), already shipped.
+2. Two more explainers exist: `AccountView.swift:455` (*"Location access (including Precise Location when prompted) is required so NaviTunes can read your network name and confirm you're home before using a local fallback address"*) and `:535`, in the connection-health footer.
+3. **The system dialog itself explains it.** `NaviTunesHost/NaviTunesHost/Info.plist:43-44`, `NSLocationWhenInUseUsageDescription` = *"NaviTunes uses your location to confirm you're on your home Wi-Fi before connecting to a local server address or reading your network name."*
+4. *"This is the app's only permission prompt"* is **false** — `Info.plist:41-42` declares `NSLocalNetworkUsageDescription`, so any user whose server is on a LAN gets iOS's Local Network prompt as well. (The sub-claim that no notification permission is requested *is* correct: zero `UNUserNotificationCenter` / `requestAuthorization` hits in `Sources/` or `NaviTunesHost/`.)
 
 **What actually survives — and the entry has it backwards.** `ensureLocationAccessForHomeDetection()` has **four** call sites, not one: `AccountView.swift:638` (Check Connection — user-initiated, the only one the entry found), `AppModel.swift:6150` (auto-offline `.homeWifi` evaluation), `:6566` (`switchActiveServerURL`), and `:6593` (`attemptAutomaticFailoverIfNeeded`). **The last two run with no user gesture at all** when `serverFailoverMode == .automatic` and the primary address goes unhealthy. So the entry's reassurance — *"it is at least user-initiated"* — is the part that is wrong, and it is the only part with a real defect behind it.
 
@@ -9238,7 +9238,7 @@ enables home-Wi-Fi detection rather than from Check Connection.
 **Re-verified (T238) —** independent second pass, agent 03, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** PARTLY REAL · **Fix:** WRONG
-- **Evidence:** The prompt really does fire from `checkConnection()` (`AccountView.swift:635-641`, unmoved), but the finding's central claim — "nothing on screen says it is for reading the Wi-Fi SSID" — is false in this tree. The `Server addresses` section footer is `Text(localFallbackFooter)` (`AccountView.swift:389`), and `localFallbackFooter` (`:550-552`) reads verbatim: `"Vellum normally connects to the primary address. The local fallback is only used on your home Wi‑Fi — add your network name below and allow location access so Vellum can verify you're home."` Two more explainers ship at `:455` (Home Wi‑Fi section footer) and `:535` (`failoverFooter`), and `Info.plist:43-44` carries `NSLocationWhenInUseUsageDescription` = "Vellum uses your location to confirm you're on your home Wi‑Fi…". `showsHomeWifiSection` (`:546-548`) renders the Home Wi‑Fi editor inline in the same view the moment a LAN fallback is typed, so P34's "unreachable UI" premise is stale too. What survives: `ensureLocationAccessForHomeDetection()` has four call sites, and `AppModel.swift:6566` (`switchActiveServerURL`) and `:6593` (`attemptAutomaticFailoverIfNeeded`) fire it with **no user gesture** during automatic failover — and `:6593` requests it even when `homeWifiSSIDs.isEmpty`, where `isAtHome` returns false without ever touching location.
+- **Evidence:** The prompt really does fire from `checkConnection()` (`AccountView.swift:635-641`, unmoved), but the finding's central claim — "nothing on screen says it is for reading the Wi-Fi SSID" — is false in this tree. The `Server addresses` section footer is `Text(localFallbackFooter)` (`AccountView.swift:389`), and `localFallbackFooter` (`:550-552`) reads verbatim: `"NaviTunes normally connects to the primary address. The local fallback is only used on your home Wi‑Fi — add your network name below and allow location access so NaviTunes can verify you're home."` Two more explainers ship at `:455` (Home Wi‑Fi section footer) and `:535` (`failoverFooter`), and `Info.plist:43-44` carries `NSLocationWhenInUseUsageDescription` = "NaviTunes uses your location to confirm you're on your home Wi‑Fi…". `showsHomeWifiSection` (`:546-548`) renders the Home Wi‑Fi editor inline in the same view the moment a LAN fallback is typed, so P34's "unreachable UI" premise is stale too. What survives: `ensureLocationAccessForHomeDetection()` has four call sites, and `AppModel.swift:6566` (`switchActiveServerURL`) and `:6593` (`attemptAutomaticFailoverIfNeeded`) fire it with **no user gesture** during automatic failover — and `:6593` requests it even when `homeWifiSSIDs.isEmpty`, where `isAtHome` returns false without ever touching location.
 - **Better approach:** Half the fix is already shipped (the explainer), so applying it as written is a no-op that would leave the actual defect untouched. Instead: (1) add `guard !homeWifiSSIDs.isEmpty` before every `ensureLocationAccessForHomeDetection()` call — with no configured SSID the permission buys nothing, since `HomePresenceHelper.isAtHome` short-circuits on an empty list; (2) drop the `checkConnection` call entirely and let the Home Wi‑Fi section's "Use current Wi‑Fi" button own the first prompt; (3) for `attemptAutomaticFailoverIfNeeded` / `switchActiveServerURL`, never *request* — only *read* `manager.authorizationStatus` and skip the LAN fallback when it is `.notDetermined`, so no dialog can appear without a gesture.
 - **Denial:** HOLDS — the finding's stated problem and its stated fix are both already satisfied by shipped copy, so it cannot be actioned as written.
 - **Versus the first pass:** AGREE — the prior verifier found the same three explainers and the same "it is at least user-initiated" error, and its replacement claim (un-gestured prompt during automatic failover) is exactly what I found independently.
@@ -9624,7 +9624,7 @@ to names the user did not fully type.
 **Re-verified (T238) —** independent second pass, agent 12, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `LibraryTrackMatcher.normalize` (`Sources/VellumMusicKit/Library/LibraryTrackMatcher.swift:15-28`) lowercases, strips diacritics/punctuation, and rejoins tokens with no stopword removal — `normalize("The Beatles")` really is `"the beatles"`. `artistRowScore` (`DiscoverySearchView.swift:639-646`) then only has three tiers: `if n == q`, `if n.hasPrefix(q)`, `if n.contains(q)`, so query `beatles` against `"the beatles"` falls to `n.contains(q)` → `artistContainsScore` (0.35), confirmed by `private static let artistContainsScore = 0.35` at line 605. MBID suppression is confirmed name-blind: `namedArtistMatches` (`:343-363`) only filters `guard !serverArtistMBIDs.contains(artist.id)`, built from `Set(serverResults.artists.compactMap(\.musicBrainzArtistId))` — a Navidrome artist with no MBID suppresses nothing, matching the finding exactly.
+- **Evidence:** `LibraryTrackMatcher.normalize` (`Sources/NaviTunesKit/Library/LibraryTrackMatcher.swift:15-28`) lowercases, strips diacritics/punctuation, and rejoins tokens with no stopword removal — `normalize("The Beatles")` really is `"the beatles"`. `artistRowScore` (`DiscoverySearchView.swift:639-646`) then only has three tiers: `if n == q`, `if n.hasPrefix(q)`, `if n.contains(q)`, so query `beatles` against `"the beatles"` falls to `n.contains(q)` → `artistContainsScore` (0.35), confirmed by `private static let artistContainsScore = 0.35` at line 605. MBID suppression is confirmed name-blind: `namedArtistMatches` (`:343-363`) only filters `guard !serverArtistMBIDs.contains(artist.id)`, built from `Set(serverResults.artists.compactMap(\.musicBrainzArtistId))` — a Navidrome artist with no MBID suppresses nothing, matching the finding exactly.
 - **Versus the first pass:** AGREE — prior pass verified the same absence of a stopword list in `normalize` at the same line.
 
 ---
@@ -9751,7 +9751,7 @@ short queue finishes after Home; for large batches move to
 **Re-verified (T238) —** independent second pass, agent 40, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `downloadURLSession` uses `URLSessionConfiguration.default` with no `identifier`/background config (`Offline/OfflineDownloadManager.swift:114-119`), used at exactly one call site: `Self.downloadURLSession.downloadTask(with: request) { ... }` (`:536`), a completion-handler task on an in-process session. `grep -rn "beginBackgroundTask" ./Sources/VellumMusicKit/` returns exactly one hit, `App/AppModel.swift:90` inside `BulkOperationBackgroundAssertion`, instantiated only once at `:4029` for a bulk playlist-row removal — never for downloads. `StreamingMediaDiskCache.swift:203` confirms `try await URLSession.shared.download(for: request)` for the stream-cache path too.
+- **Evidence:** `downloadURLSession` uses `URLSessionConfiguration.default` with no `identifier`/background config (`Offline/OfflineDownloadManager.swift:114-119`), used at exactly one call site: `Self.downloadURLSession.downloadTask(with: request) { ... }` (`:536`), a completion-handler task on an in-process session. `grep -rn "beginBackgroundTask" ./Sources/NaviTunesKit/` returns exactly one hit, `App/AppModel.swift:90` inside `BulkOperationBackgroundAssertion`, instantiated only once at `:4029` for a bulk playlist-row removal — never for downloads. `StreamingMediaDiskCache.swift:203` confirms `try await URLSession.shared.download(for: request)` for the stream-cache path too.
 - **Versus the first pass:** AGREE — prior pass verified the same config fields, the same single call site (`:536`), the identical tree-wide `beginBackgroundTask` grep result (one hit, one instantiation, both unrelated to downloads), and the same `StreamingMediaDiskCache:203` exposure. Its only correction (the assertion's real purpose is "bulk playlist-row deletion," not "purges") is a labeling nit that doesn't affect the verdict.
 
 ---
@@ -9817,7 +9817,7 @@ server" divider), or rename the scope to "Server" and mark owned rows with the e
 checkmark, so the two tabs' suppression rules become visible.
 
 
-**Verified —** **`searchPersonalLibrary` is dead — verified hard.** `grep -rn "searchPersonalLibrary" Sources/ Tests/ VellumMusicHost/` returns **one** line: `AppModel.swift:2507`, its own declaration. Zero callers, zero tests. The scope label is confirmed (`DiscoverySearchView.swift:5`, `case library = "Library"`), and Discover's suppression is confirmed and enforced at `:487` (`!personalSongIds.contains(song.id)`) and `:480` (`!personalAlbumIds.contains(album.id)`). No owned marker: `personalSongRow:1927` — despite the name — renders artwork + title + `"Song · <artist>"` and nothing else.
+**Verified —** **`searchPersonalLibrary` is dead — verified hard.** `grep -rn "searchPersonalLibrary" Sources/ Tests/ NaviTunesHost/` returns **one** line: `AppModel.swift:2507`, its own declaration. Zero callers, zero tests. The scope label is confirmed (`DiscoverySearchView.swift:5`, `case library = "Library"`), and Discover's suppression is confirmed and enforced at `:487` (`!personalSongIds.contains(song.id)`) and `:480` (`!personalAlbumIds.contains(album.id)`). No owned marker: `personalSongRow:1927` — despite the name — renders artwork + title + `"Song · <artist>"` and nothing else.
 
 **One partial mitigation the entry omits, and it narrows the fix.** The scope's own **body copy already says "server"** — `libraryIdleContent:1649` reads `Text("Search Server Library")` and the empty state at `:1723` reads `"Nothing on your server matches …"`. So the **segment label** lies but the body copy does not. The fix is therefore closer to "rename the segment" than the entry implies, and it means CLAUDE.md's description is contradicted by the tab label, not by every string. Severity **medium** stands. (Cited 271-272 -> real `:269-270`.)
 
@@ -9825,7 +9825,7 @@ checkmark, so the two tabs' suppression rules become visible.
 **Re-verified (T238) —** independent second pass, agent 40, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `runLibrarySearch` (feeding `SearchScope.library = "Library"`, `DiscoverySearchView.swift:5`) does `let results = try await lib.searchCatalog(query: query, limit: 40)` (`:2236`) with no ownership filter. `grep -rn "searchPersonalLibrary" ./Sources/VellumMusicKit/` returns exactly one line — its own declaration at `App/AppModel.swift:2507` — confirming zero callers. Discover's own comment says server hits "already in the user's personal library are filtered out upstream (they live in the Library tab)" (`DiscoverySearchView.swift:270-272`), which is the asymmetry the finding describes.
+- **Evidence:** `runLibrarySearch` (feeding `SearchScope.library = "Library"`, `DiscoverySearchView.swift:5`) does `let results = try await lib.searchCatalog(query: query, limit: 40)` (`:2236`) with no ownership filter. `grep -rn "searchPersonalLibrary" ./Sources/NaviTunesKit/` returns exactly one line — its own declaration at `App/AppModel.swift:2507` — confirming zero callers. Discover's own comment says server hits "already in the user's personal library are filtered out upstream (they live in the Library tab)" (`DiscoverySearchView.swift:270-272`), which is the asymmetry the finding describes.
 - **Versus the first pass:** AGREE — prior pass ran the identical grep (one line, own declaration, zero callers) and confirmed the scope label and Discover's suppression logic at its own cited line numbers. It added one mitigation the raw finding omits — the segment's body copy already says "Search Server Library" / "Nothing on your server matches..." (`DiscoverySearchView.swift:1649,1723`) — which narrows the fix toward "rename the segment" but does not change the REAL verdict; I independently confirmed those two strings exist verbatim at those lines.
 
 ---
@@ -9865,7 +9865,7 @@ hardcoded caption at the source.
 **Re-verified (T238) —** independent second pass, agent 41, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `AppModel.swift:4700-4702` reads `// Broad fallback: the genres tagged on the user's library albums.` / `for album in libraryAlbums where !album.genres.isEmpty { add(album.genres, weight: 0.2) }`, and `libraryAlbums` is populated from server fetches (`Sources/VellumMusicKit/App/AppModel.swift:1801 libraryAlbums = albumById.values.sorted {...}`, `:3547 libraryAlbums = fetched + preserved`) — it is the whole server catalog, not personal library, matching CLAUDE.md's own admission of this exact mislabel. `NewTabPersonalizationEngine.swift:126` is `let isPersonalized = canPersonalize || !topGenres.isEmpty` and `:429` is `let hasTasteSignal = taste.hasPersonalizationSignal || !topGenres.isEmpty`, both fed by `listeningTopGenres()` (`AppModel.swift:4779`), so a zero-signal user on a genre-tagged server still gets non-empty `topGenres` from the catalog loop, flipping both gates true.
+- **Evidence:** `AppModel.swift:4700-4702` reads `// Broad fallback: the genres tagged on the user's library albums.` / `for album in libraryAlbums where !album.genres.isEmpty { add(album.genres, weight: 0.2) }`, and `libraryAlbums` is populated from server fetches (`Sources/NaviTunesKit/App/AppModel.swift:1801 libraryAlbums = albumById.values.sorted {...}`, `:3547 libraryAlbums = fetched + preserved`) — it is the whole server catalog, not personal library, matching CLAUDE.md's own admission of this exact mislabel. `NewTabPersonalizationEngine.swift:126` is `let isPersonalized = canPersonalize || !topGenres.isEmpty` and `:429` is `let hasTasteSignal = taste.hasPersonalizationSignal || !topGenres.isEmpty`, both fed by `listeningTopGenres()` (`AppModel.swift:4779`), so a zero-signal user on a genre-tagged server still gets non-empty `topGenres` from the catalog loop, flipping both gates true.
 - **Versus the first pass:** AGREE — prior pass's CONFIRMED verdict traces the identical chain (`libraryAlbums` mislabel → `topGenres` → both gates → `newTabIsPersonalized` → "New For You" eyebrow) and I independently verified the same lines and control flow.
 
 ---
@@ -10031,7 +10031,7 @@ must press twice. The Now Playing UI exposes shuffle and repeat, but CarPlay's s
 
 **Verified —** **"Never registered anywhere" confirmed by tree-wide grep.** Excluding `.git`, the only hits for `togglePlayPauseCommand`, `changeShuffleModeCommand` and `changeRepeatModeCommand` are inside `docs/CODE_SWEEP.md` itself. `MPRemoteCommandCenter.shared()` appears exactly **three** times, all in `PlaybackEngine.swift` (`:1425` `refreshRemoteCommandAvailability`, `:1457` `updateRemoteCommands`, `:3520` `configureRemoteCommandsIfNeeded`), and between them they touch only `play`, `pause`, `changePlaybackPosition`, `nextTrack`, `previousTrack`, `skipForward`, `skipBackward`.
 
-**Re-scope 1 — the CarPlay half of the rationale is moot; delete that sentence.** **There is no CarPlay support in this app**: no `import CarPlay`, no `CPTemplateApplicationScene`, no CarPlay scene declaration in `VellumMusicHost/VellumMusicHost/Info.plist`. The only two occurrences of "CarPlay" in `Sources/` are comments (`PlaybackEngine.swift:1414`, `:3486`) about how a *head unit* renders the Now Playing info the app already publishes. "CarPlay's system screen … has no command to drive them" is true only in the sense that the app has no CarPlay screen at all. **The Siri and AVRCP arguments carry the finding on their own.**
+**Re-scope 1 — the CarPlay half of the rationale is moot; delete that sentence.** **There is no CarPlay support in this app**: no `import CarPlay`, no `CPTemplateApplicationScene`, no CarPlay scene declaration in `NaviTunesHost/NaviTunesHost/Info.plist`. The only two occurrences of "CarPlay" in `Sources/` are comments (`PlaybackEngine.swift:1414`, `:3486`) about how a *head unit* renders the Now Playing info the app already publishes. "CarPlay's system screen … has no command to drive them" is true only in the sense that the app has no CarPlay screen at all. **The Siri and AVRCP arguments carry the finding on their own.**
 
 **Re-scope 2 — mark one clause as inference.** *"With no toggle handler iOS derives play-or-pause from the reported `MPNowPlayingInfoPropertyPlaybackRate`"* cannot be verified from this repo. It is plausible and consistent with `updateNowPlaying` (`:3484`) publishing `(isPlaying && !isBuffering) ? playbackRate : 0.0`, and the coupling to **C72**'s stale rate is the right suspicion — but label it an inference. Severity **low** is correct.
 
@@ -10041,8 +10041,8 @@ must press twice. The Now Playing UI exposes shuffle and repeat, but CarPlay's s
 **Re-verified (T238) —** independent second pass, agent 41, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `grep -rn "togglePlayPauseCommand\|changeShuffleModeCommand\|changeRepeatModeCommand" Sources/VellumMusicKit/` returns zero hits — confirmed empty. `PlaybackEngine.swift:3517-3543` (`configureRemoteCommandsIfNeeded`) registers only `playCommand`, `pauseCommand`, and `changePlaybackPositionCommand`; `updateRemoteCommands` (`:1455+`) additionally touches only `nextTrackCommand`/`previousTrackCommand`. A callable `togglePlayPause()` func does exist at `:998` and is unwired to any command target.
-- **Better approach:** The fix text says to "mirror the modes into `currentShuffleType` / `currentRepeatType`" — these identifiers do not exist anywhere in `Sources/` (`grep -rn "currentShuffleType\|currentRepeatType" Sources/VellumMusicKit/` is empty). The engine's real published state is `@Published var shuffleMode: ShuffleMode` and `@Published var repeatMode: RepeatMode` (`PlaybackEngine.swift:74-75`, enums at `:23-24`). Implementing the fix literally as written would not compile; the command handlers should read/write `shuffleMode`/`repeatMode` instead. The rest of the fix (register `togglePlayPauseCommand` → `togglePlayPause()`) is directly correct and compiles as-is.
+- **Evidence:** `grep -rn "togglePlayPauseCommand\|changeShuffleModeCommand\|changeRepeatModeCommand" Sources/NaviTunesKit/` returns zero hits — confirmed empty. `PlaybackEngine.swift:3517-3543` (`configureRemoteCommandsIfNeeded`) registers only `playCommand`, `pauseCommand`, and `changePlaybackPositionCommand`; `updateRemoteCommands` (`:1455+`) additionally touches only `nextTrackCommand`/`previousTrackCommand`. A callable `togglePlayPause()` func does exist at `:998` and is unwired to any command target.
+- **Better approach:** The fix text says to "mirror the modes into `currentShuffleType` / `currentRepeatType`" — these identifiers do not exist anywhere in `Sources/` (`grep -rn "currentShuffleType\|currentRepeatType" Sources/NaviTunesKit/` is empty). The engine's real published state is `@Published var shuffleMode: ShuffleMode` and `@Published var repeatMode: RepeatMode` (`PlaybackEngine.swift:74-75`, enums at `:23-24`). Implementing the fix literally as written would not compile; the command handlers should read/write `shuffleMode`/`repeatMode` instead. The rest of the fix (register `togglePlayPauseCommand` → `togglePlayPause()`) is directly correct and compiles as-is.
 - **Versus the first pass:** AGREE on the problem verdict (prior CONFIRMED via the same tree-wide grep and the same three `MPRemoteCommandCenter.shared()` call sites, plus a correct re-scope dropping the CarPlay claim) — but the recorded "Verified" block never checks the fix's property names, so it missed the `currentShuffleType`/`currentRepeatType` naming defect I found; that part is a gap in the prior pass's verification, not a disagreement about the problem's reality.
 
 ---
@@ -10062,7 +10062,7 @@ must press twice. The Now Playing UI exposes shuffle and repeat, but CarPlay's s
 
 **Problem.** Every other stop path calls `scheduleAudioSessionDeactivation()`; this one does not, so
 after the last track finishes in the foreground the `.playback` session stays active indefinitely —
-other apps' audio remains interrupted or ducked until Vellum is backgrounded and the
+other apps' audio remains interrupted or ducked until NaviTunes is backgrounded and the
 `didEnterBackground` observer finally releases it. `teardownPlayer` also zeroes `playbackHead`, so
 `refreshNowPlaying()` stamps the lock screen with the last track at **0:00** rather than at its end.
 
@@ -10076,7 +10076,7 @@ Now Playing with `duration` as elapsed (or clear it entirely) before `refreshNow
 
 **The `didEnterBackground` recovery the entry credits is real** — `:340-357` ends with `if !self.isPlaying { self.deactivateAudioSessionNow() }`, so the leak does end at backgrounding, exactly as written.
 
-**Trim one clause.** *"Other apps' audio remains interrupted or ducked until Vellum is backgrounded"* **overstates the platform**: an active-but-silent `.playback` session does not block another app from starting audio — iOS interrupts Vellum's session and the other app plays. The real cost is the one the code's own comment at `:447-451` names: **the app cannot suspend and the audio route stays powered.** Say that instead; the finding is otherwise sound at **low**.
+**Trim one clause.** *"Other apps' audio remains interrupted or ducked until NaviTunes is backgrounded"* **overstates the platform**: an active-but-silent `.playback` session does not block another app from starting audio — iOS interrupts NaviTunes's session and the other app plays. The real cost is the one the code's own comment at `:447-451` names: **the app cannot suspend and the audio route stays powered.** Say that instead; the finding is otherwise sound at **low**.
 
 
 **Re-verified (T238) —** independent second pass, agent 41, judged from the source with the first pass's verdict withheld.
@@ -10114,7 +10114,7 @@ do these together so the added frequency is cheap.
 
 **Verified —** Mechanism confirmed, **headline wrong — rewrite it.**
 
-**The four triggers are the complete set.** `persistPlaybackQueue` has exactly two call sites repo-wide: the debounced sink (`AppModel.swift:1194`) and the scene-phase handler (`VellumMusicHost/VellumMusicHost/VellumMusicHostApp.swift:26`, on `.inactive, .background`). Nothing on interruption, nothing periodic. `currentSnapshot()` (`:595-597`) does read the live position (`player?.currentTime().seconds`), so the scene-phase flush is accurate at the moment of backgrounding.
+**The four triggers are the complete set.** `persistPlaybackQueue` has exactly two call sites repo-wide: the debounced sink (`AppModel.swift:1194`) and the scene-phase handler (`NaviTunesHost/NaviTunesHost/NaviTunesHostApp.swift:26`, on `.inactive, .background`). Nothing on interruption, nothing periodic. `currentSnapshot()` (`:595-597`) does read the live position (`player?.currentTime().seconds`), so the scene-phase flush is accurate at the moment of backgrounding.
 
 **Refuting the headline: "Nothing writes during long background playback" is FALSE, and "restores to 0:00" is FALSE.** `player.$currentIndex` is one of the four triggers and it changes on **every natural advance, including advances that happen while backgrounded** — so during background playback of a multi-track queue a snapshot **is** written ~1 s after each track change. The correct statement is: *the last write is pinned to ~1 s into the current track, so a background death loses at most the current track's elapsed time* — not the whole session, and not to 0:00 of the queue. The `.inactive` phase also fires for Control Center, notification banners and the app switcher, each flushing a live-position snapshot, so writes are more frequent than "only on backgrounding".
 
@@ -10126,8 +10126,8 @@ The entry's own 60-minute-mix example is the one case where the claim nearly hol
 **Re-verified (T238) —** independent second pass, agent 42, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** PARTLY REAL · **Fix:** BEST
-- **Evidence:** `installPlaybackQueueAutosave()` (AppModel.swift:1185-1196) only debounce-saves on `player.$queue/$currentIndex/$shuffleMode/$repeatMode`, and `VellumMusicHostApp.swift:21-30` only flushes on `.inactive/.background` — so the mechanism claim (no periodic/interruption flush) is real. But `$currentIndex` fires on every natural track advance, including ones that happen while backgrounded, so a multi-track queue keeps getting fresh ~1s-into-track snapshots throughout background playback; the loss on death is bounded by "current track's elapsed time," not "restores to 0:00" or "a lost hour" — that only holds for the edge case of one very long single track that never advances.
-- **Versus the first pass:** AGREE — CODE_SWEEP's Verified block reaches the identical correction ("headline wrong... `$currentIndex` fires on every natural advance... loses at most the current track's elapsed time") while agreeing the mechanism and proposed fix are right; my independent trace of the same two call sites (`AppModel.swift:1194`, `VellumMusicHostApp.swift:26`) landed on the same conclusion before I read it.
+- **Evidence:** `installPlaybackQueueAutosave()` (AppModel.swift:1185-1196) only debounce-saves on `player.$queue/$currentIndex/$shuffleMode/$repeatMode`, and `NaviTunesHostApp.swift:21-30` only flushes on `.inactive/.background` — so the mechanism claim (no periodic/interruption flush) is real. But `$currentIndex` fires on every natural track advance, including ones that happen while backgrounded, so a multi-track queue keeps getting fresh ~1s-into-track snapshots throughout background playback; the loss on death is bounded by "current track's elapsed time," not "restores to 0:00" or "a lost hour" — that only holds for the edge case of one very long single track that never advances.
+- **Versus the first pass:** AGREE — CODE_SWEEP's Verified block reaches the identical correction ("headline wrong... `$currentIndex` fires on every natural advance... loses at most the current track's elapsed time") while agreeing the mechanism and proposed fix are right; my independent trace of the same two call sites (`AppModel.swift:1194`, `NaviTunesHostApp.swift:26`) landed on the same conclusion before I read it.
 
 ---
 
@@ -10329,7 +10329,7 @@ leaving 49 new findings.** The dropped candidates are listed in §9 with the ent
 ## L44 — Album membership has two sources of truth and no canonical one
 
 - **Round:** 5 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:2525–2531`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:2525–2531`
 
 ```swift
     /// `true` when the album appears in the user's library — explicit album entry
@@ -10344,7 +10344,7 @@ leaving 49 new findings.** The dropped candidates are listed in §9 with the ent
 **Problem.** An album is "in the library" if it has an entry **or** any of its tracks is in the
 playlist, and the two disagree *by design*: `removeSongFromLibrary` keeps the entry while
 `isIndexingLibraryTracks` (`:3326–3327`), so an entry with zero songs is a legal state; a foreign
-client adding tracks to the visible `__vellum_…` playlist yields songs with no entry and therefore no
+client adding tracks to the visible `__navitunes_…` playlist yields songs with no entry and therefore no
 date. Every consumer then picks a side — Home eligibility and this predicate use the OR; Recently
 Added, `searchPersonalLibrary` (`:2508`) and `backfillMissingLibraryAlbumSummaries` (`:2418–2422`) use
 entries only; `libraryAlbumSongCount` (`:1828–1832`) uses songs only. The OR also **masks C101's
@@ -10358,7 +10358,7 @@ entry-only since they have no track backing. This removes the zombie and undated
 payload, which is also the C93-adjacent size problem in **C12**.
 
 
-**Verified —** Both illegal states are reachable from source. **Entry with zero songs:** `removeSongFromLibrary` (`:3310`) drops the album entry only when `!isIndexingLibraryTracks` *and* no library song remains, so an entry can legally outlive its last track. **Songs with no entry:** not reachable in-app (`addSongToLibrary:2890–2893` does create the entry) but reachable via the poll — `applyMagicPlaylistFetch` sets `librarySongIds` from the server and `libraryAlbumEntries` from the comment JSON **with no reconciliation between them**, which is exactly what a foreign client writing to `__vellum_…` produces. `membershipLookups` is a real memo invalidated on mutation, so this is a semantics problem, not a perf one.
+**Verified —** Both illegal states are reachable from source. **Entry with zero songs:** `removeSongFromLibrary` (`:3310`) drops the album entry only when `!isIndexingLibraryTracks` *and* no library song remains, so an entry can legally outlive its last track. **Songs with no entry:** not reachable in-app (`addSongToLibrary:2890–2893` does create the entry) but reachable via the poll — `applyMagicPlaylistFetch` sets `librarySongIds` from the server and `libraryAlbumEntries` from the comment JSON **with no reconciliation between them**, which is exactly what a foreign client writing to `__navitunes_…` produces. `membershipLookups` is a real memo invalidated on mutation, so this is a semantics problem, not a perf one.
 
 **The consumer split is sharper than written**, and two sites were missed: entries-only also includes **`LibraryView.swift:1893–1898` (the Library → Albums grid itself)** and **`DiscoverySearchView.swift:439`**. So a song added by another client is **absent from Library → Albums and from personal search**, while its context menu still offers "Remove from Library" and Home shelves still suppress it.
 
@@ -10379,7 +10379,7 @@ payload, which is also the C93-adjacent size problem in **C12**.
 ## L45 — The membership model cannot express per-song dates, playlist order, or ids that survive a rescan
 
 - **Round:** 5 · **Severity:** low · **Verdict:** **REINFORCED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/LibraryMembership.swift:143–153`
+- **File:** `Sources/NaviTunesKit/Library/LibraryMembership.swift:143–153`
 
 ```swift
 struct LibraryMembershipPayload: Codable, Equatable {
@@ -10412,7 +10412,7 @@ churn; and make the decoder **refuse to write over a payload whose `v` is greate
 That one check is what makes `v` do the job its comment describes.
 
 
-**Verified —** `v` has no reader — independent count: **3 hits tree-wide, all in the declaring file** (declaration, init param, assignment), plus one hard-coded `"v":1` string at `:178`. Zero reads in `Sources`, `Tests` or `VellumMusicHost`.
+**Verified —** `v` has no reader — independent count: **3 hits tree-wide, all in the declaring file** (declaration, init param, assignment), plus one hard-coded `"v":1` string at `:178`. Zero reads in `Sources`, `Tests` or `NaviTunesHost`.
 
 **Worse than written on two counts.**
 1. **The downgrade is unconditional, not accidental.** `persistLibraryMembershipPayload` (`AppModel:2483–2488`) constructs `LibraryMembershipPayload(albums:playlists:)` with the **default `v: 1`** and never threads the decoded `v` through; `applyMagicPlaylistFetch` discards `payload.v` entirely. So an older client does not merely fail to notice a v2 payload — it **actively stamps v1 over it on every single mutation**.
@@ -10433,7 +10433,7 @@ That one check is what makes `v` do the job its comment describes.
 ## L46 — The player's internal `NavigationStack` is a dead stack, and a documented dismissal guard can never fire
 
 - **Round:** 5 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/NowPlaying/NowPlayingView.swift:120, 354, 465–467`; consumer `App/RootView.swift:309`
+- **File:** `Sources/NaviTunesKit/NowPlaying/NowPlayingView.swift:120, 354, 465–467`; consumer `App/RootView.swift:309`
 
 ```swift
     @State private var libraryPath: [NowPlayingLibraryRoute] = []
@@ -10469,7 +10469,7 @@ guard starts meaning something.
 **Re-verified (T238) —** independent second pass, agent 43, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `grep -n "libraryPath" Sources/VellumMusicKit/NowPlaying/NowPlayingView.swift` returns only the `@State` declaration (`:120`), the `NavigationStack(path: $libraryPath)` binding (`:354`), and two `.count` reads (`:463`, `:465`) — no append/assignment anywhere. `grep -n "navigationDestination"` over the file returns zero hits. Every `NowPlayingLibraryRoute` case is consumed only by `dismissAndNavigate(to:)` (`:1659`), which for the non-special-case routes falls through to code that closes the cover rather than pushing onto `libraryPath`. `NowPlayingCoverZoomTransition.swift:124-126` reads verbatim: `/// False while the player has something pushed inside it — a swipe down there belongs to /// that screen. var canDismiss: () -> Bool = { true }`, and its only writer is `RootView.swift:429` (`NowPlayingCoverState.shared.libraryNavigationDepth = depth`) fed by the always-0 `libraryPath.count`.
+- **Evidence:** `grep -n "libraryPath" Sources/NaviTunesKit/NowPlaying/NowPlayingView.swift` returns only the `@State` declaration (`:120`), the `NavigationStack(path: $libraryPath)` binding (`:354`), and two `.count` reads (`:463`, `:465`) — no append/assignment anywhere. `grep -n "navigationDestination"` over the file returns zero hits. Every `NowPlayingLibraryRoute` case is consumed only by `dismissAndNavigate(to:)` (`:1659`), which for the non-special-case routes falls through to code that closes the cover rather than pushing onto `libraryPath`. `NowPlayingCoverZoomTransition.swift:124-126` reads verbatim: `/// False while the player has something pushed inside it — a swipe down there belongs to /// that screen. var canDismiss: () -> Bool = { true }`, and its only writer is `RootView.swift:429` (`NowPlayingCoverState.shared.libraryNavigationDepth = depth`) fed by the always-0 `libraryPath.count`.
 - **Versus the first pass:** AGREE — the recorded "Verified —" block independently confirms the same 0-hit greps for `navigationDestination` and `libraryPath` mutation, plus the extra `.toolbar(.hidden, for: .navigationBar)` coupling at `:428` (I confirmed that line exists via grep too); nothing in that block contradicts my read.
 
 ---
@@ -10477,7 +10477,7 @@ guard starts meaning something.
 ## E46 — `allTracks` is a single `search3` with `songCount=50000`: 100k libraries truncate, and the one response is ~30 MB
 
 - **Round:** 5 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/NavidromeClient.swift:322–337`; paged alternative at `:347–365`
+- **File:** `Sources/NaviTunesKit/Backends/NavidromeClient.swift:322–337`; paged alternative at `:347–365`
 
 ```swift
     func allTracks(limit: Int) async throws -> [Track] {
@@ -10536,7 +10536,7 @@ partial index is visibly partial rather than silently wrong.
 ## E47 — The magic-playlist poll re-downloads and re-parses all 20,000 entries every 60 seconds
 
 - **Round:** 5 · **Severity:** high · **Verdict:** **REINFORCED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/NavidromeClient.swift:1607–1617`; poll loop `App/AppModel.swift:2151–2165`
+- **File:** `Sources/NaviTunesKit/Backends/NavidromeClient.swift:1607–1617`; poll loop `App/AppModel.swift:2151–2165`
 
 ```swift
     func fetchLibraryPlaylist(playlistId: String) async throws -> LibraryPlaylistFetch {
@@ -10588,7 +10588,7 @@ fetch on the cached-id path.
 ## E48 — Library → Songs sorts 20,000 rows with a localized comparator on the main thread, per keystroke
 
 - **Round:** 5 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/LibrarySongsView.swift:84–99`
+- **File:** `Sources/NaviTunesKit/Library/LibrarySongsView.swift:84–99`
 
 ```swift
         case .title:
@@ -10640,7 +10640,7 @@ fix the house rule already asks for.
 ## E49 — Shuffle All on the Albums grid can issue 2,000 serial `getAlbum` round-trips behind a dead-looking button
 
 - **Round:** 5 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/LibraryView.swift:2082–2092`
+- **File:** `Sources/NaviTunesKit/Library/LibraryView.swift:2082–2092`
 
 ```swift
     private func resolveTracksForPlayback() async -> [Track] {
@@ -10680,7 +10680,7 @@ What actually gates it is narrower and **permanent**. Independent re-run of the 
 **Re-verified (T238) —** independent second pass, agent 43, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `LibraryView.swift:2082-2103` confirmed verbatim: `resolveTracksForPlayback()` calls `tracksForPlayback(from:)` (cache read from `app.discoveryLibraryTracks` and `app.offline.cachedTracks()`), and only on an empty result falls into `for album in albums { guard let fetched = try? await lib.tracks(forAlbumId: album.id) else { continue } … }` — a plain sequential loop with no `TaskGroup`, no cancellation check, and no busy/spinner state; `shuffleAll()`/`playAll()` call this directly from `Task { await … }` with no re-entrancy guard. I independently greped for the index-refresh trigger the fix names: `grep -rn "scheduleDiscoveryTrackIndexRefreshIfNeeded\|refreshLibraryTrackMatchIndex" Sources/VellumMusicKit/Library/LibrarySongsView.swift Sources/VellumMusicKit/Home/*.swift Sources/VellumMusicKit/Discovery/*.swift` returns only `MusicNewTabView.swift:89` and `DiscoverySearchView.swift:767` — `LibraryView.swift` (Albums tab) has zero call sites of either, so a user who lives in Home + Library and never opens New/Discovery hits the serial fallback on every tap, not just cold launch.
+- **Evidence:** `LibraryView.swift:2082-2103` confirmed verbatim: `resolveTracksForPlayback()` calls `tracksForPlayback(from:)` (cache read from `app.discoveryLibraryTracks` and `app.offline.cachedTracks()`), and only on an empty result falls into `for album in albums { guard let fetched = try? await lib.tracks(forAlbumId: album.id) else { continue } … }` — a plain sequential loop with no `TaskGroup`, no cancellation check, and no busy/spinner state; `shuffleAll()`/`playAll()` call this directly from `Task { await … }` with no re-entrancy guard. I independently greped for the index-refresh trigger the fix names: `grep -rn "scheduleDiscoveryTrackIndexRefreshIfNeeded\|refreshLibraryTrackMatchIndex" Sources/NaviTunesKit/Library/LibrarySongsView.swift Sources/NaviTunesKit/Home/*.swift Sources/NaviTunesKit/Discovery/*.swift` returns only `MusicNewTabView.swift:89` and `DiscoverySearchView.swift:767` — `LibraryView.swift` (Albums tab) has zero call sites of either, so a user who lives in Home + Library and never opens New/Discovery hits the serial fallback on every tap, not just cold launch.
 - **Better approach:** `scheduleDiscoveryTrackIndexRefreshIfNeeded()` → `scheduleLibraryTrackMatchIndexRefresh()` → `refreshLibraryTrackMatchIndex(limit: Int = 50_000)` (`AppModel.swift:4489-4510`), which itself does the single giant `allTracks(limit:)`/`search3` fetch that is the subject of E46. Awaiting the index build behind a "Preparing…" state, as the fix suggests, means awaiting E46's ~25-35MB parse hitch instead of the N-serial-fetches hitch — an improvement, but the fix should say the two must land together (with cancellation on view disappear, which is also currently missing), or Albums-tab appear inherits E46's cost.
 - **Versus the first pass:** AGREE — the recorded "Verified —" block independently found the same two call sites (and the same absence in `LibrarySongsView`), contradicts the finding's "cold launch" framing the same way I would have (persisted-snapshot restore repopulates `discoveryLibraryTracks` after first-ever index build, so the real gate is "never opened New/Discovery," not "cold launch"), and flags the same E46 coupling in the fix that I found independently.
 
@@ -10689,7 +10689,7 @@ What actually gates it is narrower and **permanent**. Independent re-run of the 
 ## E50 — `cachedTracks()` stats every downloaded file and re-sorts, on the main actor, on every catalog refresh
 
 - **Round:** 5 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Offline/OfflineDownloadManager.swift:852–866`
+- **File:** `Sources/NaviTunesKit/Offline/OfflineDownloadManager.swift:852–866`
 
 ```swift
     func cachedTracks() -> [Track] {
@@ -10745,7 +10745,7 @@ Also confirmed: `mergeOfflineCatalog`'s early return fires only *after* both `ca
 ## E51 — Widget artwork is decoded at full resolution inside `body`, unbounded for Jellyfin
 
 - **Round:** 5 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `VellumMusicHost/VellumWidgets/VellumRecentlyPlayedWidget.swift:229–237` (same at `VellumNowPlayingWidget.swift:229–237`); sizing at `Sources/VellumMusicKit/Backends/JellyfinMusicClient.swift:1766–1768`
+- **File:** `NaviTunesHost/NaviTunesWidgets/NaviTunesRecentlyPlayedWidget.swift:229–237` (same at `NaviTunesNowPlayingWidget.swift:229–237`); sizing at `Sources/NaviTunesKit/Backends/JellyfinMusicClient.swift:1766–1768`
 
 ```swift
     @ViewBuilder
@@ -10788,7 +10788,7 @@ The downsampling half (`CGImageSourceCreateThumbnailAtIndex` in `cacheArtwork`) 
 **Re-verified (T238) —** independent second pass, agent 13, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** Both widget files contain the exact cited code at `VellumRecentlyPlayedWidget.swift:229–237` and `VellumNowPlayingWidget.swift:229–237` (`Image(uiImage: uiImage).resizable().scaledToFill()` built from `UIImage(data: data)` inside a `@ViewBuilder` called from `body`). `WidgetDataStore.cacheArtwork` (`Widgets/WidgetDataStore.swift:104-123`) writes `try? data.write(to: dest, options: .atomic)` straight from the URLSession response with no `CGImageSource`/thumbnail step anywhere in the file. `JellyfinMusicClient.albumPrimaryImageURL` is `mediaURLWithQueryAuth(apiURL("Items", albumId, "Images", "Primary"), extraQuery: [])` — no `maxWidth`/`fillWidth` — while Navidrome's `coverArtURL(forId:size:)` (`NavidromeClient.swift:1041`) defaults `size: Int? = 400` and `AppModel.navidromeFreshCoverArtURL` calls it with `size: 400`.
+- **Evidence:** Both widget files contain the exact cited code at `NaviTunesRecentlyPlayedWidget.swift:229–237` and `NaviTunesNowPlayingWidget.swift:229–237` (`Image(uiImage: uiImage).resizable().scaledToFill()` built from `UIImage(data: data)` inside a `@ViewBuilder` called from `body`). `WidgetDataStore.cacheArtwork` (`Widgets/WidgetDataStore.swift:104-123`) writes `try? data.write(to: dest, options: .atomic)` straight from the URLSession response with no `CGImageSource`/thumbnail step anywhere in the file. `JellyfinMusicClient.albumPrimaryImageURL` is `mediaURLWithQueryAuth(apiURL("Items", albumId, "Images", "Primary"), extraQuery: [])` — no `maxWidth`/`fillWidth` — while Navidrome's `coverArtURL(forId:size:)` (`NavidromeClient.swift:1041`) defaults `size: Int? = 400` and `AppModel.navidromeFreshCoverArtURL` calls it with `size: 400`.
 - **Better approach:** Only implement the downsample-at-cache-time half (`CGImageSourceCreateThumbnailAtIndex` with `kCGImageSourceThumbnailMaxPixelSize` in `cacheArtwork`) — that alone is correct and sufficient. Do not adopt the fix's other two suggestions as written: (1) capping `maxWidth` on the Jellyfin client is a shared, app-wide artwork URL builder (feeds Now Playing hero art and `ArtworkDynamicGradient`/`ArtworkURLCache`, whose memo key is derived from that same URL's stable path) — changing it there degrades in-app artwork and invalidates cached backdrop palettes; size only at the widget-cache boundary. (2) decoding all items once in `getTimeline` and carrying `UIImage?` on the entry makes all 6 large-family images simultaneously resident (worse peak memory than the current per-render `body` decode, which releases each bitmap between renders) — only safe after downsampling makes each image trivially small, at which point it's unnecessary anyway.
 - **Versus the first pass:** AGREE — I independently traced the same JellyfinMusicClient sizing gap and the same fix defects (shared-URL degradation and the memory-increase from eager multi-image decode) before reading the recorded verdict.
 
@@ -10797,7 +10797,7 @@ The downsampling half (`CGImageSourceCreateThumbnailAtIndex` in `cacheArtwork`) 
 ## P50 — The Recently Played widget shows fabricated "Album Title / Artist Name" rows on the home screen
 
 - **Round:** 5 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `VellumMusicHost/VellumWidgets/VellumRecentlyPlayedWidget.swift:31–39, 61–68`
+- **File:** `NaviTunesHost/NaviTunesWidgets/NaviTunesRecentlyPlayedWidget.swift:31–39, 61–68`
 
 ```swift
     func getTimeline(in context: Context, completion: @escaping (Timeline<RecentlyPlayedEntry>) -> Void) {
@@ -10819,8 +10819,8 @@ existing widget on every user's phone decode to nil and display six fictional al
 buttons that post `itemId: "1"`**. The Now Playing widget uses `[]` in the same situation, so the two
 widgets disagree about what "no data" looks like.
 
-**Fix.** Map nil to an explicit empty state in `getTimeline` ("Play something in Vellum to see it
-here", `.widgetURL(vellum://home)`, no intent buttons), and keep the placeholder items only in
+**Fix.** Map nil to an explicit empty state in `getTimeline` ("Play something in NaviTunes to see it
+here", `.widgetURL(navitunes://home)`, no intent buttons), and keep the placeholder items only in
 `placeholder(in:)` and when `context.isPreview`. Add `schemaVersion` to `Payload` and make new fields
 optional with defaults.
 
@@ -10837,7 +10837,7 @@ optional with defaults.
 **Re-verified (T238) —** independent second pass, agent 43, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `VellumRecentlyPlayedWidget.swift` confirmed verbatim: `getSnapshot` (`:19-28`) and `getTimeline` (`:30-42`) both do `items: payload?.recentlyPlayed ?? widgetPlaceholderItems` — un-redacted substitution — while `widgetPlaceholderItems` (`:61-68`) is `.init(id: "1", title: "Album Title", artist: "Artist Name", …)` etc. `WidgetDataStore.swift`'s `Payload` struct (`:48-62`) has no version field and every property (`recentlyPlayed`, `nowPlaying`, `isPlaying`, `updatedAt`, `accentHex`) is a non-optional `let` decoded via `guard … let payload = try? JSONDecoder().decode(Payload.self, from: data) else { return nil }` (`:71-77`) — any future non-optional field addition makes `read()` return nil for every already-installed widget. `VellumRecentlyPlayedWidget.swift:150,221` confirm the "live Play buttons that post itemId: 1" claim: `Button(intent: PlayWidgetItemIntent(itemId: item?.id ?? "", itemKind: item?.kind.rawValue ?? "album"))` bound to the placeholder items whose ids are literally `"1"`–`"6"`.
+- **Evidence:** `NaviTunesRecentlyPlayedWidget.swift` confirmed verbatim: `getSnapshot` (`:19-28`) and `getTimeline` (`:30-42`) both do `items: payload?.recentlyPlayed ?? widgetPlaceholderItems` — un-redacted substitution — while `widgetPlaceholderItems` (`:61-68`) is `.init(id: "1", title: "Album Title", artist: "Artist Name", …)` etc. `WidgetDataStore.swift`'s `Payload` struct (`:48-62`) has no version field and every property (`recentlyPlayed`, `nowPlaying`, `isPlaying`, `updatedAt`, `accentHex`) is a non-optional `let` decoded via `guard … let payload = try? JSONDecoder().decode(Payload.self, from: data) else { return nil }` (`:71-77`) — any future non-optional field addition makes `read()` return nil for every already-installed widget. `NaviTunesRecentlyPlayedWidget.swift:150,221` confirm the "live Play buttons that post itemId: 1" claim: `Button(intent: PlayWidgetItemIntent(itemId: item?.id ?? "", itemKind: item?.kind.rawValue ?? "album"))` bound to the placeholder items whose ids are literally `"1"`–`"6"`.
 - **Versus the first pass:** AGREE — the recorded "Verified —" block confirms the same mechanism and the same non-optional-field schema-drift risk (noting `accentHex` was itself added after the fact as precedent), and adds that the "before first run" framing is narrower than stated because `writeWidgetData()` fires on `AppModel.init`'s `player.$isPlaying` subscription — a refinement, not a contradiction, of the core finding.
 
 ---
@@ -10845,10 +10845,10 @@ optional with defaults.
 ## P51 — No Lock Screen / StandBy families and no tinted-mode handling: artwork renders as a silhouette
 
 - **Round:** 5 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `VellumMusicHost/VellumWidgets/VellumNowPlayingWidget.swift:53–66`; artwork at `:229–237`
+- **File:** `NaviTunesHost/NaviTunesWidgets/NaviTunesNowPlayingWidget.swift:53–66`; artwork at `:229–237`
 
 ```swift
-struct VellumNowPlayingWidget: Widget {
+struct NaviTunesNowPlayingWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(
             kind: "com.randll.vellum.nowplaying",
@@ -10858,7 +10858,7 @@ struct VellumNowPlayingWidget: Widget {
                 .containerBackground(.fill.tertiary, for: .widget)
         }
         .configurationDisplayName("Now Playing")
-        .description("See what's playing in Vellum Music.")
+        .description("See what's playing in NaviTunes.")
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
@@ -10878,7 +10878,7 @@ label/glyph/buttons, and read `@Environment(\.widgetRenderingMode)` to drop the
 layout (title/artist + play glyph) and, on iOS 18+, a `ControlWidget` backed by `TogglePlaybackIntent`.
 
 
-**Verified —** Independent tree-wide grep for `widgetAccentedRenderingMode|widgetAccentable|ControlWidget|accessoryRectangular|accessoryCircular|accessoryInline|widgetRenderingMode|contentMarginsDisabled|widgetContentMargins`: **zero occurrences.** `VellumWidgetsBundle` registers exactly two `Widget`s and no `ControlWidget`. `containerBackground` is present and correct at both sites, and the entry does not overreach on it.
+**Verified —** Independent tree-wide grep for `widgetAccentedRenderingMode|widgetAccentable|ControlWidget|accessoryRectangular|accessoryCircular|accessoryInline|widgetRenderingMode|contentMarginsDisabled|widgetContentMargins`: **zero occurrences.** `NaviTunesWidgetsBundle` registers exactly two `Widget`s and no `ControlWidget`. `containerBackground` is present and correct at both sites, and the entry does not overreach on it.
 
 **Two fix corrections.**
 1. **Drop every `@available` / "on iOS 18+" hedge.** `IPHONEOS_DEPLOYMENT_TARGET = 26.1` and `Package.swift` declares `.iOS("26.1")`, so every API named — `widgetAccentedRenderingMode`, `widgetAccentable`, `ControlWidget`, the accessory families, `widgetContentMargins` — is unconditionally available. Gating them would be dead code.
@@ -10890,7 +10890,7 @@ layout (title/artist + play glyph) and, on iOS 18+, a `ControlWidget` backed by 
 **Re-verified (T238) —** independent second pass, agent 43, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `grep -rln "ControlWidget\|accessoryRectangular\|accessoryCircular\|widgetAccentedRenderingMode\|widgetAccentable\|widgetRenderingMode" VellumMusicHost` returns no files — zero occurrences anywhere in the widget extension, not just in the cited file. `VellumNowPlayingWidget.swift:50-63` confirmed verbatim: `.supportedFamilies([.systemSmall, .systemMedium])` with no accessory families and no `ControlWidget` declared anywhere. `artworkView(for:)` (`:229-237`) confirmed verbatim: `Image(uiImage: uiImage).resizable().scaledToFill()` inside an `if let` with no `.widgetAccentedRenderingMode`/`.widgetAccentable` anywhere in the file, and the placeholder fill `Color.secondary.opacity(0.2)` (`:241`) has no `@Environment(\.widgetRenderingMode)` branch.
+- **Evidence:** `grep -rln "ControlWidget\|accessoryRectangular\|accessoryCircular\|widgetAccentedRenderingMode\|widgetAccentable\|widgetRenderingMode" NaviTunesHost` returns no files — zero occurrences anywhere in the widget extension, not just in the cited file. `NaviTunesNowPlayingWidget.swift:50-63` confirmed verbatim: `.supportedFamilies([.systemSmall, .systemMedium])` with no accessory families and no `ControlWidget` declared anywhere. `artworkView(for:)` (`:229-237`) confirmed verbatim: `Image(uiImage: uiImage).resizable().scaledToFill()` inside an `if let` with no `.widgetAccentedRenderingMode`/`.widgetAccentable` anywhere in the file, and the placeholder fill `Color.secondary.opacity(0.2)` (`:241`) has no `@Environment(\.widgetRenderingMode)` branch.
 - **Better approach:** I independently confirmed `Package.swift:8` declares `.iOS("26.1")` and `project.pbxproj` sets `IPHONEOS_DEPLOYMENT_TARGET = 26.1` in both configs — so the fix's "on iOS 18+" hedge for `ControlWidget` is unnecessary; every named API (`widgetAccentedRenderingMode`, `widgetAccentable`, `ControlWidget`, accessory families) is unconditionally available and should be added without an availability check. Also, `artworkView(for:)` is `@ViewBuilder` returning either `Image` or the `ZStack` placeholder (confirmed at `:229-237`), so `.widgetAccentedRenderingMode(.fullColor)` must be applied to the `Image(uiImage:)` literal inside the `if let` branch specifically, not to the function's call site or return type — applying it at the call site would also (incorrectly) tint the placeholder icon.
 - **Versus the first pass:** AGREE — the recorded "Verified —" block makes exactly these two corrections (drop the iOS-18+ hedge given the 26.1 deployment target; apply the modifier to the `Image` inside the `if let`, not at the call site), both of which I verified independently before reading it.
 
@@ -10899,7 +10899,7 @@ layout (title/artist + play glyph) and, on iOS 18+, a `ControlWidget` backed by 
 ## P52 — Manual widget padding stacks on top of the system content margins
 
 - **Round:** 5 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `VellumMusicHost/VellumWidgets/VellumNowPlayingWidget.swift:186–188, 235–236`; same at `VellumRecentlyPlayedWidget.swift:176–177, 190–191`
+- **File:** `NaviTunesHost/NaviTunesWidgets/NaviTunesNowPlayingWidget.swift:186–188, 235–236`; same at `NaviTunesRecentlyPlayedWidget.swift:176–177, 190–191`
 
 ```swift
                 }
@@ -10921,7 +10921,7 @@ and apply `@Environment(\.widgetContentMargins)` selectively rather than adding 
 
 **Verified —** Structural claim established: the small layouts add no outer padding in either widget while medium and large add their own, so two sizes have different insets on the same home screen.
 
-**Citation error — fix before implementing.** `VellumNowPlayingWidget.swift:235–236` is **wrong**; those lines are `artworkPlaceholder` / `}` inside `artworkView(for:)`, which has no padding. The intended second site is the **not-playing medium branch at `:223–224`**. Anyone working from the entry cold would edit the wrong function.
+**Citation error — fix before implementing.** `NaviTunesNowPlayingWidget.swift:235–236` is **wrong**; those lines are `artworkPlaceholder` / `}` inside `artworkView(for:)`, which has no padding. The intended second site is the **not-playing medium branch at `:223–224`**. Anyone working from the entry cold would edit the wrong function.
 
 **The fix is incomplete.** It names `.padding(14)` and `.padding(.horizontal, 14)`, but Recently Played medium and large also carry **`.padding(.top, 10)`** (`:177`, `:191`), which stacks the same way. Remove all three or the top inset stays doubled.
 
@@ -10931,8 +10931,8 @@ and apply `@Environment(\.widgetContentMargins)` selectively rather than adding 
 **Re-verified (T238) —** independent second pass, agent 44, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `VellumNowPlayingWidget.swift` `smallView` has no outer `.padding(...)` at all before its `.widgetURL(...)`, while `mediumView`'s "now playing" branch ends `.padding(14)` / `.widgetURL(...)` and the "not playing" branch separately ends `.padding(14)` / `.widgetURL(URL(string: "vellum://home")!)` at line 223 (not 235–236 as cited — 235–236 is inside `artworkPlaceholder`/`artworkView(for:)`, which has no padding). `VellumRecentlyPlayedWidget.swift` confirms the same pattern plus an extra stacking layer the original fix omits: `grep -n "\.padding" VellumRecentlyPlayedWidget.swift` shows both `mediumView` and `largeView` end with `.padding(.horizontal, 14)` **and** `.padding(.top, 10)` (lines 176–177, 190–191), so removing only the horizontal `.padding(14)`/`.padding(.horizontal, 14)` as the fix literally says leaves the top inset still doubled.
-- **Better approach:** Same core fix (drop the manual padding, let `containerBackground` margins do the work, optionally `.contentMarginsDisabled()` + `@Environment(\.widgetContentMargins)`), but it must also remove `.padding(.top, 10)` in `VellumRecentlyPlayedWidget.swift`'s medium/large views, and the second citation for `VellumNowPlayingWidget.swift` should point at the not-playing branch around line 223, not 235–236, or an implementer edits the wrong spot.
+- **Evidence:** `NaviTunesNowPlayingWidget.swift` `smallView` has no outer `.padding(...)` at all before its `.widgetURL(...)`, while `mediumView`'s "now playing" branch ends `.padding(14)` / `.widgetURL(...)` and the "not playing" branch separately ends `.padding(14)` / `.widgetURL(URL(string: "navitunes://home")!)` at line 223 (not 235–236 as cited — 235–236 is inside `artworkPlaceholder`/`artworkView(for:)`, which has no padding). `NaviTunesRecentlyPlayedWidget.swift` confirms the same pattern plus an extra stacking layer the original fix omits: `grep -n "\.padding" NaviTunesRecentlyPlayedWidget.swift` shows both `mediumView` and `largeView` end with `.padding(.horizontal, 14)` **and** `.padding(.top, 10)` (lines 176–177, 190–191), so removing only the horizontal `.padding(14)`/`.padding(.horizontal, 14)` as the fix literally says leaves the top inset still doubled.
+- **Better approach:** Same core fix (drop the manual padding, let `containerBackground` margins do the work, optionally `.contentMarginsDisabled()` + `@Environment(\.widgetContentMargins)`), but it must also remove `.padding(.top, 10)` in `NaviTunesRecentlyPlayedWidget.swift`'s medium/large views, and the second citation for `NaviTunesNowPlayingWidget.swift` should point at the not-playing branch around line 223, not 235–236, or an implementer edits the wrong spot.
 - **Versus the first pass:** AGREE — the recorded block reaches the identical two conclusions (wrong second citation; incomplete fix missing `.padding(.top, 10)`), which I derived independently by grepping the padding calls myself before reading it.
 
 ---
@@ -10940,7 +10940,7 @@ and apply `@Environment(\.widgetContentMargins)` selectively rather than adding 
 ## P53 — Two third-party services are contacted with nothing in the app disclosing it, and the docs deny one of them
 
 - **Round:** 5 · **Severity:** low · **Verdict:** **REINFORCED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Artist/ArtistViewModel.swift:561–564`; `Sources/VellumMusicKit/Radio/RadioBrowserClient.swift:299–302`
+- **File:** `Sources/NaviTunesKit/Artist/ArtistViewModel.swift:561–564`; `Sources/NaviTunesKit/Radio/RadioBrowserClient.swift:299–302`
 
 ```swift
         if musicBrainzArtist == nil || forceRefresh {
@@ -10976,14 +10976,14 @@ live in `hybridRows` (**C92**).
 **CLAUDE.md is wrong and self-contradictory.** Line 116 states verbatim "No TheAudioDB / Last.fm / iTunes / MusicBrainz calls" for the artist page — false. Line 99 restricts its denial to *browse*, which is defensible; line 312 documents the whole `MusicBrainz/` folder. **Line 116 is the one to correct.**
 
 **Two things the entry understated.**
-1. **The User-Agent at `MusicBrainzClient.swift:323` is `"Vellum/1.0 ( <redacted-email> )"` — the repository owner's personal email address**, shipped in the binary and transmitted to a third party on every artist-page open. Commit `148c39e` ("Remove personal names from code and test fixtures") did not catch it. MusicBrainz policy does require a contact address, so the field is correct in principle; a project alias satisfies it without publishing an individual's address.
+1. **The User-Agent at `MusicBrainzClient.swift:323` is `"NaviTunes/1.0 ( <redacted-email> )"` — the repository owner's personal email address**, shipped in the binary and transmitted to a third party on every artist-page open. Commit `148c39e` ("Remove personal names from code and test fixtures") did not catch it. MusicBrainz policy does require a contact address, so the field is correct in principle; a project alias satisfies it without publishing an individual's address.
 2. **There is no `PrivacyInfo.xcprivacy` anywhere in the tree** (see **C131**). With two undeclared third-party endpoints plus heavy `UserDefaults` use, the load-bearing artifact is the privacy manifest, not the About row.
 
 
 **Re-verified (T238) —** independent second pass, agent 44, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `ArtistViewModel.loadMusicBrainzMetadata` runs unconditionally in the load path (`async let musicBrainzSide: Void = self.loadMusicBrainzMetadata(forceRefresh: forceRefresh)` at line 515) and calls `MusicBrainzService.shared.artistHeader(mbid:...)`/`searchArtists` with no toggle or offline gate; `RadioBrowserClient.registerPlay` fires `get(path: "/json/url/\(stationUUID)"...)` on every directory-station play. `grep -rn "musicbrainz.org\|radio-browser" Sources/VellumMusicKit/Settings/` returns zero hits, and `CLAUDE.md:116` literally states "No TheAudioDB / Last.fm / iTunes / MusicBrainz calls" for the artist page, which is false given the call above. I also found `MusicBrainzClient.swift:323`: `static let userAgent = "Vellum/1.0 ( <redacted-email> )"` — a personal email address hardcoded and shipped in the binary, sent to musicbrainz.org on every artist page open, and no `PrivacyInfo.xcprivacy` exists anywhere in the tree (`find ... -iname "PrivacyInfo.xcprivacy"` returns nothing).
+- **Evidence:** `ArtistViewModel.loadMusicBrainzMetadata` runs unconditionally in the load path (`async let musicBrainzSide: Void = self.loadMusicBrainzMetadata(forceRefresh: forceRefresh)` at line 515) and calls `MusicBrainzService.shared.artistHeader(mbid:...)`/`searchArtists` with no toggle or offline gate; `RadioBrowserClient.registerPlay` fires `get(path: "/json/url/\(stationUUID)"...)` on every directory-station play. `grep -rn "musicbrainz.org\|radio-browser" Sources/NaviTunesKit/Settings/` returns zero hits, and `CLAUDE.md:116` literally states "No TheAudioDB / Last.fm / iTunes / MusicBrainz calls" for the artist page, which is false given the call above. I also found `MusicBrainzClient.swift:323`: `static let userAgent = "NaviTunes/1.0 ( <redacted-email> )"` — a personal email address hardcoded and shipped in the binary, sent to musicbrainz.org on every artist page open, and no `PrivacyInfo.xcprivacy` exists anywhere in the tree (`find ... -iname "PrivacyInfo.xcprivacy"` returns nothing).
 - **Better approach:** The About-row disclosure and CLAUDE.md correction are right but incomplete: the hardcoded personal email in `MusicBrainzClient.userAgent` should be swapped for a project alias/contact (this is exactly the class of thing commit `148c39e` "Remove personal names from code and test fixtures" was meant to catch and missed), and given two undeclared third-party network endpoints, a `PrivacyInfo.xcprivacy` privacy manifest is the more load-bearing artifact than a Settings string.
 - **Versus the first pass:** AGREE — the recorded block makes the identical two additions (personal email in the User-Agent, missing privacy manifest) that I found independently by grepping the same files.
 
@@ -10992,7 +10992,7 @@ live in `hybridRows` (**C92**).
 ## P54 — An error raised from inside a sheet shows no alert, and then jams every later error
 
 - **Round:** 5 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/ServerPlaylistViews.swift:343–358`; host alert `App/RootView.swift:390–412`
+- **File:** `Sources/NaviTunesKit/Library/ServerPlaylistViews.swift:343–358`; host alert `App/RootView.swift:390–412`
 
 ```swift
     private func addToExisting(_ playlist: PlaylistSummary) async {
@@ -11047,7 +11047,7 @@ Either way, clear `errorMessage` on dismissal so the binding cannot latch.
 ## C93 — "Trust server certificate" disables all TLS validation for that host, forever, with nothing pinned and no way to revoke
 
 - **Round:** 5 · **Severity:** high · **Verdict:** **REINFORCED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/VellumNetworking.swift:28–37, 52–56`; toggle at `Settings/AccountView.swift:381–385`
+- **File:** `Sources/NaviTunesKit/Backends/NaviTunesNetworking.swift:28–37, 52–56`; toggle at `Settings/AccountView.swift:381–385`
 
 ```swift
     static func shouldAccept(serverTrust: SecTrust, host: String) -> Bool {
@@ -11067,7 +11067,7 @@ Either way, clear `errorMessage` on dismissal so the binding cannot latch.
 
 **Problem.** The decision **ignores `serverTrust` entirely** — any certificate from anyone claiming
 that hostname is accepted. Once tapped, the override is stored in `UserDefaults`
-(`vellumTrustedSSLHosts`, `:5–20`), there is **no UI to revoke it** (`removeTrustedHost` has zero
+(`navitunesTrustedSSLHosts`, `:5–20`), there is **no UI to revoke it** (`removeTrustedHost` has zero
 callers), and `signOut()` (`AppModel.swift:1374`) does not clear it. An attacker on any network the
 phone later joins — hotel Wi-Fi, or DNS on a home router — answers for `music.example.com` with their
 own certificate and receives the Subsonic `u`/`t`/`s` triple (a reusable credential for that account
@@ -11082,7 +11082,7 @@ compare the `SecTrustCopyCertificateChain` leaf hash against the stored value an
 a "Trusted certificates" row in Settings that lists and revokes, and clear the store in `signOut()`.
 
 
-**Verified —** Every claim verified: `shouldAccept` ignores `serverTrust` and is a bare `return isHostTrusted(host)`; storage is `UserDefaults.standard` under `vellumTrustedSSLHosts`; **`removeTrustedHost` — independent tree-wide grep: 1 occurrence, the declaration. Zero callers.** `signOut()` (`:1374–1442`) clears Keychain, snapshot stores, queue store, stream cache and artwork caches and **never touches the trusted-host list**. The toggle is a plain `Button` with no confirmation. Blast radius confirmed: `URLSession.vellum` carries Navidrome Subsonic, Navidrome native login (`:1061`, plaintext `password` in the body), Jellyfin (40 sites incl. `AuthenticateByName`, `"Pw": password`) and acquisition.
+**Verified —** Every claim verified: `shouldAccept` ignores `serverTrust` and is a bare `return isHostTrusted(host)`; storage is `UserDefaults.standard` under `navitunesTrustedSSLHosts`; **`removeTrustedHost` — independent tree-wide grep: 1 occurrence, the declaration. Zero callers.** `signOut()` (`:1374–1442`) clears Keychain, snapshot stores, queue store, stream cache and artwork caches and **never touches the trusted-host list**. The toggle is a plain `Button` with no confirmation. Blast radius confirmed: `URLSession.navitunes` carries Navidrome Subsonic, Navidrome native login (`:1061`, plaintext `password` in the body), Jellyfin (40 sites incl. `AuthenticateByName`, `"Pw": password`) and acquisition.
 
 **Three reinforcements.**
 1. **The override survives device migration.** `UserDefaults.standard` lives in `Library/Preferences/`, which is included in device backups (unlike `Library/Caches/`), so a user who trusts a certificate on one phone carries the permanent bypass to a restored device. *(Backup scope is an inference; the storage location is source-established.)*
@@ -11097,7 +11097,7 @@ a "Trusted certificates" row in Settings that lists and revokes, and clear the s
 **Re-verified (T238) —** independent second pass, agent 13, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `VellumNetworking.swift:28-37`: `shouldAccept(serverTrust:host:)` is literally `return isHostTrusted(host)` — the `serverTrust` parameter is unused in the body. `removeTrustedHost` (`:22-26`) is defined but `grep -rn "removeTrustedHost\|trustHost(" Sources/VellumMusicKit` returns exactly one call site, `AppModel.swift:6556: TrustedCertificateStore.trustHost(host)` — zero callers of `removeTrustedHost`. `signOut()` (`AppModel.swift:1374` onward) clears jellyfin/navidrome sessions, caches, and queues but contains no reference to `TrustedCertificateStore`. `NavidromeClient.nativeAuthenticate` (`:1049-1062`) POSTs `["username": username, "password": password]` as plaintext JSON to `/auth/login` over `URLSession.vellum`, which uses this exact delegate.
+- **Evidence:** `NaviTunesNetworking.swift:28-37`: `shouldAccept(serverTrust:host:)` is literally `return isHostTrusted(host)` — the `serverTrust` parameter is unused in the body. `removeTrustedHost` (`:22-26`) is defined but `grep -rn "removeTrustedHost\|trustHost(" Sources/NaviTunesKit` returns exactly one call site, `AppModel.swift:6556: TrustedCertificateStore.trustHost(host)` — zero callers of `removeTrustedHost`. `signOut()` (`AppModel.swift:1374` onward) clears jellyfin/navidrome sessions, caches, and queues but contains no reference to `TrustedCertificateStore`. `NavidromeClient.nativeAuthenticate` (`:1049-1062`) POSTs `["username": username, "password": password]` as plaintext JSON to `/auth/login` over `URLSession.navitunes`, which uses this exact delegate.
 - **Better approach:** Pin the SPKI (public-key) hash rather than the leaf certificate hash — self-hosted admins routinely reissue self-signed leaves with the same key, and leaf-pinning as specified would force a re-trust flow on every renewal, defeating the "no way to revoke... except this new plan" story. Also don't tie the clear-on-revoke to `signOut()`: the "Trust server certificate" button lives in `AccountView`, reachable before sign-in, so trust is established pre-authentication — clearing it at `signOut()` would force re-trust on every account switch back to the same server. Put the lifecycle entirely in an explicit "Trusted certificates" management row (list + per-entry revoke), independent of the sign-in/out lifecycle.
 - **Versus the first pass:** AGREE — same two caveats (SPKI-vs-leaf, signOut-clearing conflicting with pre-login trust flow) were the ones I flagged from reading `AccountView.swift` and `AppModel.signOut()` myself.
 
@@ -11106,7 +11106,7 @@ a "Trusted certificates" row in Settings that lists and revokes, and clear the s
 ## C94 — Plaintext HTTP is allowed everywhere and never flagged, and plugin base URLs default to `http://`
 
 - **Round:** 5 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `VellumMusicHost/VellumMusicHost/Info.plist:36–40`; `Sources/VellumMusicKit/Acquisition/AcquisitionCore.swift:694–700`
+- **File:** `NaviTunesHost/NaviTunesHost/Info.plist:36–40`; `Sources/NaviTunesKit/Acquisition/AcquisitionCore.swift:694–700`
 
 ```xml
 	<key>NSAppTransportSecurity</key>
@@ -11148,7 +11148,7 @@ exists, consider replacing the global flag with per-domain ATS exceptions.
 **Re-verified (T238) —** independent second pass, agent 44, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `Info.plist:36-40` sets `NSAllowsArbitraryLoads` = true globally. `AcquisitionHTTP.normalizedBase`: `let withScheme = trimmed.contains("://") ? trimmed : "http://\(trimmed)"` silently defaults to plaintext when a user omits a scheme. `AppModel.normalizedServerURL(from:)` (`return URL(string: trimmed)`) accepts any scheme verbatim with no validation. `grep -rniE "insecure|unencrypted|plain http|clear ?text" Sources/VellumMusicKit/ VellumMusicHost/` returns only unrelated hits (`Insecure.MD5` API name, an internal AVFoundation comment in `PlaybackEngine.swift:177`) — no user-facing warning copy exists. `NavidromeClient.nativeAuthenticate` posts `["username": username, "password": password]` as plaintext JSON over whatever scheme `baseURL` resolved to.
+- **Evidence:** `Info.plist:36-40` sets `NSAllowsArbitraryLoads` = true globally. `AcquisitionHTTP.normalizedBase`: `let withScheme = trimmed.contains("://") ? trimmed : "http://\(trimmed)"` silently defaults to plaintext when a user omits a scheme. `AppModel.normalizedServerURL(from:)` (`return URL(string: trimmed)`) accepts any scheme verbatim with no validation. `grep -rniE "insecure|unencrypted|plain http|clear ?text" Sources/NaviTunesKit/ NaviTunesHost/` returns only unrelated hits (`Insecure.MD5` API name, an internal AVFoundation comment in `PlaybackEngine.swift:177`) — no user-facing warning copy exists. `NavidromeClient.nativeAuthenticate` posts `["username": username, "password": password]` as plaintext JSON over whatever scheme `baseURL` resolved to.
 - **Better approach:** Defaulting `normalizedBase` to `https://` and adding an http-scheme warning footer (reusing `HomePresenceHelper.isLocalNetworkServerURL`, confirmed present at `Home/HomePresenceHelper.swift:29`) is sound and low-risk. Drop the closing suggestion to "replace the global flag with per-domain ATS exceptions" — `NSExceptionDomains` must be enumerated statically in `Info.plist` at build time, but server hosts and radio-station hosts here are arbitrary strings a user types at runtime, so per-domain ATS exceptions cannot accommodate them; that idea is only viable for a target with a fixed, known set of hosts (e.g. the widget extension's own separate `Info.plist`, which makes no network calls at all).
 - **Versus the first pass:** AGREE — the recorded block reaches the identical correction (drop the per-domain-ATS suggestion as infeasible for user-supplied hosts, scope it to the widget target instead), matching my own reasoning about `NSExceptionDomains` requiring static enumeration.
 
@@ -11157,7 +11157,7 @@ exists, consider replacing the global flag with per-domain ATS exceptions.
 ## C95 — The Subsonic auth token is baked into artwork URLs and persisted in six non-Keychain stores, including the widget App Group
 
 - **Round:** 5 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:5848–5859` (widget), `:5920–5929` (UserDefaults); URL construction `Backends/NavidromeClient.swift:1850–1862`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:5848–5859` (widget), `:5920–5929` (UserDefaults); URL construction `Backends/NavidromeClient.swift:1850–1862`
 
 ```swift
     public func writeWidgetData() {
@@ -11215,7 +11215,7 @@ credential-bearing URL crosses the extension boundary at all.
 ## C96 — The Lidarr API key is appended as a query parameter to artist image URLs
 
 - **Round:** 5 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Acquisition/LidarrAcquisitionPlugin.swift:1097–1106`
+- **File:** `Sources/NaviTunesKit/Acquisition/LidarrAcquisitionPlugin.swift:1097–1106`
 
 ```swift
             guard let base = AcquisitionHTTP.normalizedBase(base) else { return nil }
@@ -11231,7 +11231,7 @@ credential-bearing URL crosses the extension boundary at all.
 
 **Problem.** This is precisely the pattern the Jellyfin client documents as unacceptable
 (`JellyfinMusicClient.swift:820–832` names access logs, reverse proxies, `URLCache`'s `Cache.db`, and
-`Referer`). The resulting URL flows into `AlbumArtworkView` → `URLSession.vellum`, whose default
+`Referer`). The resulting URL flows into `AlbumArtworkView` → `URLSession.navitunes`, whose default
 `URLCache` writes the **full request URL** to disk, and into `ArtworkURLCache`, whose key normaliser
 strips only `t`/`s` (`:117`) — so the cache key itself contains the API key. Lidarr is commonly behind a
 reverse proxy logging `$request_uri`. Anyone with the proxy logs or the device's Caches directory gets
@@ -11246,7 +11246,7 @@ fallback entirely.
 **Verified —** Verified: `remoteUrl` is tried first and absolute URLs pass through; only the relative `MediaCover` path gets `apikey` appended; the result is assigned to `artworkURL` at five sites, so it does reach the artwork loaders. The Jellyfin client really does document this pattern as unacceptable at `:820–830`, concluding "Token disclosure = full account compromise."
 
 **Two mechanism corrections.**
-1. **Wrong session.** The URL does **not** flow into `URLSession.vellum`. `RemoteArtworkLoad.cgImage` delegates every non-file URL to `ArtworkURLCache.data(for:)`, which fetches with **`URLSession.shared`** and `cachePolicy = .returnCacheDataElseLoad` — the only `URLSession` call in all of `DesignSystem/`. The `Cache.db` consequence is unchanged (both sessions use `URLCache.shared`), but the path in the write-up is wrong.
+1. **Wrong session.** The URL does **not** flow into `URLSession.navitunes`. `RemoteArtworkLoad.cgImage` delegates every non-file URL to `ArtworkURLCache.data(for:)`, which fetches with **`URLSession.shared`** and `cachePolicy = .returnCacheDataElseLoad` — the only `URLSession` call in all of `DesignSystem/`. The `Cache.db` consequence is unchanged (both sessions use `URLCache.shared`), but the path in the write-up is wrong.
 2. **The cache-key claim overstates.** "The cache key itself contains the API key" is false for `ArtworkURLCache`: `cacheKey(for:)` is a **SHA-256 digest** of the normalised URL, and that hash is the on-disk filename — the key is hashed, not readable. The real exposure is `URLCache.shared`'s `Cache.db`, which stores the full URL in the clear. Keep that; drop the cache-key sentence.
 
 **The proposed fix has a hazard the entry does not mention.** `MediaAuthHeaderRegistry.register(host:headers:)` is keyed by **host** and **replaces** the entire dictionary for that host, and `AppModel` registers the active Jellyfin host's `Authorization: MediaBrowser Token=…` there. A very common self-hosted topology puts Jellyfin and Lidarr behind **one** reverse-proxy hostname on different paths — so registering Lidarr's `X-Api-Key` for that host would **clobber the Jellyfin `Authorization` header** and **send the Lidarr admin key on every Jellyfin artwork request**. The registry must become host+path-scoped, or merge rather than replace, before it can carry a second credential. **"Drop the query-param fallback entirely" is the safe immediate action**, costing only local `MediaCover` art (Lidarr's `remoteUrl` covers most rows). *(Citations: the block starts at `:1098`, not `:1097`; the registry is `:20–46`, not `:20–50`.)*
@@ -11255,7 +11255,7 @@ fallback entirely.
 **Re-verified (T238) —** independent second pass, agent 44, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `LidarrAcquisitionPlugin`'s `imageURL(from:preferred:)` falls back to `items.append(URLQueryItem(name: "apikey", value: apiKey))` when a `MediaCover` path has no `remoteUrl`. This URL is consumed by `ArtworkURLCache.data(for:)`, which I confirmed uses `URLSession.shared` (`let (data, response) = try await URLSession.shared.data(for: request)`) — not `URLSession.vellum` as the original text claims — but the underlying hazard is the same: `URLSession.shared`'s default `URLCache.shared` writes the full request URL, apikey included, to its on-disk `Cache.db`. I also confirmed `ArtworkURLCache.cacheKey(for:)` hashes the normalized URL with SHA-256 before using it as a filename, so the on-disk cache-key filename does not literally contain the apikey (only `URLCache.shared`'s own entry does) — a second inaccuracy in the original problem statement, though the disclosure risk itself stands.
+- **Evidence:** `LidarrAcquisitionPlugin`'s `imageURL(from:preferred:)` falls back to `items.append(URLQueryItem(name: "apikey", value: apiKey))` when a `MediaCover` path has no `remoteUrl`. This URL is consumed by `ArtworkURLCache.data(for:)`, which I confirmed uses `URLSession.shared` (`let (data, response) = try await URLSession.shared.data(for: request)`) — not `URLSession.navitunes` as the original text claims — but the underlying hazard is the same: `URLSession.shared`'s default `URLCache.shared` writes the full request URL, apikey included, to its on-disk `Cache.db`. I also confirmed `ArtworkURLCache.cacheKey(for:)` hashes the normalized URL with SHA-256 before using it as a filename, so the on-disk cache-key filename does not literally contain the apikey (only `URLCache.shared`'s own entry does) — a second inaccuracy in the original problem statement, though the disclosure risk itself stands.
 - **Better approach:** "Prefer `remoteUrl`, drop the query-param fallback entirely" is safe and sufficient on its own. But registering Lidarr's `X-Api-Key` in `MediaAuthHeaderRegistry` as the fix suggests has an unstated hazard I verified directly in `MusicLibraryProviding.swift`: `register(host:headers:)` is `headersByHost[key] = headers` — a full **replace** keyed only by lowercased host, with no path scoping, and `headers(for:)` looks up purely by `url.host`. A self-hosted setup that fronts both Jellyfin and Lidarr behind one reverse-proxy hostname (common with Traefik/Nginx path-based routing) would have Lidarr's registration silently clobber Jellyfin's `Authorization: MediaBrowser Token=…` for that host, and then leak the Lidarr admin key on every subsequent Jellyfin artwork request. The registry would need to become host+path-scoped (or merge rather than replace) before it's safe to add a second credential to it — until then, dropping the query-param fallback entirely (accepting the loss of local `MediaCover` art when `remoteUrl` is absent) is the only safe fix.
 - **Versus the first pass:** AGREE — the recorded block flags the identical `MediaAuthHeaderRegistry` replace/host-collision hazard ("registering Lidarr's X-Api-Key for that host would clobber the Jellyfin Authorization header") and the same two mechanism corrections (wrong session name, cache-key-is-hashed-not-literal), both of which I derived independently by reading `MusicLibraryProviding.swift` and `ArtworkURLCache.swift` myself.
 
@@ -11264,7 +11264,7 @@ fallback entirely.
 ## C97 — Acquisition error bodies are printed to the console in Release builds
 
 - **Round:** 5 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Acquisition/AcquisitionCore.swift:739–747`
+- **File:** `Sources/NaviTunesKit/Acquisition/AcquisitionCore.swift:739–747`
 
 ```swift
             // exception type is not something a user can read, act on, or should ever be shown.
@@ -11289,7 +11289,7 @@ or auth-bearing URL.**
 
 **Verified —** The `print` at `:745` is verified ungated, and the throw at `:747` passes only a classified sentence to the user, so the body's only consumer really is the log.
 
-**The audit re-run independently, tree-wide, and it holds.** All seven `print(` sites outside `Deprecated/`: `AppAlternateIconSync.swift:69` (icon name only, clean); `AppModel.swift:2107`, `:2238`, `:2283` — **all three inside `#if DEBUG`**; `MusicBrainzClient.swift:36` and `:44` — behind `echoesToConsole`, which defaults to `false`; and this site. A sweep of `NSLog|debugPrint|os_log|Logger(|dump(` found one hit, `PerfLog.swift:26`, a `Logger` on subsystem `vellum.perf`. **`AcquisitionCore.swift:745` is the sole ungated logger of remote content in the tree.** *(The entry missed a fourth DEBUG-gated site at `:2238` — same conclusion, one more data point; and the third gate is `:2282–2284`, not `:2281–2283`.)*
+**The audit re-run independently, tree-wide, and it holds.** All seven `print(` sites outside `Deprecated/`: `AppAlternateIconSync.swift:69` (icon name only, clean); `AppModel.swift:2107`, `:2238`, `:2283` — **all three inside `#if DEBUG`**; `MusicBrainzClient.swift:36` and `:44` — behind `echoesToConsole`, which defaults to `false`; and this site. A sweep of `NSLog|debugPrint|os_log|Logger(|dump(` found one hit, `PerfLog.swift:26`, a `Logger` on subsystem `navitunes.perf`. **`AcquisitionCore.swift:745` is the sole ungated logger of remote content in the tree.** *(The entry missed a fourth DEBUG-gated site at `:2238` — same conclusion, one more data point; and the third gate is `:2282–2284`, not `:2281–2283`.)*
 
 **Excerpt note:** the quoted block starts at `:741`, mid-comment, while citing `:739–747` — lines 739–740 were dropped with **no elision marker**. The omitted text is only more comment, so nothing substantive is misrepresented, but a reader reconstructing the site will not find the quoted first line at 739.
 
@@ -11299,7 +11299,7 @@ or auth-bearing URL.**
 **Re-verified (T238) —** independent second pass, agent 45, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `Sources/VellumMusicKit/Acquisition/AcquisitionCore.swift:745` reads `print("[Acquisition] HTTP \(http.statusCode) from \(path): \(body)")` with no `#if DEBUG` guard anywhere around it, inside `requestJSON`'s non-2xx branch. By contrast the three `[MAGIC-SYNC]` prints in `AppModel.swift` (lines 2107, 2238, 2283) are each wrapped in `#if DEBUG ... #endif`. `body` is up to 2000 chars of raw server response text, which for Lidarr/DroppedNeedle error pages can include stack traces or paths.
+- **Evidence:** `Sources/NaviTunesKit/Acquisition/AcquisitionCore.swift:745` reads `print("[Acquisition] HTTP \(http.statusCode) from \(path): \(body)")` with no `#if DEBUG` guard anywhere around it, inside `requestJSON`'s non-2xx branch. By contrast the three `[MAGIC-SYNC]` prints in `AppModel.swift` (lines 2107, 2238, 2283) are each wrapped in `#if DEBUG ... #endif`. `body` is up to 2000 chars of raw server response text, which for Lidarr/DroppedNeedle error pages can include stack traces or paths.
 - **Versus the first pass:** AGREE — prior pass's Verified block also confirms the print is ungated, that it is the sole ungated remote-content logger tree-wide (after checking `AppAlternateIconSync`, `AppModel`'s three DEBUG-gated prints, `MusicBrainzClient`'s `echoesToConsole`-gated prints, and `PerfLog`'s `Logger`), and calls the `#if DEBUG` fix "correct and trivial." My own reading reaches the same conclusion independently.
 
 ---
@@ -11307,7 +11307,7 @@ or auth-bearing URL.**
 ## C98 — The Jellyfin password is kept after a token exists, and held in a `@Published` property for the app's lifetime
 
 - **Round:** 5 · **Severity:** medium _(was low; verifier established a shared-device account-separation path)_ · **Verdict:** **REINFORCED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/KeychainStore.swift:7–14`; `App/AppModel.swift:155, 6890–6896`
+- **File:** `Sources/NaviTunesKit/App/KeychainStore.swift:7–14`; `App/AppModel.swift:155, 6890–6896`
 
 ```swift
     struct JellyfinCreds: Codable {
@@ -11352,7 +11352,7 @@ imaged device), but the token already suffices for everything the app does.
 ## C99 — A server-supplied share URL is written to the general pasteboard unvalidated, and syncs via Universal Clipboard
 
 - **Round:** 5 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:6737–6746`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:6737–6746`
 
 ```swift
     func createNavidromeShareAndNotify(forItemId id: String, description: String) async {
@@ -11395,7 +11395,7 @@ so the link does not leave the device.
 ## C100 — Token-bearing Subsonic responses are written to the default on-disk `URLCache`
 
 - **Round:** 5 · **Severity:** low · **Verdict:** **REINFORCED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/VellumNetworking.swift:64–71`
+- **File:** `Sources/NaviTunesKit/Backends/NaviTunesNetworking.swift:64–71`
 
 ```swift
     static let shared: URLSession = {
@@ -11428,13 +11428,13 @@ and does not rely on HTTP caching for JSON — and keep a separate cached sessio
 
 **One claim to soften:** "every cacheable GET — which is every Subsonic API call" is not source-establishable; whether a response is stored depends on Navidrome's `Cache-Control`/`Expires` headers and URLSession's heuristic rules. Read it as "every response the server permits caching of" — which the low severity already accommodates.
 
-**Fix caveat that must be stated or it creates a false sense of safety:** the artwork path is a **different session** (`URLSession.shared` via `ArtworkURLCache`, with `.returnCacheDataElseLoad`), so setting `urlCache = nil` on `VellumURLSession` does **not** address **C95**'s or **C96**'s cache exposure — those URLs go through `URLCache.shared` on a session this fix never touches.
+**Fix caveat that must be stated or it creates a false sense of safety:** the artwork path is a **different session** (`URLSession.shared` via `ArtworkURLCache`, with `.returnCacheDataElseLoad`), so setting `urlCache = nil` on `NaviTunesURLSession` does **not** address **C95**'s or **C96**'s cache exposure — those URLs go through `URLCache.shared` on a session this fix never touches.
 
 
 **Re-verified (T238) —** independent second pass, agent 45, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `VellumNetworking.swift:64-71`'s `VellumURLSession.shared` builds `URLSessionConfiguration.default` and only sets `timeoutIntervalForRequest`/`timeoutIntervalForResource` — `config.urlCache` and `config.requestCachePolicy` are never touched, leaving the default `URLCache.shared` in play. I confirmed `NavidromeClient.subsonicRequest` (`:1812-1814`) calls `URLSession.vellum.data(from: url)` with no per-request `cachePolicy` override anywhere in the file (`grep -n "cachePolicy" NavidromeClient.swift` returns nothing), while `JellyfinMusicClient.swift` sets `req.cachePolicy = .reloadIgnoringLocalCacheData` on several (not all) of its requests — so the credential-bearing Subsonic URLs (`u`/`t`/`s` query params) are the ones with zero opt-out.
+- **Evidence:** `NaviTunesNetworking.swift:64-71`'s `NaviTunesURLSession.shared` builds `URLSessionConfiguration.default` and only sets `timeoutIntervalForRequest`/`timeoutIntervalForResource` — `config.urlCache` and `config.requestCachePolicy` are never touched, leaving the default `URLCache.shared` in play. I confirmed `NavidromeClient.subsonicRequest` (`:1812-1814`) calls `URLSession.navitunes.data(from: url)` with no per-request `cachePolicy` override anywhere in the file (`grep -n "cachePolicy" NavidromeClient.swift` returns nothing), while `JellyfinMusicClient.swift` sets `req.cachePolicy = .reloadIgnoringLocalCacheData` on several (not all) of its requests — so the credential-bearing Subsonic URLs (`u`/`t`/`s` query params) are the ones with zero opt-out.
 - **Versus the first pass:** AGREE — prior pass independently re-audited `cachePolicy` usage tree-wide and reports the same asymmetry (Jellyfin: 7 sites use `.reloadIgnoringLocalCacheData`; Navidrome: 0), matching what I found by inspection. It adds that `.reloadIgnoringLocalCacheData` only suppresses cache *reads* not *writes* (so even Jellyfin's opt-out doesn't stop `Cache.db` writes) and that the fix's parenthetical about "a separate cached session for artwork" doesn't touch C95/C96 since artwork already runs through a distinct `URLSession.shared` (`ArtworkURLCache.swift:86`) — I confirmed that session split independently. None of this changes my rating of the fix itself as correct for the problem as scoped.
 
 ---
@@ -11442,7 +11442,7 @@ and does not rely on HTTP caching for JSON — and keep a separate cached sessio
 ## C101 — Membership payload writes are whole-document last-writer-wins with no tombstones: a second device resurrects deletions and drops additions
 
 - **Round:** 5 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:2483–2499`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:2483–2499`
 
 ```swift
     private func persistLibraryMembershipPayload() async {
@@ -11506,7 +11506,7 @@ site.
 ## C102 — Two-step membership writes have no completion semantics: a half-succeeded add or remove never reconciles
 
 - **Round:** 5 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:3342–3367`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:3342–3367`
 
 ```swift
     func removeAlbumFromLibrary(_ album: AlbumSummary) async {
@@ -11571,7 +11571,7 @@ deletes.
 ## C103 — The 60 s poll is the only cross-device channel, and the comment describing a faster one is false
 
 - **Round:** 5 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:2151–2165`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:2151–2165`
 
 ```swift
     func startLibraryMembershipAutoSync() {
@@ -11604,7 +11604,7 @@ server's post-write state and would close much of the single-device window. Neit
 **C101**'s merge.
 
 
-**Verified —** Independent count: `grep -rn "Publishers\." Sources/VellumMusicKit` returns **exactly two hits**, both in `AppModel` and both playback-queue triggers (`:1035` `hasActivePlaybackQueue`; `:1186–1194` `persistPlaybackQueue`). Neither touches membership. Also zero hits for `WebSocket`, `URLSessionWebSocket`, `EventSource` or `text/event-stream` outside one unrelated comment. **The comment is false — the word "publisher" describes nothing that exists.**
+**Verified —** Independent count: `grep -rn "Publishers\." Sources/NaviTunesKit` returns **exactly two hits**, both in `AppModel` and both playback-queue triggers (`:1035` `hasActivePlaybackQueue`; `:1186–1194` `persistPlaybackQueue`). Neither touches membership. Also zero hits for `WebSocket`, `URLSessionWebSocket`, `EventSource` or `text/event-stream` outside one unrelated comment. **The comment is false — the word "publisher" describes nothing that exists.**
 
 **One correction, in the app's favour.** "The 60 s poll plus a foreground refresh debounced to 8 s, and nothing more" understates it: foregrounding produces **two** refreshes — `RootView.swift:212`'s debounced `refreshLibraryMembershipIfStale()` **and** `handleAppBecameActive` → `startLibraryMembershipAutoSync()`, whose first loop iteration calls `refreshLibraryMembership()` **undebounced**. So foregrounding always refreshes immediately. The conclusion is unchanged — still poll-only, no post-mutation refresh, no server push — but an implementer reading the entry cold would otherwise add a redundant foreground kick (see **E53**, which reports the duplication as a cost).
 
@@ -11616,7 +11616,7 @@ server's post-write state and would close much of the single-device window. Neit
 **Re-verified (T238) —** independent second pass, agent 45, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `AppModel.swift:2151-2165`'s comment claims "Real membership edits refresh immediately via the change publisher + scene-active," but `grep -n "Publishers\." Sources/VellumMusicKit/App/AppModel.swift` returns only two hits, at `:1035` (`Publishers.CombineLatest(player.$queue, player.$currentIndex)`) and `:1186` (`Publishers.MergeMany(...)`), both feeding playback-queue persistence — nothing about library membership. `refreshLibraryMembership()` is called only from sign-in bootstrap, the 60s poll, `refreshLibraryMembershipIfStale` (8s-debounced, wired from `RootView.swift:212`), and `syncLibraryNow()`; there is no mutation-triggered or push-based refresh anywhere.
+- **Evidence:** `AppModel.swift:2151-2165`'s comment claims "Real membership edits refresh immediately via the change publisher + scene-active," but `grep -n "Publishers\." Sources/NaviTunesKit/App/AppModel.swift` returns only two hits, at `:1035` (`Publishers.CombineLatest(player.$queue, player.$currentIndex)`) and `:1186` (`Publishers.MergeMany(...)`), both feeding playback-queue persistence — nothing about library membership. `refreshLibraryMembership()` is called only from sign-in bootstrap, the 60s poll, `refreshLibraryMembershipIfStale` (8s-debounced, wired from `RootView.swift:212`), and `syncLibraryNow()`; there is no mutation-triggered or push-based refresh anywhere.
 - **Better approach:** The "correct the comment/CLAUDE.md" half of the fix is straightforwardly correct and should be done regardless. The "call `refreshLibraryMembership()` after each mutation" half is weaker than presented: I read `applyMagicPlaylistFetch` (`AppModel.swift:2280` onward) and confirmed it does a wholesale replace — `librarySongIds = newSongIds` and `libraryAlbumEntries = payload.albums` are full-set reassignments, not merges — so wiring it into every mutation just gives the existing last-writer-wins hazard (the entry's own linked C101) more triggers to fire from, rather than closing a gap safely. The better, self-contained move here is just the comment/doc fix; any "faster convergence" change should wait on C101's tombstone/merge design so it doesn't become a new vector for adopting a stale write.
 - **Versus the first pass:** AGREE — prior pass's Verified block reaches the same two conclusions independently: the "change publisher" is fictional (confirmed by the same two-hit `Publishers.` grep), and "the second half [of the fix] is unsafe before C101, not merely insufficient," citing the same wholesale-replace behavior in `applyMagicPlaylistFetch`.
 
@@ -11625,7 +11625,7 @@ server's post-write state and would close much of the single-device window. Neit
 ## C104 — Library identity is a hash of the URL you typed, so two routes to one server (or a rename) fork the library
 
 - **Round:** 5 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/LibraryMembership.swift:20–26, 36–43`
+- **File:** `Sources/NaviTunesKit/Library/LibraryMembership.swift:20–26, 36–43`
 
 ```swift
     static func normalizedServerKey(from url: URL) -> String {
@@ -11642,7 +11642,7 @@ server's post-write state and would close much of the single-device window. Neit
         let seed = "\(backend.rawValue)/\(normalizedServer)/\(normalizedUser)"
         let digest = SHA256.hash(data: Data(seed.utf8))
         let hex = digest.compactMap { String(format: "%02x", $0) }.joined()
-        return "__vellum_\(hex.prefix(12))"
+        return "__navitunes_\(hex.prefix(12))"
     }
 ```
 
@@ -11680,7 +11680,7 @@ URLs mean two libraries.
 **Re-verified (T238) —** independent second pass, agent 45, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `LibraryMembership.swift:20-26` hashes `url.host` (+ non-default port) and `:36-43`'s `magicPlaylistName` folds that into `SHA256(backend/server/user)` → `__vellum_<hex12>`. I traced `resolveMagicPlaylistId` (`AppModel.swift:2179-2217`): every exit — exact-name match over `candidateMagicPlaylistNames`, the legacy-Lyra rename path, the `UserDefaults`-cached id (gated by `LibraryMembership.isMagicPlaylistName`, a generic `__vellum_`+12-hex-digit pattern check, not an exact-identity check), or `createEmptyMagicPlaylist` — returns a playlist whose name is already in `expectedNames` (or gets force-created to match), so the "name drift" branch's `!expectedNames.contains(fetch.name) && !isMagicPlaylistName(fetch.name)` condition at `:2117` can only fire in a state no code path produces; confirms it's dead in practice. I also confirmed `libraryMagicPlaylistUserKey` (`:2071-2073`) uses `username.trimmed().lowercased()` for Navidrome vs. `jellyfin?.sessionUserId` for Jellyfin.
+- **Evidence:** `LibraryMembership.swift:20-26` hashes `url.host` (+ non-default port) and `:36-43`'s `magicPlaylistName` folds that into `SHA256(backend/server/user)` → `__navitunes_<hex12>`. I traced `resolveMagicPlaylistId` (`AppModel.swift:2179-2217`): every exit — exact-name match over `candidateMagicPlaylistNames`, the legacy-Lyra rename path, the `UserDefaults`-cached id (gated by `LibraryMembership.isMagicPlaylistName`, a generic `__navitunes_`+12-hex-digit pattern check, not an exact-identity check), or `createEmptyMagicPlaylist` — returns a playlist whose name is already in `expectedNames` (or gets force-created to match), so the "name drift" branch's `!expectedNames.contains(fetch.name) && !isMagicPlaylistName(fetch.name)` condition at `:2117` can only fire in a state no code path produces; confirms it's dead in practice. I also confirmed `libraryMagicPlaylistUserKey` (`:2071-2073`) uses `username.trimmed().lowercased()` for Navidrome vs. `jellyfin?.sessionUserId` for Jellyfin.
 - **Better approach:** The content-anchored (`libraryId` in the payload comment) direction is the right one, but as written it glosses over an asymmetry: Navidrome's `getPlaylists` already returns each row's `comment` in one call (per `findPlaylistByName`'s own single `subsonicRequest`), so scanning for a `libraryId` match there is cheap, but Jellyfin's `findPlaylistByName` currently uses `SearchTerm`+`Limit=50` (a name-indexed query) — resolving by content there would need a different call enumerating playlists with `Fields=Overview` (or similar) rather than a text search, which the fix doesn't call out. A concrete plan should say so explicitly per-backend rather than treating "prefer content over name" as backend-uniform.
 - **Versus the first pass:** AGREE — prior pass's Verified block confirms the same five-rung, all-name-based resolve ladder, the same "no `libraryId` anywhere, 0 hits" search, and separately calls out the identical Jellyfin `SearchTerm`-vs-`Fields=Overview` gap as a "cold-start hole" in the fix, which matches what I found by re-reading `resolveMagicPlaylistId`.
 
@@ -11689,7 +11689,7 @@ URLs mean two libraries.
 ## C105 — First-sign-in resolve is check-then-create with no server-side uniqueness, and the picker hides duplicates instead of merging them
 
 - **Round:** 5 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/NavidromeClient.swift:1589–1602`; Jellyfin twin at `:1366–1373`
+- **File:** `Sources/NaviTunesKit/Backends/NavidromeClient.swift:1589–1602`; Jellyfin twin at `:1366–1373`
 
 ```swift
     func findPlaylistByName(_ name: String) async throws -> PlaylistSummary? {
@@ -11749,7 +11749,7 @@ The second clause matters: on any cold launch where `applyRestoredSnapshotLight`
 ## C106 — A stale "NOW PLAYING · Pause" tile is never expired, and the timeline reloads itself 96×/day to say the same thing
 
 - **Round:** 5 · **Severity:** high · **Verdict:** **REINFORCED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `VellumMusicHost/VellumWidgets/VellumNowPlayingWidget.swift:37–48`; same shape at `VellumRecentlyPlayedWidget.swift:31–42`
+- **File:** `NaviTunesHost/NaviTunesWidgets/NaviTunesNowPlayingWidget.swift:37–48`; same shape at `NaviTunesRecentlyPlayedWidget.swift:31–42`
 
 ```swift
     func getTimeline(in context: Context, completion: @escaping (Timeline<NowPlayingEntry>) -> Void) {
@@ -11779,7 +11779,7 @@ the reload budget the app also spends from the other side (**E04**).
 when `payload.isPlaying && Date().timeIntervalSince(payload.updatedAt) > 3600`, emit the entry with
 `isPlaying: false` and the "RECENTLY PLAYED" label; better, emit **two** entries — the live one now and
 a demoted one at `updatedAt + 3600` — so the widget expires itself with no reload at all. Also call
-`writeWidgetData()` from the `.background` branch of `scenePhase` in `VellumMusicHostApp` so a
+`writeWidgetData()` from the `.background` branch of `scenePhase` in `NaviTunesHostApp` so a
 paused-then-killed app leaves an accurate payload behind.
 
 
@@ -11795,7 +11795,7 @@ The rest of the fix is right: the two-entry timeline (live now, demoted at `upda
 **Re-verified (T238) —** independent second pass, agent 13, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** Both `getTimeline` implementations match verbatim (`VellumNowPlayingWidget.swift:37-48`, `VellumRecentlyPlayedWidget.swift:31-42`), each using `.after(next)` with `next` 15 minutes out regardless of payload content. `grep -n "updatedAt" Sources/VellumMusicKit/App/AppModel.swift` returns only the write site (`:5877`, inside `writeWidgetData()`) — no read anywhere. `VellumMusicHostApp.swift`'s `scenePhase` handler (`:21-36`) calls `syncHomeScreenIconIfNeeded`, `persistPlaybackQueue`, and `stopLibraryMembershipAutoSync` on `.inactive/.background`, with no `writeWidgetData()` call.
+- **Evidence:** Both `getTimeline` implementations match verbatim (`NaviTunesNowPlayingWidget.swift:37-48`, `NaviTunesRecentlyPlayedWidget.swift:31-42`), each using `.after(next)` with `next` 15 minutes out regardless of payload content. `grep -n "updatedAt" Sources/NaviTunesKit/App/AppModel.swift` returns only the write site (`:5877`, inside `writeWidgetData()`) — no read anywhere. `NaviTunesHostApp.swift`'s `scenePhase` handler (`:21-36`) calls `syncHomeScreenIconIfNeeded`, `persistPlaybackQueue`, and `stopLibraryMembershipAutoSync` on `.inactive/.background`, with no `writeWidgetData()` call.
 - **Better approach:** The specific instruction "emit the entry with `isPlaying: false`" is insufficient on its own: the header text is `Text(entry.nowPlaying != nil ? "NOW PLAYING" : "RECENTLY PLAYED")` (`NowPlayingWidgetView` body, `:96`) — keyed on `nowPlaying != nil`, not `isPlaying`. Since `nowPlaying` is derived from `player.activeTrack`, which is queue-derived and the queue persists across launches, a demoted entry that only flips `isPlaying` would still render the "NOW PLAYING" header (only the Pause capsule, gated at `:116` on `entry.isPlaying && entry.nowPlaying != nil`, would go away). The demoted entry must also set `nowPlaying = nil` (or the header must be re-keyed to check `isPlaying` instead of `nowPlaying != nil`). The rest of the fix — `.never` policy plus a second, future-dated demoted entry — is correct and I'd keep it once this correction is made.
 - **Versus the first pass:** AGREE — I independently found the same header-logic bug by reading `NowPlayingWidgetView.body` line 96 before comparing notes; the fix as literally written does not clear the stale "NOW PLAYING" label, only the Pause button.
 
@@ -11804,7 +11804,7 @@ The rest of the fix is right: the two-entry timeline (live now, demoted at `upda
 ## C107 — `cacheArtwork` persists any HTTP body as a `.jpg` and then never retries or refreshes it
 
 - **Round:** 5 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Widgets/WidgetDataStore.swift:108–120`
+- **File:** `Sources/NaviTunesKit/Widgets/WidgetDataStore.swift:108–120`
 
 ```swift
         for item in items {
@@ -11860,11 +11860,11 @@ through the existing artwork loader so auth headers apply, and serialise `cacheA
 ## C108 — Widget deep links: dropped on a cold launch, ignored under the player, and `track/` is not handled at all
 
 - **Round:** 5 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:2634–2660`; consumer `App/RootView.swift:76–85`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:2634–2660`; consumer `App/RootView.swift:76–85`
 
 ```swift
     public func handleWidgetDeepLink(_ url: URL) {
-        guard url.scheme == "vellum" else { return }
+        guard url.scheme == "navitunes" else { return }
         let host = url.host ?? ""
         let itemId = url.pathComponents.dropFirst().first ?? ""
         switch host {
@@ -11923,7 +11923,7 @@ giving up; and route `track/<id>` via `indexedTrack(id:)` to its album.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
 - **Evidence:** `AppModel.swift:2634-2660` `handleWidgetDeepLink` does `libraryAlbums.first(where: { $0.id == itemId })` — a linear scan, and `libraryAlbums` is only populated via `restoreLibraryFromDiskAsync()`, spawned as an unstructured `Task` inside `loadKeychain` (line ~6909/6936), so a cold-launch tap on the widget hits an empty array. `RootView.swift`'s `DeepLinkPushModifier` (lines 66-89) only has `.onChange(of: app.presentedDeepLink)` — no `.onAppear`/`.task` fallback — so a link set before that view's body first attaches (non-Library launch tab case) never fires. `case "track" where !itemId.isEmpty: selectedTab = .home` (line matches exactly) confirms track links are dropped. `NowPlayingView.swift:1656` shows the precedented pattern (`NowPlayingCoverState.shared.requestDismiss?()`) that `handleWidgetDeepLink` never calls, confirming the cover-swallow claim.
-- **Better approach:** `activeLibrary.album(id:)` does not exist — `grep -n "func album(id:" Sources/VellumMusicKit/Backends/MusicLibraryProviding.swift` returns nothing, and `MusicLibraryProviding`'s only bulk accessors are `albums(limit:)` / `albums(forLibraryArtistId:...)`. The real single-album fetch is `albumSummary(forId:)`, which exists only on the concrete `JellyfinMusicClient`/`NavidromeClient` (called elsewhere in `AppModel` via `switch backendKind { case .jellyfin: jellyfinClient?.albumSummary(forId:); case .navidrome: navidromeClient?.albumSummary(forId:) }`, e.g. AppModel.swift:2438-2452) — the fix should promote that method onto the protocol or reuse that existing branch pattern, not call a method that doesn't exist on `activeLibrary`.
+- **Better approach:** `activeLibrary.album(id:)` does not exist — `grep -n "func album(id:" Sources/NaviTunesKit/Backends/MusicLibraryProviding.swift` returns nothing, and `MusicLibraryProviding`'s only bulk accessors are `albums(limit:)` / `albums(forLibraryArtistId:...)`. The real single-album fetch is `albumSummary(forId:)`, which exists only on the concrete `JellyfinMusicClient`/`NavidromeClient` (called elsewhere in `AppModel` via `switch backendKind { case .jellyfin: jellyfinClient?.albumSummary(forId:); case .navidrome: navidromeClient?.albumSummary(forId:) }`, e.g. AppModel.swift:2438-2452) — the fix should promote that method onto the protocol or reuse that existing branch pattern, not call a method that doesn't exist on `activeLibrary`.
 - **Versus the first pass:** AGREE — prior pass makes the exact same correction verbatim ("`activeLibrary.album(id:)` does not exist... Both concrete clients have `albumSummary(forId:)`, so the fix requires promoting `albumSummary(forId:)` onto the protocol"), which I reached independently before reading it.
 
 ---
@@ -11931,11 +11931,11 @@ giving up; and route `track/<id>` via `indexedTrack(id:)` to its album.
 ## C109 — Widget-only intents are exposed in Shortcuts, and the play handler ignores the item kind it is given
 
 - **Round:** 5 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Widgets/PlayWidgetItemIntent.swift:41–49`; handler `App/AppModel.swift:2662–2678`
+- **File:** `Sources/NaviTunesKit/Widgets/PlayWidgetItemIntent.swift:41–49`; handler `App/AppModel.swift:2662–2678`
 
 ```swift
 public struct PlayWidgetItemIntent: AppIntent {
-    public static var title: LocalizedStringResource = "Play from Vellum Widget"
+    public static var title: LocalizedStringResource = "Play from NaviTunes Widget"
     public static var openAppWhenRun: Bool = false
 
     @Parameter(title: "Item ID")
@@ -11945,7 +11945,7 @@ public struct PlayWidgetItemIntent: AppIntent {
     public var itemKind: String
 ```
 
-**Problem.** `isDiscoverable` defaults to true, so "Play from Vellum Widget" — with raw "Item ID" and
+**Problem.** `isDiscoverable` defaults to true, so "Play from NaviTunes Widget" — with raw "Item ID" and
 "Item Kind" text fields — and "Toggle Playback from Widget" both appear in the Shortcuts action list,
 where they **cannot work**, since they only post a Darwin notification (**C35**). On the app side,
 `handleWidgetPlayCommand(itemId:itemKind:)` **never reads `itemKind`** and always calls
@@ -11959,7 +11959,7 @@ and fails silently inside `catch {}`.
 truthful.
 
 
-**Verified —** **Clause 1 (Shortcuts exposure) is confirmed and is new.** `isDiscoverable` appears **nowhere** in the file, on either intent; both are plain `AppIntent`s with `openAppWhenRun = false` and free-text `String` parameters. *(Inference: `AppIntent.isDiscoverable` defaults to `true`, so both surface in the Shortcuts action library.)* Combined with **C35** — they only post a Darwin notification, delivered solely to a running process — a user who builds a Shortcut around "Play from Vellum Widget" gets an action that silently does nothing, or acts hours later. Nothing else in the sweep raises this, and `public static var isDiscoverable = false` is the correct one-line fix.
+**Verified —** **Clause 1 (Shortcuts exposure) is confirmed and is new.** `isDiscoverable` appears **nowhere** in the file, on either intent; both are plain `AppIntent`s with `openAppWhenRun = false` and free-text `String` parameters. *(Inference: `AppIntent.isDiscoverable` defaults to `true`, so both surface in the Shortcuts action library.)* Combined with **C35** — they only post a Darwin notification, delivered solely to a running process — a user who builds a Shortcut around "Play from NaviTunes Widget" gets an action that silently does nothing, or acts hours later. Nothing else in the sweep raises this, and `public static var isDiscoverable = false` is the correct one-line fix.
 
 **Clause 2 (`itemKind` ignored) is DENIED as a duplicate and must be struck from this entry.** **C35**'s verify addendum already states it verbatim — *"and it ignores `itemKind` entirely, which is plumbed widget → defaults → 2710 → 2662 and never read"* — and C35's Problem already carries the `kind: .album` / `tracks(forAlbumId: trackId)` silent-failure chain, while C35's **Fix** already prescribes both remedies this entry proposes. The underlying facts do check out (`writeWidgetData` hardcodes `kind: .album` at `:5858` and `:5868` while the id falls back to `track.id`; the widget dutifully passes `recent.kind.rawValue`) — they are simply already someone else's finding.
 
@@ -11969,7 +11969,7 @@ truthful.
 **Re-verified (T238) —** independent second pass, agent 46, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `grep -n "isDiscoverable" Sources/VellumMusicKit/Widgets/PlayWidgetItemIntent.swift` returns nothing — neither `PlayWidgetItemIntent` nor `TogglePlaybackIntent` overrides it, so both default to discoverable per `AppIntent` (framework default, inference). Separately, `handleWidgetPlayCommand(itemId:itemKind:)` (AppModel.swift:2662-2678) never references its `itemKind` parameter and unconditionally does `try await lib.tracks(forAlbumId: itemId)` inside `do { ... } catch {}`; `writeWidgetData` (line ~5848) does `let id = track.albumId.isEmpty ? track.id : track.albumId` while still constructing `kind: .album` unconditionally, confirmed by direct read of that block.
+- **Evidence:** `grep -n "isDiscoverable" Sources/NaviTunesKit/Widgets/PlayWidgetItemIntent.swift` returns nothing — neither `PlayWidgetItemIntent` nor `TogglePlaybackIntent` overrides it, so both default to discoverable per `AppIntent` (framework default, inference). Separately, `handleWidgetPlayCommand(itemId:itemKind:)` (AppModel.swift:2662-2678) never references its `itemKind` parameter and unconditionally does `try await lib.tracks(forAlbumId: itemId)` inside `do { ... } catch {}`; `writeWidgetData` (line ~5848) does `let id = track.albumId.isEmpty ? track.id : track.albumId` while still constructing `kind: .album` unconditionally, confirmed by direct read of that block.
 - **Better approach:** N/A — `isDiscoverable = false` is a correct one-line fix. Note for the record: the `itemKind`-ignored half of this Problem/Fix is a verbatim duplicate of an already-existing finding (C35's own verify addendum states "it ignores `itemKind` entirely... never read"), so shipping this fix should be scoped to just the `isDiscoverable` line and cross-reference C35 for the rest rather than re-doing that work under this entry.
 - **Versus the first pass:** AGREE on the underlying facts (I independently found both the isDiscoverable gap and the itemKind-ignored bug, and confirmed via reading C35's own text that it already documents the itemKind half verbatim, including the identical `writeWidgetData`/`kind: .album` quote) — prior pass's call to strike clause 2 as a duplicate and keep only the `isDiscoverable` claim is correct and something I verified myself by reading C35 directly, not just taking it on faith.
 
@@ -11978,7 +11978,7 @@ truthful.
 ## C110 — A duplicate track id from a paged Jellyfin fetch traps `Dictionary(uniqueKeysWithValues:)`, and the duplicate is persisted so it crashes on every launch
 
 - **Round:** 5 · **Severity:** high · **Verdict:** **REINFORCED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/JellyfinMusicClient.swift:530–545`; trap at `App/AppModel.swift:1787–1793` (also `:1797, :2465, :2510, :4855, :4890, :5965`)
+- **File:** `Sources/NaviTunesKit/Backends/JellyfinMusicClient.swift:530–545`; trap at `App/AppModel.swift:1787–1793` (also `:1797, :2465, :2510, :4855, :4890, :5965`)
 
 ```swift
     func allTracks(limit: Int) async throws -> [Track] {
@@ -12038,7 +12038,7 @@ already-persisted duplicate cannot crash-loop.
 **Re-verified (T238) —** independent second pass, agent 13, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `JellyfinMusicClient.allTracks` (`:530-545`) matches verbatim, paging via `fetchAudioItemsPage(startIndex:limit:sortBy: "SortName", sortOrder: "Ascending")` with no id-based dedup across pages. `grep -n "Dictionary(uniqueKeysWithValues:\|uniquingKeysWith" Sources/VellumMusicKit/App/AppModel.swift` shows exactly 7 trapping-initializer sites (`:1789, 1797, 2465, 2510, 4855, 4890, 5965`) alongside 7 safe `uniquingKeysWith` sites — confirming both the trap location (`mergeOfflineCatalog`, `:1787-1793`) and the "seven other sites" count. `discoveryLibraryTracks` is restored from `snap.tracks` directly in `applyRestoredSnapshotTracks` with no dedup.
+- **Evidence:** `JellyfinMusicClient.allTracks` (`:530-545`) matches verbatim, paging via `fetchAudioItemsPage(startIndex:limit:sortBy: "SortName", sortOrder: "Ascending")` with no id-based dedup across pages. `grep -n "Dictionary(uniqueKeysWithValues:\|uniquingKeysWith" Sources/NaviTunesKit/App/AppModel.swift` shows exactly 7 trapping-initializer sites (`:1789, 1797, 2465, 2510, 4855, 4890, 5965`) alongside 7 safe `uniquingKeysWith` sites — confirming both the trap location (`mergeOfflineCatalog`, `:1787-1793`) and the "seven other sites" count. `discoveryLibraryTracks` is restored from `snap.tracks` directly in `applyRestoredSnapshotTracks` with no dedup.
 - **Better approach:** The fix's "dedupe by id inside `allTracks` (and Navidrome's `allTracksByWalkingAlbums`)" step is incomplete: the protocol's own default `allTracks` (`MusicLibraryProviding.swift:527-536`, `for album in albumsList { let ts = try await tracks(forAlbumId: album.id); out.append(contentsOf: ts) }`) has the identical no-id-set concatenation bug and is inherited by any backend that doesn't override it, and `LibraryMembershipPayload.decode` (`Library/LibraryMembership.swift:166-171`) does not dedupe either, so a poisoned/duplicated server-side comment JSON still reaches `Dictionary(uniqueKeysWithValues:)` at `LibraryView.swift:1952`. Extend the "dedupe as pages/rows are appended" step to both of those sites, in addition to the two named ones.
 - **Versus the first pass:** AGREE — I independently confirmed via grep that the protocol-default `allTracks` and `LibraryMembershipPayload.decode` are un-deduped and reach `LibraryView.swift:1952`/`StaleSongRecovery.swift:13`, the same scope gap the prior pass names as "blast radius undercounted."
 
@@ -12047,7 +12047,7 @@ already-persisted duplicate cannot crash-loop.
 ## C111 — Navidrome's `created` is an ISO-8601 string and the album/song parsers only accept numbers, so `libraryAddedDate` is always nil
 
 - **Round:** 5 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/NavidromeClient.swift:277–289` (parser); call sites `:182` (album) and `:980` (song)
+- **File:** `Sources/NaviTunesKit/Backends/NavidromeClient.swift:277–289` (parser); call sites `:182` (album) and `:980` (song)
 
 ```swift
     private func navidromeCreatedDate(_ value: Any?) -> Date? {
@@ -12099,7 +12099,7 @@ path first and then the three ISO formatters, so it is a strict superset of curr
 ## C112 — One malformed Radio Browser row empties the whole page, and the failing mirror is never rotated away
 
 - **Round:** 5 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Radio/RadioBrowserClient.swift:410, 425–438`
+- **File:** `Sources/NaviTunesKit/Radio/RadioBrowserClient.swift:410, 425–438`
 
 ```swift
         guard let rows = try? JSONDecoder().decode([StationDTO].self, from: data) else { return [] }
@@ -12153,7 +12153,7 @@ zero-row decode from a non-empty body as a host failure so rotation still happen
 ## C113 — Navidrome album rows are dropped when `id`/`name` are not JSON strings, though the song parser coerces the same fields
 
 - **Round:** 5 · **Severity:** low _(was medium; verifier judged reachability speculative)_ · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/NavidromeClient.swift:174–178`; the coercing twin at `:950` / `:888–899`
+- **File:** `Sources/NaviTunesKit/Backends/NavidromeClient.swift:174–178`; the coercing twin at `:950` / `:888–899`
 
 ```swift
     private func parseAlbumDict(_ dict: [String: Any]) -> AlbumSummary? {
@@ -12198,7 +12198,7 @@ let name = navidromeCoerceString(dict["name"]) ?? navidromeCoerceString(dict["ti
 ## C114 — Download path segments are bounded by grapheme count, not bytes, so long CJK or emoji titles silently fail to save
 
 - **Round:** 5 · **Severity:** low _(was medium; DENIED — the 255-byte premise is false; two residuals re-filed)_ · **Verdict:** **DENIED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Offline/OfflineDownloadManager.swift:330–338`; sanitiser at `:374–393`
+- **File:** `Sources/NaviTunesKit/Offline/OfflineDownloadManager.swift:330–338`; sanitiser at `:374–393`
 
 ```swift
     private static func structuredRelativePath(for track: Track, ext: String) -> String {
@@ -12265,7 +12265,7 @@ The limit is **255 UTF-16 code units**. *(Inference that iOS APFS matches: same 
 ## C115 — Jellyfin's `0001-01-01` sentinel dates are accepted as real dates
 
 - **Round:** 5 · **Severity:** low · **Verdict:** **REINFORCED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/JellyfinMusicClient.swift:1704–1707`; consumers `:1670–1671` (album), `:1734` (track)
+- **File:** `Sources/NaviTunesKit/Backends/JellyfinMusicClient.swift:1704–1707`; consumers `:1670–1671` (album), `:1734` (track)
 
 ```swift
     private func jellyfinDate(_ value: Any?) -> Date? {
@@ -12312,7 +12312,7 @@ the Recently Added ordering (`LibraryView:707`) and are treated as released in y
 ## C116 — A stringified non-finite duration flows into `Int()` and traps
 
 - **Round:** 5 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/NavidromeClient.swift:967–971`; sink at `Library/TrackListSummary.swift:57–61` (and `Offline/OfflineStorageBrowserViews.swift:104`)
+- **File:** `Sources/NaviTunesKit/Backends/NavidromeClient.swift:967–971`; sink at `Library/TrackListSummary.swift:57–61` (and `Offline/OfflineStorageBrowserViews.swift:104`)
 
 ```swift
         let duration: Double = {
@@ -12360,7 +12360,7 @@ Reachability is exotic, as the entry says, and **low** is right. The value of th
 ## C117 — Lidarr preview track ids collide on multi-disc releases, and the discs interleave
 
 - **Round:** 5 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Acquisition/LidarrAcquisitionPlugin.swift:1204–1223`; flatten at `:1180–1185`
+- **File:** `Sources/NaviTunesKit/Acquisition/LidarrAcquisitionPlugin.swift:1204–1223`; flatten at `:1180–1185`
 
 ```swift
         return rawTracks.enumerated().compactMap { index, track in
@@ -12415,7 +12415,7 @@ and sort by `(mediumNumber, position)`.
 ## C118 — A Jellyfin playlist row without `PlaylistItemId` falls back to the media id, and the remove call silently no-ops
 
 - **Round:** 5 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Backends/JellyfinMusicClient.swift:1470–1476`; removal at `:1039`
+- **File:** `Sources/NaviTunesKit/Backends/JellyfinMusicClient.swift:1470–1476`; removal at `:1039`
 
 ```swift
     private func parsePlaylistRow(dict: [String: Any], playlistId: String, index: Int) -> PlaylistRowItem? {
@@ -12456,7 +12456,7 @@ by aliasing the field and hoping.
 ## C119 — `DowntifyJob.id` mints a fresh `UUID` on every access when the job has no url, filename or title
 
 - **Round:** 5 · **Severity:** low · **Verdict:** **REINFORCED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Acquisition/DowntifyClient.swift:27–31`
+- **File:** `Sources/NaviTunesKit/Acquisition/DowntifyClient.swift:27–31`
 
 ```swift
 struct DowntifyJob: Decodable, Sendable, Identifiable, Hashable {
@@ -12508,7 +12508,7 @@ A random UUID makes `snapshot != serverJobs` **always true**, so the `@Published
 ## C120 — The "server catalog" is a single 500-album page, so everything catalog-wide only ever sees albums A–D
 
 - **Round:** 5 · **Severity:** low _(was high; DENIED — the recommendation-pool consequence is false; (a) is C90 and (c) is E46)_ · **Verdict:** **DENIED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:113, 3530–3536`; caps at `Backends/NavidromeClient.swift:113–114`, `Backends/JellyfinMusicClient.swift:338–346`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:113, 3530–3536`; caps at `Backends/NavidromeClient.swift:113–114`, `Backends/JellyfinMusicClient.swift:338–346`
 
 ```swift
     public static let defaultLibraryAlbumFetchLimit = 500
@@ -12568,7 +12568,7 @@ bulk-by-id fetch instead of N single-album requests.
 ## C121 — Creating a playlist from "Add to Playlist" dismisses the wrong sheet and orphans the picker
 
 - **Round:** 5 · **Severity:** high · **Verdict:** **REINFORCED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/NowPlaying/OverPlayerSheetPresenter.swift:34–39`; flow at `Library/ServerPlaylistViews.swift:207–214, 3379–3383`
+- **File:** `Sources/NaviTunesKit/NowPlaying/OverPlayerSheetPresenter.swift:34–39`; flow at `Library/ServerPlaylistViews.swift:207–214, 3379–3383`
 
 ```swift
     func dismiss(animated: Bool = true) {
@@ -12619,7 +12619,7 @@ button is also inert: it calls `dismissPlaylistPicker()`, which finds `hosting =
 ## C122 — "Go to Album" never detects the album already on screen, so it pushes a duplicate of the page you came from
 
 - **Round:** 5 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/ServerPlaylistViews.swift:1181–1198`; consumer `NowPlaying/NowPlayingView.swift:1667–1684`
+- **File:** `Sources/NaviTunesKit/Library/ServerPlaylistViews.swift:1181–1198`; consumer `NowPlaying/NowPlayingView.swift:1667–1684`
 
 ```swift
     private func detailOnDisappear() {
@@ -12678,7 +12678,7 @@ delegate's `didShow`, which the cover does not touch.
 ## C123 — A widget tap while a sheet is open is refused, then raises the player unbidden minutes later
 
 - **Round:** 5 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/RootView.swift:223–228`; presenter guard `NowPlaying/NowPlayingCoverZoomTransition.swift:606–621`
+- **File:** `Sources/NaviTunesKit/App/RootView.swift:223–228`; presenter guard `NowPlaying/NowPlayingCoverZoomTransition.swift:606–621`
 
 ```swift
         .onChange(of: app.openNowPlayingRequests) { _, _ in
@@ -12724,7 +12724,7 @@ Two facts neither reading changes: `guard view.window != nil else { return }` re
 ## C124 — Auto-popping a removed album collapses whatever the user has pushed above it
 
 - **Round:** 5 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/ServerPlaylistViews.swift:2862–2870`; menu `Library/LibraryCellContextMenus.swift:82–91`, applied at `Artist/ArtistPageView.swift:1455`
+- **File:** `Sources/NaviTunesKit/Library/ServerPlaylistViews.swift:2862–2870`; menu `Library/LibraryCellContextMenus.swift:82–91`, applied at `Artist/ArtistPageView.swift:1455`
 
 ```swift
     func body(content: Content) -> some View {
@@ -12774,7 +12774,7 @@ another device while an artist page or a "More By" album sits above X.
 ## C125 — Background re-authentication resets the selected tab mid-session
 
 - **Round:** 5 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:6987–6991`; tab write at `:1297–1299`, default at `:1246–1248`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:6987–6991`; tab write at `:1297–1299`, default at `:1246–1248`
 
 ```swift
         switch probe {
@@ -12820,7 +12820,7 @@ re-auth.
 ## C126 — "Go to …" is bound to the tab captured at tap time and fires 450 ms later whether or not the cover closed
 
 - **Round:** 5 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/NowPlaying/NowPlayingView.swift:1704–1723`
+- **File:** `Sources/NaviTunesKit/NowPlaying/NowPlayingView.swift:1704–1723`
 
 ```swift
         let targetTab = app.selectedTab
@@ -12876,7 +12876,7 @@ Playlist" in `ArtistNowPlayingMenuButton` when `sourcePlaylist == nil` so the ni
 ## C127 — The window-level dismiss pan also fires under the Add to Playlist sheet, tearing it off screen
 
 - **Round:** 5 · **Severity:** low · **Verdict:** **REINFORCED** _(verify pass, round 5; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/NowPlaying/NowPlayingCoverZoomTransition.swift:314–316, 337–341`; recognizer installed on the window at `:172–177`
+- **File:** `Sources/NaviTunesKit/NowPlaying/NowPlayingCoverZoomTransition.swift:314–316, 337–341`; recognizer installed on the window at `:172–177`
 
 ```swift
         guard host?.presentingViewController != nil else { return false }
@@ -12994,7 +12994,7 @@ The dropped set is listed in §11. Round 6 is the **hard cap** — see §12 for 
 ## L47 — The test suite is ~1% of the tree, and none of the subsystems the project itself calls risky has one
 
 - **Round:** 6 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Tests/VellumMusicKitTests/` (5 suites, 807 lines, ~50 tests); untested example `Sources/VellumMusicKit/Home/HomeMixBuilder.swift:52–69`
+- **File:** `Tests/NaviTunesKitTests/` (5 suites, 807 lines, ~50 tests); untested example `Sources/NaviTunesKit/Home/HomeMixBuilder.swift:52–69`
 
 ```swift
     struct Context {
@@ -13010,7 +13010,7 @@ The dropped set is listed in §11. Round 6 is the **hard cap** — see §12 for 
     static func buildMixes(_ context: Context) -> [HomeMix] {
 ```
 
-**Problem.** The harness itself is sound (Swift Testing via the `VellumMusicKitTests` scheme; CI runs
+**Problem.** The harness itself is sound (Swift Testing via the `NaviTunesKitTests` scheme; CI runs
 exactly what `CONTRIBUTING.md` documents; `swift test` genuinely cannot work), and the five existing
 suites are good — each is a regression net for a real shipped defect and none passes vacuously. The
 problem is the shape of the coverage: ~700 of 74,299 lines. **Every subsystem CLAUDE.md flags as risky
@@ -13032,7 +13032,7 @@ the proportion at all.
 the stale `CONTRIBUTING.md` sentence.
 
 
-**Verified —** Every number re-counted from source and exact: `Sources/VellumMusicKit` = **74,299** lines; `Tests/` = 5 files, **807** lines, 5 suites; `AppModel` 7,004, `PlaybackEngine` 3,555, the two clients 3,881 combined. `find Tests -type f ! -name '*.swift'` returns **nothing**, so "not one fixture" is literally true. `grep -rn codeCoverageEnabled` across all three schemes: **no match**. `CONTRIBUTING.md:58`'s two-suite sentence is present and stale.
+**Verified —** Every number re-counted from source and exact: `Sources/NaviTunesKit` = **74,299** lines; `Tests/` = 5 files, **807** lines, 5 suites; `AppModel` 7,004, `PlaybackEngine` 3,555, the two clients 3,881 combined. `find Tests -type f ! -name '*.swift'` returns **nothing**, so "not one fixture" is literally true. `grep -rn codeCoverageEnabled` across all three schemes: **no match**. `CONTRIBUTING.md:58`'s two-suite sentence is present and stale.
 
 **One number to correct: "~50 tests" undercounts.** There are **61** `@Test` declarations (LibraryMembership 18, NavidromeLyricsParser 17, LibraryTrackMatcher 10, ArtistReleaseKind 8, GenreCanonicalizer 8), and parameterised cases push the executed count higher.
 
@@ -13044,7 +13044,7 @@ The fix is sound and correctly ordered; `codeCoverageEnabled="YES"` is a one-att
 **Re-verified (T238) —** independent second pass, agent 49, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `find ~/Lyra-Music/Sources/VellumMusicKit -name "*.swift" | xargs wc -l` returns exactly `74299 total`, and `Tests/VellumMusicKitTests/` sums to `807 total` across the 5 named suites — both figures match the finding exactly. `HomeMixBuilder.swift:52-60` is verbatim the quoted pure `Context` struct with injected closures, `StaleSongMatching` exists at `Playback/StaleSongRecovery.swift:8`, and `CONTRIBUTING.md:58-59` still reads "Current suites cover `LibraryMembership` … and `GenreCanonicalizer`" though 5 suites exist. `VellumMusicKitTests.xcscheme`'s `<TestAction>` block has no `codeCoverageEnabled` attribute at all.
+- **Evidence:** `find ~/Lyra-Music/Sources/NaviTunesKit -name "*.swift" | xargs wc -l` returns exactly `74299 total`, and `Tests/NaviTunesKitTests/` sums to `807 total` across the 5 named suites — both figures match the finding exactly. `HomeMixBuilder.swift:52-60` is verbatim the quoted pure `Context` struct with injected closures, `StaleSongMatching` exists at `Playback/StaleSongRecovery.swift:8`, and `CONTRIBUTING.md:58-59` still reads "Current suites cover `LibraryMembership` … and `GenreCanonicalizer`" though 5 suites exist. `NaviTunesKitTests.xcscheme`'s `<TestAction>` block has no `codeCoverageEnabled` attribute at all.
 - **Versus the first pass:** AGREE — the recorded block re-derives the same exact counts (74,299 / 807 / 5 suites) and the same stale-CONTRIBUTING and missing-coverage-flag facts; its only addition is a "~50 tests" undercount correction (61 `@Test`s) and a citation-range nit, neither of which changes the verdict.
 
 ---
@@ -13101,12 +13101,12 @@ repos/.../branches/main → {"name":"main","protected":false}
 ## L49 — A private `isHexDigit` shadows the standard library's, so the test and the guard use two different definitions
 
 - **Round:** 6 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/LibraryMembership.swift:104–108, 133–137`; test at `Tests/VellumMusicKitTests/LibraryMembershipTests.swift:78–82`
+- **File:** `Sources/NaviTunesKit/Library/LibraryMembership.swift:104–108, 133–137`; test at `Tests/NaviTunesKitTests/LibraryMembershipTests.swift:78–82`
 
 ```swift
     static func isMagicPlaylistName(_ name: String) -> Bool {
-        guard name.hasPrefix("__vellum_") else { return false }
-        let suffix = name.dropFirst("__vellum_".count)
+        guard name.hasPrefix("__navitunes_") else { return false }
+        let suffix = name.dropFirst("__navitunes_".count)
         return suffix.count == 12 && suffix.allSatisfy(\.isHexDigit)
     }
     // … (elided: unrelated members between 109 and 132)
@@ -13142,7 +13142,7 @@ the test already uses. If ASCII-only strictness is genuinely wanted, make it an 
 **Re-verified (T238) —** independent second pass, agent 49, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `LibraryMembership.swift:104-108` calls `suffix.allSatisfy(\.isHexDigit)` inside the same file that declares `private extension Character { var isHexDigit: Bool {...} }` at `:133-137` — confirmed by direct read, lines match exactly. `Tests/VellumMusicKitTests/LibraryMembershipTests.swift:80` also calls `suffix.allSatisfy(\.isHexDigit)`, but Swift's `private` is file-scoped and untouched by `@testable`, so that call resolves to the stdlib's looser `Character.isHexDigit`, not the guard's ASCII-only one. `grep -rn "\.isHexDigit"` shows exactly these two source sites plus one more in `MusicDesignSystem.swift:104`.
+- **Evidence:** `LibraryMembership.swift:104-108` calls `suffix.allSatisfy(\.isHexDigit)` inside the same file that declares `private extension Character { var isHexDigit: Bool {...} }` at `:133-137` — confirmed by direct read, lines match exactly. `Tests/NaviTunesKitTests/LibraryMembershipTests.swift:80` also calls `suffix.allSatisfy(\.isHexDigit)`, but Swift's `private` is file-scoped and untouched by `@testable`, so that call resolves to the stdlib's looser `Character.isHexDigit`, not the guard's ASCII-only one. `grep -rn "\.isHexDigit"` shows exactly these two source sites plus one more in `MusicDesignSystem.swift:104`.
 - **Better approach:** The fix itself already names the better option (an `internal static func isASCIIHex(_:)` shared by the guard and the test) but presents "delete the private extension" as the primary action. Deleting it makes `isMagicPlaylistName` accept Unicode "hex digit" fullwidth forms it previously rejected — harmless today only because generated names are always ASCII, but it's loosening a documented safety-boundary predicate as an incidental side effect of a cleanup rather than a deliberate, tested choice. Lead with the shared `isASCIIHex` helper instead of the extension deletion.
 - **Versus the first pass:** AGREE — the recorded block reaches the identical mechanism (`private` is file-scoped, `@testable` promotes `internal` not `private`) and independently concludes "the fix's first option is the wrong direction and must be dropped... offer only option two," which is the same substantive correction I make (option 1 works but is stylistically the wrong lead; option 2 is correct).
 
@@ -13151,7 +13151,7 @@ the test already uses. If ASCII-only strictness is genuinely wanted, make it an 
 ## E52 — The library snapshot is decoded from disk two or three times per cold launch
 
 - **Round:** 6 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Offline/OfflineDownloadManager.swift:179–192`; `App/AppModel.swift:1650–1651, 3566–3569`
+- **File:** `Sources/NaviTunesKit/Offline/OfflineDownloadManager.swift:179–192`; `App/AppModel.swift:1650–1651, 3566–3569`
 
 ```swift
     init() {
@@ -13208,7 +13208,7 @@ and `downloadedTrackIds` from it. Gate the legacy reconcile behind a one-time `U
 ## E53 — Every `.inactive → .active` transition re-fetches membership twice and synchronously encodes the queue
 
 - **Round:** 6 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `VellumMusicHost/VellumMusicHost/VellumMusicHostApp.swift:24–32`; `Sources/VellumMusicKit/App/AppModel.swift:2623–2631`; `App/RootView.swift:209–214`
+- **File:** `NaviTunesHost/NaviTunesHost/NaviTunesHostApp.swift:24–32`; `Sources/NaviTunesKit/App/AppModel.swift:2623–2631`; `App/RootView.swift:209–214`
 
 ```swift
                     case .inactive, .background:
@@ -13252,7 +13252,7 @@ the snapshot is unchanged.
 **Re-verified (T238) —** independent second pass, agent 49, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** WRONG
-- **Evidence:** `VellumMusicHostApp.swift:24-32` matches verbatim: `case .inactive, .background:` calls `appModel.stopLibraryMembershipAutoSync()`; `case .active:` calls `handleAppBecameActive()`. `startLibraryMembershipAutoSync()` (`AppModel.swift:2151-2165`) loops `while !Task.isCancelled { ...; await self.refreshLibraryMembership(); ... try? await Task.sleep(for: .seconds(60)) }` — the fetch runs before any sleep. `lastLibraryMembershipRefresh` is written only at `AppModel.swift:2128`, inside the `do` block, after both awaits succeed. `RootView.swift:210-215` independently calls `Task { await app.refreshLibraryMembershipIfStale() }` on `scenePhase == .active`, and `refreshLibraryMembershipIfStale` (`:2144-2148`) checks that same late-written timestamp — so both can fire concurrently.
+- **Evidence:** `NaviTunesHostApp.swift:24-32` matches verbatim: `case .inactive, .background:` calls `appModel.stopLibraryMembershipAutoSync()`; `case .active:` calls `handleAppBecameActive()`. `startLibraryMembershipAutoSync()` (`AppModel.swift:2151-2165`) loops `while !Task.isCancelled { ...; await self.refreshLibraryMembership(); ... try? await Task.sleep(for: .seconds(60)) }` — the fetch runs before any sleep. `lastLibraryMembershipRefresh` is written only at `AppModel.swift:2128`, inside the `do` block, after both awaits succeed. `RootView.swift:210-215` independently calls `Task { await app.refreshLibraryMembershipIfStale() }` on `scenePhase == .active`, and `refreshLibraryMembershipIfStale` (`:2144-2148`) checks that same late-written timestamp — so both can fire concurrently.
 - **Better approach:** The fix's first and most prominent clause ("Stop the auto-sync on `.background` only, not `.inactive`") reverses a decision the code documents inline immediately above the quoted switch: `// `.inactive` fires when pressing Home on a physical device; `.background` alone is unreliable.` Implementing this literally would leave the membership poll running through exactly the moment (pressing Home) it exists to catch, reintroducing "the background radio wake-ups" the comment at `AppModel.swift` (`stopLibraryMembershipAutoSync` call site) says `.inactive` was added to stop. Keep the `.inactive` stop; instead de-duplicate the concurrent fetch by giving `refreshLibraryMembership()` itself an in-flight `Task` handle that a second caller awaits rather than re-issuing (the fix's suggestion to do this for `refreshHome()`/`refreshLibraryPlaylists()` should be applied to `refreshLibraryMembership` too, which is the function actually racing here).
 - **Versus the first pass:** AGREE — the recorded block reaches the same conclusion in the same words: "The fix's first clause reverses a deliberate choice and must be dropped... Take the other half instead: leave the `.inactive` stop alone and kill the duplicate with an in-flight `Task` handle."
 
@@ -13261,7 +13261,7 @@ the snapshot is unchanged.
 ## E54 — Every failed catalog refresh re-applies a snapshot that is already in memory, rebuilding the album index
 
 - **Round:** 6 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:3567–3570`, with `:1682–1699` and `:222–226`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:3567–3570`, with `:1682–1699` and `:222–226`
 
 ```swift
         } catch {
@@ -13307,7 +13307,7 @@ which is precisely the empty case.
 ## E55 — The Downloads filter rescans every favorite id on each body pass
 
 - **Round:** 6 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/LibraryView.swift:645–651`, reached from `:786`
+- **File:** `Sources/NaviTunesKit/Library/LibraryView.swift:645–651`, reached from `:786`
 
 ```swift
     private var favoriteSongCount: Int {
@@ -13346,7 +13346,7 @@ mirroring `recomputePlaylistIdsWithDownloads`.
 **Re-verified (T238) —** independent second pass, agent 50, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `Sources/VellumMusicKit/Library/LibraryView.swift:645-651` contains exactly the cited `favoriteSongCount`, and it is reached from `body` (line 783 `var body`) via `let all = displayedPlaylists` at line 786. By contrast the sibling `playlistIdsWithDownloads` is a real `@State` (line 622) recomputed only in `.onChange(of: offline.downloadedTrackIds)` (line 901) and `.task(id: filter)` (line 898) — `favoriteSongCount` has no such caching, so the `.downloads` branch (`app.favoriteTrackIds.filter { app.offline.downloadedTrackIds.contains($0) }.count`) reruns on every `AppModel` publish.
+- **Evidence:** `Sources/NaviTunesKit/Library/LibraryView.swift:645-651` contains exactly the cited `favoriteSongCount`, and it is reached from `body` (line 783 `var body`) via `let all = displayedPlaylists` at line 786. By contrast the sibling `playlistIdsWithDownloads` is a real `@State` (line 622) recomputed only in `.onChange(of: offline.downloadedTrackIds)` (line 901) and `.task(id: filter)` (line 898) — `favoriteSongCount` has no such caching, so the `.downloads` branch (`app.favoriteTrackIds.filter { app.offline.downloadedTrackIds.contains($0) }.count`) reruns on every `AppModel` publish.
 - **Better approach:** The two `.onChange` handlers alone leave the new `@State` stale when `filter` itself flips from `.all`/`.favorites` to `.downloads` (neither `favoriteTrackIds` nor `downloadedTrackIds` changes on that transition). The existing `.task(id: filter)` (line 898, which already drives `refreshPlaylistDownloadIndexIfNeeded`) must also seed `downloadedFavoriteCount` so the count doesn't show the wrong number for one frame after switching filters.
 - **Versus the first pass:** AGREE — matches the recorded CONFIRMED verdict, and independently landed on the same "fix gap" (staleness on `filter` transition, `.task(id: filter)` must seed the new state).
 
@@ -13355,7 +13355,7 @@ mirroring `recomputePlaylistIdsWithDownloads`.
 ## E56 — The membership poll and the playback prewarm both run with no network
 
 - **Round:** 6 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:2151–2165`; `Playback/PlaybackEngine.swift:2217–2233`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:2151–2165`; `Playback/PlaybackEngine.swift:2217–2233`
 
 ```swift
             while !Task.isCancelled {
@@ -13396,8 +13396,8 @@ Task.sleep(for: .seconds(60)); continue }`, or await a `hasInternetPath` change.
 **Re-verified (T238) —** independent second pass, agent 50, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `Sources/VellumMusicKit/App/AppModel.swift:2151` starts `func startLibraryMembershipAutoSync()`, whose loop body (from 2155) is `while !Task.isCancelled { guard let self, self.isSignedIn else { return }; await self.refreshLibraryMembership(); ... try? await Task.sleep(for: .seconds(60)) }` — no `hasInternetPath`/`effectiveOfflineMode` guard anywhere in it. Contrast with `warmPlaylistRowsCache` at line 3643: `guard playlistRowsDiskRestoreCompleted, isSignedIn, !effectiveOfflineMode else { return }`. `schedulePrewarmNextTrack` (`PlaybackEngine.swift:2217`) likewise has no connectivity check and unconditionally does `Task.detached(priority: .utility) { _ = try? await asset.load(.isPlayable) }` for remote candidates.
-- **Better approach:** The `AppModel` loop half compiles and is correct as written (both `hasInternetPath` and `effectiveOfflineMode` are properties on the same type). The `PlaybackEngine` half is underspecified: `grep -n "effectiveOfflineMode\|hasInternetPath" Sources/VellumMusicKit/Playback/PlaybackEngine.swift` returns nothing — the engine has no connectivity signal at all, only `private weak var offline: OfflineDownloadManager?`. `OfflineDownloadManager` does expose `var networkPolicy: NetworkPolicy` (wired by `AppModel.wireOfflineDownloadManager()` to `(online: hasInternetPath, wifiLike: prefersWifiLikePath)`), but that reflects raw connectivity only, not the user's manual `offlineMode`/`autoOfflineActive` toggle — so even calling `offline?.networkPolicy().online` from the engine would miss the "auto-offline while still having a cellular path" case the finding is really about. A real fix needs a new closure (mirroring the `networkPolicy`/`artworkURLForTrack` injection pattern already used for `offline`) that PlaybackEngine can consult before prewarming.
+- **Evidence:** `Sources/NaviTunesKit/App/AppModel.swift:2151` starts `func startLibraryMembershipAutoSync()`, whose loop body (from 2155) is `while !Task.isCancelled { guard let self, self.isSignedIn else { return }; await self.refreshLibraryMembership(); ... try? await Task.sleep(for: .seconds(60)) }` — no `hasInternetPath`/`effectiveOfflineMode` guard anywhere in it. Contrast with `warmPlaylistRowsCache` at line 3643: `guard playlistRowsDiskRestoreCompleted, isSignedIn, !effectiveOfflineMode else { return }`. `schedulePrewarmNextTrack` (`PlaybackEngine.swift:2217`) likewise has no connectivity check and unconditionally does `Task.detached(priority: .utility) { _ = try? await asset.load(.isPlayable) }` for remote candidates.
+- **Better approach:** The `AppModel` loop half compiles and is correct as written (both `hasInternetPath` and `effectiveOfflineMode` are properties on the same type). The `PlaybackEngine` half is underspecified: `grep -n "effectiveOfflineMode\|hasInternetPath" Sources/NaviTunesKit/Playback/PlaybackEngine.swift` returns nothing — the engine has no connectivity signal at all, only `private weak var offline: OfflineDownloadManager?`. `OfflineDownloadManager` does expose `var networkPolicy: NetworkPolicy` (wired by `AppModel.wireOfflineDownloadManager()` to `(online: hasInternetPath, wifiLike: prefersWifiLikePath)`), but that reflects raw connectivity only, not the user's manual `offlineMode`/`autoOfflineActive` toggle — so even calling `offline?.networkPolicy().online` from the engine would miss the "auto-offline while still having a cellular path" case the finding is really about. A real fix needs a new closure (mirroring the `networkPolicy`/`artworkURLForTrack` injection pattern already used for `offline`) that PlaybackEngine can consult before prewarming.
 - **Versus the first pass:** AGREE — matches CONFIRMED, and independently arrived at the same conclusion that the prewarm-half fix is not a drop-in edit and needs new plumbing into `PlaybackEngine`.
 
 ---
@@ -13405,7 +13405,7 @@ Task.sleep(for: .seconds(60)); continue }`, or await a `hasInternetPath` change.
 ## P55 — The Lyrics, Queue and Sleep-timer buttons are unlabeled, and never say whether their panel is open
 
 - **Round:** 6 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/NowPlaying/NowPlayingView.swift:1957–1968`, glow at `:2057–2094`
+- **File:** `Sources/NaviTunesKit/NowPlaying/NowPlayingView.swift:1957–1968`, glow at `:2057–2094`
 
 ```swift
     private func bottomChromeIconButton(
@@ -13463,7 +13463,7 @@ the frame to 44×44.
 ## P56 — The mini player's transport is unlabeled and its artist line ignores Dynamic Type
 
 - **Round:** 6 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/NowPlaying/MiniPlayerView.swift:129–138, 145–164`
+- **File:** `Sources/NaviTunesKit/NowPlaying/MiniPlayerView.swift:129–138, 145–164`
 
 ```swift
                         Text(track.artist)
@@ -13504,7 +13504,7 @@ path is reachable.
 **Re-verified (T238) —** independent second pass, agent 50, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `grep -c accessibility Sources/VellumMusicKit/NowPlaying/MiniPlayerView.swift` finds none of the play/pause (`.frame(width: 28, height: 30)` inline / `28-32` expanded), skip, or expand controls labeled. Lines 129-138 confirm the artist `Text` at unconditional `.font(.system(size: 10))` in `inlineAccessoryBody`, but `expandedBody`'s equivalent at line 205 is `.font(isTabAccessory ? .system(size: 10) : .caption)` — so the `.standalone` layout's artist line already scales with Dynamic Type via `.caption`, contradicting the finding's "fixed 10pt in both layouts" framing (it's fixed in `.tabViewAccessoryInline` and `.tabViewAccessoryExpanded` only). `inlineAccessoryBody` indeed has no skip button (`showsSkip = layout == .standalone || layout == .tabViewAccessoryExpanded`).
+- **Evidence:** `grep -c accessibility Sources/NaviTunesKit/NowPlaying/MiniPlayerView.swift` finds none of the play/pause (`.frame(width: 28, height: 30)` inline / `28-32` expanded), skip, or expand controls labeled. Lines 129-138 confirm the artist `Text` at unconditional `.font(.system(size: 10))` in `inlineAccessoryBody`, but `expandedBody`'s equivalent at line 205 is `.font(isTabAccessory ? .system(size: 10) : .caption)` — so the `.standalone` layout's artist line already scales with Dynamic Type via `.caption`, contradicting the finding's "fixed 10pt in both layouts" framing (it's fixed in `.tabViewAccessoryInline` and `.tabViewAccessoryExpanded` only). `inlineAccessoryBody` indeed has no skip button (`showsSkip = layout == .standalone || layout == .tabViewAccessoryExpanded`).
 - **Better approach:** `.contentShape(Rectangle())` is already present on every transport button (e.g. lines 161-162: `.frame(width: 28, height: 30); .contentShape(Rectangle())`) — it doesn't enlarge the tappable area beyond the frame it's given, so "add `.contentShape` with a 44pt minimum" is the wrong lever; the actual fix is enlarging the `.frame` itself (e.g. `.frame(minWidth: 44, minHeight: 44)`) before `contentShape` is applied. Also, since `.tabViewAccessoryInline` has no skip-forward button at all, a `.accessibilityAction(named: "Previous")` alone leaves that layout with zero accessible way to skip forward — a matching `"Next"` action is needed there too, not just a label on a button that doesn't exist in that layout.
 - **Versus the first pass:** AGREE — matches CONFIRMED. The recorded block adds two things I did not independently catch (this is a duplicate of P01's mini-player sub-claim, and `.accessibilityAction` on a shared container would cascade to every descendant element rather than attach once) which strengthen rather than contradict my read that the fix is incomplete/imprecise.
 
@@ -13513,7 +13513,7 @@ path is reachable.
 ## P57 — The Home Top Pick card clips its own title and artist at accessibility text sizes
 
 - **Round:** 6 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Home/HomeView.swift:513–521`; metrics at `DesignSystem/MusicDesignSystem.swift:528–532`
+- **File:** `Sources/NaviTunesKit/Home/HomeView.swift:513–521`; metrics at `DesignSystem/MusicDesignSystem.swift:528–532`
 
 ```swift
     static let homeTopPickCardWidth: CGFloat = 250
@@ -13551,7 +13551,7 @@ fallback for fixed-art cards but the scaled band is the better fix.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
 - **Evidence:** `MusicDesignSystem.swift:528-532` matches verbatim (`homeTopPickCardHeight: 325`, `homeTopPickArtworkSize: 250`, band = 75). In `HomeView.swift`, `HomeTopPickCard.body` places `bleedMetadataRegion.frame(width: cardWidth, height: bleedBandHeight)` inside a `VStack` under `.frame(width: cardWidth, height: cardHeight).clipShape(RoundedRectangle(...))` — and `metadataBlock`'s title `Text` uses `.font(.headline.weight(.bold)).lineLimit(2).fixedSize(horizontal: false, vertical: true)`, which forces natural (uncapped) height inside that fixed 75pt band, so oversized content is clipped by the card's own `clipShape`.
-- **Better approach:** The fix only changes `HomeTopPickCard`'s internal height math, but two other sites hard-code the same 325pt constant and are not touched: `HomeView.swift:246`, `.frame(height: MusicDesign.homeTopPickCardHeight)` on the `heroShelf`'s horizontal `ScrollView` — if the card grows via `@ScaledMetric` but this sibling frame doesn't, the *ScrollView* clips the taller card instead of the card clipping itself; and `Sources/VellumMusicKit/DesignSystem/MusicLoadingShimmer.swift:93-94` (`cardWidth`/`cardHeight` read the same static constants for the loading skeleton), which would stay 325pt while the real card grows, producing a shelf height jump when content loads. Both need to move in lockstep with the scaled card height.
+- **Better approach:** The fix only changes `HomeTopPickCard`'s internal height math, but two other sites hard-code the same 325pt constant and are not touched: `HomeView.swift:246`, `.frame(height: MusicDesign.homeTopPickCardHeight)` on the `heroShelf`'s horizontal `ScrollView` — if the card grows via `@ScaledMetric` but this sibling frame doesn't, the *ScrollView* clips the taller card instead of the card clipping itself; and `Sources/NaviTunesKit/DesignSystem/MusicLoadingShimmer.swift:93-94` (`cardWidth`/`cardHeight` read the same static constants for the loading skeleton), which would stay 325pt while the real card grows, producing a shelf height jump when content loads. Both need to move in lockstep with the scaled card height.
 - **Versus the first pass:** AGREE — matches REINFORCED and independently landed on the same `HomeView.swift:246` gap before reading the prior pass's block; the shimmer-file gap was confirmed by grep and is exactly as recorded.
 
 ---
@@ -13559,7 +13559,7 @@ fallback for fixed-art cards but the scaled band is the better fix.
 ## P58 — Every hero title is a fixed-point font, so at large type sizes the page title is the smallest text on screen
 
 - **Round:** 6 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/ServerPlaylistViews.swift:1840–1841`; also `AlbumDetail/BrowseAlbumDetailView.swift:484–485`, `Library/LibraryView.swift:1256–1257`, `Artist/ArtistPageView.swift:592–596`, `Settings/LoginView.swift:143–144`
+- **File:** `Sources/NaviTunesKit/Library/ServerPlaylistViews.swift:1840–1841`; also `AlbumDetail/BrowseAlbumDetailView.swift:484–485`, `Library/LibraryView.swift:1256–1257`, `Artist/ArtistPageView.swift:592–596`, `Settings/LoginView.swift:143–144`
 
 ```swift
                 Text(navigationTitleText.isEmpty ? source.displayName : navigationTitleText)
@@ -13608,7 +13608,7 @@ wraps instead. If exactly 26 pt at the default size matters, use
 ## P59 — "Now playing" and "favorite" are conveyed by colour and glyph alone, and both are hidden from VoiceOver
 
 - **Round:** 6 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/LibrarySongsView.swift:731–779`; `AlbumDetail/AppleMusicAlbumTrackRow.swift:383–389, 394–395`; `NowPlaying/NowPlayingBarsIndicator.swift:14–34`
+- **File:** `Sources/NaviTunesKit/Library/LibrarySongsView.swift:731–779`; `AlbumDetail/AppleMusicAlbumTrackRow.swift:383–389, 394–395`; `NowPlaying/NowPlayingBarsIndicator.swift:14–34`
 
 ```swift
                         if isFavorite {
@@ -13660,7 +13660,7 @@ overlay.
 ## P60 — "Browsing downloaded content only" is false everywhere except the screen it appears on
 
 - **Round:** 6 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Settings/SettingsSections.swift:105–111`
+- **File:** `Sources/NaviTunesKit/Settings/SettingsSections.swift:105–111`
 
 ```swift
                 if app.effectiveOfflineMode {
@@ -13703,7 +13703,7 @@ per-row catalog scan.
 **Re-verified (T238) —** independent second pass, agent 51, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `grep -rn "effectiveOfflineMode" Sources/VellumMusicKit` returns hits only in `App/AppModel.swift` (definition + `warmPlaylistRowsCache`/`registerPlay`), `Discovery/DiscoverySearchView.swift`, `Radio/RadioTabView.swift`, `Scrobbling/ScrobbleService.swift`, and the Settings copy itself (`SettingsSections.swift:105`) — zero hits under `Library/`, `Home/`, `AlbumDetail/`, `Artist/`, `NowPlaying/`. The label reads `Label("Browsing downloaded content only", systemImage: "wifi.slash")` guarded only by `if app.effectiveOfflineMode`, with no corresponding gate anywhere in Library/Home/AlbumDetail/Artist. The `downloadsOnly` filter defaults (`LibrarySongsView.swift:21`, `LibraryView.swift:613,1885`) are seeded from caller-supplied navigation arguments, never from offline state.
+- **Evidence:** `grep -rn "effectiveOfflineMode" Sources/NaviTunesKit` returns hits only in `App/AppModel.swift` (definition + `warmPlaylistRowsCache`/`registerPlay`), `Discovery/DiscoverySearchView.swift`, `Radio/RadioTabView.swift`, `Scrobbling/ScrobbleService.swift`, and the Settings copy itself (`SettingsSections.swift:105`) — zero hits under `Library/`, `Home/`, `AlbumDetail/`, `Artist/`, `NowPlaying/`. The label reads `Label("Browsing downloaded content only", systemImage: "wifi.slash")` guarded only by `if app.effectiveOfflineMode`, with no corresponding gate anywhere in Library/Home/AlbumDetail/Artist. The `downloadsOnly` filter defaults (`LibrarySongsView.swift:21`, `LibraryView.swift:613,1885`) are seeded from caller-supplied navigation arguments, never from offline state.
 - **Better approach:** N/A — rewriting the label text is minimal, correct, and carries no implementation risk.
 - **Versus the first pass:** AGREE — the recorded block re-ran the same per-folder search and reproduced the exact same hit distribution, and correctly scoped the criticism to the `Label` specifically (the footer text is closer to true).
 
@@ -13712,7 +13712,7 @@ per-row catalog scan.
 ## C128 — A passing test asserts that a lyric line is silently dropped, and documents the loss as intended
 
 - **Round:** 6 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Tests/VellumMusicKitTests/NavidromeLyricsParserTests.swift:206–215`; source `Backends/NavidromeClient.swift:1930–1943`
+- **File:** `Tests/NaviTunesKitTests/NavidromeLyricsParserTests.swift:206–215`; source `Backends/NavidromeClient.swift:1930–1943`
 
 ```swift
     /// When there is real plain text alongside, it still wins — that path is unchanged.
@@ -13767,7 +13767,7 @@ doc comment describing why the timestamps are discarded but the text is not.
 ## C129 — `decode(encoded())` is not identity, so every local library add makes the next poll do the expensive work it was written to avoid
 
 - **Round:** 6 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/LibraryMembership.swift:166–181`; writers `App/AppModel.swift:3177`, `:2891`; consumer `:2307–2309`
+- **File:** `Sources/NaviTunesKit/Library/LibraryMembership.swift:166–181`; writers `App/AppModel.swift:3177`, `:2891`; consumer `:2307–2309`
 
 ```swift
     static func decode(_ raw: String?) -> LibraryMembershipPayload {
@@ -13823,7 +13823,7 @@ identity: false
 
 - **Problem:** REAL · **Fix:** ADEQUATE
 - **Evidence:** `LibraryMembershipPayload.decode`/`encoded()` (`LibraryMembership.swift:166-181`) both use `dateDecodingStrategy = .iso8601` / `dateEncodingStrategy = .iso8601`, which (via `.withInternetDateTime`) serializes whole seconds only. The append sites write full-precision dates: `libraryAlbumEntries.append(.init(id: track.albumId, added: Date()))` (`AppModel.swift:2891`) and `libraryAlbumEntries.append(.init(id: album.id, added: Date()))` (`AppModel.swift:3177`). `Entry` (`LibraryMembership.swift:144-147`) is a plain `Codable, Equatable, Hashable` struct with no custom `==`, so equality is synthesized over `added` including its fraction. The consumer at `AppModel.swift:2307` (`if libraryAlbumEntries != payload.albums`) will therefore be true on the very next poll after an add, entering the `didMutate` branch that runs `rebuildHomeTopPicksFromMemory()`, `backfillMissingLibraryAlbumSummaries()`, an avatar refresh, and `persistLibrarySnapshot()`.
-- **Better approach:** Truncating at the append sites is correct in principle, but `grep -n "added: Date()" AppModel.swift` shows a **third** identical writer the finding doesn't cite: `AppModel.swift:3374`, `libraryPlaylistEntries.append(.init(id: playlist.id, added: Date()))` inside `addPlaylistToLibrary`, which drives the sibling comparison `libraryPlaylistEntries != payload.playlists` at `:2311-2313` — a fix applied only to the two album sites leaves adding a playlist still spuriously mutating. Also, `grep -n "upsertAlbum(\|upsertPlaylist(" Sources/VellumMusicKit Tests` shows these two methods (which the fix also says to patch) have zero call sites — they're dead code, so citing them implies live writers that don't exist. A more robust fix centralizes the truncation inside `Entry`'s initializer (or a custom `init(id:added:)` that floors to whole seconds) so it can't be missed at any current or future append site, rather than patching each call site by hand.
+- **Better approach:** Truncating at the append sites is correct in principle, but `grep -n "added: Date()" AppModel.swift` shows a **third** identical writer the finding doesn't cite: `AppModel.swift:3374`, `libraryPlaylistEntries.append(.init(id: playlist.id, added: Date()))` inside `addPlaylistToLibrary`, which drives the sibling comparison `libraryPlaylistEntries != payload.playlists` at `:2311-2313` — a fix applied only to the two album sites leaves adding a playlist still spuriously mutating. Also, `grep -n "upsertAlbum(\|upsertPlaylist(" Sources/NaviTunesKit Tests` shows these two methods (which the fix also says to patch) have zero call sites — they're dead code, so citing them implies live writers that don't exist. A more robust fix centralizes the truncation inside `Entry`'s initializer (or a custom `init(id:added:)` that floors to whole seconds) so it can't be missed at any current or future append site, rather than patching each call site by hand.
 - **Versus the first pass:** AGREE — the recorded block confirmed the exact same missing third writer at `:3374` and the same dead-code observation about `upsertAlbum`/`upsertPlaylist`, both of which I found independently before reading it.
 
 ---
@@ -13831,7 +13831,7 @@ identity: false
 ## C130 — `GenreCanonicalizer`'s first-match-wins keyword scan files compound genres under the wrong head
 
 - **Round:** 6 · **Severity:** medium · **Verdict:** **REINFORCED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/GenreCanonicalizer.swift:14–30`
+- **File:** `Sources/NaviTunesKit/Library/GenreCanonicalizer.swift:14–30`
 
 ```swift
         ("Electronic",  ["electronic", "electronica", "edm", "house", "techno", "trance", "dubstep",
@@ -13907,8 +13907,8 @@ verifiable from this tree):* App Store Connect rejects uploads using these APIs 
 declaring reasons. Nothing in the repo or in CI catches this before the upload fails, so it surfaces at
 the worst moment. Filed high because it blocks shipping rather than degrading a feature.
 
-**Fix.** Add `VellumMusicHost/VellumMusicHost/PrivacyInfo.xcprivacy` to the host's Resources phase and —
-while the extension still links the whole kit (**L10**) — the same file to `VellumWidgets`. Declare
+**Fix.** Add `NaviTunesHost/NaviTunesHost/PrivacyInfo.xcprivacy` to the host's Resources phase and —
+while the extension still links the whole kit (**L10**) — the same file to `NaviTunesWidgets`. Declare
 `NSPrivacyAccessedAPITypes` for `NSPrivacyAccessedAPICategoryUserDefaults` (CA92.1),
 `…FileTimestamp` (C617.1) and `…SystemBootTime` (35F9.1), plus `NSPrivacyTracking = false` and an empty
 `NSPrivacyCollectedDataTypes`. Verify the reason codes against Apple's current table when implementing —
@@ -13917,27 +13917,27 @@ they change.
 
 **Verified —** **The file really is absent, and not merely untracked:** `find . -name "*.xcprivacy"` returns nothing, `git ls-files | grep -i xcprivacy` returns nothing, and **`grep PrivacyInfo` on `project.pbxproj` returns nothing** — no target references one.
 
-**All three excerpts verbatim, and the counts verified:** UserDefaults in **exactly 18 files** under `Sources/VellumMusicKit/`, **none in `Deprecated/`** — so the count is not inflated by dead code, which matters given L05/L06 — and that set includes `Widgets/WidgetDataStore.swift` and `Widgets/PlayWidgetItemIntent.swift`. Every named file-timestamp and boot-time site exists at the cited line.
+**All three excerpts verbatim, and the counts verified:** UserDefaults in **exactly 18 files** under `Sources/NaviTunesKit/`, **none in `Deprecated/`** — so the count is not inflated by dead code, which matters given L05/L06 — and that set includes `Widgets/WidgetDataStore.swift` and `Widgets/PlayWidgetItemIntent.swift`. Every named file-timestamp and boot-time site exists at the cited line.
 
 **One addition:** `NowPlaying/CoverZoomCustomTransition.swift:674, 1106, 1172, 1226` use `CACurrentMediaTime()`, which sits in the same boot-time category — four more sites in a file the entry does not name, in the transition path that runs on every player open. It does not change the fix, but it means removing the EQ tap would not remove the category. **No required-reason category was missed** — no `volumeAvailableCapacity`, `attributesOfFileSystem`, or free-space API anywhere in `Sources/`.
 
 **The consequence is correctly labelled as inference and that labelling is restated here: nothing in this repository proves a submission would be rejected.** Established from source is only that the manifest is absent from both bundles, that three categories are exercised by shipping code, and that no CI step checks for it. The reason-code strings in the fix are from memory of Apple's table, not from this tree — the entry already says to re-verify them, which is the right instruction.
 
-**Fix refinement:** the widget half is **required, not defensive** — both widget sources `import VellumMusicKit`, and the kit's `WidgetDataStore` uses `UserDefaults`, so the extension exercises the category in its own process regardless of **L10**. A manifest could alternatively live at `Sources/VellumMusicKit/Resources/PrivacyInfo.xcprivacy` (the target already declares `resources: [.process("Resources")]`); the host-app placement the entry proposes is simpler and covers first-party code. Both targets set `GENERATE_INFOPLIST_FILE = NO` with an explicit `INFOPLIST_FILE`, so this is a plain Resources-phase addition with no Info.plist interaction. Not a duplicate of **C46** (transport security, different plist, different rule).
+**Fix refinement:** the widget half is **required, not defensive** — both widget sources `import NaviTunesKit`, and the kit's `WidgetDataStore` uses `UserDefaults`, so the extension exercises the category in its own process regardless of **L10**. A manifest could alternatively live at `Sources/NaviTunesKit/Resources/PrivacyInfo.xcprivacy` (the target already declares `resources: [.process("Resources")]`); the host-app placement the entry proposes is simpler and covers first-party code. Both targets set `GENERATE_INFOPLIST_FILE = NO` with an explicit `INFOPLIST_FILE`, so this is a plain Resources-phase addition with no Info.plist interaction. Not a duplicate of **C46** (transport security, different plist, different rule).
 
 
 **Re-verified (T238) —** independent second pass, agent 14, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `find . -iname "PrivacyInfo.xcprivacy"` from the repo root returns nothing. All three cited call sites verify verbatim: `AppModel.swift:114` — `@Published var accentPresetId: String = UserDefaults.standard.string(forKey: AppAccentPreset.accentPresetIdKey) ...`; `StreamingMediaDiskCache.swift:236` — `let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]`; `EqualizerAudioTap.swift:515` — `let hostTime = mach_absolute_time()`. `grep -rl "UserDefaults" Sources/VellumMusicKit/ | wc -l` returns 18, matching the entry's count, and `mach_absolute_time` appears in exactly the two files cited (`EqualizerAudioTap.swift:515`, `EqualizerTapRegistry.swift:202`).
-- **Versus the first pass:** AGREE — prior pass confirmed the file is absent from `project.pbxproj` too (not just missing on disk), verified the 18-file count excludes `Deprecated/`, found four additional `CACurrentMediaTime()` sites in the same boot-time category, and correctly kept the App Store rejection consequence labeled as inference. Its "fix refinement" (widget target needs the manifest unconditionally since it links `VellumMusicKit` directly, not just defensively per L10) sharpens the fix but doesn't contradict it.
+- **Evidence:** `find . -iname "PrivacyInfo.xcprivacy"` from the repo root returns nothing. All three cited call sites verify verbatim: `AppModel.swift:114` — `@Published var accentPresetId: String = UserDefaults.standard.string(forKey: AppAccentPreset.accentPresetIdKey) ...`; `StreamingMediaDiskCache.swift:236` — `let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]`; `EqualizerAudioTap.swift:515` — `let hostTime = mach_absolute_time()`. `grep -rl "UserDefaults" Sources/NaviTunesKit/ | wc -l` returns 18, matching the entry's count, and `mach_absolute_time` appears in exactly the two files cited (`EqualizerAudioTap.swift:515`, `EqualizerTapRegistry.swift:202`).
+- **Versus the first pass:** AGREE — prior pass confirmed the file is absent from `project.pbxproj` too (not just missing on disk), verified the 18-file count excludes `Deprecated/`, found four additional `CACurrentMediaTime()` sites in the same boot-time category, and correctly kept the App Store rejection consequence labeled as inference. Its "fix refinement" (widget target needs the manifest unconditionally since it links `NaviTunesKit` directly, not just defensively per L10) sharpens the fix but doesn't contradict it.
 
 ---
 
 ## C132 — The app is iPhone-only but declares a full iPad orientation set, and its UI-test bundle targets iPad
 
 - **Round:** 6 · **Severity:** low · **Verdict:** **CONFIRMED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `VellumMusicHost/VellumMusicHost/Info.plist:61–71`; `VellumMusicHost.xcodeproj/project.pbxproj:514, 629`
+- **File:** `NaviTunesHost/NaviTunesHost/Info.plist:61–71`; `NaviTunesHost.xcodeproj/project.pbxproj:514, 629`
 
 ```xml
 	<key>UISupportedInterfaceOrientations</key>
@@ -13970,7 +13970,7 @@ disagreeing.
 
 **One correction: the entry cites only `:629`, but the UI-test bundle disagrees in *both* configurations.** A fix must touch `:629` **and** `:655`, or the two configs will then disagree with each other.
 
-Also confirmed the plist is live rather than generated: both host configs set `GENERATE_INFOPLIST_FILE = NO` with `INFOPLIST_FILE = VellumMusicHost/Info.plist`, and there are no `INFOPLIST_KEY_UISupportedInterfaceOrientations*` overrides in the pbxproj — **so the `~ipad` block really is what ships.**
+Also confirmed the plist is live rather than generated: both host configs set `GENERATE_INFOPLIST_FILE = NO` with `INFOPLIST_FILE = NaviTunesHost/Info.plist`, and there are no `INFOPLIST_KEY_UISupportedInterfaceOrientations*` overrides in the pbxproj — **so the `~ipad` block really is what ships.**
 
 The compatibility-mode reasoning is correctly labelled as inference; from source only the disagreement itself is establishable. **low** is right — misleading configuration, not a runtime defect. **Fix asymmetry to note:** "delete 65–71 and set UITests to `1`" is the correct branch given the kit has no landscape handling; the opposite branch (host to `"1,2"`) is **not** a config-only change, since it would ship an iPad binary against a UI that only ever ran portrait iPhone. Do not present them as symmetrical. Not a duplicate of **C43** or **C44** (different keys, different targets).
 
@@ -13978,7 +13978,7 @@ The compatibility-mode reasoning is correctly labelled as inference; from source
 **Re-verified (T238) —** independent second pass, agent 51, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** BEST
-- **Evidence:** `Info.plist:61-71` verbatim contains `UISupportedInterfaceOrientations` (Portrait only) followed immediately by `UISupportedInterfaceOrientations~ipad` (all four orientations), lines 65-71 as cited. `grep -n "TARGETED_DEVICE_FAMILY" project.pbxproj` shows the host app (`VellumMusicHost`, buildConfigurationList `A0...0015`) at `:514`/`:548` = `1`, the widget extension at `:576`/`:604` = `1`, and the `VellumMusicUITests` target (buildConfigurationList `CC...0052`, confirmed by name via `grep -n "Build configuration list for PBXNativeTarget \"VellumMusicUITests\""`) at **both** `:629` (Debug) and `:655` (Release) = `"1,2"` — the finding cites only `:629` but the disagreement exists in both configs of that target.
+- **Evidence:** `Info.plist:61-71` verbatim contains `UISupportedInterfaceOrientations` (Portrait only) followed immediately by `UISupportedInterfaceOrientations~ipad` (all four orientations), lines 65-71 as cited. `grep -n "TARGETED_DEVICE_FAMILY" project.pbxproj` shows the host app (`NaviTunesHost`, buildConfigurationList `A0...0015`) at `:514`/`:548` = `1`, the widget extension at `:576`/`:604` = `1`, and the `NaviTunesUITests` target (buildConfigurationList `CC...0052`, confirmed by name via `grep -n "Build configuration list for PBXNativeTarget \"NaviTunesUITests\""`) at **both** `:629` (Debug) and `:655` (Release) = `"1,2"` — the finding cites only `:629` but the disagreement exists in both configs of that target.
 - **Better approach:** N/A — "set the UITests target to `TARGETED_DEVICE_FAMILY = 1`" is a target-level instruction that naturally covers both its Debug and Release configs; the fix is correct and low-risk as a plist/pbxproj-only change (both host configs already set `GENERATE_INFOPLIST_FILE = NO` with an explicit `INFOPLIST_FILE`, so no Info.plist-key/pbxproj interaction to worry about). Worth noting for whoever implements it that both `:629` and `:655` need the edit, not just `:629`.
 - **Versus the first pass:** AGREE — the recorded block confirmed the same exact-line span for the plist deletion and independently caught that both UITests configs (`:629` and `:655`) disagree, which I verified matches the pbxproj directly.
 
@@ -13987,7 +13987,7 @@ The compatibility-mode reasoning is correctly labelled as inference; from source
 ## C133 — Album detail collapses to just the downloaded tracks whenever *any* track is downloaded
 
 - **Round:** 6 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Library/ServerPlaylistViews.swift:2383–2389`; source of the list `Offline/OfflineDownloadManager.swift:852–858`
+- **File:** `Sources/NaviTunesKit/Library/ServerPlaylistViews.swift:2383–2389`; source of the list `Offline/OfflineDownloadManager.swift:852–858`
 
 ```swift
             case .album(let album, _):
@@ -14038,7 +14038,7 @@ from album detail, online or offline, until the downloads are removed.
 ## C134 — Losing the network mid-album makes the download queue burn through the remaining tracks and mark them permanently failed
 
 - **Round:** 6 · **Severity:** high · **Verdict:** **CONFIRMED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Offline/OfflineDownloadManager+Queue.swift:305–323, 336–348`
+- **File:** `Sources/NaviTunesKit/Offline/OfflineDownloadManager+Queue.swift:305–323, 336–348`
 
 ```swift
     private func evaluateQueuePause() async -> Bool {
@@ -14079,7 +14079,7 @@ the error in `downloadQueueTrack`: for `URLError` codes `.notConnectedToInternet
 
 **THE STATED MECHANISM IS WRONG for the headline scenario.** `OfflineDownloadManager.downloadURLSession` sets **`config.waitsForConnectivity = true`** with no `timeoutIntervalForResource` override. *(Inference, URLSession semantics:)* tasks started while no path exists do not fail — they wait, up to the 7-day default. So on a clean path loss (airplane mode, tunnel): only the ≤3 **already in flight** fail with `.networkConnectionLost`, and **every subsequent slot hangs** — `runQueueWorker`'s `withTaskGroup` never returns, the item sits at `.downloading` forever, and because `isQueuePaused` stays false **`DownloadQueueView` shows no reason at all**. The burn-through the entry describes is the **captive-portal / dead-link** case, where the path stays `.satisfied` and `cache()` fails on the HTTP status guard or `looksLikeSubsonicJSONError`. Rewrite the sequence around that case, and add "silently hangs with no pause reason" for true offline.
 
-**The 25 s inference is misattributed:** `timeoutIntervalForRequest = 25` belongs to `VellumURLSession.shared`, which downloads do **not** use. The download session is `URLSessionConfiguration.default` (60 s request default), and with `waitsForConnectivity` the connect phase does not time out at 25 s at all.
+**The 25 s inference is misattributed:** `timeoutIntervalForRequest = 25` belongs to `NaviTunesURLSession.shared`, which downloads do **not** use. The download session is `URLSessionConfiguration.default` (60 s request default), and with `waitsForConnectivity` the connect phase does not time out at 25 s at all.
 
 **The second half of the fix is dangerous as written.** Leaving a track pending keeps `pendingTracks` non-empty, so `finalizeQueueItemIfDrained` no-ops and `runQueueWorker`'s `while !Task.isCancelled` loop **immediately re-slots the same track**. In the captive-portal case `policy.online` is true, so `evaluateQueuePause` returns false and there is **no 2 s sleep** — a tight infinite retry loop hammering a dead endpoint with no backoff, and `.timedOut` in the never-fail list is the worst offender. **Any implementation needs a per-track consecutive-failure counter with backoff, or a "pause after N consecutive network failures" rule, before the pending-not-failed change is safe.** The `!policy.online` pause itself is correct and also fixes the silent hang. Not a duplicate of **E24** or **C21**.
 
@@ -14096,7 +14096,7 @@ the error in `downloadQueueTrack`: for `URLError` codes `.notConnectedToInternet
 ## C135 — `autoOfflineActive` is not published, so every offline indicator in the app renders a stale value
 
 - **Round:** 6 · **Severity:** low _(was medium; DENIED — an incidental `@Published` write does publish after the flag is set)_ · **Verdict:** **DENIED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:711–712, 6135–6157, 6185–6191`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:711–712, 6135–6157, 6185–6191`
 
 ```swift
     var effectiveOfflineMode: Bool { offlineMode || autoOfflineActive }
@@ -14145,7 +14145,7 @@ That kills both stated sequences. *"Toggle Auto-offline in Settings → the Acti
 ## C136 — Two offline gates test `offlineMode` instead of `effectiveOfflineMode`, so auto-offline stalls playback between downloaded tracks
 
 - **Round:** 6 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:6483, 6604`; caller `Playback/PlaybackEngine.swift:1855–1860`, budget at `:2338`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:6483, 6604`; caller `Playback/PlaybackEngine.swift:1855–1860`, budget at `:2338`
 
 ```swift
     func refreshAlbumTracksIfNeeded(for track: Track) async -> Track {
@@ -14177,7 +14177,7 @@ regardless of server id, and reactive `recoverStaleSongIDs` still runs if a stre
 
 **One aggravator the entry misses:** `albumTracksCache` is **in-memory only** — not in `LibrarySnapshotStore` — so on any cold launch it is empty, the network path is taken on the **first track of every album** regardless of the threshold, and because the failure path returns without writing a cache entry, **an offline session re-attempts on every single track**, not just the first.
 
-The entry's own inference is correct and its premise is confirmable: `VellumURLSession.shared` does **not** set `waitsForConnectivity`, so with no path at all it errors immediately — the 2 s stall genuinely requires "path present, internet dead".
+The entry's own inference is correct and its premise is confirmable: `NaviTunesURLSession.shared` does **not** set `waitsForConnectivity`, so with no path at all it errors immediately — the 2 s stall genuinely requires "path present, internet dead".
 
 **The fix would cause a regression as written.** Adding `!effectiveOfflineMode` to `recoverStaleSongIDs` is wrong: **playback is not offline-gated**, so a user with auto-offline active on cellular is still streaming — and that guard would disable reactive stale-id recovery for exactly those users, breaking playback after a server rescan on cellular. **Gate `recoverStaleSongIDs` on `hasInternetPath` only.** `refreshAlbumTracksIfNeeded` may take both, being proactive metadata refresh. **The strongest part of the fix is the third clause** — skip the pre-play refresh when `offline.localFile(for:) != nil` — which removes the whole reported stall independently of which flag is used; note it must be inserted in `PlaybackEngine` (which holds `offline`), since the engine cannot see `AppModel`. Distinct from **L36**, which covers what the refresh does when it runs.
 
@@ -14185,7 +14185,7 @@ The entry's own inference is correct and its premise is confirmable: `VellumURLS
 **Re-verified (T238) —** independent second pass, agent 52, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `Sources/VellumMusicKit/App/AppModel.swift:6483` reads `guard !offlineMode, !track.isInternetRadioStream else { return track }` and `:6604` reads `guard !offlineMode, !track.isInternetRadioStream, !track.albumId.isEmpty else { return nil }` — both test the manual toggle, not `var effectiveOfflineMode: Bool { offlineMode || autoOfflineActive }` (line 711). `refreshAlbumTracksIfNeeded` is wired as `player.refreshTrackBeforePlay` (AppModel.swift:1103) and `PlaybackEngine.advance()` calls it via `refreshedTrackForPlay` under a confirmed 2s `trackRefreshBudget` watchdog on every track change, with no local-file short-circuit anywhere before the await.
+- **Evidence:** `Sources/NaviTunesKit/App/AppModel.swift:6483` reads `guard !offlineMode, !track.isInternetRadioStream else { return track }` and `:6604` reads `guard !offlineMode, !track.isInternetRadioStream, !track.albumId.isEmpty else { return nil }` — both test the manual toggle, not `var effectiveOfflineMode: Bool { offlineMode || autoOfflineActive }` (line 711). `refreshAlbumTracksIfNeeded` is wired as `player.refreshTrackBeforePlay` (AppModel.swift:1103) and `PlaybackEngine.advance()` calls it via `refreshedTrackForPlay` under a confirmed 2s `trackRefreshBudget` watchdog on every track change, with no local-file short-circuit anywhere before the await.
 - **Better approach:** Applying `!effectiveOfflineMode` to both guards regresses `recoverStaleSongIDs`: per CLAUDE.md, "Auto-offline ... streaming are not fully offline-gated," and grep confirms `effectiveOfflineMode`/`autoOfflineActive` gate only search/radio-registration/playlist-rows-warmup in AppModel.swift, never stream start — so a cellular auto-offline user is still actively streaming and needs reactive stale-id recovery after a failed stream. Gate `recoverStaleSongIDs` on `hasInternetPath` only; `refreshAlbumTracksIfNeeded` (proactive, can safely be skipped) may use both `!effectiveOfflineMode` and `hasInternetPath`. The local-file short-circuit (`offline.localFile(for:) != nil`) is the strongest part of the fix and should be added directly in `PlaybackEngine`, which already holds `offline`.
 - **Versus the first pass:** AGREE — the CODE_SWEEP.md `**Verified —**` block under C136 reaches the same conclusion independently: "The fix would cause a regression as written... Gate `recoverStaleSongIDs` on `hasInternetPath` only."
 
@@ -14194,7 +14194,7 @@ The entry's own inference is correct and its premise is confirmable: `VellumURLS
 ## C137 — Lyrics are never cached with a download, so every downloaded song is lyric-less offline and fires a doomed request
 
 - **Round:** 6 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Playback/PlaybackEngine.swift:3316–3326`; the gap is in `Offline/OfflineDownloadManager.swift` (no lyrics anywhere)
+- **File:** `Sources/NaviTunesKit/Playback/PlaybackEngine.swift:3316–3326`; the gap is in `Offline/OfflineDownloadManager.swift` (no lyrics anywhere)
 
 ```swift
     private func loadLyrics() async throws {
@@ -14208,7 +14208,7 @@ The entry's own inference is correct and its premise is confirmable: `VellumURLS
         let fetched = (try? await library.lyrics(for: track)) ?? []
 ```
 
-**Problem.** `grep -rln lyric Sources/VellumMusicKit/Offline/` returns **nothing** — the download record
+**Problem.** `grep -rln lyric Sources/NaviTunesKit/Offline/` returns **nothing** — the download record
 stores audio, artwork and duration, but never the lyrics the server already returned. And `loadLyrics()`
 has no offline gate, so it fires a server request on every track start regardless. Sequence: the user
 downloads an album specifically for a flight, plays it, opens the Lyrics tab, and gets *"Lyrics aren't
@@ -14223,7 +14223,7 @@ first and skip the server call when the track has a local file. `PlaybackEngine`
 `AppModel`, so inject an `isOffline: () -> Bool` closure alongside the existing `refreshTrackBeforePlay`.
 
 
-**Verified —** The search was re-run independently and widened to case-insensitive: `grep -rln -i "lyric" Sources/VellumMusicKit/Offline/` → **0 files**. The directory holds 8 files and none mentions lyrics. A tree-wide `lyricsCache|cachedLyrics|LyricsCache` → **0 hits**. **There is no lyrics cache anywhere in the codebase.**
+**Verified —** The search was re-run independently and widened to case-insensitive: `grep -rln -i "lyric" Sources/NaviTunesKit/Offline/` → **0 files**. The directory holds 8 files and none mentions lyrics. A tree-wide `lyricsCache|cachedLyrics|LyricsCache` → **0 hits**. **There is no lyrics cache anywhere in the codebase.**
 
 Reachability walked: `scheduleLyricsLoad()` is called from `:748`, `:1865` (inside `advance()`) and `:3180`, plus `scheduleLyricsLoadIfNeeded(for:)` at `:2372` inside `startCurrentItem` — so every track start schedules a load, and `loadLyrics()` has **no offline gate and no local-file check**. Confirmed end to end: every downloaded song, offline, gets an empty lyrics tab plus a doomed request, and because `(try? …) ?? []` collapses failure into "none" (**P49**) the empty state is definitive with no retry. *(Citation is exact — the elided `#if DEBUG` block is three lines and the range ends correctly.)*
 
@@ -14235,7 +14235,7 @@ The rest checks out: `cache(track:remote:headers:)` exists with that exact signa
 **Re-verified (T238) —** independent second pass, agent 52, judged from the source with the first pass's verdict withheld.
 
 - **Problem:** REAL · **Fix:** ADEQUATE
-- **Evidence:** `grep -rln "lyric" Sources/VellumMusicKit/Offline/` returns nothing, and `OfflineTrackRecord` (OfflineDownloadManager.swift:82-87) has no lyrics field. `loadLyrics()` in PlaybackEngine.swift has `let fetched = (try? await library.lyrics(for: track)) ?? []` with no offline/local-file gate, and `library` is never nilled based on offline mode, so it always attempts a network call.
+- **Evidence:** `grep -rln "lyric" Sources/NaviTunesKit/Offline/` returns nothing, and `OfflineTrackRecord` (OfflineDownloadManager.swift:82-87) has no lyrics field. `loadLyrics()` in PlaybackEngine.swift has `let fetched = (try? await library.lyrics(for: track)) ?? []` with no offline/local-file gate, and `library` is never nilled based on offline mode, so it always attempts a network call.
 - **Better approach:** `LyricLine` is declared `struct LyricLine: Identifiable, Hashable` (MusicLibraryProviding.swift:360) — not `Codable` — so storing `[LyricLine]` on `OfflineTrackRecord: Codable` as literally described will not compile until `LyricLine` also conforms to `Codable`. Also, the fix's "inject an `isOffline: () -> Bool` closure... PlaybackEngine does not see AppModel" is unnecessary complexity: PlaybackEngine already holds `private weak var offline: OfflineDownloadManager?` (line 198) and calls it directly elsewhere (`resolvedArtworkURL`, `persistOfflineDurationIfNeeded`) — `loadLyrics()` can call `offline?.localFile(for: track.id)` / a new `offline?.cachedLyrics(forTrackId:)` directly with no new closure.
 - **Versus the first pass:** AGREE (and extends it) — the recorded block independently caught the same Codable gap: "`LyricLine` is `Identifiable, Hashable` — not `Codable`... It must gain `Codable` first." It did not, however, flag the unnecessary closure — it says the injected-closure pattern "matches the existing `refreshTrackBeforePlay`," but `offline` is already a direct property on `PlaybackEngine`, making that closure redundant.
 
@@ -14244,7 +14244,7 @@ The rest checks out: `cache(track:remote:headers:)` exists with that exact signa
 ## C138 — Nothing re-bootstraps when the network comes back, and the bootstrap records success even when it failed
 
 - **Round:** 6 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:6997–7003, 2029–2034, 6172–6176`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:6997–7003, 2029–2034, 6172–6176`
 
 ```swift
         case .unreachable:
@@ -14298,7 +14298,7 @@ to `.connected` from a non-connected state. Record `lastLibrarySyncAt` only on s
 ## C139 — Tapping Next twice during a track refresh can stop playback entirely, with no error
 
 - **Round:** 6 · **Severity:** high · **Verdict:** **REINFORCED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Playback/PlaybackEngine.swift:1855–1863, 2344–2352, 1833–1845`
+- **File:** `Sources/NaviTunesKit/Playback/PlaybackEngine.swift:1855–1863, 2344–2352, 1833–1845`
 
 ```swift
         if let track = currentTrack, refreshTrackBeforePlay != nil {
@@ -14365,7 +14365,7 @@ sleep, so cancelling `advanceWork` cancels the fetch too.
 ## C140 — A local-duration probe that lands after a skip writes the previous track's length onto the current one, and persists it
 
 - **Round:** 6 · **Severity:** low _(was medium; verifier narrowed reachability to the gapless-advance path)_ · **Verdict:** **CONFIRMED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Playback/PlaybackEngine.swift:2945–2957`; helpers at `:1282–1292`
+- **File:** `Sources/NaviTunesKit/Playback/PlaybackEngine.swift:2945–2957`; helpers at `:1282–1292`
 
 ```swift
         } else if duration <= 0, item.asset is AVURLAsset,
@@ -14425,7 +14425,7 @@ Pass `trackId` explicitly into `persistOfflineDurationIfNeeded(trackId:seconds:)
 ## C141 — The acquisition completion loop polls for a minute against a captured client and can add tracks to the wrong account
 
 - **Round:** 6 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/App/AppModel.swift:1067–1070, 3107, 3124–3128`
+- **File:** `Sources/NaviTunesKit/App/AppModel.swift:1067–1070, 3107, 3124–3128`
 
 ```swift
         acquisition.onJobFinished = { [weak self] job in
@@ -14478,7 +14478,7 @@ backend switch, and inside the loop replace `try? await Task.sleep` with
 ## C142 — A scrobble that can never succeed is retried every 60 seconds for the life of the install
 
 - **Round:** 6 · **Severity:** medium · **Verdict:** **CONFIRMED** _(verify pass, round 6; different agent than the raiser)_
-- **File:** `Sources/VellumMusicKit/Scrobbling/ScrobbleService.swift:253–276`
+- **File:** `Sources/NaviTunesKit/Scrobbling/ScrobbleService.swift:253–276`
 
 ```swift
     func processPendingScrobbles() async {
@@ -14516,7 +14516,7 @@ snapshot, so items added mid-run are handled in the same pass.
 
 **Verified —** Searched and confirmed absent: `PendingScrobble` has **no attempts, no lastAttempt, no expiry**; `ScrobbleStore`'s `completedCap = 500` applies only to *completed*, and **`addPending` is an unconditional append with no cap and no prune**; and `removePending` is called from **exactly one place — line 261, on success** (repo-wide grep; the only other reference to `store.pending` is a read-only count in Settings, which offers no clear action). `signOut` never touches the store, and **`applyTrackIDSwaps` does not remap pending scrobbles** — so the headline example (an id changed by a server rescan) is a genuinely permanent failure, not one the stale-id machinery rescues.
 
-**Permanent failure is deterministically reachable on the primary backend:** `NavidromeClient.submitScrobble` → `subsonicRequest`, which throws on **any** Subsonic error payload, so `scrobble?id=<gone>` returns error 70 → throws → `catch { continue }` → the item stays pending forever. *(Inference: Navidrome returns error 70 for an unknown id rather than accepting silently — standard Subsonic. Jellyfin's `Sessions/Playing` is more likely to accept-and-ignore, so **the affected population is Navidrome-weighted** — worth saying, since it changes who is hit.)* One round-trip per dead item per 60 s tick, and the queue is persisted under `vellumPendingScrobbles` with nothing to prune it.
+**Permanent failure is deterministically reachable on the primary backend:** `NavidromeClient.submitScrobble` → `subsonicRequest`, which throws on **any** Subsonic error payload, so `scrobble?id=<gone>` returns error 70 → throws → `catch { continue }` → the item stays pending forever. *(Inference: Navidrome returns error 70 for an unknown id rather than accepting silently — standard Subsonic. Jellyfin's `Sessions/Playing` is more likely to accept-and-ignore, so **the affected population is Navidrome-weighted** — worth saying, since it changes who is hit.)* One round-trip per dead item per 60 s tick, and the queue is persisted under `navitunesPendingScrobbles` with nothing to prune it.
 
 Claim (2) is correct but **more self-healing than the entry allows** — the *next* completed track re-triggers a full drain including the missed item, so "waits for the next timer tick" is worst-case.
 
@@ -14540,7 +14540,7 @@ Thirty-two of round 6's sixty-one candidates were already in the document.
 
 | Round-6 candidate | Already covered by |
 |---|---|
-| Lyra→Vellum migration matches only dotted `lyra.` keys | **C14** (independently re-derived against `git show f592b6e~1`) |
+| Lyra→NaviTunes migration matches only dotted `lyra.` keys | **C14** (independently re-derived against `git show f592b6e~1`) |
 | Bootstrap ordering: `RootView.task` wins the dedupe and clobbers | **C89** |
 | Sign-out does not cancel the bootstrap / disk-restore tasks | **C21** |
 | Sign-out leaves per-account state behind | **C22** |
@@ -14564,7 +14564,7 @@ Thirty-two of round 6's sixty-one candidates were already in the document.
 | `HomePresenceHelper` misfiled under `Home/` | **L08** |
 | Repo top level accreted; no ignore rules for media/xcresult | **L11**, **L14** |
 | README/CONTRIBUTING document a toolchain that does not match | **P20** |
-| Dead `VellumMusic` executable target | **L12** |
+| Dead `NaviTunes` executable target | **L12** |
 | EQ tap use-after-free at a gapless boundary | **E32** |
 | Backend clients unisolated; `nativeAuthToken` races | **C20** |
 | Membership reentrancy across `await` | **C16**, **C101** |

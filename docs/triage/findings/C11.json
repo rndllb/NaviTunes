@@ -12,8 +12,8 @@
   "issue": "For a Jellyfin user with more than 5,000 songs added, My Library silently shrinks to 5,000 on each sync across all devices, and removing a song past row 5,000 from a playlist does nothing, with no error.",
   "proposed_fix": "Page `fetchPlaylistRows` with `StartIndex` / `Limit=1000` (the loop `allTracks` already uses) until `Items.count < Limit` or `StartIndex >= TotalRecordCount`, with `EnableTotalRecordCount=true`; throw rather than return a short list when received and total disagree, so the existing error path in `refreshLibraryMembership` keeps the previous `librarySongIds`. A lightweight id-only fetch for the membership seed is fine as an addition, but must not replace paging on the general row path.",
   "steps": [
-    "Confirm the code is still present: Sources/VellumMusicKit/Backends/JellyfinMusicClient.swift:964 `URLQueryItem(name: \"Limit\", value: \"5000\")`, single request, no StartIndex loop.",
-    "Check the rig: the only configured backend is Navidrome (`VellumMusic.libraryPlaylistId.navidrome.100.127.122.120:4533.vellum-test` in the app's defaults); no Jellyfin host was provided.",
+    "Confirm the code is still present: Sources/NaviTunesKit/Backends/JellyfinMusicClient.swift:964 `URLQueryItem(name: \"Limit\", value: \"5000\")`, single request, no StartIndex loop.",
+    "Check the rig: the only configured backend is Navidrome (`NaviTunes.libraryPlaylistId.navidrome.100.127.122.120:4533.navitunes-test` in the app's defaults); no Jellyfin host was provided.",
     "Check whether Navidrome can stand in: no — `NavidromeClient` fetches the magic playlist with `getPlaylist`, which returns all entries without a limit, so the Navidrome path cannot exhibit this truncation (the sweep's own divergence note).",
     "Stopped there rather than seed 5,000+ songs into a backend that does not have the defect."
   ],

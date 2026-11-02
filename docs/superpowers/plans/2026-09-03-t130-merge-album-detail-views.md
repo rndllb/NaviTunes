@@ -16,7 +16,7 @@ it is converting the enum's silent pattern-match accessors into ones the compile
 re-triage.
 
 **Tech Stack:** Swift 6.2 toolchain / language mode 5, SwiftUI, iOS 26.1 deployment target, SPM
-package `Sources/VellumMusicKit` built through the `VellumMusicHost` Xcode workspace.
+package `Sources/NaviTunesKit` built through the `NaviTunesHost` Xcode workspace.
 
 **Spec:** `~/manager-briefs/T130.md` (the approving brief). This plan is the analysis it asked for.
 
@@ -25,10 +25,10 @@ package `Sources/VellumMusicKit` built through the `VellumMusicHost` Xcode works
 ## Global Constraints
 
 - **Branch `dev`. No commits. No install to device.** The brief says so explicitly.
-- **The gate is `xcodebuild -workspace VellumMusicHost/VellumMusicHost.xcodeproj/project.xcworkspace
-  -scheme VellumMusicHost -destination 'generic/platform=iOS Simulator' build` → BUILD SUCCEEDED.**
-- **There is no unit-test target.** `Package.swift` declares exactly two targets, `VellumMusicKit`
-  and the `VellumMusic` executable; the only test bundle in the repo is `VellumMusicUITests`
+- **The gate is `xcodebuild -workspace NaviTunesHost/NaviTunesHost.xcodeproj/project.xcworkspace
+  -scheme NaviTunesHost -destination 'generic/platform=iOS Simulator' build` → BUILD SUCCEEDED.**
+- **There is no unit-test target.** `Package.swift` declares exactly two targets, `NaviTunesKit`
+  and the `NaviTunes` executable; the only test bundle in the repo is `NaviTunesUITests`
   (XCUITest). A per-task red/green unit cycle is therefore not available, and this plan does not
   pretend otherwise. Pure-logic tasks are verified with the repo's own established substitute — a
   throwaway SPM executable under `docs/verification/harness-t130/` that symlinks the shipping
@@ -53,7 +53,7 @@ any pull or after terminal 12 lands anything further.
 
 ```bash
 cd ~/Lyra-Music
-S=Sources/VellumMusicKit/ServerPlaylistViews.swift
+S=Sources/NaviTunesKit/ServerPlaylistViews.swift
 
 # 1. The ten exhaustive switches. Each prints its enclosing member and its current line.
 awk '/^ *(private )?(var|func|init)/ {member=$0; line=NR}
@@ -88,7 +88,7 @@ that stands whatever you decide about T130.
 
 ### The symbol
 
-`ServerPlaylistDetailView.trackRows` — `Sources/VellumMusicKit/ServerPlaylistViews.swift`. One
+`ServerPlaylistDetailView.trackRows` — `Sources/NaviTunesKit/ServerPlaylistViews.swift`. One
 computed property. Find it with `grep -n 'private var trackRows: some View'`; do not navigate by
 line, per the recipe below.
 
@@ -172,7 +172,7 @@ Tasks 2-7. Being separately reviewable does not make it separately schedulable.
 
 ### Steps
 
-- [ ] **Step 1: Re-resolve.** `grep -n 'private var trackRows: some View\|else if visible.isEmpty\|else if shouldShowMergedAlbumTracklist' Sources/VellumMusicKit/ServerPlaylistViews.swift`.
+- [ ] **Step 1: Re-resolve.** `grep -n 'private var trackRows: some View\|else if visible.isEmpty\|else if shouldShowMergedAlbumTracklist' Sources/NaviTunesKit/ServerPlaylistViews.swift`.
       If the two `else if` lines no longer appear in that order, terminal 12 has already touched
       this chain — stop and re-read the property before editing.
 - [ ] **Step 2: Swap the two clauses.** Move the whole `else if shouldShowMergedAlbumTracklist`
@@ -188,7 +188,7 @@ Tasks 2-7. Being separately reviewable does not make it separately schedulable.
       // requestable list this view was already holding in `mergedRows` was never drawn.
       ```
 - [ ] **Step 4: Build.**
-      `xcodebuild -workspace VellumMusicHost/VellumMusicHost.xcodeproj/project.xcworkspace -scheme VellumMusicHost -destination 'generic/platform=iOS Simulator' build`
+      `xcodebuild -workspace NaviTunesHost/NaviTunesHost.xcodeproj/project.xcworkspace -scheme NaviTunesHost -destination 'generic/platform=iOS Simulator' build`
       → BUILD SUCCEEDED, zero errors.
 - [ ] **Step 5: Verify the fixed case and the unbroken ones.** On the simulator: an album matching
       the repro above now shows requestable rows. Then confirm no regression in the three states
@@ -368,7 +368,7 @@ The conditions that would have reversed this are recorded in "VERDICT", above.
 
 ## THE FOURTH CASE: SHAPE
 
-New file, `Sources/VellumMusicKit/CatalogRelease.swift`:
+New file, `Sources/NaviTunesKit/CatalogRelease.swift`:
 
 ```swift
 /// A release that exists in a catalog but not necessarily on the user's server.
@@ -602,7 +602,7 @@ As of writing, both other agents have started:
   `-1051` (−10 lines), `-1813` (+9), `-2293`, `-2436`, `-2632` — recorded only to show that the
   file had already shifted twice in opposite directions before anyone started Task 2. **Those
   positions are certainly wrong by now.** Get the current picture with
-  `git diff --stat` and `git diff -U1 Sources/VellumMusicKit/ServerPlaylistViews.swift | grep '^@@'`,
+  `git diff --stat` and `git diff -U1 Sources/NaviTunesKit/ServerPlaylistViews.swift | grep '^@@'`,
   then run the re-resolve recipe. Never reconcile this plan against the file by line arithmetic.
 - **Terminal 11** (artist credit-line navigation) holds `DiscoverySearchView.swift`,
   `AcquisitionCore.swift`, `ArtistPageView.swift`, `MusicBrainzDiscographyMapping.swift`,
@@ -629,10 +629,10 @@ correct for `9579592` and for nothing since.
 
 | File | Change | Responsibility |
 |---|---|---|
-| `Sources/VellumMusicKit/CatalogRelease.swift` | **Create** | The value type and its mappings. No SwiftUI. Kept out of `ServerPlaylistViews.swift` so it can be symlinked into a harness and reasoned about alone. |
-| `Sources/VellumMusicKit/ServerPlaylistViews.swift` | Modify | The enum case, the ten switches, the accessor rename, and the catalog branches in hero / action row / tracklist. |
-| `Sources/VellumMusicKit/SearchLibraryView.swift` | Modify (`:89`) | Route `SearchNavTarget.acquire` to the merged view. |
-| `Sources/VellumMusicKit/DiscoverySearchView.swift` | Modify | Delete `AcquireResultDetailView` (`:2251-2462`). Mark the search row's cover-zoom source id. |
+| `Sources/NaviTunesKit/CatalogRelease.swift` | **Create** | The value type and its mappings. No SwiftUI. Kept out of `ServerPlaylistViews.swift` so it can be symlinked into a harness and reasoned about alone. |
+| `Sources/NaviTunesKit/ServerPlaylistViews.swift` | Modify | The enum case, the ten switches, the accessor rename, and the catalog branches in hero / action row / tracklist. |
+| `Sources/NaviTunesKit/SearchLibraryView.swift` | Modify (`:89`) | Route `SearchNavTarget.acquire` to the merged view. |
+| `Sources/NaviTunesKit/DiscoverySearchView.swift` | Modify | Delete `AcquireResultDetailView` (`:2251-2462`). Mark the search row's cover-zoom source id. |
 | `docs/verification/harness-t130/` | **Create** | Pure-logic verification for `CatalogRelease`, per repo convention. |
 
 ---
@@ -642,7 +642,7 @@ correct for `9579592` and for nothing since.
 Touches no file any other agent holds. **Can start immediately.**
 
 **Files:**
-- Create: `Sources/VellumMusicKit/CatalogRelease.swift`
+- Create: `Sources/NaviTunesKit/CatalogRelease.swift`
 - Create: `docs/verification/harness-t130/Package.swift`, `README.md`, `Sources/t130/Main.swift`
 
 **Interfaces:**
@@ -695,8 +695,8 @@ which is empty for a release row by construction (`AcquisitionCore.swift:496` ex
 - [ ] **Step 2: Build the package**
 
 ```bash
-xcodebuild -workspace VellumMusicHost/VellumMusicHost.xcodeproj/project.xcworkspace \
-  -scheme VellumMusicHost -destination 'generic/platform=iOS Simulator' build
+xcodebuild -workspace NaviTunesHost/NaviTunesHost.xcodeproj/project.xcworkspace \
+  -scheme NaviTunesHost -destination 'generic/platform=iOS Simulator' build
 ```
 Expected: BUILD SUCCEEDED. Nothing references the type yet, so this only proves it compiles.
 
@@ -710,7 +710,7 @@ Follow `docs/verification/harness-t128/README.md` exactly — same `Package.swif
 cd docs/verification/harness-t130
 mkdir -p Sources/t130
 for f in CatalogRelease AcquisitionCore; do
-  ln -sf ../../../../../Sources/VellumMusicKit/$f.swift Sources/t130/$f.swift
+  ln -sf ../../../../../Sources/NaviTunesKit/$f.swift Sources/t130/$f.swift
 done
 ```
 
@@ -751,7 +751,7 @@ constructs it. That is what makes it independently reviewable — a reviewer can
 triage decisions without any screen having changed.
 
 **Files:**
-- Modify: `Sources/VellumMusicKit/ServerPlaylistViews.swift` (enum at `:563`; view from `:623`)
+- Modify: `Sources/NaviTunesKit/ServerPlaylistViews.swift` (enum at `:563`; view from `:623`)
 
 **Interfaces:**
 - Consumes: `CatalogRelease` from Task 1.
@@ -763,9 +763,9 @@ triage decisions without any screen having changed.
 - [ ] **Step 1: Re-resolve the line numbers**
 
 ```bash
-git diff --stat Sources/VellumMusicKit/ServerPlaylistViews.swift
+git diff --stat Sources/NaviTunesKit/ServerPlaylistViews.swift
 grep -n "enum LibraryDetailSource\|struct ServerPlaylistDetailView\|albumOrNil\|isAlbumStyleDetail" \
-  Sources/VellumMusicKit/ServerPlaylistViews.swift
+  Sources/NaviTunesKit/ServerPlaylistViews.swift
 ```
 The table in this plan is anchored to `9579592`. Work from this grep, not from the table.
 
@@ -856,8 +856,8 @@ Each site gets one of three treatments, and each needs a one-line comment saying
 - [ ] **Step 7: Build**
 
 ```bash
-xcodebuild -workspace VellumMusicHost/VellumMusicHost.xcodeproj/project.xcworkspace \
-  -scheme VellumMusicHost -destination 'generic/platform=iOS Simulator' build 2>&1 | tail -30
+xcodebuild -workspace NaviTunesHost/NaviTunesHost.xcodeproj/project.xcworkspace \
+  -scheme NaviTunesHost -destination 'generic/platform=iOS Simulator' build 2>&1 | tail -30
 ```
 Expected: BUILD SUCCEEDED, zero errors.
 
@@ -981,7 +981,7 @@ empty by definition, so until the merged branch is reachable from an empty `visi
 screen renders "No songs" and nothing else on every search result.
 
 Check it: `grep -n 'else if shouldShowMergedAlbumTracklist\|else if visible.isEmpty'
-Sources/VellumMusicKit/ServerPlaylistViews.swift` — the merged clause must come first. If it does
+Sources/NaviTunesKit/ServerPlaylistViews.swift` — the merged clause must come first. If it does
 not, stop and run Standalone Task A as its own change, with its own build and its own report, then
 come back. **Do not fold that fix into this task.** It is filed separately precisely so a reviewer
 can see it without reading a restructure around it.
@@ -1028,8 +1028,8 @@ artist and title alone.
 - [ ] **Step 1: See what terminal 11 landed**
 
 ```bash
-git diff 9579592 -- Sources/VellumMusicKit/DiscoverySearchView.swift \
-  Sources/VellumMusicKit/ArtistPageView.swift Sources/VellumMusicKit/AcquisitionCore.swift
+git diff 9579592 -- Sources/NaviTunesKit/DiscoverySearchView.swift \
+  Sources/NaviTunesKit/ArtistPageView.swift Sources/NaviTunesKit/AcquisitionCore.swift
 ```
 Read `AcquireResultDetailView.artistNavTarget` and `ArtistNameNavigation` as they now stand.
 
@@ -1056,7 +1056,7 @@ The first task with a user-visible change.
 - [ ] **Step 1: Diff before deleting**
 
 ```bash
-git diff 9579592 -- Sources/VellumMusicKit/DiscoverySearchView.swift | sed -n '/AcquireResultDetailView/,$p'
+git diff 9579592 -- Sources/NaviTunesKit/DiscoverySearchView.swift | sed -n '/AcquireResultDetailView/,$p'
 ```
 Anything terminal 11 added inside that view is ported in Task 5, not deleted here. Confirm it is
 ported before removing the view.

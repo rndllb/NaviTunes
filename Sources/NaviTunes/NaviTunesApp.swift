@@ -1,0 +1,14 @@
+import NaviTunesKit
+import SwiftUI
+
+@main
+struct NaviTunesApp: App {
+    @StateObject private var appModel = AppModel()
+
+    var body: some Scene {
+        WindowGroup {
+            RootView()
+                .environmentObject(appModel)
+        }
+    }
+}

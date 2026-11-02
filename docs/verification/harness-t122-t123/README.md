@@ -7,8 +7,8 @@ the harness always exercises the shipping code rather than a snapshot that can d
 
     cd harness-t122-t123
     for f in MusicBrainzModels MusicBrainzClient MusicBrainzCacheStore MusicBrainzService \
-             MusicBrainzQuery VellumNetworking; do
-      t=$(cd ../../.. && git ls-files "Sources/VellumMusicKit/**/$f.swift")
+             MusicBrainzQuery NaviTunesNetworking; do
+      t=$(cd ../../.. && git ls-files "Sources/NaviTunesKit/**/$f.swift")
       ln -sfn "../../../../../$t" "Sources/mb2/$f.swift"
     done
     swift run mb2

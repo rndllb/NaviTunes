@@ -24,32 +24,32 @@ around isn't one.
 `.github/workflows/ci.yml` runs on pull requests into `dev` and `main` — not on every push,
 because macOS runners bill at 10x on private repos.
 
-The job builds the host app and runs the `VellumMusicKit` unit tests on an iOS Simulator:
+The job builds the host app and runs the `NaviTunesKit` unit tests on an iOS Simulator:
 
 ```
 xcodebuild test \
-  -workspace VellumMusic.xcworkspace \
-  -scheme VellumMusicKitTests \
+  -workspace NaviTunes.xcworkspace \
+  -scheme NaviTunesKitTests \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
   CODE_SIGNING_ALLOWED=NO
 ```
 
 That same command is what to run locally before opening a PR.
 
-`VellumMusicUITests` is deliberately **not** in that scheme. It drives a real signed-in
+`NaviTunesUITests` is deliberately **not** in that scheme. It drives a real signed-in
 Navidrome/Jellyfin server, so it can't run on a clean runner and would be flaky if it did.
 Run it locally when you touch navigation.
 
 ## Tests
 
-Unit tests live in `Tests/VellumMusicKitTests/` and use
+Unit tests live in `Tests/NaviTunesKitTests/` and use
 [Swift Testing](https://developer.apple.com/documentation/testing) (`import Testing`, `@Test`,
 `#expect`).
 
-The package is iOS-only — `Sources/VellumMusicKit` uses SwiftUI APIs unavailable on macOS — so
+The package is iOS-only — `Sources/NaviTunesKit` uses SwiftUI APIs unavailable on macOS — so
 `swift test` does not work. Tests must run through an iOS Simulator destination via the
-`VellumMusicKitTests` scheme. For the same reason the package is listed as a member of
-`VellumMusic.xcworkspace`: as a bare package *dependency* its test target isn't buildable and
+`NaviTunesKitTests` scheme. For the same reason the package is listed as a member of
+`NaviTunes.xcworkspace`: as a bare package *dependency* its test target isn't buildable and
 the scheme resolves to "no test bundles available".
 
 ### What belongs here

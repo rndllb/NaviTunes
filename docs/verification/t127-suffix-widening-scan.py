@@ -51,9 +51,9 @@ def base_key(raw, pattern):
 def subsonic(base, user, password, endpoint, extra=""):
     salt = "t127scan"
     token = hashlib.md5((password + salt).encode()).hexdigest()
-    q = f"u={urllib.parse.quote(user)}&t={token}&s={salt}&v=1.16.1&c=VellumT127&f=json"
+    q = f"u={urllib.parse.quote(user)}&t={token}&s={salt}&v=1.16.1&c=NaviTunesT127&f=json"
     url = f"{base.rstrip('/')}/rest/{endpoint}.view?{q}{extra}"
-    req = urllib.request.Request(url, headers={"User-Agent": "VellumT127/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "NaviTunesT127/1.0"})
     return json.load(urllib.request.urlopen(req))["subsonic-response"]
 
 def all_albums(base, user, password):

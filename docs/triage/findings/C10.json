@@ -13,7 +13,7 @@
   "proposed_fix": "No code change. Fixed by commit 8fd35ba, which threads `artistId` through both constructors and adds TrackCopyConstructorTests.swift (109 lines) to prevent silent regression. The sweep's proposed fix and the shipped fix agree.",
   "steps": [
     "Read the claim: `withArtworkURL` and `withDuration` in MusicLibraryProviding.swift omit `artistId`.",
-    "Read current source at Sources/VellumMusicKit/Backends/MusicLibraryProviding.swift:313-359.",
+    "Read current source at Sources/NaviTunesKit/Backends/MusicLibraryProviding.swift:313-359.",
     "Confirm `artistId: artistId,` is present as the final argument in `withArtworkURL` (line 333) and in `withDuration` (line 357).",
     "Check provenance: `git log` shows commit 8fd35ba 'Thread artistId through the Track copy constructors (C10)', naming this finding id explicitly.",
     "Check the diffstat: 8fd35ba adds +2 lines to MusicLibraryProviding.swift (one per constructor) and +109 lines of TrackCopyConstructorTests.swift.",

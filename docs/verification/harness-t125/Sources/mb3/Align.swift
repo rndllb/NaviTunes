@@ -26,12 +26,12 @@ enum Navidrome {
         let salt = String(UUID().uuidString.prefix(8)).lowercased()
         let token = Insecure.MD5.hash(data: Data((pass + salt).utf8))
             .map { String(format: "%02x", $0) }.joined()
-        return "u=\(user)&t=\(token)&s=\(salt)&v=1.16.1&c=VellumT125&f=json"
+        return "u=\(user)&t=\(token)&s=\(salt)&v=1.16.1&c=NaviTunesT125&f=json"
     }
 
     static func get(_ path: String, _ extra: String) async throws -> [String: Any] {
         var req = URLRequest(url: URL(string: "\(base)/\(path).view?\(query())&\(extra)")!)
-        req.setValue("VellumT125/1.0", forHTTPHeaderField: "User-Agent")
+        req.setValue("NaviTunesT125/1.0", forHTTPHeaderField: "User-Agent")
         let (data, _) = try await URLSession.shared.data(for: req)
         let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
         return obj["subsonic-response"] as? [String: Any] ?? [:]

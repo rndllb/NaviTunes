@@ -22,7 +22,7 @@ the user's step. The remaining Mac checks are listed at the end.
   leading/trailing bars under 70 % are intro/outro, capped at 32 bars. The same rule runs in the
   Linux harness so its scores apply to what ships.
 - **Loudness:** BS.1770 (K-weighting, gated) in Swift, integrated + 10 s windows at the cues.
-- **Cache:** `TransitionAnalysisStore`, one JSON per track under `Caches/VellumMusic/automix/`,
+- **Cache:** `TransitionAnalysisStore`, one JSON per track under `Caches/NaviTunes/automix/`,
   keyed by track id **and** a file fingerprint (byte count + mtime), kept forever. A re-download or
   retag misses and re-analyses; a purged cache costs one re-analysis.
 - **Deadline fallback:** `TransitionPlanner.plan(from:to:pending:outgoingPosition:)` never waits.
@@ -116,7 +116,7 @@ planning, no second transport. The `AVQueuePlayer` path costs exactly what it di
 | `Playback/AutoMix/AutoMixStreamPrefetcher.swift` | early fetch of the next queued stream into the stream cache (AutoMix on only) |
 | `Playback/PlaybackEngine.swift` (AutoMix extension at the end) | planning hook, handoff, promote, hand-back |
 | `Resources/BeatThisSmall.mlpackage` | the converted model (SwiftPM compiles it to `BeatThisSmall.mlmodelc`) |
-| `Tests/VellumMusicKitTests/TransitionPlannerTests.swift`, `AutoMixAnalysisTests.swift` | 41 tests in 5 suites (green on the Mac, iOS 26.4 simulator, inside the full 209-test scheme): guard both ways, deadline, cache hit / miss-in-time / miss-too-late, heuristic, chunking, peaks, stream prefetch with a counting URLProtocol |
+| `Tests/NaviTunesKitTests/TransitionPlannerTests.swift`, `AutoMixAnalysisTests.swift` | 41 tests in 5 suites (green on the Mac, iOS 26.4 simulator, inside the full 209-test scheme): guard both ways, deadline, cache hit / miss-in-time / miss-too-late, heuristic, chunking, peaks, stream prefetch with a counting URLProtocol |
 | `scripts/automix/` | the Linux evaluation harness (analyze, render, bench, Core ML conversion) — not shipped |
 
 ### Streamed songs (round 2)
@@ -149,7 +149,7 @@ what plays is decided by `AutoMixPreparation` (pure, `AutoMixPreparationTests`):
   of up to 8 s ending a second before the song does (`AutoMixPreparation.plainCrossfade`, durations
   only). Only when even that cannot be staged — the playhead within ~11 s of the end — is it the
   normal transition (`TransitionStyleReason.noTimeToPrepare`). Every fallback is one line in the
-  perf log (`vellum.perf`, category `automix`, plus a `automix.fallback` event) with the playhead,
+  perf log (`navitunes.perf`, category `automix`, plus a `automix.fallback` event) with the playhead,
   e.g. "plain crossfade: the analysis of the playing song failed (at 183 s of 234 s)".
 - Planning reads the player's live clock (`autoMixPlanningPosition`), not `playbackHead`, which the
   periodic observer had not yet refreshed when the steady-playback re-plan ran.
@@ -218,11 +218,11 @@ plus ~1.2 GB for All-In-One.
 
 ### On-device measurement recipe (Mac)
 
-Signposts are already in the code: `automix.analyze` (interval, subsystem `vellum.perf`) around
+Signposts are already in the code: `automix.analyze` (interval, subsystem `navitunes.perf`) around
 every analysis, `automix.handoff` and `automix.chain` (events) at every transition.
 
 1. Instruments → **Time Profiler + os_signpost + Energy Log** template, device attached, Release
-   build. Filter signposts to subsystem `vellum.perf`.
+   build. Filter signposts to subsystem `navitunes.perf`.
 2. Play a 10-song downloaded playlist with AutoMix **off**; note Energy Log's average "CPU" and
    "Audio" impact over 10 minutes.
 3. Same playlist, AutoMix **on**, first pass (cold cache): every `automix.analyze` interval is
@@ -239,14 +239,14 @@ Same phone, same 60-minute downloaded playlist in both apps (export it to Apple 
 album run), Low Power Mode off, Wi-Fi and Bluetooth off, brightness at 50 % with auto-brightness
 off, wired headphones at the same volume, screen locked after pressing play.
 
-| Step | Apple Music, AutoMix on | Vellum, AutoMix on (warm cache) | Vellum, AutoMix off |
+| Step | Apple Music, AutoMix on | NaviTunes, AutoMix on (warm cache) | NaviTunes, AutoMix off |
 |---|---|---|---|
 | Battery % at start | | | |
 | Battery % after 60 min | | | |
 | Drop | | | |
 
 Run each column from the same starting charge (e.g. 80 %), charging back between runs; repeat
-twice and average. Vellum's cold-cache run is a fourth column if you want the analysis cost
+twice and average. NaviTunes's cold-cache run is a fourth column if you want the analysis cost
 included (it is one inference per song, then never again).
 
 ## Pricing the on-device variant (c8) — measured
@@ -377,8 +377,8 @@ Median |cue delta|: mix-out 0.0 s, mix-in 0.0 s over 10 blended pairs. Median lo
    ```
    mkdir -p ~/agent-scratch/automix && cd ~/Lyra-Music
    xcodebuild test \
-     -workspace VellumMusic.xcworkspace \
-     -scheme VellumMusicKitTests \
+     -workspace NaviTunes.xcworkspace \
+     -scheme NaviTunesKitTests \
      -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
      -derivedDataPath ~/agent-scratch/automix/DerivedData \
      MODULE_CACHE_DIR=~/agent-scratch/automix/ModuleCache \
@@ -388,8 +388,8 @@ Median |cue delta|: mix-out 0.0 s, mix-in 0.0 s over 10 blended pairs. Median lo
    Then the app:
 
    ```
-   xcodebuild -workspace VellumMusicHost/VellumMusicHost.xcodeproj/project.xcworkspace \
-     -scheme VellumMusicHost -destination 'generic/platform=iOS' build \
+   xcodebuild -workspace NaviTunesHost/NaviTunesHost.xcodeproj/project.xcworkspace \
+     -scheme NaviTunesHost -destination 'generic/platform=iOS' build \
      -derivedDataPath ~/agent-scratch/automix/DerivedData \
      MODULE_CACHE_DIR=~/agent-scratch/automix/ModuleCache
    ```

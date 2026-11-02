@@ -1,6 +1,6 @@
 # Rendering cost on scroll paths
 
-Applies to all Swift UI code in `Sources/VellumMusicKit/`. Read together with
+Applies to all Swift UI code in `Sources/NaviTunesKit/`. Read together with
 `Rules/swiftui-body-cost.md`.
 
 ## Lazy containers are the default

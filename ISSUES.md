@@ -2,7 +2,7 @@
 
 ## Playlist search bar reveals on scroll-to-top (not pull-to-reveal only)
 
-**Where:** `Sources/VellumMusicKit/ServerPlaylistViews.swift` — `ServerPlaylistDetailView`, the `.searchable(...placement: .navigationBarDrawer(displayMode: .automatic))` modifier.
+**Where:** `Sources/NaviTunesKit/ServerPlaylistViews.swift` — `ServerPlaylistDetailView`, the `.searchable(...placement: .navigationBarDrawer(displayMode: .automatic))` modifier.
 
 **Desired behavior:**
 1. Playlist opens → search bar hidden.
@@ -24,7 +24,7 @@
 
 ## Search tab: detached search button vs scroll-collapse (mutually exclusive)
 
-**Where:** `Sources/VellumMusicKit/RootView.swift` — the Search `Tab(role: .search)` and `.tabBarMinimizeBehavior(...)`.
+**Where:** `Sources/NaviTunesKit/RootView.swift` — the Search `Tab(role: .search)` and `.tabBarMinimizeBehavior(...)`.
 
 **Limitation:** A `Tab(role: .search)` renders as a detached search button in the tab bar but does **not** participate in `tabBarMinimizeBehavior(.onScrollDown)`. So under Search the tab bar and the bottom mini-player accessory (`tabViewBottomAccessoryPlacement`, system-driven) do not collapse on scroll. Removing `role: .search` enables the collapse but collapses all five tabs into one inline pill (no detached search button). iOS provides no way to get both.
 
@@ -50,4 +50,4 @@
 
 ## Performance is a standing constraint, not a one-off cleanup
 
-Every view holds `@EnvironmentObject var app: AppModel`, and `AppModel` has ~100 `@Published` properties, so **any** publish re-runs **every** visible `body`. A single full-catalog scan or live `.blur` in a body path is enough to make scrolling and the mini-player transition visibly janky — this has regressed twice. Before adding UI, read `Rules/swiftui-body-cost.md` and `Rules/swiftui-render-cost.md`. `PerfLog` logs any main-actor block over 16 ms under subsystem `vellum.perf` and emits Instruments signposts; use it rather than guessing.
+Every view holds `@EnvironmentObject var app: AppModel`, and `AppModel` has ~100 `@Published` properties, so **any** publish re-runs **every** visible `body`. A single full-catalog scan or live `.blur` in a body path is enough to make scrolling and the mini-player transition visibly janky — this has regressed twice. Before adding UI, read `Rules/swiftui-body-cost.md` and `Rules/swiftui-render-cost.md`. `PerfLog` logs any main-actor block over 16 ms under subsystem `navitunes.perf` and emits Instruments signposts; use it rather than guessing.

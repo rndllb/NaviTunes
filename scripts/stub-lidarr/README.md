@@ -1,7 +1,7 @@
 # Stub Lidarr
 
 A stand-in Lidarr for the Discover-search UI tests
-(`VellumMusicHost/VellumMusicUITests/DiscoverAlbumSearch.swift`).
+(`NaviTunesHost/NaviTunesUITests/DiscoverAlbumSearch.swift`).
 
 It exists because those tests need a *known* acquisition catalog. Pointing them at a real Lidarr
 would make them depend on somebody's private server, its contents, and its credentials — and the

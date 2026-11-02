@@ -1,6 +1,6 @@
 # Cost inside SwiftUI bodies
 
-Applies to all Swift UI code in `Sources/VellumMusicKit/`. Read together with
+Applies to all Swift UI code in `Sources/NaviTunesKit/`. Read together with
 `Rules/swiftui-render-cost.md`.
 
 Nearly every view holds `@EnvironmentObject var app: AppModel`, and `AppModel` has 138
@@ -52,5 +52,5 @@ Decorate–sort–undecorate. Never call a function that scans an array from ins
 - `PerfLog.measure(details:)` interpolation is eager — never re-evaluate something expensive
   just to build the log string.
 
-`PerfLog` logs any main-actor block over 16 ms to Console.app under subsystem `vellum.perf`,
+`PerfLog` logs any main-actor block over 16 ms to Console.app under subsystem `navitunes.perf`,
 and emits signposts for Instruments. Use it to confirm a suspicion instead of guessing.

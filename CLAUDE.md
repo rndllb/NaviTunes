@@ -1,4 +1,4 @@
-# Vellum Music — Backend Notes
+# NaviTunes — Backend Notes
 
 This app talks to two pluggable music backends. The active one is chosen at login via `BackendKind` (`AppModel.swift`). Both implement `MusicLibraryProviding` (`MusicLibraryProviding.swift`) so feature code stays backend-agnostic; reach for the concrete client only when an endpoint or capability differs.
 
@@ -40,14 +40,14 @@ The app surfaces two distinct collections. The naming is a footgun — `AppModel
 
 - **Server catalog** — every album/track on the connected Navidrome / Jellyfin instance. Loaded via `MusicLibraryProviding.albums(limit:)` → Subsonic `getAlbumList2` / Jellyfin `Items?IncludeItemTypes=MusicAlbum`. Cached in `AppModel.libraryAlbums` / `recentlyAddedAlbums`. Server-wide search is `MusicLibraryProviding.searchCatalog(query:)` → Subsonic `search3` / Jellyfin `Items?searchTerm=…`.
 - **Home discovery shelves** (Top Picks, New Releases, genre rows, New Artists Added) surface **server catalog only** — albums the user has **not** added to their magic playlist (`AppModel.isEligibleForHomeTopPick`). Top Picks + New Releases are taste-ranked via `NewTabPersonalizationEngine.tasteRankedAlbumSummaries`; genre rows use `listeningTopGenres()`.
-- **Personal library (Vellum "My Library" magic playlist)** — a per-user opaquely-named playlist (`__vellum_<sha12>`) Vellum creates on the backend. Its contents are the canonical "what *I* added" set, synced across devices:
+- **Personal library (NaviTunes "My Library" magic playlist)** — a per-user opaquely-named playlist (`__vellum_<sha12>`) NaviTunes creates on the backend. The prefix is the name stored on users' servers and stays `__vellum_` through the NaviTunes rename; names with `__navitunes_` made by a rename-era build are still found and recognised. Its contents are the canonical "what *I* added" set, synced across devices:
   - Playlist tracks → `AppModel.librarySongIds: Set<String>`
   - `comment` (Subsonic) / `Overview` (Jellyfin) JSON → `LibraryMembershipPayload` → `libraryAlbumEntries` + `libraryPlaylistEntries` (each entry carries a per-item `added` date so "Recently Added (yours)" is accurate).
   - Name is deterministic from `(backend, normalized server key, user id)` in `LibraryMembership` — same user + same server URL → same playlist on every device (legacy host-only names are still discovered).
   - Resolved on sign-in by `refreshLibraryMembership()` (always find-by-name on the server, not cache-only); kept live via `startLibraryMembershipAutoSync()` (~20s poll) and `refreshLibraryMembershipIfStale()` on foreground.
   - Mutated by `addAlbumToLibrary` / `removeAlbumFromLibrary` / `toggleFavoriteTrack` etc., then persisted back to the magic playlist via `persistLibraryMembershipPayload()`.
   - Filtered out of every user-facing playlist surface by id and by name prefix (`LibraryMembership.isMagicPlaylistName`, applied in `AppModel.filterOutMagicPlaylist`).
-  - **That filter is a safety boundary, not cosmetics.** `libraryPlaylists` feeds `PlaylistEditSheet`, whose `removeSelectedRows` commits a multi-row delete to the server immediately, with no confirmation and no undo. The magic playlist's tracks *are* `librarySongIds`, so if the filter ever stops matching, editing a playlist becomes deleting from the library through a button reviewed on the assumption it can't. The id half of the check is nil until `refreshLibraryMembership()` resolves, so in that window the name comparison is the only thing separating the two states — and it matches `__vellum_` only, while pre-rebrand users can still hold a `__lyra_<hash12>` playlist (see `legacyLyraMagicPlaylistNames`). Known gap, recorded not fixed.
+  - **That filter is a safety boundary, not cosmetics.** `libraryPlaylists` feeds `PlaylistEditSheet`, whose `removeSelectedRows` commits a multi-row delete to the server immediately, with no confirmation and no undo. The magic playlist's tracks *are* `librarySongIds`, so if the filter ever stops matching, editing a playlist becomes deleting from the library through a button reviewed on the assumption it can't. The id half of the check is nil until `refreshLibraryMembership()` resolves, so in that window the name comparison is the only thing separating the two states — and it matches `__vellum_` and `__navitunes_` only, while pre-rebrand users can still hold a `__lyra_<hash12>` playlist (see `legacyLyraMagicPlaylistNames`). Known gap, recorded not fixed.
 
 Rule of thumb: anything that means "things the *user* owns / has added" must read from `librarySongIds` / `libraryAlbumEntries` / `libraryPlaylistEntries`, not `libraryAlbums`. Search scopes follow the same split: the Library tab in Discovery searches **personal** state; the Discover tab is a hybrid of **server catalog** + acquisition download candidates.
 
@@ -59,7 +59,7 @@ All "request missing music" flows funnel through one swappable abstraction so ba
 - **Manager** (`AcquisitionManager.swift`, `@MainActor`): `enqueue(_:)` is the single entry point; jobs keyed by `requestKey`; a shared poll loop reconciles against `provider.activeJobs()`; `onJobFinished` fires once per terminal job. `AppModel.acquisition` owns it and forwards `objectWillChange`. Default plugin is **Lidarr**. The source list in `SettingsView` renders `AcquisitionPluginKind.allCases`, so every registered kind is user-selectable.
 - **Plugins** (conform to `AcquisitionProviding`): **Lidarr** (`LidarrAcquisitionPlugin`) — album-level; MusicBrainz lookup → add + monitor → `AlbumSearch` (#5012 monitor-race fix); polls `/queue` + `/command`; catalog reads `GET /artist`, `/album?artistId=`, `/calendar`, `/wanted/missing` (`supportsReleaseCatalog`). **DroppedNeedle** (`DroppedNeedleAcquisitionPlugin`) — album-level (optional per-track when `trackTitle` is set); native `/api/v1/*` auth via session tokens from one of: `POST /api/v1/auth/login` (local account), `POST /api/v1/auth/jellyfin/login` (imported Jellyfin user), or Plex pin (`POST /api/v1/auth/plex/pin` → browser → `GET /api/v1/auth/plex/poll`); Connect Apps app passwords are **not** valid for the native API; requests via `POST /api/v1/requests/new`; polls `/api/v1/downloads`; artist discography via `/search` (no calendar). **Downtify** (`DowntifyAcquisitionPlugin`) — the only **track**-granularity plugin (`supportsTrackSearch`, no release catalog); single `baseURL` config field.
 - **Call sites**: UI never touches a concrete plugin. Build an `AcquisitionRequest` and call `AppModel.requestAcquisition(_:)` (`DiscoverySearchView`, `BrowseAlbumDetailView`, `ServerPlaylistViews`, `MusicNewTabView`). Gate affordances on `app.acquisitionCapabilities` (`supportsTrackSearch`, `granularity`). Album-level plugins request the whole release for missing-track rows.
-- **Settings**: `SettingsView` → Plugins → **Music Requests** (renamed from "Downloads") opens `AcquisitionPluginSettingsView` — a Request Source list (all kinds, each showing granularity + whether credentials are stored), capability-driven config fields, Test Connection (`provider.validate()`), and a unified Activity list (`acquisition.displayJobs`, includes server-side items started outside Vellum). (The offline-media "Downloads" section under Settings is a separate thing.)
+- **Settings**: `SettingsView` → Plugins → **Music Requests** (renamed from "Downloads") opens `AcquisitionPluginSettingsView` — a Request Source list (all kinds, each showing granularity + whether credentials are stored), capability-driven config fields, Test Connection (`provider.validate()`), and a unified Activity list (`acquisition.displayJobs`, includes server-side items started outside NaviTunes). (The offline-media "Downloads" section under Settings is a separate thing.)
 - **Setup copy is part of the capability declaration, not the view.** `AcquisitionCapabilities.requirementsSummary` states what credentials the plugin needs (it's the answer to "does this want an API key?") and renders under its fields. `AcquisitionConfigField.helpText` says where a value comes from (e.g. "Lidarr → Settings → General → Security"); `placeholder` stays a format example, never an instruction. Fields render with a persistent label, a Required marker until filled, and a reveal toggle for `.apiKey` / `.password`. A new plugin that leaves these blank ships an unexplained form.
 - **Completion**: `AppModel.handleAcquisitionJobFinished` (backend-agnostic) triggers a server scan and retries `searchCatalog` until the new file surfaces, then adds it to the personal library.
 - **Request an artist not in your library**: Discover search surfaces plugin artist matches (`AcquisitionManager.searchArtists`) when Lidarr or DroppedNeedle is configured. Settings → Following has an "Add artist" entry. Both open `ArtistPageView(input: .named(...))`, which blends the server catalog with the plugin discography.
@@ -70,7 +70,7 @@ To add a backend: add a `case` to `AcquisitionPluginKind`, write one `*Acquisiti
 
 The "Lidarr-style brain" — keep a followed artist's discography complete — but it **lives in the app**. Canonical releases come from the active plugin (`artistReleases`); there is no iTunes/TheAudioDB floor.
 
-- **Models/store** (`MusicSubscriptionModels.swift`): `FollowedArtist` (persisted "wanted" intent; id = MBID or normalized-name fallback; tracks `requestedReleaseIds` so re-checks don't re-enqueue), `SubscriptionReleaseStatus` (`.have`/`.requested`/`.pending` UI status), and `MusicSubscriptionStore` (JSON in `Application Support/VellumMusic/subscriptions.json`, same layout as `LibrarySnapshotStore`).
+- **Models/store** (`MusicSubscriptionModels.swift`): `FollowedArtist` (persisted "wanted" intent; id = MBID or normalized-name fallback; tracks `requestedReleaseIds` so re-checks don't re-enqueue), `SubscriptionReleaseStatus` (`.have`/`.requested`/`.pending` UI status), and `MusicSubscriptionStore` (JSON in `Application Support/NaviTunes/subscriptions.json`, same layout as `LibrarySnapshotStore`).
 - **Engine** (`MusicSubscriptionEngine.swift`, `@MainActor`): env-injected (no `AppModel` internals) so it stays testable. `check(artistId:)` = plugin discography → diff against the connected server (`serverAlbumsForArtist`, normalized-title match, any backend) → enqueue missing albums/EPs through the **active acquisition plugin**. With no catalog plugin, completeness is server-only (have vs wishlist).
 - **AppModel** owns `subscriptions` (built in `init`, forwards `objectWillChange`); `serverAlbums(forArtistName:)` is the "have it?" probe; `refreshSubscriptions()` runs a pass. The engine calls `acquisition.enqueue` directly (not `requestAcquisition`) to avoid per-album toasts.
 - **UI**: `ArtistFollowButton` (bell toggle in the artist-page toolbar, always shown — following without a plugin is a valid wishlist) and `SubscriptionsView` (Settings → Plugins → **Following**: per-artist status, "Check now", unfollow; banner when no download plugin is configured).
@@ -82,7 +82,7 @@ The "Lidarr-style brain" — keep a followed artist's discography complete — b
 - Mix types: **On Repeat**, **Favorites**, **Rediscover**, **New in Your Library** — each needs **≥ 3 tracks** or it is omitted.
 - **On Repeat** / **Rediscover** read `ScrobbleService.store.completed` (successful **server** scrobbles), not `recentlyPlayedTracks` alone.
 - **Favorites** intersects `favoriteTrackIds` with `discoveryLibraryTracks` (partial until discovery index finishes).
-- Synthetic playlist IDs: `__vellum_home_mix:<mixId>` via `HomeMix.asPlaylistSummary()`.
+- Synthetic playlist IDs: `__navitunes_home_mix:<mixId>` via `HomeMix.asPlaylistSummary()`.
 - Library → Playlists surfaces mixes when `AppModel.showHomeMixesInPlaylists` is true (Settings → Library & Data).
 - Mix detail: `ServerPlaylistDetailView(homeMixId:)` — album-style UI, mosaic hero, no remove-from-playlist.
 
@@ -146,7 +146,7 @@ Implementation: `AlbumDetailRelatedSectionsView` (horizontal carousels, backdrop
 
 The Radio tab shows three independent collections. Don't conflate them:
 
-- **Your Stations** — local, user-owned (`CustomRadioStationStore`, JSON in `Application Support/VellumMusic/custom-radio`). Stations saved from the directory land here too, keyed by `directoryStationUUID`.
+- **Your Stations** — local, user-owned (`CustomRadioStationStore`, JSON in `Application Support/NaviTunes/custom-radio`). Stations saved from the directory land here too, keyed by `directoryStationUUID`.
 - **Radio Browser directory** — `RadioBrowserClient.swift`, a third-party community dataset (~57k stations, 7.8k US, 238 countries). Public: needs a network but **no server sign-in**, gated only on `AppModel.effectiveOfflineMode`.
 - **Server stations** — Subsonic `getInternetRadioStations`, Navidrome only, whatever the user configured on their own server.
 
@@ -211,7 +211,7 @@ User-facing settings live under **Settings → Sound & Playback** (`SettingsPlay
 
 - **Streaming** — separate Wi‑Fi / cellular max bitrate (`StreamBitRateOption`) and format (`StreamFormatOption`). Active pair follows `prefersCellularStreamingQuality`. Navidrome sends Subsonic `format` + `maxBitRate` query params; Jellyfin maps format to progressive stream containers.
 - **Downloads** — `DownloadQualityTier` + `DownloadFormatOption` (separate from streaming).
-- **Stream cache** — `streamingDiskCacheEnabled` (`UserDefaults`, **off by default** — registered in `AppModel.init`; turning the EQ on flips it true). `StreamingMediaDiskCache` stores fully-fetched progressive streams under `Caches/VellumMusic/stream-cache/` (512 MB LRU). `peekCachedFileURL` for cheap candidate scans; `markAccessed` bumps LRU on actual play. `CachingResourceLoaderDelegate` can commit during AVPlayer playback when enabled (limited on current iOS — EQ prefetch is the reliable writer).
+- **Stream cache** — `streamingDiskCacheEnabled` (`UserDefaults`, **off by default** — registered in `AppModel.init`; turning the EQ on flips it true). `StreamingMediaDiskCache` stores fully-fetched progressive streams under `Caches/NaviTunes/stream-cache/` (512 MB LRU). `peekCachedFileURL` for cheap candidate scans; `markAccessed` bumps LRU on actual play. `CachingResourceLoaderDelegate` can commit during AVPlayer playback when enabled (limited on current iOS — EQ prefetch is the reliable writer).
 - **Equalizer** — `EqualizerSettings.swift` + `SettingsEqualizerView`. Ten ISO bands (32 Hz–16 kHz), presets (Flat, Dance, Jazz, Bass Boost, Vocal), bypass, per-band gains in `UserDefaults`. `AppModel.equalizerEnabled` syncs to `PlaybackEngine` via `syncEqualizerToEngine()`. Toggling EQ while the engine path is live bypasses/applies the EQ node in place (no track reload). Turning EQ on while streaming still reloads via `reloadForEqualizerSettingsChange()` so a cache/EQ path can take over. Live slider changes call `applyLiveEqualizerGains()` on the active EQ session only.
 - **Player** — skip interval buttons, sleep timer chrome, default playback speed, lock-screen remote mode (skip track vs skip interval). Wired through `PlaybackEngine` + `syncPlaybackPreferencesToEngine()`.
 - **Artist play mode** — top songs / shuffle album / full discography (`ArtistPlayMode` in settings + long-press override on artist page).
@@ -224,7 +224,7 @@ User-facing settings live under **Settings → Sound & Playback** (`SettingsPlay
 **EQ-eligible sources** (read via `AVAudioFile`, never live HTTP decode):
 
 1. **Offline downloads** — `OfflineDownloadManager.localFile(for:)`
-2. **Committed stream-cache files** — `StreamingMediaDiskCache` under `VellumMusic/stream-cache/`
+2. **Committed stream-cache files** — `StreamingMediaDiskCache` under `NaviTunes/stream-cache/`
 
 **Streams without a local file:**
 
@@ -240,7 +240,7 @@ User-facing settings live under **Settings → Sound & Playback** (`SettingsPlay
 
 ## Server listening history (scrobbling)
 
-Vellum submits **server** scrobbles separately from local Recently Played shelves:
+NaviTunes submits **server** scrobbles separately from local Recently Played shelves:
 
 - `PlaybackEngine.maybeScrobble` → `AppModel.recordRecentPlay` (local) **and** `ScrobbleService.recordCompletedScrobble` (server queue).
 - `PlaybackEngine.onTrackStarted` → `ScrobbleService.sendNowPlaying` (Subsonic `scrobble?submission=false`; Jellyfin `Sessions/Playing`).
@@ -256,7 +256,7 @@ Vellum submits **server** scrobbles separately from local Recently Played shelve
 
 ## Client backup
 
-`VellumClientBackup` / `ClientBackupControlsView` — export/import scrobbles, playback preferences, the signed-in account's Kill Mode history (`KillModeStore`) and library pins (`LibraryPinStore`), via `VellumClientBackupLocalState`. Both sections are optional in the file: a backup without them leaves this phone's Kill Mode and pins alone, even on Replace. Does **not** include credentials, downloaded audio, or server magic-playlist contents.
+`NaviTunesClientBackup` / `ClientBackupControlsView` — export/import scrobbles, playback preferences, the signed-in account's Kill Mode history (`KillModeStore`) and library pins (`LibraryPinStore`), via `NaviTunesClientBackupLocalState`. Both sections are optional in the file: a backup without them leaves this phone's Kill Mode and pins alone, even on Replace. Does **not** include credentials, downloaded audio, or server magic-playlist contents.
 
 ## Navidrome shares
 
@@ -301,12 +301,12 @@ Document for contributors — not an exhaustive bug list:
 
 ## Source layout
 
-`Sources/VellumMusicKit/` is grouped by feature. SPM discovers sources recursively under the target's `path`, and the host project consumes the package as a local reference rather than listing files — so **moving a file between these folders needs no change to `Package.swift`, the pbxproj, or any import**. There are no per-folder modules; everything is one target and `internal` is visible across all of it.
+`Sources/NaviTunesKit/` is grouped by feature. SPM discovers sources recursively under the target's `path`, and the host project consumes the package as a local reference rather than listing files — so **moving a file between these folders needs no change to `Package.swift`, the pbxproj, or any import**. There are no per-folder modules; everything is one target and `internal` is visible across all of it.
 
 | Folder | Holds |
 |---|---|
 | `App/` | Composition root — `AppModel`, `RootView` — plus app-lifetime concerns: `KeychainStore`, `PersistedModelSchema`, `LegacyLyraMigration`, `DebugUIRemote`, `PerfLog` |
-| `Backends/` | `MusicLibraryProviding` and the Jellyfin / Navidrome clients, `VellumNetworking`, Navidrome shares |
+| `Backends/` | `MusicLibraryProviding` and the Jellyfin / Navidrome clients, `NaviTunesNetworking`, Navidrome shares |
 | `Acquisition/` | `AcquisitionCore`, the manager, and the Lidarr / Downtify / DroppedNeedle plugins |
 | `MusicBrainz/` | Client, service, models, query, search feed, caches, discography mapping |
 | `Playback/` | `PlaybackEngine`, failure policy, queue store, stream cache, `StaleSongRecovery` |
@@ -323,13 +323,13 @@ Document for contributors — not an exhaustive bug list:
 | `Subscriptions/` | Follow-artist completeness |
 | `Settings/` | Settings hub and detail pages, account, login, client backup |
 | `DesignSystem/` | `MusicDesignSystem`, artwork pipeline, shimmer, UIKit action sheet |
-| `Widgets/` | The main app's half of the widget contract (extension views live in `VellumMusicHost/VellumWidgets`) |
+| `Widgets/` | The main app's half of the widget contract (extension views live in `NaviTunesHost/NaviTunesWidgets`) |
 | `Deprecated/` | Unreferenced dead code — the iTunes clients, TheAudioDB, Last.fm. **Do not wire these back in.** |
 
-Tests live in `Tests/VellumMusicKitTests/` and run on an iOS Simulator via the `VellumMusicKitTests` scheme; see `CONTRIBUTING.md` for why `swift test` cannot run them.
+Tests live in `Tests/NaviTunesKitTests/` and run on an iOS Simulator via the `NaviTunesKitTests` scheme; see `CONTRIBUTING.md` for why `swift test` cannot run them.
 
 ## Build / run
 
-- iOS app target: `VellumMusicHost/VellumMusicHost.xcodeproj` (workspace at `VellumMusicHost/VellumMusicHost.xcodeproj/project.xcworkspace`).
-- Library code lives in the SPM package at `Sources/VellumMusicKit/` (`Package.swift`), grouped as above.
-- Standard build: `xcodebuild -workspace VellumMusicHost/VellumMusicHost.xcodeproj/project.xcworkspace -scheme VellumMusicHost -destination 'generic/platform=iOS Simulator' build`.
+- iOS app target: `NaviTunesHost/NaviTunesHost.xcodeproj` (workspace at `NaviTunesHost/NaviTunesHost.xcodeproj/project.xcworkspace`).
+- Library code lives in the SPM package at `Sources/NaviTunesKit/` (`Package.swift`), grouped as above.
+- Standard build: `xcodebuild -workspace NaviTunesHost/NaviTunesHost.xcodeproj/project.xcworkspace -scheme NaviTunesHost -destination 'generic/platform=iOS Simulator' build`.

@@ -8,7 +8,7 @@ import Foundation
 // and `PlaybackFailureStreak` here are the same declarations the app ships. If the policy
 // changes and this proof still passes, the proof is still telling the truth.
 //
-//   swiftc Sources/VellumMusicKit/PlaybackFailurePolicy.swift \
+//   swiftc Sources/NaviTunesKit/PlaybackFailurePolicy.swift \
 //          docs/verification/t162-failure-policy-proof.swift -o /tmp/t162proof && /tmp/t162proof
 
 var failures = 0

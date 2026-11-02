@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate T344 finding JSONs against the vellum triage data contract.
+"""Validate T344 finding JSONs against the navitunes triage data contract.
 
 The contract (amended 2026-09-16, md5 32c56d39c6254d7d69f938f99f6cce2e) is the
 interface between this run and the swipe app, whose author cannot talk to us.
