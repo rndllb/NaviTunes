@@ -71,12 +71,11 @@ struct LibraryMembershipTests {
 
     // MARK: - Name shape
 
-    @Test("generated names are __vellum_ plus exactly 12 hex characters")
+    @Test("generated names are __navitunes_ plus exactly 12 hex characters")
     func nameShape() {
         let name = LibraryMembership.magicPlaylistName(backend: .navidrome, serverKey: Self.server, userKey: Self.user)
-        // The prefix is the name stored on users' servers; the NaviTunes rename deliberately left it alone.
-        #expect(name.hasPrefix("__vellum_"))
-        let suffix = name.dropFirst("__vellum_".count)
+        #expect(name.hasPrefix("__navitunes_"))
+        let suffix = name.dropFirst("__navitunes_".count)
         // `allSatisfy` is `rethrows`, which the #expect macro can't hoist — evaluate it first.
         let isAllHex = suffix.allSatisfy(\.isHexDigit)
         #expect(suffix.count == 12)
@@ -133,28 +132,23 @@ struct LibraryMembershipTests {
         #expect(!LibraryMembership.isMagicPlaylistName(name))
     }
 
-    /// **Documented gap, not endorsed behaviour.** CLAUDE.md records that pre-rebrand users can
-    /// still hold a `__lyra_<hash12>` playlist until the one-time rename migration runs, and that
-    /// `isMagicPlaylistName` does not match it — meaning such a playlist is still reachable from
-    /// `PlaylistEditSheet`. This test pins the current behaviour so the gap is visible in the
-    /// suite rather than only in prose. **When the prefix check is widened to cover `__lyra_`,
-    /// this test should be inverted, not deleted.**
-    @Test("known gap: legacy __lyra_ names are NOT filtered out")
-    func legacyLyraNamesAreNotRecognised() {
+    /// Pre-rebrand `__lyra_<hash12>` playlists can still be on a server, and the playlist editor must
+    /// not be able to reach them, so they count as magic names. They are renamed to the current prefix.
+    @Test("legacy __lyra_ and __vellum_ names are recognised and map to the current name")
+    func legacyNamesAreRecognised() {
         let legacy = LibraryMembership.legacyLyraMagicPlaylistNames(
-            backend: .navidrome,
-            serverKey: Self.server,
-            userKey: Self.user,
+            backend: .navidrome, serverKey: Self.server, userKey: Self.user,
             baseURLString: "https://\(Self.server)",
         )
         #expect(!legacy.isEmpty)
         for name in legacy {
             #expect(name.hasPrefix("__lyra_"))
-            #expect(
-                !LibraryMembership.isMagicPlaylistName(name),
-                "if this now passes, the prefix check was widened — invert this test",
-            )
+            #expect(LibraryMembership.isMagicPlaylistName(name))
+            #expect(LibraryMembership.currentName(forLegacy: name)?.hasPrefix("__navitunes_") == true)
         }
+        #expect(LibraryMembership.currentName(forLegacy: "__vellum_0123456789ab") == "__navitunes_0123456789ab")
+        #expect(LibraryMembership.currentName(forLegacy: "__navitunes_0123456789ab") == nil)
+        #expect(LibraryMembership.isMagicPlaylistName("__vellum_0123456789ab"))
     }
 
     /// The rename migration only works if the hash half is untouched by the rebrand.
@@ -169,28 +163,28 @@ struct LibraryMembershipTests {
             baseURLString: "https://\(Self.server)",
         )
         // Only the canonical-prefix candidates have a pre-rebrand `__lyra_` counterpart.
-        let canonical = current.filter { $0.hasPrefix("__vellum_") }
+        let canonical = current.filter { $0.hasPrefix("__navitunes_") }
         #expect(canonical.count == legacy.count)
         for (new, old) in zip(canonical, legacy) {
-            #expect(new.dropFirst("__vellum_".count) == old.dropFirst("__lyra_".count))
+            #expect(new.dropFirst("__navitunes_".count) == old.dropFirst("__lyra_".count))
         }
     }
 
-    /// A build made during the NaviTunes rename created `__navitunes_<hash>` playlists. They must still be
-    /// found and still be recognised as the magic playlist, or they leak into user-facing playlist lists.
-    @Test("names from the rename build are candidates and are recognised as magic")
-    func renamedBuildNamesAreRecognised() {
+    /// Servers can hold the same playlist under `__vellum_`. It must still be found and recognised as the
+    /// magic playlist, or it would leak into user-facing playlist lists.
+    @Test("__vellum_ names are candidates and are recognised as magic")
+    func vellumNamesAreRecognised() {
         let candidates = LibraryMembership.candidateMagicPlaylistNames(
             backend: .navidrome, serverKey: Self.server, userKey: Self.user,
             baseURLString: "https://\(Self.server)",
         )
-        let renamed = candidates.filter { $0.hasPrefix("__navitunes_") }
-        #expect(!renamed.isEmpty)
-        for name in renamed {
+        let vellum = candidates.filter { $0.hasPrefix("__vellum_") }
+        #expect(!vellum.isEmpty)
+        for name in vellum {
             #expect(LibraryMembership.isMagicPlaylistName(name), "\(name) was not recognised")
         }
-        // The canonical name still leads, so it is what a fresh install creates.
-        #expect(candidates.first?.hasPrefix("__vellum_") == true)
+        // The current name still leads, so it is what a fresh install creates.
+        #expect(candidates.first?.hasPrefix("__navitunes_") == true)
     }
 
     // MARK: - Server key normalisation
@@ -238,7 +232,7 @@ struct LibraryMembershipTests {
             userKey: Self.user,
             baseURLString: "https://\(Self.server)",
         )
-        // One canonical name, plus its rename-build twin; the identical legacy hash adds nothing.
+        // One current name, plus its `__vellum_` twin; the identical legacy hash adds nothing.
         let canonical = candidates.filter { $0.hasPrefix(LibraryMembership.magicPlaylistPrefix) }
         #expect(canonical.count == 1)
         #expect(Set(candidates).count == candidates.count)

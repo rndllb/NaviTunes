@@ -12,9 +12,6 @@ struct NaviTunesHostApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(appModel)
-                .onAppear {
-                    appModel.syncHomeScreenIconIfNeeded()
-                }
                 .onOpenURL { url in
                     appModel.handleWidgetDeepLink(url)
                 }
@@ -22,7 +19,6 @@ struct NaviTunesHostApp: App {
                     // `.inactive` fires when pressing Home on a physical device; `.background` alone is unreliable.
                     switch phase {
                     case .inactive, .background:
-                        appModel.syncHomeScreenIconIfNeeded()
                         appModel.persistPlaybackQueue()
                         // Stop the library-membership network poll while
                         // backgrounded so it can't keep waking the radio during

@@ -1611,6 +1611,26 @@ final class NavidromeClient: MusicLibraryProviding {
         }
     }
 
+    /// The richest magic-named playlist this user owns, whatever address it was hashed under. The name
+    /// embeds a hash of the server address, so signing in through a different one (a Tailscale address,
+    /// a LAN IP) no longer matches the playlist made through the first; this finds it anyway.
+    func findOwnMagicPlaylist() async throws -> PlaylistSummary? {
+        let items = try await subsonicRequest(path: "getPlaylists", query: [:])
+        guard let root = navidromeDict(items["playlists"]) else { return nil }
+        let me = username.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let matches = childDictArray(from: root, key: "playlist").compactMap { dict -> PlaylistSummary? in
+            guard let summary = parsePlaylistDictSummary(dict),
+                  LibraryMembership.isMagicPlaylistName(summary.name) else { return nil }
+            // `getPlaylists` also lists other users' public playlists; only adopt one this user owns.
+            if let owner = navidromeCoerceString(dict["owner"])?.lowercased(), !me.isEmpty, owner != me { return nil }
+            return summary
+        }
+        return matches.max { lhs, rhs in
+            let l = lhs.songCount ?? 0, r = rhs.songCount ?? 0
+            return l != r ? l < r : lhs.id > rhs.id
+        }
+    }
+
     /// One round-trip `getPlaylist` that returns enough to drive NaviTunes library state:
     /// the ordered track id list (for song membership) and the comment field (for
     /// album / playlist membership and add-dates).

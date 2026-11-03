@@ -44,7 +44,7 @@ struct RecentlyPlayedProvider: TimelineProvider {
 
 // MARK: - Shared widget helpers
 
-let widgetDefaultAccent = Color(red: 250/255, green: 45/255, blue: 72/255)
+let widgetDefaultAccent = Color(red: 53/255, green: 212/255, blue: 224/255)
 
 func widgetAccentColor(from hex: String?) -> Color {
     guard let hex else { return widgetDefaultAccent }

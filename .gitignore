@@ -44,3 +44,8 @@ NaviTunesHost/Config/Local.xcconfig
 
 # DerivedData written by ~/.claude/scripts/build-to-phone.sh (device builds)
 .build-to-phone/
+
+# Private notes, not for the repo
+APP_REVIEW_NOTES.md
+APP_STORE_COPY.md
+app-review/

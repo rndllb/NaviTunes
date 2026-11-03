@@ -1066,7 +1066,7 @@ struct ServerPlaylistDetailView: View {
             } message: {
                 Text("Would you like to remove this song from this playlist?")
             }
-            .toolbar { detailToolbarContent }
+            .musicPushedActions(placement: isAlbumStyleDetail ? MusicToolbar.trailingItemPlacement : .primaryAction) { detailToolbarButtons }
             .sheet(isPresented: $showPlaylistEditor) {
                 playlistEditorSheet
             }
@@ -1434,53 +1434,50 @@ struct ServerPlaylistDetailView: View {
     /// Toolbar content branches: playlist mode shows the rename/delete/sort overflow
     /// menu; album mode shows a share-artwork link plus a compact overflow with
     /// download-all and library actions. Items fade with ``detailChromeIsLeaving``.
-    @ToolbarContentBuilder
-    private var detailToolbarContent: some ToolbarContent {
+    /// The actions themselves, shared by the iPhone toolbar and the iPad bar drawn on the dock's row.
+    @ViewBuilder
+    private var detailToolbarButtons: some View {
         if isAlbumStyleDetail {
-            ToolbarItemGroup(placement: MusicToolbar.trailingItemPlacement) {
-                Group {
-                    if let url = resolvedDetailArtworkURL {
-                        ShareLink(item: url) {
-                            Image(systemName: "square.and.arrow.up")
-                                .font(.body.weight(.semibold))
-                                .foregroundStyle(backdropPalette.heroChromePrimary)
-                        }
-                    }
-                    Menu {
-                        if isHomeMix {
-                            homeMixOverflowMenuContent
-                        } else {
-                            albumOverflowMenuContent
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
+            Group {
+                if let url = resolvedDetailArtworkURL {
+                    ShareLink(item: url) {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.body.weight(.semibold))
                             .foregroundStyle(backdropPalette.heroChromePrimary)
                     }
-                    .menuOrder(.fixed)
                 }
-                .opacity(detailChromeIsLeaving ? 0 : 1)
-                .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
-                .transaction(value: detailChromeIsLeaving) { t in
-                    t.animation = detailChromeIsLeaving ? .none : .easeOut(duration: 0.15)
+                Menu {
+                    if isHomeMix {
+                        homeMixOverflowMenuContent
+                    } else {
+                        albumOverflowMenuContent
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .foregroundStyle(backdropPalette.heroChromePrimary)
                 }
+                .menuOrder(.fixed)
+            }
+            .opacity(detailChromeIsLeaving ? 0 : 1)
+            .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
+            .transaction(value: detailChromeIsLeaving) { t in
+                t.animation = detailChromeIsLeaving ? .none : .easeOut(duration: 0.15)
             }
         } else {
-            ToolbarItemGroup(placement: .primaryAction) {
-                Group {
-                    killModeToolbarButton
-                    Menu {
-                        playlistOverflowMenuContent
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .foregroundStyle(backdropPalette.heroChromePrimary)
-                    }
-                    .menuOrder(.fixed)
+            Group {
+                killModeToolbarButton
+                Menu {
+                    playlistOverflowMenuContent
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .foregroundStyle(backdropPalette.heroChromePrimary)
                 }
-                .opacity(detailChromeIsLeaving ? 0 : 1)
-                .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
-                .transaction(value: detailChromeIsLeaving) { t in
-                    t.animation = detailChromeIsLeaving ? .none : .easeOut(duration: 0.15)
-                }
+                .menuOrder(.fixed)
+            }
+            .opacity(detailChromeIsLeaving ? 0 : 1)
+            .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
+            .transaction(value: detailChromeIsLeaving) { t in
+                t.animation = detailChromeIsLeaving ? .none : .easeOut(duration: 0.15)
             }
         }
     }

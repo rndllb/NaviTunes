@@ -285,18 +285,6 @@ struct SettingsAppearanceView: View {
             } footer: {
                 Text("Accent color tints buttons, highlights, and chrome throughout the app.")
             }
-
-            Section {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("App Icon")
-                        .font(.subheadline.weight(.medium))
-                    AppIconPickerGrid(appIconPresetId: $app.appIconPresetId)
-                        .padding(.vertical, 4)
-                }
-                .padding(.vertical, 8)
-            } footer: {
-                Text("Chooses the NaviTunes home screen icon. Independent from accent color — custom accents do not include matching icon artwork.")
-            }
         }
         .navigationTitle("Appearance")
         .settingsSubpageChrome()

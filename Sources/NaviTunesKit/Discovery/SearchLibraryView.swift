@@ -103,7 +103,105 @@ private struct SearchTabHeader: View {
 
     private var isSearching: Bool { sessionActive || searchFieldFocused || !searchText.isEmpty }
 
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.tabBarPlacement) private var tabBarPlacement
+    private var isPad: Bool { MusicPadDock.hidesPageProfile(sizeClass: sizeClass) }
+
     var body: some View {
+        if isPad {
+            padBody
+        } else {
+            phoneBody
+        }
+    }
+
+    /// iPad, as in Apple Music: no "Search" title or avatar, just the field and the scope pill on one row.
+    /// With the dock along the top the row sits beneath it; with the sidebar open it takes the dock's row.
+    /// Where the page's top edge sits on screen. Measured from a marker above the row, so the row's own
+    /// padding cannot feed back into it.
+    @State private var pageTopY: CGFloat = 88
+
+    /// With the sidebar open there is no dock to sit under, so the row rises to the dock's own row: its top is
+    /// the status bar plus 8pt, the same place Apple Music puts it. The content below rises with it.
+    private var padTopPadding: CGFloat {
+        guard tabBarPlacement == .sidebar else { return 0 }
+        return (MusicPadDock.statusBarHeight + 8) - pageTopY
+    }
+
+    private var padBody: some View {
+        VStack(spacing: 0) {
+            Color.clear
+                .frame(height: 0)
+                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { pageTopY = $0 }
+            padRow
+                .padding(.top, padTopPadding)
+        }
+    }
+
+    private var padRow: some View {
+        HStack(alignment: .center, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "magnifyingglass")
+                    .font(.title3.weight(.medium))
+                    .foregroundStyle(MusicDesign.secondaryLabel)
+                TextField(
+                    "",
+                    text: $searchText,
+                    prompt: Text(scope == .discover ? "Artists, Songs, and More" : "Songs, Albums, Artists")
+                        .foregroundStyle(MusicDesign.secondaryLabel),
+                )
+                .font(.title3)
+                .focused($searchFieldFocused)
+                .musicTextInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+                .tint(MusicDesign.accent)
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(MusicDesign.secondaryLabel)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 16)
+            .frame(height: 44)
+            .musicGlassEffect(in: Capsule(style: .continuous))
+
+            if isSearching {
+                Button {
+                    searchText = ""
+                    searchFieldFocused = false
+                    onCancel()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(MusicDesign.secondaryLabel)
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .musicGlassEffect(in: Circle())
+                .transition(.opacity.combined(with: .scale(scale: 0.6)))
+            }
+
+            MusicGlassSegmentPillBar(
+                options: Array(SearchScope.allCases),
+                selection: $scope,
+                title: { $0.rawValue },
+                isLarge: true,
+            )
+            .frame(width: 233)
+        }
+        .animation(.smooth(duration: 0.25), value: isSearching)
+        .padding(.horizontal, 16)
+        // Under the top dock the page already starts 11pt below it, as in Apple Music.
+        .padding(.bottom, 12)
+        .background(MusicDesign.background)
+    }
+
+    private var phoneBody: some View {
         VStack(spacing: isSearching ? 10 : 12) {
             HStack(alignment: .center, spacing: 12) {
                 Text("Search")

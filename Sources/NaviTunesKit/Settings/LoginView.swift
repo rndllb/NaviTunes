@@ -1,53 +1,113 @@
 import SwiftUI
 
-/// Login with accent blobs and CTA — follows system appearance (dark matches ``MusicDesign`` black chrome).
+/// Sign-in colours, taken from the NaviTunes icon: its mint and aqua gradient on a deep teal ground.
+private enum LoginPalette {
+    static let canvas = Color(red: 0.012, green: 0.075, blue: 0.092)
+    static let mint = Color(red: 0.58, green: 1.0, blue: 0.82)
+    static let aqua = Color(red: 0.42, green: 0.96, blue: 1.0)
+    static let primaryText = Color.white
+    static let secondaryText = Color.white.opacity(0.72)
+    static let captionText = Color.white.opacity(0.55)
+    static let iconTint = Color.white.opacity(0.55)
+    static let divider = Color.white.opacity(0.12)
+    static let actionLabel = canvas
+    static let success = Color(red: 0.22, green: 0.78, blue: 0.42)
+    static let failure = Color(red: 1, green: 0.38, blue: 0.38)
+}
+
+/// White logo artwork bundled for the sign-in screen (`Resources/BackendLogos`).
+private enum LoginLogoAsset {
+    static func image(_ name: String) -> Image? {
+        let bundle = Bundle.module
+        let url = bundle.url(forResource: name, withExtension: "png", subdirectory: "BackendLogos")
+            ?? bundle.url(forResource: name, withExtension: "png")
+        guard let url, let data = try? Data(contentsOf: url),
+              let cg = ArtworkImageDecoder.cgImage(from: data, maxPixelSize: 1024)
+        else { return nil }
+        return ArtworkPlatformImage.swiftUIImage(cgImage: cg)
+    }
+}
+
+/// Sign-in canvas: deep teal, lit from the top by the icon's mint and aqua.
+private struct LoginCanvas: View, Equatable {
+    var isRegularWidth: Bool
+
+    var body: some View {
+        GeometryReader { geo in
+            let endRadius = isRegularWidth
+                ? hypot(geo.size.width / 2, geo.size.height)
+                : max(geo.size.width * 0.72, 220)
+
+            ZStack {
+                LoginPalette.canvas
+                RadialGradient(
+                    colors: [
+                        LoginPalette.aqua.opacity(0.30),
+                        LoginPalette.mint.opacity(0.14),
+                        LoginPalette.canvas,
+                    ],
+                    center: .top,
+                    startRadius: 12,
+                    endRadius: endRadius,
+                )
+            }
+            .frame(width: geo.size.width, height: geo.size.height)
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+/// Login: always dark, like the rest of the first-run flow, with the icon's palette.
 struct LoginView: View {
     @EnvironmentObject private var app: AppModel
-    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var forgotPasswordHint = false
     @State private var serverDraft = ServerConnectionDraft()
     @State private var isTestingConnection = false
     @State private var testResultMessage: String?
     @State private var testResultIsSuccess = false
 
-    private var isDark: Bool { colorScheme == .dark }
+    private var isRegularWidth: Bool { horizontalSizeClass == .regular }
 
     var body: some View {
         ZStack {
-            canvasBackground
-                .ignoresSafeArea()
-
-            loginAccentBlobs
+            LoginCanvas(isRegularWidth: isRegularWidth)
+                .equatable()
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    logoBlock
-                        .padding(.top, 36)
-                        .padding(.bottom, 28)
-
-                    headerBlock
-                        .padding(.bottom, 28)
-
-                    serverTypePicker
-                        .padding(.bottom, 18)
+                    brandBlock
+                        .padding(.top, isRegularWidth ? 56 : 28)
+                        .padding(.bottom, 32)
 
                     credentialsCard
                         .padding(.bottom, 22)
 
                     errorText
 
-                    HStack(spacing: 12) {
-                        testConnectionButton
+                    VStack(spacing: 12) {
                         loginButton
+                        testConnectionButton
                     }
                 }
+                .frame(maxWidth: 440)
+                .frame(maxWidth: .infinity)
                 .padding(.horizontal, 26)
                 .padding(.bottom, 44)
             }
+            .scrollDismissesKeyboard(.interactively)
+            .scrollBounceBehavior(.basedOnSize)
         }
-        .id("\(app.accentPresetId)-\(app.appIconPresetId)-\(app.themePreference.rawValue)")
+        .tint(LoginPalette.aqua)
+        .preferredColorScheme(.dark)
         .onAppear {
             SettingsFormDrafts.pullServer(from: app, into: &serverDraft)
+        }
+        .onChange(of: app.backendKind) { _, _ in
+            app.errorMessage = nil
+            testResultMessage = nil
         }
         .alert("Password help", isPresented: $forgotPasswordHint) {
             Button("OK", role: .cancel) {}
@@ -56,109 +116,87 @@ struct LoginView: View {
         }
     }
 
-    // MARK: - Colors (dark / light)
+    // MARK: - Brand
 
-    private var canvasBackground: Color {
-        isDark ? MusicDesign.background : Color(red: 0.98, green: 0.98, blue: 0.99)
-    }
-
-    private var primaryText: Color {
-        isDark ? .white : Color(white: 0.1)
-    }
-
-    private var secondaryText: Color {
-        isDark ? MusicDesign.secondaryLabel : Color(white: 0.44)
-    }
-
-    private var captionText: Color {
-        isDark ? MusicDesign.secondaryLabel : Color(white: 0.52)
-    }
-
-    private var iconTint: Color {
-        isDark ? Color.white.opacity(0.55) : Color(white: 0.62)
-    }
-
-    private var fieldValueText: Color {
-        isDark ? .white : Color(white: 0.12)
-    }
-
-    private var dividerLine: Color {
-        isDark ? MusicDesign.separator : Color(white: 0.9)
-    }
-
-    private var passwordUnderline: Color {
-        isDark ? MusicDesign.separator : Color(white: 0.88)
-    }
-
-    // MARK: - Accent ornaments
-
-    private var loginAccentBlobs: some View {
-        GeometryReader { geo in
-            ZStack {
-                accentBlob
-                    .frame(width: geo.size.width * 0.62, height: geo.size.width * 0.52)
-                    .position(x: geo.size.width * 0.88, y: geo.size.height * 0.08)
-
-                accentBlob
-                    .frame(width: geo.size.width * 0.72, height: geo.size.width * 0.58)
-                    .position(x: geo.size.width * 0.82, y: geo.size.height * 0.94)
+    private var brandBlock: some View {
+        VStack(spacing: 22) {
+            VStack(spacing: 14) {
+                // The white mark on its own, no tile behind it.
+                LoginLogoAsset.image("navitunes-mark")?
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: isRegularWidth ? 176 : 148)
+                    .shadow(color: LoginPalette.aqua.opacity(0.4), radius: 26, y: 8)
+                    .accessibilityHidden(true)
+                Text("NaviTunes")
+                    .font(.system(size: 34, weight: .bold))
+                    .foregroundStyle(LoginPalette.primaryText)
+                    .accessibilityAddTraits(.isHeader)
             }
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("NaviTunes")
 
-    private var accentBlob: some View {
-        Ellipse()
-            .fill(
-                RadialGradient(
-                    colors: [
-                        MusicDesign.accent.opacity(isDark ? 0.42 : 0.5),
-                        MusicDesign.accent.opacity(isDark ? 0.14 : 0.18),
-                        MusicDesign.accent.opacity(0),
-                    ],
-                    center: .center,
-                    startRadius: 8,
-                    endRadius: 140,
-                ),
-            )
-            .blur(radius: 26)
-    }
-
-    // MARK: - Logo & header
-
-    private var logoBlock: some View {
-        VStack(spacing: 14) {
-            NaviTunesAccentLogoView(accentPresetId: app.appIconPresetId, size: 88, showsIconPlate: true)
-                .animation(.easeInOut(duration: 0.2), value: app.appIconPresetId)
-            Text("NaviTunes")
-                .font(.title2.weight(.bold))
-                .foregroundStyle(primaryText)
+            serverTypePicker
         }
         .frame(maxWidth: .infinity)
     }
 
-    private var headerBlock: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Login")
-                .font(.system(size: 28, weight: .bold))
-                .foregroundStyle(primaryText)
-
-            Text("Please sign in to continue.")
-                .font(.subheadline)
-                .foregroundStyle(secondaryText)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
+    /// Rounded-square tiles for the two servers, under the logo.
     private var serverTypePicker: some View {
-        Picker("Server", selection: $app.backendKind) {
+        HStack(spacing: 18) {
             ForEach(BackendKind.allCases) { kind in
-                Text(kind.title).tag(kind)
+                serverTile(kind)
             }
         }
-        .pickerStyle(.segmented)
-        .tint(isDark ? MusicDesign.accent : nil)
+        .frame(maxWidth: .infinity)
+    }
+
+    private func tileLogoName(_ kind: BackendKind) -> String {
+        switch kind {
+        case .jellyfin: "jellyfin"
+        case .navidrome: "navidrome"
+        }
+    }
+
+    /// Jellyfin's mark is a little heavier than Navidrome's vinyl, so it gets more breathing room in the tile.
+    private func tileLogoPadding(_ kind: BackendKind, size: CGFloat) -> CGFloat {
+        switch kind {
+        case .jellyfin: size * 0.24
+        case .navidrome: size * 0.2
+        }
+    }
+
+    private func serverTile(_ kind: BackendKind) -> some View {
+        let selected = app.backendKind == kind
+        let size: CGFloat = isRegularWidth ? 96 : 86
+        return Button {
+            app.backendKind = kind
+        } label: {
+            VStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
+                        .fill(Color.white.opacity(selected ? 0.16 : 0.08))
+                    RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
+                        .strokeBorder(Color.white.opacity(selected ? 0.9 : 0.22), lineWidth: selected ? 1.5 : 1)
+                    LoginLogoAsset.image(tileLogoName(kind))?
+                        .renderingMode(.template)
+                        .resizable()
+                        .scaledToFit()
+                        .padding(tileLogoPadding(kind, size: size))
+                        .foregroundStyle(Color.white.opacity(selected ? 1 : 0.72))
+                }
+                .frame(width: size, height: size)
+
+                Text(kind.title.uppercased())
+                    .font(.caption2.weight(.bold))
+                    .tracking(1.0)
+                    .foregroundStyle(selected ? LoginPalette.primaryText : LoginPalette.captionText)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(kind.title)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityHint("Use this server type to sign in")
     }
 
     private var serverURLPlaceholder: String {
@@ -177,11 +215,10 @@ struct LoginView: View {
                     "",
                     text: $serverDraft.baseURL,
                     prompt: Text(serverURLPlaceholder)
-                        .foregroundStyle(MusicDesign.accent.opacity(isDark ? 0.82 : 0.78)),
+                        .foregroundStyle(Color.white.opacity(0.55)),
                 )
                 .font(.body.weight(.semibold))
-                .foregroundStyle(fieldValueText)
-                .tint(MusicDesign.accent)
+                .foregroundStyle(.white)
                 .musicTextInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 #if os(iOS)
@@ -192,26 +229,29 @@ struct LoginView: View {
             }
 
             Divider()
-                .background(dividerLine)
+                .background(LoginPalette.divider)
                 .padding(.leading, 36)
 
             loginLabeledField(
                 label: "USERNAME",
                 systemImage: "person.fill",
             ) {
-                TextField("Username", text: $serverDraft.username)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(fieldValueText)
-                    .tint(MusicDesign.accent)
-                    .musicTextInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    #if os(iOS)
-                        .textContentType(.username)
-                    #endif
+                TextField(
+                    "",
+                    text: $serverDraft.username,
+                    prompt: Text("username").foregroundStyle(Color.white.opacity(0.55)),
+                )
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.white)
+                .musicTextInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                #if os(iOS)
+                    .textContentType(.username)
+                #endif
             }
 
             Divider()
-                .background(dividerLine)
+                .background(LoginPalette.divider)
                 .padding(.leading, 36)
 
             passwordRow
@@ -220,17 +260,11 @@ struct LoginView: View {
         .padding(.vertical, 14)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(isDark ? Color.white.opacity(0.08) : Color.white)
-                .shadow(
-                    color: isDark ? Color.clear : Color.black.opacity(0.07),
-                    radius: 18,
-                    x: 0,
-                    y: 10,
-                ),
+                .fill(Color.white.opacity(0.08)),
         )
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(isDark ? MusicDesign.separator : Color.clear, lineWidth: 1),
+                .strokeBorder(LoginPalette.divider, lineWidth: 1),
         )
     }
 
@@ -242,13 +276,13 @@ struct LoginView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(label)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(captionText)
+                .foregroundStyle(LoginPalette.captionText)
                 .tracking(0.6)
 
             HStack(alignment: .center, spacing: 12) {
                 Image(systemName: systemImage)
                     .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(iconTint)
+                    .foregroundStyle(LoginPalette.iconTint)
                     .frame(width: 22, alignment: .center)
 
                 content()
@@ -263,7 +297,7 @@ struct LoginView: View {
             HStack {
                 Text("PASSWORD")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(captionText)
+                    .foregroundStyle(LoginPalette.captionText)
                     .tracking(0.6)
                 Spacer(minLength: 8)
                 Button {
@@ -272,7 +306,7 @@ struct LoginView: View {
                     Text("FORGOT")
                         .font(.caption.weight(.bold))
                         .tracking(0.8)
-                        .foregroundStyle(MusicDesign.accent)
+                        .foregroundStyle(LoginPalette.aqua)
                 }
                 .buttonStyle(.plain)
             }
@@ -280,22 +314,25 @@ struct LoginView: View {
             HStack(alignment: .center, spacing: 12) {
                 Image(systemName: "lock.fill")
                     .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(iconTint)
+                    .foregroundStyle(LoginPalette.iconTint)
                     .frame(width: 22, alignment: .center)
 
-                SecureField("Password", text: $serverDraft.password)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(fieldValueText)
-                    .tint(MusicDesign.accent)
-                    #if os(iOS)
-                        .textContentType(.password)
-                    #endif
+                SecureField(
+                    "",
+                    text: $serverDraft.password,
+                    prompt: Text("Password").foregroundStyle(Color.white.opacity(0.55)),
+                )
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.white)
+                #if os(iOS)
+                    .textContentType(.password)
+                #endif
 
                 Spacer(minLength: 0)
             }
 
             Rectangle()
-                .fill(passwordUnderline)
+                .fill(LoginPalette.divider)
                 .frame(height: 1)
         }
         .padding(.vertical, 12)
@@ -308,19 +345,19 @@ struct LoginView: View {
         if let err = app.errorMessage {
             Text(err)
                 .font(.footnote.weight(.medium))
-                .foregroundStyle(Color(red: 1, green: 0.38, blue: 0.38))
+                .foregroundStyle(LoginPalette.failure)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.bottom, 14)
         } else if let msg = testResultMessage {
             Text(msg)
                 .font(.footnote.weight(.medium))
-                .foregroundStyle(testResultIsSuccess
-                    ? Color(red: 0.22, green: 0.78, blue: 0.42)
-                    : Color(red: 1, green: 0.38, blue: 0.38))
+                .foregroundStyle(testResultIsSuccess ? LoginPalette.success : LoginPalette.failure)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.bottom, 14)
         }
     }
+
+    // MARK: - Buttons
 
     private var loginButton: some View {
         let isDisabled = app.isAuthenticating
@@ -335,17 +372,30 @@ struct LoginView: View {
                 if app.isAuthenticating {
                     ProgressView()
                         .controlSize(.small)
-                        .tint(.white)
+                        .tint(LoginPalette.actionLabel)
                 }
-                Text(app.isAuthenticating ? "SIGNING IN…" : "LOGIN")
+                Text(app.isAuthenticating ? "SIGNING IN…" : "SIGN IN")
                     .font(.caption.weight(.bold))
                     .tracking(0.9)
             }
-            .modifier(LoginActionButtonStyle(isDark: isDark))
+            .foregroundStyle(LoginPalette.actionLabel)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [LoginPalette.mint, LoginPalette.aqua],
+                            startPoint: .leading,
+                            endPoint: .trailing,
+                        ),
+                    ),
+            )
         }
         .buttonStyle(.plain)
         .disabled(isDisabled)
         .opacity(isDisabled ? 0.42 : 1)
+        .accessibilityLabel("Sign in with \(app.backendKind.title)")
     }
 
     private var testConnectionButton: some View {
@@ -364,7 +414,13 @@ struct LoginView: View {
                     .font(.caption.weight(.bold))
                     .tracking(0.9)
             }
-            .modifier(LoginActionButtonStyle(isDark: isDark))
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.55), lineWidth: 1.5),
+            )
         }
         .buttonStyle(.plain)
         .disabled(isDisabled)
@@ -383,7 +439,7 @@ struct LoginView: View {
         guard !isTestingConnection else { return }
         let raw = trimmedBaseURL
         guard !raw.isEmpty else { return }
-        guard let base = URL(string: raw), base.scheme != nil, base.host != nil else {
+        guard !ServerURL.candidates(raw).isEmpty else {
             testResultMessage = "Invalid server URL."
             testResultIsSuccess = false
             return
@@ -394,6 +450,11 @@ struct LoginView: View {
         testResultMessage = nil
         isTestingConnection = true
         defer { isTestingConnection = false }
+        guard let base = await ServerURL.resolved(raw) else {
+            testResultMessage = "Invalid server URL."
+            testResultIsSuccess = false
+            return
+        }
 
         let probeURL: URL
         let serverLabel: String
@@ -488,30 +549,5 @@ struct LoginView: View {
         default:
             return "Connection failed: \(error.localizedDescription)"
         }
-    }
-}
-
-private struct LoginActionButtonStyle: ViewModifier {
-    let isDark: Bool
-
-    func body(content: Content) -> some View {
-        content
-            .foregroundStyle(.white)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 16)
-            .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                MusicDesign.accent,
-                                MusicDesign.accent.opacity(0.78),
-                            ],
-                            startPoint: .leading,
-                            endPoint: .trailing,
-                        ),
-                    ),
-            )
-            .shadow(color: MusicDesign.accent.opacity(isDark ? 0.45 : 0.35), radius: 14, x: 0, y: 8)
     }
 }

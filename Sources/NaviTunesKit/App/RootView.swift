@@ -278,18 +278,25 @@ private struct MainShellView: View {
                 let screen = geo.frame(in: .global)
                 let page = padContentFrame.width > 0 ? padContentFrame : screen
                 let width = min(MusicPadMiniPlayer.width, max(0, page.width - 48))
-                TabViewMiniPlayerAccessory(
-                    showNowPlaying: $showNowPlaying,
-                    player: app.player,
-                    artworkNamespace: playerArtworkNamespace
-                )
-                .environmentObject(app)
-                .frame(width: width, height: MusicPadMiniPlayer.height)
-                .musicGlassCapsuleInteractiveChrome()
-                .position(
-                    x: page.midX - screen.minX,
-                    y: geo.size.height - MusicPadMiniPlayer.height / 2 - MusicPadMiniPlayer.bottomGap
-                )
+                let centerX = page.midX - screen.minX
+                let centerY = geo.size.height - MusicPadMiniPlayer.height / 2 - MusicPadMiniPlayer.bottomGap
+                ZStack {
+                    TabViewMiniPlayerAccessory(
+                        showNowPlaying: $showNowPlaying,
+                        player: app.player,
+                        artworkNamespace: playerArtworkNamespace
+                    )
+                    .environmentObject(app)
+                    .frame(width: width, height: MusicPadMiniPlayer.height)
+                    .musicGlassCapsuleInteractiveChrome()
+                    .position(x: centerX, y: centerY)
+
+                    // The ⋯ sits over the empty slot the capsule leaves for it: 14pt trailing padding, then
+                    // the lyrics and queue buttons (40pt each, 4pt apart) to its right.
+                    MiniPlayerMoreMenu(player: app.player)
+                        .environmentObject(app)
+                        .position(x: centerX + width / 2 - 14 - 40 - 4 - 40 - 4 - 20, y: centerY - MiniPlayerMoreMenu.menuLift / 2)
+                }
             }
         }
     }

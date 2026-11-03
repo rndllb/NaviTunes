@@ -115,8 +115,6 @@ public final class AppModel: ObservableObject {
     public static let defaultLibraryAlbumFetchLimit = 50_000
     @Published var accentPresetId: String = UserDefaults.standard.string(forKey: AppAccentPreset.accentPresetIdKey) ?? AppAccentPreset.defaultId {
         didSet {
-            // Accent color and app icon are independent — changing the accent must NOT change
-            // the home-screen icon. The icon is controlled solely by `appIconPresetId`.
             UserDefaults.standard.set(accentPresetId, forKey: AppAccentPreset.accentPresetIdKey)
         }
     }
@@ -129,19 +127,6 @@ public final class AppModel: ObservableObject {
                 return
             }
             UserDefaults.standard.set(customAccentHex, forKey: AppAccentPreset.customAccentHexKey)
-        }
-    }
-
-    /// Home-screen icon artwork — independent from ``accentPresetId`` (custom accents have no matching icon set).
-    @Published var appIconPresetId: String = AppModel.loadAppIconPresetId() {
-        didSet {
-            let resolved = AppAccentPreset.validIconPresetId(appIconPresetId)
-            if resolved != appIconPresetId {
-                appIconPresetId = resolved
-                return
-            }
-            UserDefaults.standard.set(appIconPresetId, forKey: AppAccentPreset.appIconPresetIdKey)
-            syncHomeScreenIconIfNeeded()
         }
     }
 
@@ -180,6 +165,10 @@ public final class AppModel: ObservableObject {
     /// Raised by the lock-screen / home-screen Now Playing widget (``handleWidgetDeepLink``),
     /// and by ``DebugUIRemote`` in DEBUG builds.
     @Published var openNowPlayingRequests = 0
+
+    /// A pane the full player should open on, set by the mini player's lyrics and queue buttons just before
+    /// it expands. ``NowPlayingView`` consumes it (and clears it) when it appears.
+    @Published var pendingNowPlayingPane: NowPlayingInitialPane?
 #if DEBUG
     /// Incremented by ``DebugUIRemote`` to pop the active tab's stack — see that file.
     @Published var debugPopRequests = 0
@@ -1231,28 +1220,6 @@ public final class AppModel: ObservableObject {
         player.restore(library: activeLibrary, snapshot: snap)
     }
 
-    /// Updates the home screen icon when it does not match ``appIconPresetId`` (iOS shows its OK alert on change).
-    public func syncHomeScreenIconIfNeeded() {
-        #if canImport(UIKit)
-        guard UIApplication.shared.supportsAlternateIcons else { return }
-        let target = AppAlternateIconSync.resolvedIconName(forIconPresetId: appIconPresetId)
-        guard UIApplication.shared.alternateIconName != target else { return }
-        AppAlternateIconSync.apply(iconPresetId: appIconPresetId, completion: nil)
-        #endif
-    }
-
-    /// Migrates legacy installs that tied icon color to accent selection.
-    private static func loadAppIconPresetId() -> String {
-        if let stored = UserDefaults.standard.string(forKey: AppAccentPreset.appIconPresetIdKey) {
-            return AppAccentPreset.validIconPresetId(stored)
-        }
-        let accent = UserDefaults.standard.string(forKey: AppAccentPreset.accentPresetIdKey) ?? AppAccentPreset.defaultId
-        if accent != AppAccentPreset.customId {
-            return AppAccentPreset.validIconPresetId(accent)
-        }
-        return AppAccentPreset.defaultId
-    }
-
     private static func loadLaunchTab() -> LaunchTabPreference {
         guard let raw = UserDefaults.standard.string(forKey: launchTabPreferenceKey),
               let value = LaunchTabPreference(rawValue: raw)
@@ -1268,13 +1235,16 @@ public final class AppModel: ObservableObject {
     public func signIn() async {
         guard !isAuthenticating else { return }
         errorMessage = nil
-        guard let base = URL(string: baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+        isAuthenticating = true
+        defer { isAuthenticating = false }
+        // Accepts a bare host, a mangled scheme or a pasted LAN address; a scheme-less LAN or Tailscale
+        // host is probed over HTTPS then HTTP. The field then shows the address that was actually used.
+        guard let base = await ServerURL.resolved(baseURLString) else {
             errorMessage = "Invalid server URL"
             return
         }
+        baseURLString = base.absoluteString
         let secondary = normalizedServerURL(from: secondaryURLString)
-        isAuthenticating = true
-        defer { isAuthenticating = false }
         let priorSessionKey = mediaSessionKey
         do {
             switch backendKind {
@@ -2237,7 +2207,20 @@ public final class AppModel: ObservableObject {
             guard let found = try await findMagicPlaylistSummaryByName(name) else { continue }
             if best == nil || (found.songCount ?? 0) > (best?.songCount ?? 0) { best = found }
         }
+        // The name hashes the server address, so signing in through a different one (Tailscale, a LAN IP)
+        // matches nothing — or an empty copy created by that very sign-in. Adopt the user's existing, fuller
+        // magic playlist instead of starting a second library beside it.
+        if best == nil || (best?.songCount ?? 0) == 0,
+           let existing = try? await findOwnMagicPlaylistSummary(),
+           existing.id != best?.id, (existing.songCount ?? 0) > (best?.songCount ?? 0) {
+            best = existing
+        }
         if let best {
+            // Found under an earlier name (`__vellum_…`): rename it in place so the server only ever
+            // holds the current one. The hash stays, so other devices still find it.
+            if let current = LibraryMembership.currentName(forLegacy: best.name) {
+                try? await renamePlaylist(playlistId: best.id, name: current)
+            }
             LibraryMembership.cachePlaylistId(
                 best.id, backend: backendKind, serverKey: identity.serverKey, userKey: identity.userKey,
             )
@@ -2304,6 +2287,17 @@ public final class AppModel: ObservableObject {
         case .navidrome:
             guard let client = navidrome else { throw URLError(.userAuthenticationRequired) }
             return try await client.findPlaylistByName(name)
+        }
+    }
+
+    private func findOwnMagicPlaylistSummary() async throws -> PlaylistSummary? {
+        switch backendKind {
+        case .jellyfin:
+            guard let client = jellyfin else { throw URLError(.userAuthenticationRequired) }
+            return try await client.findOwnMagicPlaylist()
+        case .navidrome:
+            guard let client = navidrome else { throw URLError(.userAuthenticationRequired) }
+            return try await client.findOwnMagicPlaylist()
         }
     }
 
@@ -6853,9 +6847,7 @@ public final class AppModel: ObservableObject {
     }
 
     func normalizedServerURL(from string: String) -> URL? {
-        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        return URL(string: trimmed)
+        ServerURL.normalizeLanAddress(string)
     }
 
     /// True when the configured fallback address is a private LAN URL.
@@ -7403,4 +7395,10 @@ public final class AppModel: ObservableObject {
             break
         }
     }
+}
+
+/// Which pane Now Playing opens with, when opened from a mini player button that names one.
+enum NowPlayingInitialPane {
+    case lyrics
+    case queue
 }

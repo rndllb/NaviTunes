@@ -44,6 +44,74 @@ struct ArtistPageView: View {
     @Environment(\.horizontalSizeClass) private var padSizeClass
     private var usesPadColumns: Bool { MusicPadDock.hidesPageProfile(sizeClass: padSizeClass) }
 
+    @ViewBuilder
+    private var artistToolbarButtons: some View {
+                ArtistFollowButton(
+                    name: model.displayName,
+                    mbid: model.pluginProfile?.mbid,
+                    coverURL: model.bannerArtworkURL
+                )
+                    .tint(backdropPalette.heroChromePrimary)
+
+                Menu {
+                    Button(action: toggleFavoriteArtist) {
+                        let favorited = app.isArtistFavorited(name: model.displayName)
+                        Label(
+                            favorited ? "Remove from Favorites" : "Add to Favorites",
+                            systemImage: favorited ? "star.fill" : "star",
+                        )
+                    }
+                    if let url = artistShareURL {
+                        ShareLink(item: url) {
+                            Label("Share", systemImage: "square.and.arrow.up")
+                        }
+                    }
+                    // Both labels are kept short enough to stay on one line at the longest real
+                    // count. Three digits is real — Nana Mouskouri is 314 release groups — and a
+                    // menu row that hyphenates across two lines reads as broken next to Share and
+                    // Info. Measured against "Remove from Favorites" (173.8pt at the 17pt body
+                    // font), the longest item here that is known to fit:
+                    //   "Request Discography (314)"   207.3pt  wraps  (what this used to say)
+                    //   "Request Missing (314)"       169.7pt  fits
+                    //   "Stop Requesting (196 of 314)" 222.6pt wraps
+                    //   "Stop (196 of 314)"           132.5pt  fits
+                    //
+                    // "Missing" rather than "Discography" is also the accurate word: the action
+                    // requests what the server does not have, and the number in brackets is that
+                    // missing count — never the size of the discography.
+                    if let progress = app.bulkAcquisitionProgress {
+                        Divider()
+                        Button(role: .destructive) {
+                            app.cancelBulkAcquisition()
+                        } label: {
+                            Label(
+                                "Stop (\(progress.placed) of \(progress.total))",
+                                systemImage: "stop.circle"
+                            )
+                        }
+                    } else if showsRequestDiscography {
+                        Divider()
+                        Button {
+                            showRequestDiscographyConfirmation = true
+                        } label: {
+                            Label(
+                                "Request Missing (\(model.discographyRequestPlan.count))",
+                                systemImage: "arrow.down.circle"
+                            )
+                        }
+                    }
+                    Divider()
+                    Button {
+                        showArtistIdentityInfo = true
+                    } label: {
+                        Label("Info", systemImage: "info.circle")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .tint(backdropPalette.heroChromePrimary)
+            }
+
     var body: some View {
         ZStack(alignment: .top) {
             AlbumHeroBackdropView(
@@ -126,74 +194,7 @@ struct ArtistPageView: View {
         .musicNavigationBarTitleDisplayMode(.inline)
         .musicNavigationBarVisibleWhenPushed()
         .musicHeroAlbumNavigationChrome(palette: backdropPalette)
-        .toolbar {
-            ToolbarItemGroup(placement: MusicToolbar.trailingItemPlacement) {
-                ArtistFollowButton(
-                    name: model.displayName,
-                    mbid: model.pluginProfile?.mbid,
-                    coverURL: model.bannerArtworkURL
-                )
-                    .tint(backdropPalette.heroChromePrimary)
-
-                Menu {
-                    Button(action: toggleFavoriteArtist) {
-                        let favorited = app.isArtistFavorited(name: model.displayName)
-                        Label(
-                            favorited ? "Remove from Favorites" : "Add to Favorites",
-                            systemImage: favorited ? "star.fill" : "star",
-                        )
-                    }
-                    if let url = artistShareURL {
-                        ShareLink(item: url) {
-                            Label("Share", systemImage: "square.and.arrow.up")
-                        }
-                    }
-                    // Both labels are kept short enough to stay on one line at the longest real
-                    // count. Three digits is real — Nana Mouskouri is 314 release groups — and a
-                    // menu row that hyphenates across two lines reads as broken next to Share and
-                    // Info. Measured against "Remove from Favorites" (173.8pt at the 17pt body
-                    // font), the longest item here that is known to fit:
-                    //   "Request Discography (314)"   207.3pt  wraps  (what this used to say)
-                    //   "Request Missing (314)"       169.7pt  fits
-                    //   "Stop Requesting (196 of 314)" 222.6pt wraps
-                    //   "Stop (196 of 314)"           132.5pt  fits
-                    //
-                    // "Missing" rather than "Discography" is also the accurate word: the action
-                    // requests what the server does not have, and the number in brackets is that
-                    // missing count — never the size of the discography.
-                    if let progress = app.bulkAcquisitionProgress {
-                        Divider()
-                        Button(role: .destructive) {
-                            app.cancelBulkAcquisition()
-                        } label: {
-                            Label(
-                                "Stop (\(progress.placed) of \(progress.total))",
-                                systemImage: "stop.circle"
-                            )
-                        }
-                    } else if showsRequestDiscography {
-                        Divider()
-                        Button {
-                            showRequestDiscographyConfirmation = true
-                        } label: {
-                            Label(
-                                "Request Missing (\(model.discographyRequestPlan.count))",
-                                systemImage: "arrow.down.circle"
-                            )
-                        }
-                    }
-                    Divider()
-                    Button {
-                        showArtistIdentityInfo = true
-                    } label: {
-                        Label("Info", systemImage: "info.circle")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                }
-                .tint(backdropPalette.heroChromePrimary)
-            }
-        }
+        .musicPushedActions { artistToolbarButtons }
         // The count is the point of this dialog: a one-tap action that silently places 300
         // requests is not an action anybody asked for. Stock `confirmationDialog`, so Cancel is
         // where the reader already expects it.

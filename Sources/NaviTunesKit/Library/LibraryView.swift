@@ -195,12 +195,19 @@ struct LibraryView: View {
                 slack: MusicTabFloatingHeaderScrollModifier.defaultSlack,
                 showFloatingHeader: $showFloatingHeader
             ))
-            .musicTabFloatingHeaderInset(isVisible: showFloatingHeader) {
+            .musicTabFloatingHeaderInset(isVisible: showFloatingHeader || headerIsButtonsOnly) {
                 libraryHeaderBar
             }
             .background(MusicDesign.background)
             .musicNewTabNavigationChrome()
-            .musicNewTabRootHidesNavigationBar()
+            .toolbarVisibility(headerIsButtonsOnly ? .visible : .hidden, for: .navigationBar)
+            .toolbar {
+                if headerIsButtonsOnly {
+                    ToolbarItemGroup(placement: MusicToolbar.trailingItemPlacement) {
+                        libraryHeaderActions
+                    }
+                }
+            }
             .navigationTitle("")
             // Deliberately *not* `musicBackHistoryTitle` here. Naming the root would name it in
             // the back-history menu, but `backButtonTitle` also drives the visible label on every
@@ -231,48 +238,64 @@ struct LibraryView: View {
         }
     }
 
+    /// With the dock along the top the page drops its title, so the header is only its buttons. They sit on
+    /// the dock's row and stay put, like Apple Music's; letting them fade with the scroll switched them off
+    /// (hidden headers do not take taps) until something reset the scroll state, such as opening the sidebar.
+    private var headerIsButtonsOnly: Bool {
+        recentlyAddedOnly && MusicPadDock.isTopDock(placement: tabBarPlacement, sizeClass: libraryHeaderSizeClass)
+    }
+
+    /// New playlist and the ⋯ menu. In the header row on iPhone and with the sidebar open; in the system
+    /// navigation bar with the dock along the top (see ``headerIsButtonsOnly``).
+    @ViewBuilder
+    private var libraryHeaderActions: some View {
+        Button {
+            showNewPlaylistSheet = true
+        } label: {
+            Image(systemName: "text.badge.plus")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 44, height: 44)
+        }
+        .accessibilityLabel("New playlist")
+
+        Menu {
+            Button("Edit Sections") {
+                showEditSections = true
+            }
+            Button("Refresh library") {
+                Task { await app.refreshLibraryAlbums() }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 44, height: 44)
+        }
+        .accessibilityLabel("More library actions")
+    }
+
+    @ViewBuilder
     private var libraryHeaderBar: some View {
-        HStack(alignment: .center, spacing: 12) {
-            // With the dock along the top it already says "Recently Added", so the page drops its title.
-            if !(recentlyAddedOnly && MusicPadDock.isTopDock(placement: tabBarPlacement, sizeClass: libraryHeaderSizeClass)) {
+        // With the dock along the top the buttons live in the navigation bar instead: the floating dock is a
+        // full-width view on the same row and swallowed taps on plain views drawn there.
+        if !headerIsButtonsOnly {
+            HStack(alignment: .center, spacing: 12) {
                 Text(recentlyAddedOnly ? "Recently Added" : "Library")
                     .font(.largeTitle.bold())
                     .foregroundStyle(.primary)
                     .accessibilityAddTraits(.isHeader)
-            }
-            Spacer(minLength: 0)
-            HStack(spacing: 0) {
-                Button {
-                    showNewPlaylistSheet = true
-                } label: {
-                    Image(systemName: "text.badge.plus")
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .frame(width: 44, height: 44)
+                Spacer(minLength: 0)
+                HStack(spacing: 0) {
+                    libraryHeaderActions
                 }
-                .accessibilityLabel("New playlist")
+                .musicGlassCapsuleInteractiveChrome()
 
-                Menu {
-                    Button("Edit Sections") {
-                        showEditSections = true
-                    }
-                    Button("Refresh library") {
-                        Task { await app.refreshLibraryAlbums() }
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .frame(width: 44, height: 44)
-                }
-                .accessibilityLabel("More library actions")
+                MusicToolbarSettingsAvatarLink(diameter: 45)
             }
-            .musicGlassCapsuleInteractiveChrome()
-
-            MusicToolbarSettingsAvatarLink(diameter: 45)
+            .padding(.horizontal, MusicDesign.newTabHorizontalInset)
+            .padding(.bottom, 10)
         }
-        .padding(.horizontal, MusicDesign.newTabHorizontalInset)
-        .padding(.bottom, 10)
     }
 
     private var libraryScrollMainContent: some View {

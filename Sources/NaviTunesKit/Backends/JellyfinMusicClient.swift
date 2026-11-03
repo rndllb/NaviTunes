@@ -1349,6 +1349,42 @@ final class JellyfinMusicClient: MusicLibraryProviding {
 
     /// Finds a playlist by exact name. Used to bind the NaviTunes magic playlist by
     /// deterministic name across devices.
+    /// The richest private magic-named playlist for this user, whatever address it was hashed under.
+    /// See `NavidromeClient.findOwnMagicPlaylist`.
+    func findOwnMagicPlaylist() async throws -> PlaylistSummary? {
+        var all: [PlaylistSummary] = []
+        for prefix in [LibraryMembership.magicPlaylistPrefix] + LibraryMembership.legacyPrefixes {
+            all += try await findPlaylists(searchTerm: prefix)
+        }
+        return all.filter { LibraryMembership.isMagicPlaylistName($0.name) && $0.isPublic != true }
+            .max { lhs, rhs in
+                let l = lhs.songCount ?? 0, r = rhs.songCount ?? 0
+                return l != r ? l < r : lhs.id > rhs.id
+            }
+    }
+
+    private func findPlaylists(searchTerm: String) async throws -> [PlaylistSummary] {
+        try requireSignedInUser()
+        let itemsURL = apiURL("Users", userId, "Items")
+        var comps = URLComponents(url: itemsURL, resolvingAgainstBaseURL: false)!
+        comps.queryItems = [
+            URLQueryItem(name: "IncludeItemTypes", value: "Playlist"),
+            URLQueryItem(name: "Recursive", value: "true"),
+            URLQueryItem(name: "SearchTerm", value: searchTerm),
+            URLQueryItem(name: "Limit", value: "50"),
+            URLQueryItem(name: "Fields", value: "ChildCount,IsPublic,DateCreated,DateModified,ImageTags"),
+        ]
+        var req = URLRequest(url: comps.url!)
+        applyAuth(&req)
+        let (data, res) = try await URLSession.navitunes.data(for: req)
+        guard let http = res as? HTTPURLResponse, http.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let items = json?["Items"] as? [[String: Any]] ?? []
+        return items.compactMap { parsePlaylistSummary($0) }
+    }
+
     func findPlaylistByName(_ name: String) async throws -> PlaylistSummary? {
         try requireSignedInUser()
         let itemsURL = apiURL("Users", userId, "Items")

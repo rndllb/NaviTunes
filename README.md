@@ -15,7 +15,7 @@ Jellyfin or Navidrome. Your files, your library, no streaming subscription.
 <img src="https://img.shields.io/badge/Equalizer-10%20band-7c5cff?style=flat-square&labelColor=111111" alt="10 band equalizer" />
 <img src="https://img.shields.io/badge/Lyrics-synced-ff6b4a?style=flat-square&labelColor=111111" alt="Synced lyrics" />
 <img src="https://img.shields.io/badge/Offline-downloads-22c55e?style=flat-square&labelColor=111111" alt="Offline downloads" />
-<img src="https://img.shields.io/badge/Lidarr%20·%20Downtify%20·%20DroppedNeedle-requests-2ad4fc?style=flat-square&labelColor=111111" alt="Request plugins" />
+<img src="https://img.shields.io/badge/Lidarr%20·%20DroppedNeedle-requests-2ad4fc?style=flat-square&labelColor=111111" alt="Request plugins" />
 
 [Jump](#what-you-get) · [Servers](#servers) · [Magic playlist](#the-magic-playlist) · [iPad](#iphone-and-ipad) · [Run](#run-it)
 
@@ -31,20 +31,20 @@ Jellyfin or Navidrome. Your files, your library, no streaming subscription.
 
 **🪼 Jellyfin** · ready
 
-Sign in with URL, username, and password. Favorites, playlists, lyrics, and downloads all use the Jellyfin API directly. Your library syncs through a hidden playlist on the server.
+Sign in with your server address, username, and password. Paste the address however you have it (with or without `https://`, a port, or a path) and NaviTunes works out the rest. Favorites, playlists, lyrics, and downloads all use the Jellyfin API directly. Your library syncs through a hidden playlist on the server.
 
 </td>
 <td width="50%" valign="top">
 
 **🎵 Navidrome** · ready
 
-Speaks the Subsonic API with salted-token auth. Adds per-item favorite dates, share links, internet radio stations from your server, and scan control.
+Speaks the Subsonic API. Adds per-item favorite dates, share links, internet radio stations from your server, and scan control.
 
 </td>
 </tr>
 </table>
 
-Credentials stay in the Keychain. HTTP works on a local network; HTTPS is recommended anywhere else.
+Credentials stay in the Keychain. The sign-in screen has a **Test Connection** button so you can check the address before you commit to it. HTTP works on a local network; HTTPS is recommended anywhere else.
 
 ---
 
@@ -55,6 +55,8 @@ This is what makes NaviTunes different from a normal server client.
 When you add a song or album, it goes into a hidden playlist on your server. That playlist is your personal library. It syncs across your devices, keeps track of what you actually added (not just everything sitting on the server), and remembers when you added each item.
 
 On a shared box your library stays separate from everyone else's. You never manage the playlist by hand: NaviTunes creates it, keeps it out of your playlist list, and updates it when you tap **Add to Library**.
+
+If you sign in through a different address (a Tailscale name instead of your LAN IP, say), NaviTunes finds your existing playlist and keeps using it instead of starting a second one. Playlists made by earlier builds under the old names are renamed in place.
 
 ---
 
@@ -135,7 +137,7 @@ Home screen widgets for recently played music and Made for You mixes.
 
 ### 📥 Requests
 
-Ask for missing music through **Lidarr** (albums), **Downtify** (single tracks), or **DroppedNeedle** (albums). One plugin is active at a time.
+Ask for missing music through **Lidarr** (albums), **DroppedNeedle** (albums). One plugin is active at a time.
 
 </td>
 <td width="33%" valign="top">
@@ -149,7 +151,7 @@ Follow an artist to keep their discography complete. NaviTunes compares the plug
 
 ### ⚙️ Settings
 
-Account, library stats, streaming and download quality, equalizer, accent color, app icon, which tabs sit in the dock and the page the app opens to, scrobbling to your server, and plugins.
+Account, library stats, streaming and download quality, equalizer, accent color, which tabs sit in the dock and the page the app opens to, scrobbling to your server, and plugins.
 
 </td>
 </tr>
@@ -173,7 +175,7 @@ Account, library stats, streaming and download quality, equalizer, accent color,
 | Two-pane Now Playing with queue or lyrics | — | ✅ |
 | Floating mini player | — | ✅ |
 
-On iPad the tabs sit in a capsule at the top, and a liquid glass sidebar holds your Library pages and playlists, with **Edit** to reorder and hide them. The sidebar tints with your accent color. Grids fit the width of the page, so the sidebar opening gives you a column fewer. Now Playing keeps the player in the center, or moves it to the left with the queue or lyrics beside it. The mini player is a floating capsule with full transport controls. Artist pages put the latest release next to Top Songs, and album pages put the cover on the left with details and buttons beside it.
+On iPad the tabs sit in a capsule at the top, and a liquid glass sidebar holds your Library pages and playlists, with **Edit** to reorder and hide them. The sidebar tints with your accent color, which defaults to teal to match the app icon. Grids fit the width of the page, so the sidebar opening gives you a column fewer. Now Playing keeps the player in the center, or moves it to the left with the queue or lyrics beside it. The mini player is a floating capsule with full transport controls, and its lyrics and queue buttons open Now Playing straight to that pane. Artist pages put the latest release next to Top Songs, and album pages put the cover on the left with details and buttons beside it.
 
 ---
 

@@ -354,7 +354,7 @@ struct NowPlayingView: View {
                     .font(font)
                     .foregroundStyle(foreground)
                     .frame(width: frame, height: frame)
-                    .background(Circle().fill(fgCapsule))
+                    .background { if !isPadLayout { Circle().fill(fgCapsule) } }
             }
             .buttonStyle(.plain)
             .accessibilityLabel(
@@ -601,9 +601,37 @@ struct NowPlayingView: View {
         .onAppear {
             player.reconcilePlaybackSessionAfterUIMilestone()
             onLibraryNavigationDepthChanged(libraryPath.count)
+            applyPendingPane()
+        }
+        .onChange(of: app.pendingNowPlayingPane) { _, pane in
+            if pane != nil { applyPendingPane() }
         }
         .onChange(of: libraryPath.count) { _, count in
             onLibraryNavigationDepthChanged(count)
+        }
+    }
+
+    /// Opens the pane a mini player button asked for, with no animation: the player is arriving, so it
+    /// should already be on that pane rather than visibly switching to it.
+    private func applyPendingPane() {
+        guard let pane = app.pendingNowPlayingPane else { return }
+        app.pendingNowPlayingPane = nil
+        guard let track = player.activeTrack, !isLiveRadio(track) else { return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            switch pane {
+            case .lyrics:
+                showLyrics = true
+                showQueue = false
+            case .queue:
+                // Always open on Now Playing, never on the page last visited (e.g. History).
+                queuePageAnchor.anchor = .nowPlayingHeader
+                queuePageAnchor.lastHapticAnchor = .nowPlayingHeader
+                queueArtworkHandedOff = true
+                showQueue = true
+                showLyrics = false
+            }
         }
     }
 
@@ -1204,23 +1232,23 @@ struct NowPlayingView: View {
             progressBlock(track: track, isEnabled: !liveRadio)
                 // Bigger → bar + timers pull in narrower from both edges.
                 .padding(.horizontal, isPadLayout ? 0 : 22)
-                .padding(.top, isPadLayout ? 4 : 8)
+                .padding(.top, isPadLayout ? 0 : 8)
                 // Playback bar → transport gap. Bigger → play/skip/replay
                 // buttons (and volume + icons) drop lower.
-                .padding(.bottom, isPadLayout ? 20 : 34)
+                .padding(.bottom, isPadLayout ? 2 : 34)
 
             transportRow(for: track)
                 .padding(.horizontal, isPadLayout ? 0 : 20)
-                .padding(.top, isPadLayout ? 6 : 15)
+                .padding(.top, isPadLayout ? 0 : 15)
                 // Bigger → volume bar + icons drop lower (transport stays).
-                .padding(.bottom, isPadLayout ? 14 : 28)
+                .padding(.bottom, isPadLayout ? 20 : 28)
 
-            NowPlayingVolumeRow(backdropPalette: backdropPalette)
+            NowPlayingVolumeRow(backdropPalette: backdropPalette, padLayout: isPadLayout)
                 // Counterweight: bigger → volume bar + icons drop lower.
                 // SHRINK this by the amount you add to a gap above when the
                 // bottom block should hold its place — otherwise it slides
                 // toward (or past) the screen edge.
-                .padding(.top, isPadLayout ? 14 : 30)
+                .padding(.top, isPadLayout ? 0 : 30)
 
             if !isPadLayout {
                 nowPlayingBottomChrome(track: track)
@@ -1680,9 +1708,9 @@ struct NowPlayingView: View {
         // .center keeps the star/ellipsis buttons vertically spanning the
         // title AND artist rows (Apple Music) instead of hugging the title.
         return HStack(alignment: .center, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: isPadLayout ? 0 : 4) {
                 autoMixCrossfadeText(for: track, \.title)
-                    .font(.title2)
+                    .font(isPadLayout ? .title3.weight(.semibold) : .title2)
                     .foregroundStyle(fgPrimary)
                     .multilineTextAlignment(.leading)
                     .lineLimit(2)
@@ -1730,7 +1758,7 @@ struct NowPlayingView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            HStack(spacing: 10) {
+            HStack(spacing: isPadLayout ? 14 : 10) {
                 nowPlayingLeadingActionButton(
                     track: track,
                     font: .title3.weight(.semibold),
@@ -1745,7 +1773,7 @@ struct NowPlayingView: View {
                         .font(.title3.weight(.semibold))
                         .foregroundStyle(liveRadio ? fgMuted : fgAccentChrome)
                         .frame(width: 34, height: 34)
-                        .background(Circle().fill(fgCapsule))
+                        .background { if !isPadLayout { Circle().fill(fgCapsule) } }
                 }
                 .disabled(liveRadio)
             }
@@ -1914,7 +1942,96 @@ struct NowPlayingView: View {
     }
 
     /// Transport SF Symbols (contrast follows Light / Dark Now Playing chrome).
+    @ViewBuilder
     private func transportRow(for track: Track) -> some View {
+        if isPadLayout {
+            padTransportRow(for: track)
+        } else {
+            phoneTransportRow(for: track)
+        }
+    }
+
+    /// Apple Music's iPad transport: shuffle and repeat flank larger previous / play / next buttons.
+    /// Centres sit at -183, -106, 0, +106 and +183pt from the column centre, measured on the real thing.
+    private func padTransportRow(for track: Track) -> some View {
+        let liveRadio = isLiveRadio(track)
+        let dim = fgPrimary.opacity(0.45)
+        return ZStack {
+            Button { player.toggleShuffle() } label: {
+                Image(systemName: "shuffle")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(player.isQueueOutOfNaturalOrder ? fgPrimary : dim)
+                    .frame(width: 44, height: 56)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(TransportPressButtonStyle())
+            .disabled(liveRadio)
+            .offset(x: -183)
+
+            transportButton(
+                systemName: "backward.fill",
+                fontSize: 30,
+                frameWidth: 72,
+                isEnabled: !liveRadio,
+                bouncePulse: prevTapPulse,
+                bouncesBackward: true,
+            ) {
+                prevTapPulse += 1
+                player.skipPrevious()
+            }
+            .offset(x: -106)
+
+            Group {
+                if player.isBuffering {
+                    Button { player.togglePlayPause() } label: {
+                        ProgressView()
+                            .controlSize(.large)
+                            .tint(fgPrimary)
+                            .frame(width: 72, height: 56)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(TransportPressButtonStyle())
+                } else {
+                    transportButton(
+                        systemName: player.isPlaying ? "pause.fill" : "play.fill",
+                        fontSize: 46,
+                        frameWidth: 72,
+                        isEnabled: true,
+                        symbolReplace: true,
+                    ) {
+                        player.togglePlayPause()
+                    }
+                }
+            }
+
+            transportButton(
+                systemName: "forward.fill",
+                fontSize: 30,
+                frameWidth: 72,
+                isEnabled: !liveRadio,
+                bouncePulse: nextTapPulse,
+            ) {
+                nextTapPulse += 1
+                player.skipNext()
+            }
+            .offset(x: 106)
+
+            Button { player.cycleRepeat() } label: {
+                Image(systemName: player.repeatMode == .one ? "repeat.1" : "repeat")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(player.repeatMode != .off ? fgPrimary : dim)
+                    .frame(width: 44, height: 56)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(TransportPressButtonStyle())
+            .disabled(liveRadio)
+            .offset(x: 183)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 56)
+    }
+
+    private func phoneTransportRow(for track: Track) -> some View {
         let liveRadio = isLiveRadio(track)
         let showSkipIntervals = player.showSkipIntervalButtons
         return HStack {
@@ -2274,7 +2391,7 @@ struct NowPlayingView: View {
 
     // MARK: - iPad layout
 
-    private static let padColumnWidth: CGFloat = 460
+    private static let padColumnWidth: CGFloat = 456
 
     private func padPlayerBody(track: Track) -> some View {
         let twoPane = showLyrics || showQueue
@@ -2282,7 +2399,7 @@ struct NowPlayingView: View {
             let columnWidth = min(Self.padColumnWidth, twoPane ? geo.size.width * 0.44 : geo.size.width - 80)
             HStack(alignment: .top, spacing: 0) {
                 if !twoPane { Spacer(minLength: 0) }
-                padPlayerColumn(track: track, maxArtSide: twoPane ? 334 : 457)
+                padPlayerColumn(track: track, maxArtSide: twoPane ? 334 : 452, twoPane: twoPane)
                     .frame(width: columnWidth)
                 if twoPane {
                     padSidePane(track: track)
@@ -2300,35 +2417,50 @@ struct NowPlayingView: View {
         }
     }
 
-    /// Cover (sized to the room above the title), metadata, scrubber, transport and volume.
-    private func padPlayerColumn(track: Track, maxArtSide: CGFloat) -> some View {
-        VStack(spacing: 0) {
+    /// Cover, metadata, scrubber, transport and volume.
+    ///
+    /// Single pane is laid out top-down at fixed offsets measured from Apple Music on an iPad (A16,
+    /// landscape): a 452pt cover 6pt under the grabber, the title row 21pt below it, then the scrubber,
+    /// transport and volume in fixed steps. With lyrics or the queue open the cover shrinks to fit instead.
+    private func padPlayerColumn(track: Track, maxArtSide: CGFloat, twoPane: Bool) -> some View {
+        let cover = { (side: CGFloat) in
+            artworkView(
+                for: track,
+                cornerRadius: 12,
+                shadow: AutoMixCoverShadow(
+                    color: .black.opacity(backdropPalette.prefersDarkHeroChrome ? 0.22 : 0.45),
+                    radius: 20,
+                    y: 12,
+                ),
+            )
+            .frame(width: side, height: side)
+            .coverZoomHeroAnchor(id: NowPlayingCoverZoom.id, cornerRadius: 12)
+            .nowPlayingHeroFlightHiding()
+            // Apple Music's paused cover is 558px against 766px playing: about 0.73, around the same centre.
+            .modifier(PlayPulseScale(scale: app.player.isPlaying ? 1 : 0.73, isPlaying: app.player.isPlaying))
+        }
+        // One structure for both modes: the cover is the same view either way, and only its size,
+        // position and the paddings change, so the move into and out of the two-pane layout animates
+        // (the parent animates on `twoPane`). Two branches here rebuilt the cover and lost that.
+        return VStack(spacing: 0) {
             GeometryReader { geo in
-                let side = max(160, min(maxArtSide, geo.size.height - 16, geo.size.width))
-                artworkView(
-                    for: track,
-                    cornerRadius: 12,
-                    shadow: AutoMixCoverShadow(
-                        color: .black.opacity(backdropPalette.prefersDarkHeroChrome ? 0.22 : 0.45),
-                        radius: 20,
-                        y: 12,
-                    ),
-                )
-                .frame(width: side, height: side)
-                .coverZoomHeroAnchor(id: NowPlayingCoverZoom.id, cornerRadius: 12)
-                .nowPlayingHeroFlightHiding()
-                .modifier(PlayPulseScale(scale: app.player.isPlaying ? 1 : 0.93, isPlaying: app.player.isPlaying))
-                .position(x: geo.size.width / 2, y: geo.size.height / 2)
+                let side = twoPane
+                    ? max(160, min(maxArtSide, geo.size.height - 16, geo.size.width))
+                    : max(160, min(maxArtSide, geo.size.height - 6, geo.size.width))
+                cover(side)
+                    .position(x: geo.size.width / 2, y: twoPane ? geo.size.height / 2 : 6 + side / 2)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             metadataRow(track: track)
-                .padding(.top, 14)
+                .padding(.top, twoPane ? 14 : 21)
+                .padding(.bottom, twoPane ? 0 : 6)
 
             pinnedBottomChrome(track: track)
 
-            // Room for the corner controls (AirPlay, lyrics, queue) that sit under the column.
-            Color.clear.frame(height: 62)
+            // Room under the column for the corner controls (AirPlay, lyrics, queue). In single pane it is
+            // what leaves the cover exactly 452pt of band on an A16.
+            Color.clear.frame(height: twoPane ? 62 : 69)
         }
     }
 
@@ -2357,7 +2489,7 @@ struct NowPlayingView: View {
                 .frame(width: 46, height: 46)
             #endif
             Spacer(minLength: 0)
-            HStack(spacing: 18) {
+            HStack(spacing: 14) {
                 bottomChromeIconButton(
                     showLyrics ? "quote.bubble.fill" : "quote.bubble",
                     isActive: showLyrics,
@@ -2394,11 +2526,26 @@ struct NowPlayingView: View {
                 }
             }
         }
-        .padding(.horizontal, 52)
-        .padding(.bottom, 22)
+        .padding(.leading, 41)
+        .padding(.trailing, 52)
+        .padding(.bottom, 10)
     }
 
     private var dragIndicator: some View {
+        if isPadLayout {
+            // Apple Music's iPad grabber: a little wider and thinner, centred 45pt from the screen top.
+            return AnyView(
+                Capsule()
+                    .fill(fgDragHandle)
+                    .frame(width: 59, height: 4)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 26)
+            )
+        }
+        return AnyView(phoneDragIndicator)
+    }
+
+    private var phoneDragIndicator: some View {
         Capsule()
             .fill(fgDragHandle)
             .frame(width: 50, height: 5)
@@ -2612,10 +2759,11 @@ private struct NowPlayingMatchedTrackBar: View {
 /// System volume row — same drag styling as the song progress scrubber.
 private struct NowPlayingVolumeRow: View {
     let backdropPalette: ArtworkDynamicGradient.BackdropPalette
+    var padLayout = false
 
     var body: some View {
         #if os(iOS)
-        VolumeScrubberBlock(backdropPalette: backdropPalette)
+        VolumeScrubberBlock(backdropPalette: backdropPalette, padLayout: padLayout)
         #else
         EmptyView()
         #endif
@@ -2753,6 +2901,8 @@ private struct AirPlayRoutePickerView: UIViewRepresentable {
 /// Interactive volume scrubber (matches ``ScrubberBlock`` drag + pill styling).
 private struct VolumeScrubberBlock: View {
     let backdropPalette: ArtworkDynamicGradient.BackdropPalette
+    /// iPad: the speaker glyphs sit just inside the column edges and the bar runs wider, as in Apple Music.
+    var padLayout = false
 
     @State private var volume: Float = AVAudioSession.sharedInstance().outputVolume
     @State private var isScrubbing = false
@@ -2763,11 +2913,11 @@ private struct VolumeScrubberBlock: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: padLayout ? 13 : 10) {
             Image(systemName: "speaker.fill")
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(backdropPalette.nowPlayingVolumeGlyph)
-                .frame(width: 20, alignment: .center)
+                .frame(width: padLayout ? 12 : 20, alignment: .center)
 
             GeometryReader { geo in
                 NowPlayingMatchedTrackBar(
@@ -2803,11 +2953,11 @@ private struct VolumeScrubberBlock: View {
             Image(systemName: "speaker.wave.3.fill")
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(backdropPalette.nowPlayingVolumeGlyph)
-                .frame(width: 20, alignment: .center)
+                .frame(width: padLayout ? 24 : 20, alignment: .center)
         }
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, 22)
-        .padding(.bottom, 12)
+        .padding(.horizontal, padLayout ? 0 : 22)
+        .padding(.bottom, padLayout ? 0 : 12)
         .onAppear {
             // The `setActive(true)` that used to sit here is gone: it was a third synchronous
             // `mediaserverd` round trip on every player open, on top of the two the engine

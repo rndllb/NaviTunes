@@ -1,11 +1,36 @@
 {
-  "fill" : "automatic",
+  "fill" : {
+    "linear-gradient" : [
+      "display-p3:0.56770,0.94840,0.99035,1.00000",
+      "display-p3:0.68149,0.98844,0.83236,1.00000"
+    ],
+    "orientation" : {
+      "start" : {
+        "x" : 0.5,
+        "y" : 0
+      },
+      "stop" : {
+        "x" : 0.5,
+        "y" : 0.7
+      }
+    }
+  },
   "groups" : [
     {
       "layers" : [
         {
-          "image-name" : "Untitled.png",
-          "name" : "Red"
+          "fill" : {
+            "solid" : "srgb:1.00000,1.00000,1.00000,1.00000"
+          },
+          "image-name" : "music-note-chromatic.svg",
+          "name" : "music-note-chromatic",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              0,
+              27.96044921875
+            ]
+          }
         }
       ],
       "shadow" : {

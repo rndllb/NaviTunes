@@ -31,16 +31,24 @@ enum LibraryMembership {
         return normalizedServerKey(from: url)
     }
 
-    /// The magic playlist's name prefix. It is the name stored on users' servers, so the NaviTunes
-    /// rename left it as `__vellum_`: changing it made the app stop finding the existing library
-    /// playlist and create a new, empty one beside it.
-    static let magicPlaylistPrefix = "__vellum_"
+    /// The magic playlist's name prefix.
+    static let magicPlaylistPrefix = "__navitunes_"
 
-    /// The prefix a build made during the NaviTunes rename used. Playlists with it exist on some servers,
-    /// so they are still found and still recognised as the magic playlist.
-    static let renamedBuildPrefix = "__navitunes_"
+    /// Earlier names for the same playlist. Servers can still hold them, so they are still found and
+    /// recognised; ``AppModel`` renames what it finds to the current prefix.
+    static let legacyVellumPrefix = "__vellum_"
+    static let legacyLyraPrefix = "__lyra_"
+    static let legacyPrefixes = [legacyVellumPrefix, legacyLyraPrefix]
 
-    /// `__vellum_<sha256(server/user)[0..12]>` — deterministic per (backend, server, user).
+    /// `name` with a legacy prefix swapped for the current one (same hash), or nil when it already has it.
+    static func currentName(forLegacy name: String) -> String? {
+        for prefix in legacyPrefixes where name.hasPrefix(prefix) {
+            return magicPlaylistPrefix + name.dropFirst(prefix.count)
+        }
+        return nil
+    }
+
+    /// `__navitunes_<sha256(server/user)[0..12]>` — deterministic per (backend, server, user).
     /// Same input → same name on every device, so find-or-create converges across logins.
     static func magicPlaylistName(backend: BackendKind, serverKey: String?, userKey: String) -> String {
         let normalizedServer = (serverKey ?? "").lowercased()
@@ -51,7 +59,7 @@ enum LibraryMembership {
         return "\(magicPlaylistPrefix)\(hex.prefix(12))"
     }
 
-    /// Names to probe on the server, newest canonical first. Includes a legacy host-only
+    /// Names to probe on the server, current prefix first. Includes a legacy host-only
     /// hash so devices that used an older NaviTunes build still find the same playlist.
     static func candidateMagicPlaylistNames(
         backend: BackendKind,
@@ -69,9 +77,9 @@ enum LibraryMembership {
             let legacy = magicPlaylistName(backend: backend, serverKey: hostOnly, userKey: userKey)
             append(legacy)
         }
-        // Same names under the prefix a build made during the NaviTunes rename used.
+        // The same names under the `__vellum_` prefix older builds used.
         for name in names {
-            append(name.replacingOccurrences(of: magicPlaylistPrefix, with: renamedBuildPrefix))
+            append(name.replacingOccurrences(of: magicPlaylistPrefix, with: legacyVellumPrefix))
         }
         return names
     }
@@ -90,7 +98,7 @@ enum LibraryMembership {
             backend: backend, serverKey: serverKey, userKey: userKey, baseURLString: baseURLString,
         )
         .filter { $0.hasPrefix(magicPlaylistPrefix) }
-        .map { $0.replacingOccurrences(of: magicPlaylistPrefix, with: "__lyra_") }
+        .map { $0.replacingOccurrences(of: magicPlaylistPrefix, with: legacyLyraPrefix) }
     }
 
     /// True for names produced by ``magicPlaylistName(backend:serverKey:userKey:)``. Used to
@@ -111,13 +119,9 @@ enum LibraryMembership {
     /// `refreshLibraryMembership()` resolves, and during that window this name check is the only
     /// thing standing between the two states.
     ///
-    /// One known gap, recorded rather than fixed: this matches `__navitunes_` only, while
-    /// ``legacyLyraMagicPlaylistNames(backend:serverKey:userKey:baseURLString:)`` shows pre-rebrand
-    /// users can still hold a `__lyra_<hash12>` playlist on the server until the one-time rename
-    /// migration runs. Such a playlist is not matched here. Widen the prefix check before assuming
-    /// this filter is total.
+    /// Matches the current prefix and the legacy `__vellum_` and `__lyra_` ones, since servers can still hold those.
     static func isMagicPlaylistName(_ name: String) -> Bool {
-        for prefix in [magicPlaylistPrefix, renamedBuildPrefix] where name.hasPrefix(prefix) {
+        for prefix in [magicPlaylistPrefix] + legacyPrefixes where name.hasPrefix(prefix) {
             let suffix = name.dropFirst(prefix.count)
             if suffix.count == 12 && suffix.allSatisfy(\.isHexDigit) { return true }
         }

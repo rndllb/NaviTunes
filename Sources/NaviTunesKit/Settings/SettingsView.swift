@@ -194,12 +194,7 @@ struct SettingsView: View {
     }
 
     private var appearanceSubtitle: String? {
-        let accent = AppAccentPreset.preset(id: app.accentPresetId).name
-        let icon = AppAccentPreset.preset(id: app.appIconPresetId).name
-        if app.accentPresetId == app.appIconPresetId {
-            return accent
-        }
-        return "\(accent) accent · \(icon) icon"
+        AppAccentPreset.preset(id: app.accentPresetId).name
     }
 
     private var pluginsSubtitle: String? {

@@ -174,6 +174,7 @@ struct MiniPlayerView: View {
             HStack(spacing: 4) {
                 padTransportButton(
                     "shuffle",
+                    isToggle: true,
                     isActive: player.isQueueOutOfNaturalOrder,
                     isDisabled: liveRadio,
                     label: "Shuffle"
@@ -205,6 +206,7 @@ struct MiniPlayerView: View {
                 }
                 padTransportButton(
                     player.repeatMode == .one ? "repeat.1" : "repeat",
+                    isToggle: true,
                     isActive: player.repeatMode != .off,
                     isDisabled: liveRadio,
                     label: "Repeat"
@@ -244,22 +246,20 @@ struct MiniPlayerView: View {
             .buttonStyle(.plain)
 
             HStack(spacing: 4) {
-                Menu {
-                    padTrackMenu(track: track)
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .frame(width: 40, height: 40)
-                        .contentShape(Rectangle())
-                }
-                .accessibilityLabel("More")
+                // The ⋯ itself is drawn by ``MiniPlayerMoreMenu``, a sibling of the capsule (see
+                // ``MainShellView/padMiniPlayerOverlay``): a system menu opened from inside the glass capsule
+                // took the capsule as its source and hid it while open. This keeps its place in the row.
+                Color.clear
+                    .frame(width: 40, height: 40)
+                    .allowsHitTesting(false)
 
-                // Both open the full player; it holds the lyrics and queue panes.
+                // Each opens the full player on its own pane.
                 padTransportButton("quote.bubble", size: 20, isDisabled: liveRadio, label: "Lyrics") {
+                    app.pendingNowPlayingPane = .lyrics
                     expandNowPlaying()
                 }
                 padTransportButton("list.bullet", size: 20, label: "Queue") {
+                    app.pendingNowPlayingPane = .queue
                     expandNowPlaying()
                 }
             }
@@ -270,6 +270,7 @@ struct MiniPlayerView: View {
     private func padTransportButton(
         _ systemImage: String,
         size: CGFloat = 18,
+        isToggle: Bool = false,
         isActive: Bool = false,
         isDisabled: Bool = false,
         label: String,
@@ -280,7 +281,9 @@ struct MiniPlayerView: View {
                 .font(.system(size: size, weight: .semibold))
                 .foregroundStyle(
                     isActive ? MusicDesign.accent
-                        : (isDisabled ? MusicDesign.secondaryLabel.opacity(0.45) : Color.primary)
+                        : (isDisabled ? MusicDesign.secondaryLabel.opacity(0.45)
+                            // Shuffle and repeat rest in a soft grey and take the accent when on.
+                            : (isToggle ? MusicDesign.secondaryLabel.opacity(0.6) : Color.primary))
                 )
                 .frame(width: 40, height: 40)
                 .contentShape(Rectangle())
@@ -288,28 +291,6 @@ struct MiniPlayerView: View {
         .buttonStyle(TransportPressButtonStyle())
         .disabled(isDisabled)
         .accessibilityLabel(label)
-    }
-
-    @ViewBuilder
-    private func padTrackMenu(track: Track) -> some View {
-        let isFavorite = app.favoriteTrackIds.contains(track.id)
-        Button {
-            app.toggleFavoriteTrack(id: track.id)
-        } label: {
-            Label(isFavorite ? "Unfavorite" : "Favorite", systemImage: isFavorite ? "star.slash" : "star")
-        }
-        if !app.isSongInLibrary(track.id) {
-            Button {
-                Task { await app.addSongToLibrary(track) }
-            } label: {
-                Label("Add to Library", systemImage: "plus")
-            }
-        }
-        Button {
-            expandNowPlaying()
-        } label: {
-            Label("Show Now Playing", systemImage: "music.note")
-        }
     }
 
     @ViewBuilder
@@ -410,5 +391,95 @@ private struct MiniPlayerChromeModifier: ViewModifier {
         } else {
             content
         }
+    }
+}
+
+
+/// The ⋯ on the iPad mini player: the system `Menu`, with the same items a song row's ⋯ offers.
+///
+/// Drawn by the shell as a sibling of the glass capsule, over the spot the capsule leaves empty. Inside the
+/// capsule the system took the whole capsule as the menu's source and hid it while the menu was open.
+struct MiniPlayerMoreMenu: View {
+    @EnvironmentObject private var app: AppModel
+    @ObservedObject var player: PlaybackEngine
+
+    /// How far above the ⋯ the menu opens. The menu is placed off the top of its label, so empty,
+    /// untappable space is added above the glyph; the shell shifts the whole view down by half of it to
+    /// keep the glyph where it was.
+    static let menuLift: CGFloat = 24
+
+    var body: some View {
+        if let track = player.activeTrack {
+            Menu {
+                trackMenu(track: track)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 40, height: 40)
+                    .contentShape(Rectangle())
+                    .padding(.top, Self.menuLift)
+            }
+            .buttonStyle(.plain)
+            .disabled(track.isInternetRadioStream)
+            .accessibilityLabel("More")
+        }
+    }
+
+    /// The same menu a song row's ⋯ opens: ``StandardSongMenuContent``, so the mini player offers the
+    /// actions a track does everywhere else. Going to an album or artist has no player to close first,
+    /// so it sets the deep link directly.
+    @ViewBuilder
+    fileprivate func trackMenu(track: Track) -> some View {
+        let album = app.catalogAlbum(id: track.albumId) ?? miniAlbumFallback(from: track)
+        let artist = track.artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        StandardSongMenuContent(
+            track: track,
+            onPlayNext: nil,
+            onAddToQueue: nil,
+            onFavorite: { app.toggleFavoriteTrack(id: track.id) },
+            onAddToPlaylist: { app.presentAddToPlaylist(tracks: [track]) },
+            onAddToLibrary: app.isSongInLibrary(track.id)
+                ? nil
+                : { Task { await app.addSongToLibrary(track) } },
+            onDownload: app.isSongInLibrary(track.id) && !app.offline.downloadedTrackIds.contains(track.id)
+                ? { app.enqueueOfflineTrack(track) }
+                : nil,
+            onRemoveDownload: app.offline.downloadedTrackIds.contains(track.id)
+                ? { try? app.offline.remove(trackId: track.id) }
+                : nil,
+            onGoToAlbum: album.map { album in
+                {
+                    app.deepLinkTab = app.selectedTab
+                    app.presentedDeepLink = .album(
+                        album,
+                        scrollToTrackId: track.id,
+                        librarySource: app.isSongInLibrary(track.id),
+                    )
+                }
+            },
+            onGoToArtist: ArtistNavigation.isTappable(artist)
+                ? {
+                    app.deepLinkTab = app.selectedTab
+                    app.presentedDeepLink = .artist(ArtistNameNavigation(id: track.artist, serverArtistId: track.artistId))
+                }
+                : nil,
+            onRemoveFromLibrary: app.isSongInLibrary(track.id)
+                ? { app.requestRemoveSongFromLibrary(track) }
+                : nil,
+            onDeleteFromLibrary: app.canDeleteFromLibrary
+                ? { app.beginLibraryTrackDeletion(track) }
+                : nil
+        )
+    }
+
+    private func miniAlbumFallback(from track: Track) -> AlbumSummary? {
+        guard !track.albumId.isEmpty else { return nil }
+        return AlbumSummary(
+            id: track.albumId,
+            title: track.albumTitle.isEmpty ? "Unknown Album" : track.albumTitle,
+            artist: track.artist,
+            artworkURL: app.resolvedArtworkURL(for: track)
+        )
     }
 }

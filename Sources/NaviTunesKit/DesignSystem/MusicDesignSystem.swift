@@ -15,12 +15,12 @@ struct AppAccentPreset: Identifiable, Equatable {
     let color: Color
 
     static let presets: [AppAccentPreset] = [
+        .init(id: "teal",   name: "Teal",   color: Color(red: 53/255,  green: 212/255, blue: 224/255)),
         .init(id: "red",    name: "Red",    color: Color(red: 250/255, green: 45/255,  blue: 72/255)),
         .init(id: "pink",   name: "Pink",   color: Color(red: 255/255, green: 55/255,  blue: 120/255)),
         .init(id: "orange", name: "Orange", color: Color(red: 255/255, green: 149/255, blue: 0/255)),
         .init(id: "yellow", name: "Yellow", color: Color(red: 255/255, green: 214/255, blue: 10/255)),
         .init(id: "green",  name: "Green",  color: Color(red: 52/255,  green: 199/255, blue: 89/255)),
-        .init(id: "teal",   name: "Teal",   color: Color(red: 48/255,  green: 176/255, blue: 199/255)),
         .init(id: "blue",   name: "Blue",   color: Color(red: 10/255,  green: 132/255, blue: 255/255)),
         .init(id: "indigo", name: "Indigo", color: Color(red: 94/255,  green: 92/255,  blue: 230/255)),
         .init(id: "purple", name: "Purple", color: Color(red: 191/255, green: 90/255,  blue: 242/255)),
@@ -28,16 +28,11 @@ struct AppAccentPreset: Identifiable, Equatable {
     ]
 
     static let customId = "custom"
-    static let defaultId = "red"
+    /// The brand teal: the logo's aqua, a little deeper so white labels stay readable on it.
+    static let defaultId = "teal"
     static let accentPresetIdKey = "navitunesAccentPresetId"
-    static let appIconPresetIdKey = "navitunesAppIconPresetId"
     static let customAccentHexKey = "navitunesCustomAccentHex"
-    static let defaultCustomHex = "#FA2D48"
-
-    /// Icon sets only exist for bundled presets — never ``customId``.
-    static func validIconPresetId(_ id: String) -> String {
-        presets.contains(where: { $0.id == id }) ? id : defaultId
-    }
+    static let defaultCustomHex = "#35D4E0"
 
     static func preset(id: String) -> AppAccentPreset {
         if id == customId {
@@ -278,56 +273,6 @@ struct CustomAccentColorControls: View {
             hexDraft = normalized
         } else {
             hexDraft = customAccentHex
-        }
-    }
-}
-
-/// Home-screen icon picker — preset artwork only (no custom slot).
-struct AppIconPickerGrid: View {
-    @Binding var appIconPresetId: String
-    var showsLabels: Bool = true
-    var swatchSize: CGFloat = 44
-    var selectedLabelColor: Color = .primary
-    var unselectedLabelColor: Color = .secondary
-
-    var body: some View {
-        LazyVGrid(
-            columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 5),
-            spacing: 14,
-        ) {
-            ForEach(AppAccentPreset.presets) { preset in
-                Button {
-                    appIconPresetId = preset.id
-                } label: {
-                    VStack(spacing: 6) {
-                        ZStack {
-                            NaviTunesAccentLogoView(
-                                accentPresetId: preset.id,
-                                size: swatchSize,
-                                cornerRadius: swatchSize * 0.22,
-                                showsIconPlate: true,
-                            )
-                            if appIconPresetId == preset.id {
-                                RoundedRectangle(cornerRadius: swatchSize * 0.22, style: .continuous)
-                                    .strokeBorder(.white, lineWidth: 2.5)
-                                    .frame(width: swatchSize, height: swatchSize)
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: swatchSize * 0.28, weight: .bold))
-                                    .foregroundStyle(.white)
-                                    .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
-                            }
-                        }
-                        if showsLabels {
-                            Text(preset.name)
-                                .font(.caption2)
-                                .foregroundStyle(
-                                    appIconPresetId == preset.id ? selectedLabelColor : unselectedLabelColor,
-                                )
-                        }
-                    }
-                }
-                .buttonStyle(.plain)
-            }
         }
     }
 }
@@ -1275,6 +1220,8 @@ struct MusicGlassSegmentPillBar<Selection: Hashable>: View {
     let options: [Selection]
     @Binding var selection: Selection
     let title: (Selection) -> String
+    /// Taller, larger-type variant used on iPad, where the pill sits beside the 44pt search field.
+    var isLarge = false
     @Namespace private var ns
 
     var body: some View {
@@ -1284,10 +1231,10 @@ struct MusicGlassSegmentPillBar<Selection: Hashable>: View {
                     withAnimation(.smooth(duration: 0.22)) { selection = option }
                 } label: {
                     Text(title(option))
-                        .font(.subheadline.weight(.semibold))
+                        .font((isLarge ? Font.body : .subheadline).weight(.semibold))
                         .foregroundStyle(selection == option ? Color.primary : MusicDesign.secondaryLabel)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 5)
+                        .padding(.vertical, isLarge ? 9 : 5)
                         .background {
                             if selection == option {
                                 Capsule(style: .continuous)
@@ -1399,13 +1346,14 @@ private struct MusicTabFloatingHeaderOverlay<Header: View>: ViewModifier {
     /// Measured once from the header's own layout so the reserved space matches it
     /// exactly at any Dynamic Type size.
     @State private var headerHeight: CGFloat = 0
-    @Environment(\.tabBarPlacement) private var tabBarPlacement
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
-    /// iPad with the dock along the top: the title and buttons share the dock's row instead of
-    /// sitting in a second row beneath it.
+    /// iPad: the title and buttons share the dock's row instead of sitting in a second row
+    /// beneath it. Deliberately independent of `tabBarPlacement` — that flips to `.sidebar` as the
+    /// sidebar opens (and can flicker mid-transition), which dropped the header into its own row
+    /// and snapped it back. The nav-bar row sits at the same height either way.
     private var sharesDockRow: Bool {
-        MusicPadDock.isTopDock(placement: tabBarPlacement, sizeClass: horizontalSizeClass)
+        MusicPadDock.hidesPageProfile(sizeClass: horizontalSizeClass)
     }
 
     func body(content: Content) -> some View {
@@ -1471,13 +1419,190 @@ enum MusicPadDock {
 
     #if os(iOS)
     @MainActor
-    private static var statusBarHeight: CGFloat {
+    static var statusBarHeight: CGFloat {
         for scene in UIApplication.shared.connectedScenes {
             if let h = (scene as? UIWindowScene)?.statusBarManager?.statusBarFrame.height, h > 0 { return h }
         }
         return 24
     }
     #endif
+}
+
+#if os(iOS)
+/// The floating iPad tab bar's vertical centre in window coordinates; nil when no top tab bar is on
+/// screen (sidebar open, or still sliding in). Found by its accessibility trait, or by class name.
+@MainActor
+enum MusicPadTabBarLocator {
+    static func midY() -> CGFloat? {
+        for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
+            guard let window = scene.windows.first(where: \.isKeyWindow) ?? scene.windows.first else { continue }
+            var found: [CGRect] = []
+            collect(in: window, window: window, into: &found)
+            // The floating bar is centred; leftover tab-bar views sit off to the side.
+            return found.min { abs($0.midX - window.bounds.midX) < abs($1.midX - window.bounds.midX) }?.midY
+        }
+        return nil
+    }
+
+    private static func collect(in view: UIView, window: UIWindow, into found: inout [CGRect]) {
+        let status = MusicPadDock.statusBarHeight
+        for subview in view.subviews where !subview.isHidden && subview.alpha > 0.01 {
+            let isTabBar = subview.accessibilityTraits.contains(.tabBar)
+                || String(describing: type(of: subview)).contains("FloatingTabBar")
+            if isTabBar {
+                let frame = subview.convert(subview.bounds, to: window)
+                // Pill sized, on screen and below the status bar: a bar still sliding in from above, or
+                // one parked off screen with the sidebar open, is not where the row should go.
+                if frame.height > 20, frame.height < 120, frame.maxY < 200, frame.minY >= status - 2,
+                   frame.minX >= 0, frame.maxX <= window.bounds.width, frame.width < window.bounds.width * 0.95 {
+                    found.append(frame)
+                    continue
+                }
+            }
+            collect(in: subview, window: window, into: &found)
+        }
+    }
+}
+
+/// Remembers a UIKit view inside the page so the page's navigation controller can be found from SwiftUI.
+@MainActor
+private final class NavigationAnchor {
+    weak var view: UIView?
+
+    var navigationController: UINavigationController? {
+        var responder: UIResponder? = view
+        while let current = responder {
+            if let controller = current as? UIViewController, let nav = controller.navigationController { return nav }
+            responder = current.next
+        }
+        return nil
+    }
+}
+
+private struct NavigationAnchorView: UIViewRepresentable {
+    let anchor: NavigationAnchor
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.isUserInteractionEnabled = false
+        anchor.view = view
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) { anchor.view = uiView }
+}
+
+/// iPad pushed pages: the system navigation bar wraps its back and action buttons onto a row *below*
+/// the floating tab bar, and after the sidebar opens or closes it can stay there until something forces
+/// a layout. So, as Zelefin does, hide the bar and draw our own back button and actions, centred on the
+/// tab bar as measured on screen. iPhone keeps the system bar and its `.toolbar` items.
+private struct MusicPadPushedBar<Trailing: View>: ViewModifier {
+    let placement: ToolbarItemPlacement
+    let trailing: Trailing
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.tabBarPlacement) private var tabBarPlacement
+    @Environment(\.dismiss) private var dismiss
+    @State private var tabBarMidY: CGFloat?
+    @State private var navigationAnchor = NavigationAnchor()
+
+    private static var buttonSize: CGFloat { 44 }
+    private var isPad: Bool { MusicPadDock.hidesPageProfile(sizeClass: sizeClass) }
+
+    private var topPadding: CGFloat {
+        let status = MusicPadDock.statusBarHeight
+        let midY = tabBarMidY ?? status + 22
+        return max(midY - Self.buttonSize / 2, status + 2)
+    }
+
+    func body(content: Content) -> some View {
+        // The navigation bar stays in place, empty, on iPad: hiding it changed how the cover-zoom
+        // transition and its pop handling behave, and pages stopped going back. Only the back button
+        // and the toolbar items move out of it, into the bar drawn below.
+        content
+            .navigationBarBackButtonHidden(isPad)
+            .toolbar {
+                if !isPad {
+                    ToolbarItemGroup(placement: placement) { trailing }
+                }
+            }
+            .overlay(alignment: .top) {
+                if isPad {
+                    bar
+                }
+            }
+    }
+
+    /// Pops the way the system back button does. SwiftUI's `dismiss` did nothing on a number of pages
+    /// (pushed through `navigationDestination(item:)` and the cover-zoom transition), so go to the
+    /// navigation controller and fall back to `dismiss` only when there is none to pop.
+    private func goBack() {
+        if let nav = navigationAnchor.navigationController, nav.viewControllers.count > 1 {
+            nav.popViewController(animated: true)
+        } else {
+            dismiss()
+        }
+    }
+
+    private var bar: some View {
+        HStack(spacing: 8) {
+            Button(action: goBack) {
+                Image(systemName: "chevron.backward")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: Self.buttonSize, height: Self.buttonSize)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .glassEffect(.regular.interactive(), in: .circle)
+            .accessibilityLabel("Back")
+            Spacer(minLength: 0).allowsHitTesting(false)
+            HStack(spacing: 18) { trailing }
+                .padding(.horizontal, 16)
+                .frame(height: Self.buttonSize)
+                .glassEffect(.regular.interactive(), in: .capsule)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, topPadding)
+        .frame(maxWidth: .infinity, alignment: .top)
+        .background { NavigationAnchorView(anchor: navigationAnchor).allowsHitTesting(false) }
+        .ignoresSafeArea(.container, edges: .top)
+        .task(id: String(describing: tabBarPlacement)) {
+            // The bar slides in after a push, a tab switch or the sidebar closing, so follow it until it
+            // holds still rather than trusting one early reading.
+            var steady = 0
+            for _ in 0..<20 where steady < 3 {
+                let reading = MusicPadTabBarLocator.midY()
+                if let reading, abs(reading - (tabBarMidY ?? -1)) > 0.5 {
+                    tabBarMidY = reading
+                    steady = 0
+                } else if reading == nil, tabBarMidY != nil {
+                    // Sidebar open: no top bar to follow, so fall back to the fixed row.
+                    tabBarMidY = nil
+                    steady = 0
+                } else {
+                    steady += 1
+                }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+    }
+}
+#endif
+
+extension View {
+    /// Pushed hero pages. iPhone: `trailing` goes in the system toolbar. iPad: the system back button and
+    /// toolbar items give way to a back button and `trailing` drawn on the dock's row.
+    @ViewBuilder
+    func musicPushedActions<Trailing: View>(
+        placement: ToolbarItemPlacement = MusicToolbar.trailingItemPlacement,
+        @ViewBuilder trailing: () -> Trailing
+    ) -> some View {
+        #if os(iOS)
+        modifier(MusicPadPushedBar(placement: placement, trailing: trailing()))
+        #else
+        toolbar { ToolbarItemGroup(placement: placement) { trailing() } }
+        #endif
+    }
 }
 
 /// Large **Home** / **New** / **Radio** title row + trailing controls (profile ring, refresh, …).

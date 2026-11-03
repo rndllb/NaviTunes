@@ -22,15 +22,6 @@
 		CC0000000000000000000016 /* HistoryPlaybackLyrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000009 /* HistoryPlaybackLyrics.swift */; };
 		CC0000000000000000000091 /* DiscoverAlbumSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000090 /* DiscoverAlbumSearch.swift */; };
 		IC0000000000000000000020 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000010 /* AppIcon.icon */; };
-		IC0000000000000000000021 /* NaviTunesIcon-blue.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000011 /* NaviTunesIcon-blue.icon */; };
-		IC0000000000000000000022 /* NaviTunesIcon-green.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000012 /* NaviTunesIcon-green.icon */; };
-		IC0000000000000000000023 /* NaviTunesIcon-orange.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000013 /* NaviTunesIcon-orange.icon */; };
-		IC0000000000000000000024 /* NaviTunesIcon-pink.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000014 /* NaviTunesIcon-pink.icon */; };
-		IC0000000000000000000025 /* NaviTunesIcon-indigo.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000015 /* NaviTunesIcon-indigo.icon */; };
-		IC0000000000000000000026 /* NaviTunesIcon-teal.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000016 /* NaviTunesIcon-teal.icon */; };
-		IC0000000000000000000027 /* NaviTunesIcon-yellow.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000017 /* NaviTunesIcon-yellow.icon */; };
-		IC0000000000000000000028 /* NaviTunesIcon-purple.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000018 /* NaviTunesIcon-purple.icon */; };
-		IC0000000000000000000029 /* NaviTunesIcon-lightgray.icon in Resources */ = {isa = PBXBuildFile; fileRef = IC0000000000000000000019 /* NaviTunesIcon-lightgray.icon */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -86,15 +77,6 @@
 		CC0000000000000000000009 /* HistoryPlaybackLyrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryPlaybackLyrics.swift; sourceTree = "<group>"; };
 		CC0000000000000000000090 /* DiscoverAlbumSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoverAlbumSearch.swift; sourceTree = "<group>"; };
 		IC0000000000000000000010 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
-		IC0000000000000000000011 /* NaviTunesIcon-blue.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "NaviTunesIcon-blue.icon"; sourceTree = "<group>"; };
-		IC0000000000000000000012 /* NaviTunesIcon-green.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "NaviTunesIcon-green.icon"; sourceTree = "<group>"; };
-		IC0000000000000000000013 /* NaviTunesIcon-orange.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "NaviTunesIcon-orange.icon"; sourceTree = "<group>"; };
-		IC0000000000000000000014 /* NaviTunesIcon-pink.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "NaviTunesIcon-pink.icon"; sourceTree = "<group>"; };
-		IC0000000000000000000015 /* NaviTunesIcon-indigo.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "NaviTunesIcon-indigo.icon"; sourceTree = "<group>"; };
-		IC0000000000000000000016 /* NaviTunesIcon-teal.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "NaviTunesIcon-teal.icon"; sourceTree = "<group>"; };
-		IC0000000000000000000017 /* NaviTunesIcon-yellow.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "NaviTunesIcon-yellow.icon"; sourceTree = "<group>"; };
-		IC0000000000000000000018 /* NaviTunesIcon-purple.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "NaviTunesIcon-purple.icon"; sourceTree = "<group>"; };
-		IC0000000000000000000019 /* NaviTunesIcon-lightgray.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "NaviTunesIcon-lightgray.icon"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -203,15 +185,6 @@
 			isa = PBXGroup;
 			children = (
 				IC0000000000000000000010 /* AppIcon.icon */,
-				IC0000000000000000000011 /* NaviTunesIcon-blue.icon */,
-				IC0000000000000000000012 /* NaviTunesIcon-green.icon */,
-				IC0000000000000000000013 /* NaviTunesIcon-orange.icon */,
-				IC0000000000000000000014 /* NaviTunesIcon-pink.icon */,
-				IC0000000000000000000015 /* NaviTunesIcon-indigo.icon */,
-				IC0000000000000000000016 /* NaviTunesIcon-teal.icon */,
-				IC0000000000000000000017 /* NaviTunesIcon-yellow.icon */,
-				IC0000000000000000000018 /* NaviTunesIcon-purple.icon */,
-				IC0000000000000000000019 /* NaviTunesIcon-lightgray.icon */,
 			);
 			path = AppIcons;
 			sourceTree = "<group>";
@@ -336,15 +309,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				IC0000000000000000000020 /* AppIcon.icon in Resources */,
-				IC0000000000000000000021 /* NaviTunesIcon-blue.icon in Resources */,
-				IC0000000000000000000022 /* NaviTunesIcon-green.icon in Resources */,
-				IC0000000000000000000023 /* NaviTunesIcon-orange.icon in Resources */,
-				IC0000000000000000000024 /* NaviTunesIcon-pink.icon in Resources */,
-				IC0000000000000000000025 /* NaviTunesIcon-indigo.icon in Resources */,
-				IC0000000000000000000026 /* NaviTunesIcon-teal.icon in Resources */,
-				IC0000000000000000000027 /* NaviTunesIcon-yellow.icon in Resources */,
-				IC0000000000000000000028 /* NaviTunesIcon-purple.icon in Resources */,
-				IC0000000000000000000029 /* NaviTunesIcon-lightgray.icon in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -488,7 +452,6 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = A000000000000000000000CF /* Signing.xcconfig */;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "NaviTunesIcon-pink NaviTunesIcon-orange NaviTunesIcon-yellow NaviTunesIcon-green NaviTunesIcon-teal NaviTunesIcon-blue NaviTunesIcon-indigo NaviTunesIcon-purple NaviTunesIcon-lightgray";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
@@ -529,7 +492,6 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = A000000000000000000000CF /* Signing.xcconfig */;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "NaviTunesIcon-pink NaviTunesIcon-orange NaviTunesIcon-yellow NaviTunesIcon-green NaviTunesIcon-teal NaviTunesIcon-blue NaviTunesIcon-indigo NaviTunesIcon-purple NaviTunesIcon-lightgray";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;

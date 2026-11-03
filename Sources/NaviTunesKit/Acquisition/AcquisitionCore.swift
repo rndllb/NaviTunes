@@ -713,12 +713,10 @@ enum AcquisitionHTTP {
     /// against a fake server; the app never reassigns it.
     nonisolated(unsafe) static var session: URLSession = .navitunes
 
-    /// Normalizes a user-entered base URL: adds `http://` when no scheme, drops a trailing slash.
+    /// Normalizes a user-entered base URL: repairs a mangled scheme, drops a trailing slash, and picks a
+    /// scheme when none was typed (HTTP for LAN hosts, HTTPS otherwise). See ``ServerURL``.
     static func normalizedBase(_ raw: String) -> String? {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        let withScheme = trimmed.contains("://") ? trimmed : "http://\(trimmed)"
-        return withScheme.hasSuffix("/") ? String(withScheme.dropLast()) : withScheme
+        ServerURL.normalizeLanAddress(raw)?.absoluteString
     }
 
     /// Performs a request and returns the decoded JSON object plus status code.

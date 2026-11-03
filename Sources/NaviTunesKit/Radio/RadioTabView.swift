@@ -2,6 +2,8 @@ import SwiftUI
 
 /// **Radio** tab — user-added stations plus the Radio Browser directory.
 struct RadioTabView: View {
+    @Environment(\.tabBarPlacement) private var tabBarPlacement
+    @Environment(\.horizontalSizeClass) private var radioSizeClass
     @EnvironmentObject private var app: AppModel
     @State private var navigationPath = NavigationPath()
     @State private var showFloatingHeader = true
@@ -122,7 +124,14 @@ struct RadioTabView: View {
             }
             .background(MusicDesign.background)
             .musicNewTabNavigationChrome()
-            .musicNewTabRootHidesNavigationBar()
+            .toolbarVisibility(addStationInToolbar ? .visible : .hidden, for: .navigationBar)
+            .toolbar {
+                if addStationInToolbar {
+                    ToolbarItem(placement: MusicToolbar.trailingItemPlacement) {
+                        addStationButton
+                    }
+                }
+            }
             .navigationTitle("")
             .musicNavigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: RadioDirectoryDestination.self) { destination in
@@ -144,6 +153,24 @@ struct RadioTabView: View {
 
     // MARK: - Header
 
+    /// With the dock along the top, the button goes in the navigation bar: the floating dock is a full-width view
+    /// on the same row, and it swallowed taps on plain views drawn there.
+    private var addStationInToolbar: Bool {
+        MusicPadDock.isTopDock(placement: tabBarPlacement, sizeClass: radioSizeClass)
+    }
+
+    private var addStationButton: some View {
+        Button {
+            showAddStationSheet = true
+        } label: {
+            Image(systemName: "radio")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 44, height: 44)
+        }
+        .accessibilityLabel("Add radio station")
+    }
+
     private var radioHeaderBar: some View {
         HStack(alignment: .center, spacing: 12) {
             Text("Radio")
@@ -151,16 +178,10 @@ struct RadioTabView: View {
                 .foregroundStyle(.primary)
                 .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 0)
-            Button {
-                showAddStationSheet = true
-            } label: {
-                Image(systemName: "radio")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .frame(width: 44, height: 44)
+            if !addStationInToolbar {
+                addStationButton
+                    .musicGlassCapsuleInteractiveChrome()
             }
-            .accessibilityLabel("Add radio station")
-            .musicGlassCapsuleInteractiveChrome()
 
             MusicToolbarSettingsAvatarLink(diameter: 45)
         }

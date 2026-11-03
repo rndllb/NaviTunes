@@ -353,11 +353,9 @@ struct BrowseAlbumDetailView: View {
         .musicNavigationBarTitleDisplayMode(.inline)
         .musicNavigationBarVisibleWhenPushed()
         .musicHeroAlbumNavigationChrome(palette: backdropPalette)
-        .toolbar {
-            ToolbarItemGroup(placement: MusicToolbar.trailingItemPlacement) {
-                toolbarButtons
-                    .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
-            }
+        .musicPushedActions {
+            toolbarButtons
+                .coverZoomDetailHitTesting(phase: $dismissalPhase, isBeingDismissed: $isBeingDismissed)
         }
         // No manual clear: `onDisappear` also fires when this destination is covered by a
         // further push, and clearing the binding there pops the whole subtree. The item binding
